@@ -44,8 +44,8 @@ ADR that motivated it.
 | T006c | done | 2026-09-05 | `DeterministicRng`, PCG32 with named sub-streams |
 | T006d | done | 2026-09-05 | `Tick`, `RoundCount`, `Ulid` |
 | T006e | done | 2026-09-05 | `Interner`, `StatId`, `TagId` |
-| **T007** | **next** | — | `crpg-sim`: `World` (with `EventQueue<SimEvent>`), `ComponentStore<T>`, spawn/despawn/query, `Timeline` container; generic event substrate per ADR-0008 (scoped core exception, see ADR) |
-| T008 | open | — | `state_hash` + the fixed-step tick loop + `Timeline` advance rules |
+| T007 | done | 2026-09-06 | `crpg-sim`: `World` (with `EventQueue<SimEvent>`), `ComponentStore<T>`, spawn/despawn/query, `Timeline` container; generic event substrate per ADR-0008 (scoped core exception, see ADR) |
+| **T008** | **next** | — | `state_hash` + the fixed-step tick loop + `Timeline` advance rules |
 | T009 | open | — | Replay record/playback harness |
 
 T006a–e are spec §24's single T6, split per ADR-0006. T006a established
@@ -174,7 +174,7 @@ Record it here, one line per week.
 
 | Week ending | Merged | Notes |
 |---|---|---|
-| 2026-09-06 | 13 | T001–T005c plus T006a–e, all on `master`. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
+| 2026-09-06 | 14 | T001–T005c plus T006a–e and T007, all on `master`. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
 
 ---
 
@@ -185,3 +185,4 @@ Record it here, one line per week.
 - 2026-09-05 (UTC) · opencode/muse-spark + E001/ADR-0008 · Assigned event pieces: substrate + SimEvent → T007 (scoped core exception, see ADR), IR types → T010, hooks → T014.
 - 2026-09-06 (UTC) · opencode/muse-spark + spec-gap triage · Filed E009–E022 from the full-spec gap review and indexed all E-tasks in the blockers table; no spec, README, or source changes per file-only scope.
 - 2026-09-06 (UTC) · opencode/muse-spark + E006-A/E009/E014/E015 + hygiene · Marked T006e merged (it landed in 8f2e38b; the "on branch" row was stale), corrected the throughput count to 13, locked the T007/T008 scope split (Timeline container vs advance rules), and recorded the four T007-unblocking decisions as done.
+- 2026-09-06 (UTC) · opencode/muse-spark + T007 merged · Marked T007 done, T008 next, throughput at 14.

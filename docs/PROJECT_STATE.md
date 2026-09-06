@@ -137,6 +137,16 @@ history below is merged work only.
   strings, then hardened RNG deserialization against invalid stream parameters
   and added a direct rejection-sampling regression. Nine interner tests and two
   RNG regressions bring core to 85 tests including its doctest.
+- T007 `crpg-sim` skeleton plus the ADR-0008 core substrate: `World` reuses
+  `GenerationalArena<EntityMeta>` (spawn with explicit meta, total despawn
+  with auto `Spawned`/`Despawned` events), `ComponentStore<T>`,
+  `Timeline` container (`BTreeMap<(InitiativeKey, EntityId)>`,
+  advance rules reserved for T008), `f32` `Transform`, and generic
+  `EventEnvelope`/`EventQueue` in core. Seven sim tests including two
+  10,000-case property tests (skeleton round-trip, replay determinism) and
+  four substrate tests. Implementation findings now pinned in code and docs:
+  stores/timeline serialize as pair lists (struct keys are not JSON keys),
+  `EntityMeta` is braced (a unit serializes as `null`, i.e. a vacant slot).
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -167,9 +177,10 @@ history below is merged work only.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T007 crpg-sim: World and ComponentStore. Its entity arena is
-  `GenerationalArena<EntityMeta>` from T006a, already property-tested — not a
-  second implementation.
+- T008 `state_hash` + the fixed-step tick loop (with `Timeline` advance
+  rules). Note E004 (one-task-one-crate splits) is still open and names T008:
+  resolve it before specifying T008, or the task spans `crpg-sim` and
+  `crpg-testkit` against the rule.
 
 ## Task backlog
 `tasks/BACKLOG.md` is the index of every numbered task with its status, plus
@@ -222,3 +233,4 @@ the carried blockers and the throughput log.
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + hygiene + T007-unblock · Folded T006e into Done (it landed in 8f2e38b; "complete in working tree" was stale) and recorded E006-A/E009/E014/E015 so T007 can be specified.
+- 2026-09-06 (UTC) · opencode/muse-spark + T007 merged · Recorded the skeleton above; next is T008 with the open E004 split question flagged.
