@@ -130,6 +130,18 @@ impl World {
         self.tick
     }
 
+    /// Advances the tick counter by one, saturating at `u64::MAX`.
+    ///
+    /// Crate-visible only: the [`tick`](crate::tick) loop calls it; no outer
+    /// code sets time, so there is deliberately no public setter (see the
+    /// crate contract). Saturation is unreachable-by-construction — 2^64
+    /// ticks is not a workload — exactly as the event `seq` counter in
+    /// `crpg-core`, and for the same reason it saturates rather than wraps:
+    /// wrapping would silently reorder time.
+    pub(crate) fn advance_tick(&mut self) {
+        self.tick = self.tick.saturating_add(1);
+    }
+
     /// The transform store. No liveness check: check
     /// [`contains`](Self::contains) first, or keep the id you spawned.
     pub fn transforms(&self) -> &ComponentStore<Transform> {

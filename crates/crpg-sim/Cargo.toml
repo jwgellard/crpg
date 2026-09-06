@@ -5,13 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 crpg-core = { path = "../crpg-core" }
 indexmap = { workspace = true }
 serde = { workspace = true }
+# Promoted from dev by T008a: state_hash serializes the world through it.
+serde_json = { workspace = true }
 
 [dev-dependencies]
-# Same pair as crpg-core (ADR-0006): proptest for the op-sequence property
-# tests, serde_json for the skeleton round-trip. Neither may become a normal
-# dependency.
+# Same as crpg-core (ADR-0006): proptest for the property tests.
 proptest.workspace = true
-serde_json.workspace = true

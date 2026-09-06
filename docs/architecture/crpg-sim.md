@@ -2,11 +2,11 @@
 
 One loaded area's simulation state: the authoritative world the server owns.
 
-**State:** the skeleton is complete (T007): `World` with spawn/despawn/query,
-`ComponentStore<T>`, the `Timeline` container, `Transform`, `SimEvent`, and
-the live event queue. Systems, the tick loop, `state_hash`, movement and
-every further component are planned, each with its owning task named in the
-module docs.
+**State:** the skeleton (T007) plus the loop and the instrument (T008a):
+`World` with spawn/despawn/query, the fixed-step `tick` with its ordered
+system list, the `Timeline` advance policy for both play modes, and
+`state_hash`. Systems beyond the timeline step, movement and further
+components are planned, each with its owning task named in the module docs.
 
 Decisions: [ADR-0006](../adr/0006-crpg-core-primitives.md),
 [ADR-0007](../adr/0007-reserved-arena-generation.md) and
@@ -43,18 +43,22 @@ substrate (core), the campaign content types (data) and the rules kernel
   iteration, pair-list serde. The no-dangling invariant is `World`'s job.
 - **`timeline` — `Timeline`, `InitiativeKey`.** The container only:
   `BTreeMap<(key, id)>` with replace-on-insert and O(n) removal. Advance
-  policy is T008's.
+  policy is T008a's (`tick` preserves standing order; `end_turn` pops).
 - **`transform` — `Transform`.** `f32` position and velocity, the only
   floating point in the crate (E006-A). No rotation until movement needs it.
 - **`event` — `SimEvent`.** `Spawned` / `Despawned` only. Grows as systems
   arrive, one variant per consumer-backed vocabulary decision.
+- **`tick` — `tick`, `end_turn`, `run_systems`.** The fixed-step loop and
+  both advance primitives. Order is spec §10, handwritten; today one system.
+- **`hash` — `state_hash`.** BLAKE3 over canonical JSON, queue bytes
+  included, exclusions none (governed list per ADR-0009, starting empty).
 
 ## Today versus planned
 
-| Exists (T007) | Planned (owner) |
+| Exists (T007–T008a) | Planned (owner) |
 |---|---|
-| Skeleton, spawn/despawn/query, skeleton serde | Tick loop, systems, `state_hash` (T008) |
-| `Timeline` container | Advance policy (T008) |
+| Skeleton, spawn/despawn/query, skeleton serde | Systems beyond the timeline step (their tasks) |
+| Tick loop, `Timeline` advance, `state_hash` (T008a) | Harness + goldens (T008b), replay (T009) |
 | `SimEvent` spawn/despawn | Further variants with their systems |
 | `Transform` position/velocity | Rotation, movement, collision (later) |
 | Reserved `SimDelta` seam (E015) | Full delta shape, `apply_delta` (T018) |
@@ -66,8 +70,8 @@ substrate (core), the campaign content types (data) and the rules kernel
   lowest-index reuse, ascending iteration, `u32::MAX` tombstone. Every save
   and every golden hash downstream inherits them.
 - **The closed event contract**: envelopes ordered `(tick, seq)`, queue
-  bytes part of the hashed world (T008 covers them in `state_hash` goldens
-  per ADR-0008).
+  bytes part of the hashed world (covered in `state_hash` goldens per
+  ADR-0008).
 - **The `f32`-spatial / `Fx16_16`-rules split.** Anything a consumer computes
   a rule from must cross into integers or fixed point before `crpg-rules`
   sees it. The boundary is enforced at this crate's edge by the `no-f64`
@@ -76,3 +80,4 @@ substrate (core), the campaign content types (data) and the rules kernel
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
+- 2026-09-06 (UTC) · opencode/muse-spark + T008a · Moved the loop, advance policy and hash into Exists; recorded the governed-empty exclusion list.

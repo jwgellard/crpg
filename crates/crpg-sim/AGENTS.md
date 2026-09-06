@@ -21,7 +21,7 @@ builds the data structure; T008 owns advancing it.
 ## Public API  (changing this requires an ADR)
 
 `World`, `EntityMeta`, `ComponentStore<T>`, `Timeline`, `InitiativeKey`,
-`Transform`, `SimEvent`.
+`Transform`, `SimEvent`, `tick`, `end_turn`, `state_hash`.
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -34,6 +34,10 @@ builds the data structure; T008 owns advancing it.
   (O(n)), `contains`, `len`, `is_empty`, `iter` ascending.
 - `InitiativeKey(pub i32)`, `Transform { position, velocity }`,
   `SimEvent::{Spawned, Despawned}`, `EntityMeta {}` (reserved placeholder).
+- `tick(world)`: counter saturating +1, then the ordered system list (today
+  exactly `[timeline_system]`). `end_turn(world)`: pops the timeline head,
+  never re-queues, never despawns. `state_hash(world) -> [u8; 32]`: BLAKE3
+  over canonical JSON, queue bytes included, exclusions none.
 
 ## Invariants
 
@@ -106,9 +110,27 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - **No new `SimEvent` variants without consumers.** Each variant is a
   vocabulary decision with a producer and a reader. Speculative variants are
   how game churn reaches the skeleton.
-- **`World::tick` is a getter.** Anything that advances time lives in T008.
-  Do not add a setter to "help" a test; construct the world you need.
+- **`World::tick` is a getter.** Time advances only through `tick` /
+  `end_turn` (T008a). Do not add a setter to "help" a test; construct the
+  world you need.
+- **Tick order is serial territory (spec §15.2).** `run_systems` is a
+  hand-written list in spec §10 stage order; appending is routine,
+  reordering is a behaviour change reviewed as one. No scheduler, no
+  parallelism, no per-entity effect smuggled into `timeline_system` without
+  its task.
+- **Hash exclusions need behaviour-proof tests.** The list is empty and
+  stays empty until a test proves the excluded field cannot affect
+  behaviour. Category (b) admissions and rule changes are ADR-level
+  (ADR-0009).
+- **Determinism scope is ADR-0009.** Same binary + same inputs ⇒ same
+  hashes; cross-platform and cross-build sameness are explicitly not owed.
+  A hash divergence outside the exact-build scope is out-of-scope by
+  citation, not a bug.
+- **`state_hash` panics on non-finite floats by design.** No sim API can
+  produce NaN/infinity, so one in world state means corruption or bridge
+  abuse. Do not add a scrubbing pass; fix the producer.
 
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
+- 2026-09-06 (UTC) · opencode/muse-spark + T008a · Extended the API with `tick`/`end_turn`/`state_hash` and added traps for tick order, hash exclusions, ADR-0009 scope and the designed float panic.
