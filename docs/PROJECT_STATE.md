@@ -158,6 +158,18 @@ history below is merged work only.
   exact-tick `Mismatch` vs `Io` errors, hand-rolled hex (zero new deps).
   Four wiring tests including the 10,000-tick golden round trip. Sim
   untouched; direction follows unratified E005 without declaring it.
+- Review follow-up 3 (third whole-project review, 2026-09-06). Hardened the
+  T007/T008a/T008b seams with no behavior change, in four commits:
+  `crpg-sim` asserts `is_finite` up front in `state_hash` (`serde_json`
+  emits `null` for NaN/infinity instead of failing), `Timeline::from`
+  replaces while `Deserialize` rejects duplicate entities, and `World`
+  loading rejects dangling ids; `crpg-core` `EventQueue` loading rejects
+  duplicate `seq` and stale `next_seq`; `crpg-testkit` `Mismatch` is now a
+  truthful enum (ADR-0010: only present sides, non-UTF-8 as content
+  divergence); ADR-0011 clarifies the event payload bound as fields, not
+  the enum, affirming `EventQueue<SimEvent>`. Sim now 24 tests (11 tick +
+  13 world, incl. interleaved 10k ops), core event 7, testkit 6. All gates
+  green each time.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -225,6 +237,13 @@ the carried blockers and the throughput log.
 - ADR-0009 (2026-09-06): determinism scope is replay-over-exact-build, not
   lockstep; goldens filename-scoped, compared on canonical Linux; hash
   exclusion list governed, starting empty. T008a/T009 acceptance criterion.
+- ADR-0010 (2026-09-06): testkit `Mismatch` is an enum carrying only present
+  sides (no zeroed-hash sentinels); non-UTF-8 goldens are content
+  divergence, not I/O failures.
+- ADR-0011 (2026-09-06): supersedes ADR-0008 Decision 1's wording — the
+  core-closed event payload bound applies to payload fields, not the
+  vocabulary enum; `World.events: EventQueue<SimEvent>` affirmed as the
+  sanctioned instance. Docs aligned, no code changes.
 - Godot pinned at 4.7.2
 - Toolchain pinned at rustc 1.98.0
 
@@ -236,7 +255,8 @@ the carried blockers and the throughput log.
 ## Known problems
 - Scaffolding from workflow plan §15 still missing, none of it blocking:
   `tools/preflight.ps1`, `docs/adr/0000-template.md`, per-crate `AGENTS.md`
-  for every crate except `crpg-core` (written in T006a).
+  for every crate except `crpg-core` (T006a), `crpg-sim` (T007) and
+  `crpg-testkit` (T008b).
 - Spec §14's `docs/contracts/` and `docs/guides/` still do not exist. Neither
   has a gate depending on it: contracts matter once `crpg-contracts` holds
   traits, guides once there is a campaign format to author against.
@@ -252,3 +272,4 @@ the carried blockers and the throughput log.
 - 2026-09-06 (UTC) · opencode/muse-spark + E011 filed · ADR-0009 accepted; T008a's scope input is now ratified, leaving only the `blake3` choice for its task file.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008a merged · Recorded the loop and instrument above; next is T008b (specify first), then T009 with E005/E020.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b merged · Recorded the harness above; next is T009 (specify after E005 + E020), then T010 (needs E016).
+- 2026-09-06 (UTC) · opencode/muse-spark + review 3 follow-up · Recorded the sim/core/testkit hardening, ADR-0010/0011, and the AGENTS.md correction above; next is still T009 (blocked: E005 + E020).

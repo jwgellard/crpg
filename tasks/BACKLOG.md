@@ -47,6 +47,7 @@ ADR that motivated it.
 | T007 | done | 2026-09-06 | `crpg-sim`: `World` (with `EventQueue<SimEvent>`), `ComponentStore<T>`, spawn/despawn/query, `Timeline` container; generic event substrate per ADR-0008 (scoped core exception, see ADR) |
 | T008a | done | 2026-09-06 | `state_hash`, fixed-step tick loop, `Timeline` advance rules (`crpg-sim`; scope ADR-0009) |
 | T008b | done | 2026-09-06 | Hash-sequence harness + golden convention (`crpg-testkit`; scope ADR-0009) |
+| — | done | 2026-09-06 | Review 3 follow-up: sim/core/testkit invariant hardening (finite hash guard, validated Timeline/World/EventQueue loading, truthful Mismatch enum) + ADR-0010/0011 |
 | **T009** | **next** | — | Replay record/playback harness (scope ADR-0009; needs E005 + E020 first) |
 
 T006a–e are spec §24's single T6, split per ADR-0006. T006a established
@@ -191,3 +192,4 @@ Record it here, one line per week.
 - 2026-09-06 (UTC) · opencode/muse-spark + E011 filed · ADR-0009 accepted (replay-not-lockstep scope); T008a/T008b/T009 rows cite it, E011 done.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008a merged · Marked T008a done, T008b next, throughput at 15.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b merged · Marked T008b done, T009 next (blocked: E005 + E020), throughput at 16.
+- 2026-09-06 (UTC) · opencode/muse-spark + review 3 follow-up · Recorded the sim/core/testkit hardening and ADR-0010/0011 as done (fixes, not counted in throughput per the review 1/2 precedent); T009 still next, still blocked on E005 + E020.
