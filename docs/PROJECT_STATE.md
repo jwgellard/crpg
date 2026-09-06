@@ -1,25 +1,13 @@
 # Project state
 
-Updated: 2026-09-05
+Updated: 2026-09-06
 
 ## Phase
 Phase 1 — core skeleton and test harness.
 
 ## Branch state
-T006b-T006d are merged to local `master`. T006e is complete and green in the
-uncommitted `master` working tree. The Done history below is merged work only.
-
-## Complete in working tree
-- T006e `crpg-core`: `Interner` assigns dense `u32` handles in first-intern
-  order and serializes as an ordered string list. `Interners` owns distinct stat
-  and tag namespaces whose private-field `StatId`/`TagId` handles are
-  runtime-only and deliberately do not implement serde or `Display`. A full
-  review made equality order-sensitive and made deserialization reject duplicate
-  strings, then hardened RNG deserialization against invalid stream parameters
-  and added a direct rejection-sampling regression. Nine interner tests and two
-  RNG regressions bring core to 85 tests including its doctest. All required
-  local gates pass; no proptest regression file was produced. Not committed or
-  merged.
+All merged work is on local `master`. The working tree is clean. The Done
+history below is merged work only.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -141,6 +129,14 @@ uncommitted `master` working tree. The Done history below is merged work only.
   tests, including six property tests, brought core to 74 tests including its
   doctest. All required local gates passed; no proptest regression file was
   produced.
+- T006e `crpg-core`: `Interner` assigns dense `u32` handles in first-intern
+  order and serializes as an ordered string list. `Interners` owns distinct stat
+  and tag namespaces whose private-field `StatId`/`TagId` handles are
+  runtime-only and deliberately do not implement serde or `Display`. A full
+  review made equality order-sensitive and made deserialization reject duplicate
+  strings, then hardened RNG deserialization against invalid stream parameters
+  and added a direct rejection-sampling regression. Nine interner tests and two
+  RNG regressions bring core to 85 tests including its doctest.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -198,6 +194,12 @@ the carried blockers and the throughput log.
   `proptest` + `serde_json` as workspace dev-dependencies.
 - ADR-0007 reserves `u32::MAX` as the arena's never-issued retirement
   tombstone, superseding ADR-0006 Decision 1's original overflow boundary.
+- E006-A (2026-09-06): `f64` banned in `crpg-sim`; the determinism lint
+  enforces it as `no-f64`, `f32`-spatial-only per spec §2.4.
+- E009/E014/E015 (2026-09-06): spec carries the ADR-0008 residue fixes, the
+  skeleton-only `World` serde caveat (conversion pair owned by T014), and the
+  replica/`Timeline` ownership (prediction buffer outside sim, container in
+  T007, advance rules in T008). T007 scope is locked.
 - Godot pinned at 4.7.2
 - Toolchain pinned at rustc 1.98.0
 
@@ -213,4 +215,10 @@ the carried blockers and the throughput log.
 - Spec §14's `docs/contracts/` and `docs/guides/` still do not exist. Neither
   has a gate depending on it: contracts matter once `crpg-contracts` holds
   traits, guides once there is a campaign format to author against.
-  (`docs/architecture/` was the one with a gate — §15.6 — and now exists.)
+   (`docs/architecture/` was the one with a gate — §15.6 — and now exists.)
+
+---
+
+## Agent log
+
+- 2026-09-06 (UTC) · opencode/muse-spark + hygiene + T007-unblock · Folded T006e into Done (it landed in 8f2e38b; "complete in working tree" was stale) and recorded E006-A/E009/E014/E015 so T007 can be specified.
