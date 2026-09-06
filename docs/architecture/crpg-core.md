@@ -92,7 +92,9 @@ outcome. `CorruptArena` and `InvalidEntityId` guard entity deserialization;
 ### `event.rs`
 
 Generic `(tick, seq)` ordering, stable drain and pair-plus-counter serde —
-mechanism only, per ADR-0008. Payloads stay core-closed by review. Loading
+mechanism only, per ADR-0008. The payload bound is over fields, not the enum
+(ADR-0011): every field core-closed, the vocabulary enum owned above, so
+`World.events: EventQueue<SimEvent>` is the sanctioned instance. Loading
 rejects duplicate sequence numbers and a `next_seq` that does not exceed the
 queued max (saturation excepted), so a later push cannot reuse a number.
 
@@ -217,3 +219,4 @@ issued them. Persistence resolves and stores the string, as fixed by
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + event-queue hardening · Documented the event substrate module and its load-time sequence guards; corrected the stale blake3-authorisation note.
+- 2026-09-06 (UTC) · opencode/muse-spark + ADR-0011 · Recorded the fields-not-enum payload clarification and affirmed the sanctioned sim instance.

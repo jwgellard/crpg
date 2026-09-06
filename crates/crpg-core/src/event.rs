@@ -6,12 +6,17 @@
 //! `SimEvent` in `crpg-sim`, event-IR graph types in `crpg-data`, kernel
 //! hooks in `crpg-rules`.
 //!
-//! The payload type `P` is deliberately unconstrained. Restricting it to
-//! core-closed field types (`EntityId`, `Tick`, integers / `Fx16_16`, `Ulid`,
-//! `String` — never `StatId`/`TagId` handles per ADR-0006 Decision 4, never
-//! `rules`/`sim` types) is enforced by review, not by the compiler: a bound
-//! would take a trait, and ADR-0008 forbids new traits. Instantiating this
-//! queue with a non-core payload is a layering violation, full stop.
+//! The payload type `P` is deliberately unconstrained. The core-closed rule
+//! (ADR-0008 Decision 1, clarified by ADR-0011) applies to the *fields
+//! composing* a payload — `EntityId`, `Tick`, integers / `Fx16_16`, `Ulid`,
+//! `String`, never `StatId`/`TagId` handles per ADR-0006 Decision 4 — while
+//! the vocabulary enum itself lives in the crate that owns it (`SimEvent`
+//! in `crpg-sim`, IR types in `crpg-data`, hooks in `crpg-rules`). It is
+//! enforced by review, not by the compiler: a bound would take a trait, and
+//! ADR-0008 forbids new traits. Defining game vocabulary in core, or putting
+//! non-core-closed fields in any payload, is a layering violation, full
+//! stop; instantiating the generic above with a field-clean enum — as
+//! `World.events: EventQueue<SimEvent>` does — is the intended use.
 //!
 //! There is no dispatch here, no routing, no handlers, no game enum. If this
 //! module wants any of those, that want is its own task (per ADR-0008).

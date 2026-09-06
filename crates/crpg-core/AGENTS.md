@@ -247,15 +247,20 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - **`Ulid` generation does not live here.** Core has no clock or entropy source.
   Callers author ids by supplying both fields to `Ulid::from_parts`; do not add
   `new`, `now`, `SystemTime`, or an RNG-backed constructor.
-- **The event queue takes core-closed payloads only.** `EventQueue<P>` is
-  generic, so nothing stops you writing `EventQueue<CombatEvent>` — except
-  review, this entry, and ADR-0008. A non-core payload compiles and is still a
-  layering violation: it smuggles game vocabulary into the primitives crate
-  and subjects game churn to the strictest stability contract in the
-  workspace. Concrete event types go in `crpg-sim`, `crpg-data` or
-  `crpg-rules`, never here.
+- **The event queue takes field-clean payloads only (ADR-0011).**
+  `EventQueue<P>` is generic, so nothing stops you writing
+  `EventQueue<CombatEvent>` — except review, this entry, and ADR-0008/0011.
+  The bound is over payload *fields* (all core-closed), not over the enum:
+  defining game vocabulary in core, or putting non-core-closed fields in any
+  payload, compiles and is still a layering violation — it smuggles game
+  vocabulary into the primitives crate and subjects game churn to the
+  strictest stability contract in the workspace. Concrete event types go in
+  `crpg-sim`, `crpg-data` or `crpg-rules`, never here; instantiating the
+  generic there with a field-clean enum (as `World.events` does) is the
+  intended use, not a violation.
 
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Added the event-substrate contract, payload trap and Public API names for ADR-0008's scoped core exception.
 - 2026-09-06 (UTC) · opencode/muse-spark + event-queue hardening · Validated EventQueue deserialization (unique seq, next_seq exceeding the queued max) and recorded it in the substrate contract.
+- 2026-09-06 (UTC) · opencode/muse-spark + ADR-0011 · Narrowed the payload trap to fields-vs-enum per the superseding ADR so the sanctioned `EventQueue<SimEvent>` instance stops reading as a violation.
