@@ -5,3 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+crpg-core = { path = "../crpg-core" }
+indexmap = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+# Same pair as crpg-core (ADR-0006): proptest for the op-sequence property
+# tests, serde_json for the skeleton round-trip. Neither may become a normal
+# dependency.
+proptest.workspace = true
+serde_json.workspace = true

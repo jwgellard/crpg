@@ -25,7 +25,7 @@ interning, and the crate-wide error type.
 
 `CoreError`, `Result<T>`, `EntityId`, `GenerationalArena<T>`, `Fx16_16`,
 `DeterministicRng`, `Pcg32`, `Tick`, `RoundCount`, `Ulid`, `Interner`,
-`Interners`, `StatId`, `TagId`.
+`Interners`, `StatId`, `TagId`, `EventEnvelope`, `EventQueue`.
 
 `CoreError`: `CorruptArena` and `InvalidEntityId` guard deserialization;
 `InvalidFixedPoint` rejects malformed, inexact or out-of-range decimals. The
@@ -109,6 +109,19 @@ The handle newtypes expose only `index`; their fields are private and they have
 no raw constructors. They are runtime-only and deliberately have no
 `Serialize`, `Deserialize`, or `Display` implementation. Persistence resolves
 the handle through the issuing interner and stores the string.
+
+### Event substrate contract (T007, ADR-0008)
+
+`event::{EventEnvelope, EventQueue}` are re-exported at the crate root. The
+queue is mechanism only: `push` stamps `(tick, seq)`, `drain` yields ascending
+`(tick, seq)` stably and clears, serde covers the envelopes plus the sequence
+counter. No game variants, no dispatch, no handlers — those live in
+`crpg-sim` (`SimEvent`), `crpg-data` (IR types) and `crpg-rules` (hooks).
+
+Payloads are core-closed types (`EntityId`, `Tick`, integers / `Fx16_16`,
+`Ulid`, `String`) by convention and review, not by a compiler bound — a bound
+would take a trait, and ADR-0008 forbids new traits. `tests/event.rs` pins
+ordering and the round trip with integer payloads.
 
 ## Invariants
 
@@ -232,3 +245,14 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - **`Ulid` generation does not live here.** Core has no clock or entropy source.
   Callers author ids by supplying both fields to `Ulid::from_parts`; do not add
   `new`, `now`, `SystemTime`, or an RNG-backed constructor.
+- **The event queue takes core-closed payloads only.** `EventQueue<P>` is
+  generic, so nothing stops you writing `EventQueue<CombatEvent>` — except
+  review, this entry, and ADR-0008. A non-core payload compiles and is still a
+  layering violation: it smuggles game vocabulary into the primitives crate
+  and subjects game churn to the strictest stability contract in the
+  workspace. Concrete event types go in `crpg-sim`, `crpg-data` or
+  `crpg-rules`, never here.
+
+## Agent log
+
+- 2026-09-06 (UTC) · opencode/muse-spark + T007 · Added the event-substrate contract, payload trap and Public API names for ADR-0008's scoped core exception.

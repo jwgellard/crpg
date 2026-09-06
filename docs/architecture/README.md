@@ -43,7 +43,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-core` | [crpg-core.md](crpg-core.md) | ADR-0006, ADR-0007 |
 | `crpg-data` | due with T010 | spec §4 |
 | `crpg-rules` | due with T014 | spec §3, §15.1 |
-| `crpg-sim` | due with T007 | spec §2.4 |
+| `crpg-sim` | [crpg-sim.md](crpg-sim.md) | spec §2.4 |
 | `crpg-nav` | due with its first task | spec §6.3 |
 | `crpg-script` | due with its first task | spec §5, ADR-0005 |
 | `crpg-ai` | due with its first task | spec §6 |
@@ -69,3 +69,4 @@ superseded by appending, never rewritten.
 ## Agent log
 
 - 2026-09-05 · opencode/big-pickle + agent-attribution rule · Restated the root attribution rule here so agents working on architecture docs see it without leaving the directory; no change to the readiness gate.
+- 2026-09-06 (UTC) · opencode/muse-spark + T007 · Linked the new crpg-sim doc; the §15.6 readiness gate is now satisfied for the second crate.
