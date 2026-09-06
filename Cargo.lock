@@ -153,6 +153,10 @@ dependencies = [
 [[package]]
 name = "crpg-testkit"
 version = "0.1.0"
+dependencies = [
+ "crpg-core",
+ "crpg-sim",
+]
 
 [[package]]
 name = "equivalent"

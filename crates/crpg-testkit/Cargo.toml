@@ -5,3 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Plain testkit -> sim normal dependency: permitted by the ALLOWED table and
+# matching the proposed E005 one-way rule (testkit may reach sim; sim never
+# reaches testkit). The rule itself is still unratified — this edge follows
+# it without declaring it.
+crpg-sim = { path = "../crpg-sim" }
+
+[dev-dependencies]
+# Tests name EntityId directly (tracked live ids). Same direction, tests only.
+crpg-core = { path = "../crpg-core" }

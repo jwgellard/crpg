@@ -51,7 +51,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-persist` | due with its first task | spec §8 |
 | `crpg-edit` | due with its first task | spec §11 |
 | `crpg-contracts` | due with its first task | spec §15.1 (human-owned) |
-| `crpg-testkit` | due with its first task | spec §15.3, §16 |
+| `crpg-testkit` | [crpg-testkit.md](crpg-testkit.md) | spec §15.3, §16 |
 | `crpg-server` | due with its first task | spec §10 |
 | `crpg-cli` | due with T013 | spec §24 |
 | `crpg-godot` | due with its first task | spec §9, ADR-0001, ADR-0003 |
@@ -70,3 +70,4 @@ superseded by appending, never rewritten.
 
 - 2026-09-05 · opencode/big-pickle + agent-attribution rule · Restated the root attribution rule here so agents working on architecture docs see it without leaving the directory; no change to the readiness gate.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Linked the new crpg-sim doc; the §15.6 readiness gate is now satisfied for the second crate.
+- 2026-09-06 (UTC) · opencode/muse-spark + T008b · Linked the new crpg-testkit doc; third crate through the gate.
