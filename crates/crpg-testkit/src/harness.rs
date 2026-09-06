@@ -30,10 +30,14 @@
 //!
 //! [`verify_golden`] returns `Result<(), HarnessError>`: `Io` for filesystem
 //! failures, `Mismatch` for content divergence (including length mismatch,
-//! reported at the shorter length, and missing files, which surface as `Io`
-//! with kind `NotFound`). The two are distinguishable without matching on
-//! strings, both call sites stay single-pathed, and neither costs a
-//! dependency.
+//! reported at the shorter length, malformed lines, and non-UTF-8 files;
+//! missing files surface as `Io` with kind `NotFound`). The two are
+//! distinguishable without matching on strings, both call sites stay
+//! single-pathed, and neither costs a dependency.
+//!
+//! [`Mismatch`] is an enum so each side is present only when it exists: a
+//! missing or unparsable side is `None`/its own variant, never a zeroed
+//! hash (ADR-0010).
 
 use std::fmt;
 use std::io::{self, Write};
@@ -50,25 +54,100 @@ use crpg_sim::{state_hash, tick, World};
 pub type ScriptStep = Box<dyn FnMut(&mut World)>;
 
 /// First-diverging-tick report from [`verify_golden`].
+///
+/// Each variant carries only the sides that exist: absent or unparsable
+/// content is `None` or its own variant, never a zeroed hash (ADR-0010).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mismatch {
-    /// Index into the hash sequence where comparison stopped.
-    pub tick: usize,
-    /// The approved hash at `tick`.
-    pub expected: [u8; 32],
-    /// The hash the run produced at `tick`.
-    pub actual: [u8; 32],
+pub enum Mismatch {
+    /// Same length, different hashes at `tick`.
+    Diverged {
+        /// Index into the hash sequence where comparison stopped.
+        tick: usize,
+        /// The approved hash at `tick`.
+        expected: [u8; 32],
+        /// The hash the run produced at `tick`.
+        actual: [u8; 32],
+    },
+    /// The run produced more hashes than the golden holds.
+    GoldenShort {
+        /// First index with no approved hash (the golden length).
+        tick: usize,
+        /// The hash the run produced at `tick`.
+        actual: [u8; 32],
+    },
+    /// The golden holds more hashes than the run produced.
+    RunShort {
+        /// First index with no produced hash (the run length).
+        tick: usize,
+        /// The approved hash at `tick`.
+        expected: [u8; 32],
+    },
+    /// A golden line exists but is not 64 lowercase hex chars.
+    Malformed {
+        /// Index of the bad line among hash lines.
+        tick: usize,
+        /// The produced hash, when the run reaches `tick`.
+        actual: Option<[u8; 32]>,
+        /// The raw golden line.
+        line: String,
+    },
+    /// The golden file is not valid UTF-8.
+    InvalidUtf8,
+}
+
+impl Mismatch {
+    /// Index where comparison stopped, when the variant has one.
+    pub fn tick(&self) -> Option<usize> {
+        match self {
+            Mismatch::Diverged { tick, .. }
+            | Mismatch::GoldenShort { tick, .. }
+            | Mismatch::RunShort { tick, .. }
+            | Mismatch::Malformed { tick, .. } => Some(*tick),
+            Mismatch::InvalidUtf8 => None,
+        }
+    }
 }
 
 impl fmt::Display for Mismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "diverged at tick {}: expected {}, got {}",
-            self.tick,
-            hex(&self.expected),
-            hex(&self.actual)
-        )
+        match self {
+            Mismatch::Diverged {
+                tick,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "diverged at tick {}: expected {}, got {}",
+                tick,
+                hex(expected),
+                hex(actual)
+            ),
+            Mismatch::GoldenShort { tick, actual } => write!(
+                f,
+                "run outlived golden at tick {}: got {}, no approved hash",
+                tick,
+                hex(actual)
+            ),
+            Mismatch::RunShort { tick, expected } => write!(
+                f,
+                "golden outlived run at tick {}: expected {}, run ended",
+                tick,
+                hex(expected)
+            ),
+            Mismatch::Malformed { tick, actual, line } => match actual {
+                Some(hash) => write!(
+                    f,
+                    "malformed golden at tick {}: got {}, line {line:?}",
+                    tick,
+                    hex(hash)
+                ),
+                None => write!(
+                    f,
+                    "malformed golden at tick {tick}: line {line:?}, run ended"
+                ),
+            },
+            Mismatch::InvalidUtf8 => write!(f, "golden file is not valid UTF-8"),
+        }
     }
 }
 
@@ -143,31 +222,37 @@ pub fn write_golden(path: &Path, hashes: &[[u8; 32]]) -> io::Result<()> {
 /// full match, `Err(HarnessError::Mismatch)` at the first diverging tick —
 /// a length mismatch reports at the shorter length — and
 /// `Err(HarnessError::Io)` when the file cannot be read (a missing golden
-/// and a wrong golden stay distinguishable).
+/// and a wrong golden stay distinguishable). Non-UTF-8 files are content
+/// divergence (`Mismatch::InvalidUtf8`), not I/O failures.
 pub fn verify_golden(path: &Path, hashes: &[[u8; 32]]) -> Result<(), HarnessError> {
-    let text = std::fs::read_to_string(path).map_err(HarnessError::Io)?;
+    let bytes = std::fs::read(path).map_err(HarnessError::Io)?;
+    let text =
+        String::from_utf8(bytes).map_err(|_| HarnessError::Mismatch(Mismatch::InvalidUtf8))?;
     let mut expected = text.lines().filter(|line| !line.starts_with('#'));
     for (tick, actual) in hashes.iter().enumerate() {
         match expected.next() {
-            Some(line) => {
-                let baseline = unhex(line).ok_or(HarnessError::Mismatch(Mismatch {
-                    tick,
-                    expected: [0; 32],
-                    actual: *actual,
-                }))?;
-                if baseline != *actual {
-                    return Err(HarnessError::Mismatch(Mismatch {
+            Some(line) => match unhex(line) {
+                Some(baseline) => {
+                    if baseline != *actual {
+                        return Err(HarnessError::Mismatch(Mismatch::Diverged {
+                            tick,
+                            expected: baseline,
+                            actual: *actual,
+                        }));
+                    }
+                }
+                None => {
+                    return Err(HarnessError::Mismatch(Mismatch::Malformed {
                         tick,
-                        expected: baseline,
-                        actual: *actual,
+                        actual: Some(*actual),
+                        line: line.to_string(),
                     }));
                 }
-            }
+            },
             // The run outlived the file: length mismatch at the shorter side.
             None => {
-                return Err(HarnessError::Mismatch(Mismatch {
+                return Err(HarnessError::Mismatch(Mismatch::GoldenShort {
                     tick,
-                    expected: [0; 32],
                     actual: *actual,
                 }));
             }
@@ -176,11 +261,17 @@ pub fn verify_golden(path: &Path, hashes: &[[u8; 32]]) -> Result<(), HarnessErro
     // The file outlived the run: same rule, reported at the shorter length.
     match expected.next() {
         None => Ok(()),
-        Some(_) => Err(HarnessError::Mismatch(Mismatch {
-            tick: hashes.len(),
-            expected: [0; 32],
-            actual: [0; 32],
-        })),
+        Some(line) => match unhex(line) {
+            Some(baseline) => Err(HarnessError::Mismatch(Mismatch::RunShort {
+                tick: hashes.len(),
+                expected: baseline,
+            })),
+            None => Err(HarnessError::Mismatch(Mismatch::Malformed {
+                tick: hashes.len(),
+                actual: None,
+                line: line.to_string(),
+            })),
+        },
     }
 }
 

@@ -6,8 +6,10 @@
 use std::path::PathBuf;
 
 use crpg_core::EntityId;
-use crpg_sim::{InitiativeKey, Transform, World};
-use crpg_testkit::{run_hash_sequence, verify_golden, write_golden, HarnessError, ScriptStep};
+use crpg_sim::{state_hash, tick, InitiativeKey, Transform, World};
+use crpg_testkit::{
+    run_hash_sequence, verify_golden, write_golden, HarnessError, Mismatch, ScriptStep,
+};
 
 /// Spawns up to `cap` entities, then rewrites every live transform per tick.
 struct SpawnHeavy {
@@ -117,6 +119,10 @@ fn golden_round_trip_over_10k_ticks() {
     remove_silently(&path);
 }
 
+fn hex_of(hash: &[u8; 32]) -> String {
+    hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[test]
 fn tamper_reports_the_exact_tick() {
     let path = temp_golden("tamper");
@@ -133,37 +139,71 @@ fn tamper_reports_the_exact_tick() {
     lines[target] = chars.into_iter().collect();
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     match verify_golden(&path, &hashes) {
-        Err(HarnessError::Mismatch(m)) => {
-            assert_eq!(m.tick, 40);
-            assert_eq!(m.actual, hashes[40]);
-            assert_ne!(m.expected, m.actual);
+        Err(HarnessError::Mismatch(Mismatch::Diverged {
+            tick,
+            expected,
+            actual,
+        })) => {
+            assert_eq!(tick, 40);
+            assert_eq!(actual, hashes[40]);
+            assert_ne!(expected, actual);
             assert_eq!(
-                m.to_string(),
+                Mismatch::Diverged {
+                    tick,
+                    expected,
+                    actual
+                }
+                .to_string(),
                 format!(
                     "diverged at tick 40: expected {}, got {}",
-                    m.expected
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>(),
-                    hashes[40]
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>(),
+                    hex_of(&expected),
+                    hex_of(&hashes[40]),
                 )
             );
         }
-        other => panic!("expected a tick-40 mismatch, got {other:?}"),
+        other => panic!("expected a tick-40 divergence, got {other:?}"),
     }
 
-    // Truncate five hashes: divergence reported at the shorter length.
+    // Truncate a line: malformed content reports the exact tick with the
+    // produced hash and the raw line, not a zeroed expected hash.
+    write_golden(&path, &hashes).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let target = 2 + 40;
+    lines[target].truncate(10);
+    let bad_line = lines[target].clone();
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    match verify_golden(&path, &hashes) {
+        Err(HarnessError::Mismatch(Mismatch::Malformed { tick, actual, line })) => {
+            assert_eq!(tick, 40);
+            assert_eq!(actual, Some(hashes[40]));
+            assert_eq!(line, bad_line);
+        }
+        other => panic!("expected a tick-40 malformed line, got {other:?}"),
+    }
+
+    // Run outlived the file: the produced hash is reported, no expected side.
     let hashes_plus = run_hash_sequence(0xFACE, 200, timeline_rng_script());
     write_golden(&path, &hashes_plus).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     std::fs::write(&path, lines[..lines.len() - 5].join("\n") + "\n").unwrap();
     match verify_golden(&path, &hashes_plus) {
-        Err(HarnessError::Mismatch(m)) => assert_eq!(m.tick, 195),
-        other => panic!("expected a tick-195 length mismatch, got {other:?}"),
+        Err(HarnessError::Mismatch(Mismatch::GoldenShort { tick, actual })) => {
+            assert_eq!(tick, 195);
+            assert_eq!(actual, hashes_plus[195]);
+        }
+        other => panic!("expected a tick-195 golden-short, got {other:?}"),
+    }
+
+    // File outlived the run: the approved hash is reported, no produced side.
+    write_golden(&path, &hashes_plus).unwrap();
+    match verify_golden(&path, &hashes_plus[..195]) {
+        Err(HarnessError::Mismatch(Mismatch::RunShort { tick, expected })) => {
+            assert_eq!(tick, 195);
+            assert_eq!(expected, hashes_plus[195]);
+        }
+        other => panic!("expected a tick-195 run-short, got {other:?}"),
     }
 
     // Reworded headers still verify: headers never compare.
@@ -173,6 +213,13 @@ fn tamper_reports_the_exact_tick() {
     std::fs::write(&path, reworded).unwrap();
     verify_golden(&path, &hashes_plus).unwrap();
 
+    // Readable non-UTF-8 is content divergence, not an I/O failure.
+    std::fs::write(&path, [0xff, 0xfe, 0x00, 0x2a]).unwrap();
+    match verify_golden(&path, &hashes_plus) {
+        Err(HarnessError::Mismatch(Mismatch::InvalidUtf8)) => {}
+        other => panic!("expected invalid-UTF-8 mismatch, got {other:?}"),
+    }
+
     // A missing file is an I/O failure, not a mismatch.
     remove_silently(&path);
     match verify_golden(&path, &hashes_plus) {
@@ -180,6 +227,78 @@ fn tamper_reports_the_exact_tick() {
         other => panic!("expected a NotFound io error, got {other:?}"),
     }
     remove_silently(&path);
+}
+
+#[test]
+fn golden_format_is_exact_and_headers_never_compare() {
+    let path = temp_golden("format");
+    remove_silently(&path);
+    let hashes = run_hash_sequence(0xA11CE, 8, spawn_heavy_script(6));
+    write_golden(&path, &hashes).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.ends_with('\n'));
+    let mut lines = text.lines();
+    let scope = lines.next().unwrap();
+    assert!(scope.starts_with("# scope: "));
+    assert!(scope.contains(std::env::consts::OS));
+    assert!(scope.contains(std::env::consts::ARCH));
+    assert_eq!(lines.next().unwrap(), "# generator: crpg-testkit");
+    let hash_lines: Vec<&str> = lines.collect();
+    assert_eq!(hash_lines.len(), hashes.len());
+    for (line, hash) in hash_lines.iter().zip(hashes.iter()) {
+        assert_eq!(line.len(), 64);
+        assert_eq!(*line, hex_of(hash));
+    }
+
+    // Nested parents are created by the writer.
+    let nested = std::env::temp_dir().join(format!(
+        "crpg-testkit-{}-nested/a/b/c.golden",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&nested);
+    write_golden(&nested, &hashes).unwrap();
+    verify_golden(&nested, &hashes).unwrap();
+    let _ = std::fs::remove_file(&nested);
+    remove_silently(&path);
+}
+
+#[test]
+fn harness_pins_script_tick_hash_order() {
+    // A spawning script observes different event ticks depending on whether
+    // the script runs before `tick`: script-first stamps spawns at the prior
+    // tick, tick-first at the new tick. The harness must match script-first.
+    fn script_first(seed: u64, ticks: usize) -> Vec<[u8; 32]> {
+        let mut world = World::new(seed);
+        let mut out = Vec::with_capacity(ticks);
+        for _ in 0..ticks {
+            world.spawn(crpg_sim::EntityMeta {});
+            tick(&mut world);
+            out.push(state_hash(&world));
+        }
+        out
+    }
+    fn tick_first(seed: u64, ticks: usize) -> Vec<[u8; 32]> {
+        let mut world = World::new(seed);
+        let mut out = Vec::with_capacity(ticks);
+        for _ in 0..ticks {
+            tick(&mut world);
+            world.spawn(crpg_sim::EntityMeta {});
+            out.push(state_hash(&world));
+        }
+        out
+    }
+    let seed = 0x0BDE;
+    let ticks = 32;
+    let harness = run_hash_sequence(
+        seed,
+        ticks,
+        Box::new(|world: &mut World| {
+            world.spawn(crpg_sim::EntityMeta {});
+        }),
+    );
+    assert_eq!(harness, script_first(seed, ticks));
+    assert_ne!(harness, tick_first(seed, ticks));
 }
 
 #[test]

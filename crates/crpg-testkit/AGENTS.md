@@ -10,7 +10,8 @@ already name their owners.
 Design doc: [`docs/architecture/crpg-testkit.md`](../../docs/architecture/crpg-testkit.md)
 — what the crate is and how its pieces fit. This file is the working contract:
 what you may do and what will break. The dependency rule it follows but does
-not ratify is E005; the determinism scope it operates under is ADR-0009.
+not ratify is E005; the determinism scope it operates under is ADR-0009; the
+mismatch shape is ADR-0010.
 
 Shared test machinery, built once so it cannot fork across crates: the
 hash-sequence harness and golden-file convention that T009's replay, T016's
@@ -29,8 +30,9 @@ harnesses; it never ships in a binary.
 - `write_golden(path, hashes)`: lowercase hex, one per line, `#` scope
   headers, trailing newline, parents created.
 - `verify_golden(path, hashes) -> Result<(), HarnessError>`: `Ok` on full
-  match; `Mismatch` (exact tick, expected, actual) on divergence including
-  length mismatch; `Io` on filesystem failure. Headers never compare.
+  match; `Mismatch` enum on divergence — `Diverged`, `GoldenShort`,
+  `RunShort`, `Malformed`, `InvalidUtf8` (ADR-0010, only present sides);
+  `Io` on filesystem failure. Headers never compare.
 
 ## Invariants
 
@@ -90,11 +92,15 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   ticking, or ticking twice per script step, produces sequences no other
   task can compare against. The failure mode is silent: everything verifies
   against itself and cross-task comparison quietly means nothing.
-- **Missing golden ≠ wrong golden.** `Io(NotFound)` and `Mismatch` are
-  different variants on purpose. Do not merge them into "no approved
-  baseline" — the first means "write one," the second means "behaviour
-  changed," and confusing them wastes exactly the investigation the harness
-  exists to shorten.
+- **Missing golden ≠ wrong golden ≠ unreadable text.** `Io(NotFound)` and
+  `Mismatch` are different variants on purpose. Do not merge them into "no
+  approved baseline" — the first means "write one," the second means
+  "behaviour changed," and confusing them wastes exactly the investigation
+  the harness exists to shorten. Non-UTF-8 files are `Mismatch::InvalidUtf8`,
+  not `Io`.
+- **Never fabricate a hash side.** Length and malformed paths carry `None`
+  or their own variant (ADR-0010). Zeroed `[0; 32]` sentinels made
+  `expected != actual` unreliable and hid the approved hash.
 - **Scope discipline belongs to CI.** Filenames carry the full ADR-0009
   scope; comparison runs on canonical Linux per E020's sequencing. The day
   someone proposes choosing goldens by platform at runtime, that proposal
@@ -108,3 +114,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b · Wrote the crate contract for the harness: API list, seven invariants, and traps for the interleaving, tolerant comparison, missing-vs-wrong goldens, scope discipline and the unratified E005 direction.
+- 2026-09-06 (UTC) · opencode/muse-spark + testkit mismatch hardening · Replaced the Mismatch struct with the ADR-0010 enum (truthful sides, UTF-8 as content divergence) and recorded the no-sentinel trap.
