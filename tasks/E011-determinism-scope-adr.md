@@ -23,7 +23,7 @@ authority behind it.
 
 ## Deliverable
 - New `docs/adr/NNNN-*.md` + one-line citations from spec §2.4 and T008/T009
-  rows. No source changes.
+  rows (read T008a/T008b after the E004 split, 2026-09-06). No source changes.
 
 ## Constraints
 - Doc-only. Human sign-off; this ADR will be cited by every determinism
@@ -32,3 +32,4 @@ authority behind it.
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: the spec orders this ADR itself and it was never written.
+- 2026-09-06 (UTC) · opencode/muse-spark + E004 split · The `state_hash` acceptance-criterion need sits in T008a now; BACKLOG Blocks retargeted from T008 to T008a accordingly. T009 still needs it too.

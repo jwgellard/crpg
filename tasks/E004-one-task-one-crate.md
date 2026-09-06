@@ -2,6 +2,12 @@
 Resolve the one-task-one-crate rule vs multi-crate tasks T008/T009/T011/T016/T018.
 Human-decision task.
 
+> **Decided 2026-09-06 as Option A** (split into per-crate sub-tasks). T008
+> is split concretely below; T009/T011/T016/T018 split at specification time
+> (Stage 2), following the T008 precedent — splitting them now, with no task
+> files and only guessed scopes, would be fiction. The `crpgc run`
+> thin-wrapper moves to T013 (`crpg-cli`).
+
 ## Why this is deferred
 
 AGENTS.md mandates "one task = one crate" (reviewer/editor constraint). But the
@@ -29,3 +35,7 @@ If a task touches multiple crates it violates the rule and would fail
 
 ## Constraints
 - Human decision; do not guess. Only the maintainer can relax a non-negotiable.
+
+## Agent log
+
+- 2026-09-06 (UTC) · opencode/muse-spark + maintainer sign-off · Decided Option A: T008 splits into T008a (`crpg-sim`: `state_hash`, tick loop, `Timeline` advance) and T008b (`crpg-testkit`: hash-sequence harness + golden convention), with the `crpgc run` wrapper transferred to T013. Later multi-crate tasks split at Stage 2 on this precedent; the rule itself is unchanged, so `AGENTS.md` needs no edit.

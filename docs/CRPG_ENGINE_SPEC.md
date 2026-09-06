@@ -1623,13 +1623,23 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Test:* skeleton property test that `deserialize(serialize(w)) == w` after random spawn/despawn/mutate sequences; a test that despawn does not leave dangling component entries.
 *Done when:* round-trip property test passes over 10,000 generated cases.
 
-**T8. State hashing and the fixed-step tick loop**
-*Purpose:* the measurement instrument for every behavioural test in the project.
-*Affected:* `crpg-testkit`, `crpg-sim`.
+**T8a. `state_hash` and the fixed-step tick loop (`crpg-sim`)**
+*Purpose:* the measurement instrument for every behavioural test in the project, plus the loop it measures.
+*Affected:* `crates/crpg-sim`.
 *Dependencies:* T7.
-*Work:* `state_hash(&World) -> [u8; 32]` over canonical serialization with an explicit exclusion list; `fn tick(&mut World)` with a hand-written ordered system list (initially one trivial system); `Timeline` advance policy (every-tick vs `EndTurn`, reconciling §6.2 turn-start AI with the §10 per-tick loop) per E015.
-*Test:* two runs of 10,000 ticks from the same seed produce identical hash sequences; changing the seed changes them.
-*Done when:* `crpgc run --ticks 10000 --hash-every 100` is reproducible.
+*Work:* `state_hash(&World) -> [u8; 32]` over canonical serialization with an explicit exclusion list (queue bytes included per ADR-0008; hash function — expected `blake3` — decided in the task file, which is also where it enters the dependency set); `fn tick(&mut World)` with a hand-written ordered system list (initially one trivial system); `Timeline` advance policy — every-tick real-time advance and `EndTurn` turn-based advance, reconciling §6.2 turn-start AI with the §10 per-tick loop (E015).
+*Test:* two runs of 10,000 ticks from the same seed produce identical hash sequences; changing the seed changes them. Tests are self-contained `proptest` suites in `crpg-sim` (E005: `crpg-sim` does not dev-depend on `crpg-testkit`).
+*Done when:* the hash-sequence tests pass over 10,000 ticks in CI.
+
+**T8b. Hash-sequence harness (`crpg-testkit`)**
+*Purpose:* the reusable golden-hash machinery every later behavioural task (T009 replay, T016 combat, …) builds on. First real code in `crpg-testkit`, so it also writes the crate's `AGENTS.md` and architecture doc.
+*Affected:* `crates/crpg-testkit`.
+*Dependencies:* T8a.
+*Work:* `run_hash_sequence(seed, ticks)` over `crpg-sim` (a normal dependency, which the ALLOWED table already permits), golden-file write/compare helpers, and the convention later tasks use. The thin `crpgc run --ticks/--hash-every` CLI wrapper is `crpg-cli` work and lives in T013 (transferred per E004, 2026-09-06).
+*Test:* a golden hash file produced and verified end-to-end through the harness API.
+*Done when:* a scripted 10,000-tick run produces and verifies its golden file with no sim-side changes.
+
+(T8a/T8b are spec §24's single T8, split per E004 Option A: one task, one crate.)
 
 **T9. Replay record/playback harness**
 *Purpose:* turn behaviour into a regression-testable artifact.
@@ -1667,7 +1677,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Purpose:* make the campaign format usable by AI agents without the editor.
 *Affected:* `crpg-cli`.
 *Dependencies:* T11.
-*Work:* `crpgc new <type> --slug <s>`, `crpgc schema <type>`, `crpgc explain <id>` (object plus inbound/outbound references), `crpgc fmt`.
+*Work:* `crpgc new <type> --slug <s>`, `crpgc schema <type>`, `crpgc explain <id>` (object plus inbound/outbound references), `crpgc fmt`, and the `crpgc run --ticks N --hash-every M` wrapper over the T008b harness (transferred from T008 per E004, 2026-09-06).
 *Test:* the literal acceptance test from Phase 2 — give an LLM only `crpgc schema creature` output and have it produce a file that passes `crpgc validate` on the first attempt. Record the transcript.
 *Done when:* that test passes for creature, item, dialogue, and quest.
 
@@ -1734,3 +1744,4 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-09-05 (UTC) · opencode/muse-spark + E002/E008 · §2.4 now references the single core EntityId per ADR-0006 instead of redefining it; §5.2 event-graph budget is instruction/bytecode, not wall-clock, preserving replay determinism. Dated inline notes mark both corrections.
 - 2026-09-05 (UTC) · opencode/muse-spark + E001/ADR-0008 · Layer diagram, repo tree, and §16.2 test line now say generic event queue/substrate in core; SimEvent lives in sim, IR types in data, hooks in rules.
 - 2026-09-06 (UTC) · opencode/muse-spark + E006-A/E009/E014/E015 · E009: World sketch owns `EventQueue<SimEvent>`, core diagram/tree lines say generic substrate, §24 T7/T10/T14 mirror the ADR-0008 assignments. E014: World serde is skeleton-only; interned boundaries persist strings via T014's conversion pair. E015: prediction is a buffer outside sim, `Timeline` is `BTreeMap<(InitiativeKey, EntityId)>` with the container in T007 and advance rules in T008.
+- 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · §24 T8 is now T8a (sim: `state_hash`, tick loop, advance) + T8b (testkit: hash harness, first testkit code); the `crpgc run` wrapper moved to T13. Rule itself unchanged.

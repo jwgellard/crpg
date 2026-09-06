@@ -177,10 +177,12 @@ history below is merged work only.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T008 `state_hash` + the fixed-step tick loop (with `Timeline` advance
-  rules). Note E004 (one-task-one-crate splits) is still open and names T008:
-  resolve it before specifying T008, or the task spans `crpg-sim` and
-  `crpg-testkit` against the rule.
+- T008a `state_hash` + the fixed-step tick loop (with `Timeline` advance
+  rules) in `crpg-sim` — specify first (no task file yet; E004 split it from
+  T008b). Open input: E011 (determinism-scope ADR) is its acceptance
+  criterion, and the `blake3` dependency choice lands in its task file.
+- T008b hash-sequence harness + golden convention in `crpg-testkit` (first
+  testkit code: crate `AGENTS.md` + arch doc due with it).
 
 ## Task backlog
 `tasks/BACKLOG.md` is the index of every numbered task with its status, plus
@@ -234,3 +236,4 @@ the carried blockers and the throughput log.
 
 - 2026-09-06 (UTC) · opencode/muse-spark + hygiene + T007-unblock · Folded T006e into Done (it landed in 8f2e38b; "complete in working tree" was stale) and recorded E006-A/E009/E014/E015 so T007 can be specified.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 merged · Recorded the skeleton above; next is T008 with the open E004 split question flagged.
+- 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · T008 is now T008a (sim, specify first) + T008b (testkit); E011 acceptance criterion sits with T008a.

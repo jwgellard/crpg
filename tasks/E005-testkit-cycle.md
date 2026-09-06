@@ -27,3 +27,7 @@ dev-dependency cycles, so this must be resolved by a one-way ownership rule.
 
 ## Constraints
 - Human decision; do not guess. This blocks T009-style integration testing.
+
+## Agent log
+
+- 2026-09-06 (UTC) · opencode/muse-spark + E004 split · The T008 split sidesteps the cycle for now: T008a uses no testkit helper (self-contained `proptest` tests, as T007's were) and T008b is a plain `testkit -> sim` normal dependency, which the ALLOWED table already permits. The general one-way rule still needs ratifying before T009 deepens testkit integration; BACKLOG retargets this task's Blocks column to T009 accordingly.
