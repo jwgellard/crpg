@@ -44,8 +44,8 @@ Phase 1 — core skeleton and test harness.
 ## Decisions made
 - ADR-0001 Godot consumed as pinned dependency, not forked
 - ADR-0002 Rust for everything below the presentation layer
-- Godot pinned at 4.6.x  (record your exact version)
-- Toolchain pinned at rustc 1.XX.0
+- Godot pinned at 4.6.x  (record your exact version; live pin is now 4.7.2 — see `docs/PROJECT_STATE.md`)
+- Toolchain pinned at rustc 1.XX.0 (live pin is now 1.98.0)
 
 ## Open questions
 - Whether to buy a subscription (decide end of week 1)
@@ -96,3 +96,9 @@ Rarely, and deliberately: reviewing a whole phase before starting the next one, 
 5. Open a terminal, write `tasks/T005b.md` for the determinism lint, and run the agent.
 
 Step 5 is the actual project. Everything above is bookkeeping that makes step 5 repeatable a thousand times.
+
+---
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark + stale-pin hygiene · Annotated the template pin lines with the live Godot 4.7.2 / rustc 1.98.0 values; template history otherwise untouched.

@@ -59,3 +59,13 @@ govern it (as links), and what consumers inherit from it.
 Writing the doc is part of the **first task that puts real code in a crate**,
 listed in that task's definition of done alongside the crate's `AGENTS.md`.
 Later tasks in the same crate extend it rather than starting a new one.
+
+Agent attribution follows the root `AGENTS.md` rule: every agent edit signs
+itself with `YYYY-MM-DD (UTC) · <harness/model> + <task> · 1–2 sentence why`.
+Attribution footer/appendix lines are separate from the content they annotate;
+they do not change what an ADR's Decision section says. Prior log entries are
+superseded by appending, never rewritten.
+
+## Agent log
+
+- 2026-09-05 · opencode/big-pickle + agent-attribution rule · Restated the root attribution rule here so agents working on architecture docs see it without leaving the directory; no change to the readiness gate.

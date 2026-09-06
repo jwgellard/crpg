@@ -38,7 +38,9 @@ maintainer instruction (chose "defer ALL human-decision phases").
   exponent, string-pass, range/member pass, hex pass, char pass, int/method
   pass, marker-in-string-no-suppress, spaced-path rule parse).
 - Verified: 61 lint self-tests pass (was 49), `determinism.py` exit 0 on the
-  real tree, `cargo test -p crpg-core --locked` green (11 unit + 1 doctest).
+  real tree, `cargo test -p crpg-core --locked` green (11 unit + 1 doctest;
+  scope note 2026-09-05: that was a partial/filtered re-run count —
+  PROJECT_STATE records 85 tests incl. doctest for the full tree).
 
 ### Phase C2 — delivered
 
@@ -112,3 +114,7 @@ in the pre-existing T006 work were not touched.
    per file after sign-off).
 5. Whether to fold this session's changes into the T006 merge commit or keep
    separate — the user's call on return.
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark + count correction · Flagged the "11 unit + 1 doctest" line as a partial re-run count versus PROJECT_STATE's 85-test full-tree figure, so future readers do not bisect against it.

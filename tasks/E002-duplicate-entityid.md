@@ -24,3 +24,7 @@ product/design decision the maintainer must sign off.
 ## Constraints
 - Do not touch `crpg-*` sources in this task; only the spec and any ADR note.
 - Human-decision: do not guess; get sign-off before editing the spec.
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark · Applied per maintainer sign-off: spec §2.4 now references the single core EntityId; see spec Agent log.

@@ -84,6 +84,8 @@ cargo install cargo-deny
 
 ---
 
+> **Version-note (2026-09-05):** the `4.6.x` / `1.XX.0` strings below are the day-one bootstrap snapshot. Live pins are Godot 4.7.2 / rustc 1.98.0 — see `docs/PROJECT_STATE.md`. The embedded agent-rules template is likewise superseded by root `AGENTS.md:17-21`.
+
 ## Step 3 — Godot (10 minutes)
 
 Download **Godot 4.6.x, the standard build, not the .NET build**, from godotengine.org. The .NET build only matters if you intend to write C#, and per the architecture you do not.
@@ -502,3 +504,9 @@ If you got through step 4 and nothing else, today was still a success. If step 4
 ## One warning
 
 The temptation on day two will be to skip ahead to something visible, because lints and id types are not fun and a rendering demo is. Resist it for about three weeks. The determinism lint and the replay harness are the instruments you will use to debug everything else, and building them after the code they measure is how projects end up with a simulation nobody can reason about.
+
+---
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark + stale-pin hygiene · Added a version banner pointing at the live Godot/rustc pins in PROJECT_STATE.md; historical 4.6.x/1.XX.0 strings left intact as bootstrap snapshot.
