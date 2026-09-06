@@ -153,6 +153,11 @@ history below is merged work only.
   tick tests including the 10,000-tick hash-identity backbone plus seed
   sensitivity. New runtime deps `blake3` + promoted `serde_json`; `deny`
   clean.
+- T008b harness in `crpg-testkit` (first testkit code): fixed
+  script→tick→hash interleaving, line-hex goldens with scope headers,
+  exact-tick `Mismatch` vs `Io` errors, hand-rolled hex (zero new deps).
+  Four wiring tests including the 10,000-tick golden round trip. Sim
+  untouched; direction follows unratified E005 without declaring it.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -183,9 +188,10 @@ history below is merged work only.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T008b hash-sequence harness + golden convention in `crpg-testkit` (first
-  testkit code: crate `AGENTS.md` + arch doc due with it; no task file yet).
-  Then T009 replay, which needs E005 ratified and E020's gate sequencing.
+- T009 replay record/playback harness — specify first, but E005 (testkit
+  cycle rule) must be ratified and E020 (gate steps 7–13 sequencing) decided
+  before it, or the task inherits both open questions. Then T010 campaign
+  data, which needs E016.
 
 ## Task backlog
 `tasks/BACKLOG.md` is the index of every numbered task with its status, plus
@@ -245,3 +251,4 @@ the carried blockers and the throughput log.
 - 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · T008 is now T008a (sim, specify first) + T008b (testkit); E011 acceptance criterion sits with T008a.
 - 2026-09-06 (UTC) · opencode/muse-spark + E011 filed · ADR-0009 accepted; T008a's scope input is now ratified, leaving only the `blake3` choice for its task file.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008a merged · Recorded the loop and instrument above; next is T008b (specify first), then T009 with E005/E020.
+- 2026-09-06 (UTC) · opencode/muse-spark + T008b merged · Recorded the harness above; next is T009 (specify after E005 + E020), then T010 (needs E016).
