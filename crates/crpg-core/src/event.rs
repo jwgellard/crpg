@@ -41,10 +41,55 @@ pub struct EventEnvelope<P> {
 ///
 /// Ticks arrive from callers and may arrive out of order, so the drain sorts.
 /// Push order alone is not the contract; `(tick, seq)` is.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Loading is validated: sequence numbers must be unique and `next_seq` must
+/// exceed every queued `seq` (saturation at `u64::MAX` excepted), so a later
+/// [`push`](Self::push) cannot reuse a number or reverse push order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct EventQueue<P> {
     envelopes: Vec<EventEnvelope<P>>,
     next_seq: u64,
+}
+
+/// Serialized shape of [`EventQueue`]. Deserialization goes through this
+/// shape so sequence counters from untrusted input can be checked before a
+/// queue is built.
+#[derive(Deserialize)]
+struct EventQueueRepr<P> {
+    envelopes: Vec<EventEnvelope<P>>,
+    next_seq: u64,
+}
+
+impl<'de, P: Deserialize<'de>> Deserialize<'de> for EventQueue<P> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let repr = EventQueueRepr::deserialize(deserializer)?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut max: Option<u64> = None;
+        for envelope in &repr.envelopes {
+            if !seen.insert(envelope.seq) {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate event sequence {}",
+                    envelope.seq
+                )));
+            }
+            max = Some(max.map_or(envelope.seq, |current| current.max(envelope.seq)));
+        }
+        if let Some(highest) = max {
+            // Saturation is unreachable-by-construction but representable: a
+            // queue that pushed at `u64::MAX` holds `seq == next_seq == MAX`,
+            // and must still round-trip.
+            if repr.next_seq != u64::MAX && repr.next_seq <= highest {
+                return Err(serde::de::Error::custom(format!(
+                    "event next_seq {} must exceed queued max {}",
+                    repr.next_seq, highest
+                )));
+            }
+        }
+        Ok(Self {
+            envelopes: repr.envelopes,
+            next_seq: repr.next_seq,
+        })
+    }
 }
 
 impl<P> EventQueue<P> {

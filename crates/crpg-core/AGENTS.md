@@ -115,8 +115,10 @@ the handle through the issuing interner and stores the string.
 `event::{EventEnvelope, EventQueue}` are re-exported at the crate root. The
 queue is mechanism only: `push` stamps `(tick, seq)`, `drain` yields ascending
 `(tick, seq)` stably and clears, serde covers the envelopes plus the sequence
-counter. No game variants, no dispatch, no handlers — those live in
-`crpg-sim` (`SimEvent`), `crpg-data` (IR types) and `crpg-rules` (hooks).
+counter with load-time guards (unique `seq`, `next_seq` exceeding the queued
+max, saturation at `u64::MAX` excepted). No game variants, no dispatch, no
+handlers — those live in `crpg-sim` (`SimEvent`), `crpg-data` (IR types) and
+`crpg-rules` (hooks).
 
 Payloads are core-closed types (`EntityId`, `Tick`, integers / `Fx16_16`,
 `Ulid`, `String`) by convention and review, not by a compiler bound — a bound
@@ -256,3 +258,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Added the event-substrate contract, payload trap and Public API names for ADR-0008's scoped core exception.
+- 2026-09-06 (UTC) · opencode/muse-spark + event-queue hardening · Validated EventQueue deserialization (unique seq, next_seq exceeding the queued max) and recorded it in the substrate contract.

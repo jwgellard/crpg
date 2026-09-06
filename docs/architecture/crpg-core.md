@@ -65,6 +65,7 @@ src/
   lib.rs      pub mod + pub use + the crate doc comment, nothing else
   error.rs    CoreError, Result<T>
   entity.rs   EntityId, GenerationalArena<T>          (T006a)
+  event.rs    EventEnvelope, EventQueue               (T007, ADR-0008)
   fixed.rs    Fx16_16                                (T006b)
   intern.rs   Interner, Interners, StatId, TagId     (T006e)
   rng.rs      DeterministicRng, Pcg32                (T006c)
@@ -87,6 +88,13 @@ variants without a breaking change. It is deliberately small: absence is
 reported with `Option`, not an error, because "this id is dead" is an ordinary
 outcome. `CorruptArena` and `InvalidEntityId` guard entity deserialization;
 `InvalidFixedPoint` guards exact decimal parsing.
+
+### `event.rs`
+
+Generic `(tick, seq)` ordering, stable drain and pair-plus-counter serde —
+mechanism only, per ADR-0008. Payloads stay core-closed by review. Loading
+rejects duplicate sequence numbers and a `next_seq` that does not exceed the
+queued max (saturation excepted), so a later push cannot reuse a number.
 
 ### `entity.rs`
 
@@ -203,5 +211,9 @@ issued them. Persistence resolves and stores the string, as fixed by
 ## Open
 
 - Nothing blocking. T006e completed the planned core primitives.
-- `blake3` will be needed for `state_hash` (T008) and is not yet authorised as
-  a dependency — ADR-0006 says so explicitly and does not decide it.
+- `blake3` landed as a runtime dependency for `state_hash` in T008a
+  (workspace dependency, license gate via the Apache-2.0 alternative).
+
+## Agent log
+
+- 2026-09-06 (UTC) · opencode/muse-spark + event-queue hardening · Documented the event substrate module and its load-time sequence guards; corrected the stale blake3-authorisation note.

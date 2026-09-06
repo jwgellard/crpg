@@ -82,3 +82,52 @@ fn drain_of_empty_queue_is_empty() {
     assert_eq!(queue.len(), 0);
     assert!(queue.drain().is_empty());
 }
+
+#[test]
+fn deserialize_rejects_stale_next_seq() {
+    let mut queue = EventQueue::new();
+    queue.push(tick(0), 10);
+    let mut value = serde_json::to_value(&queue).unwrap();
+    // Envelope holds seq 0; rewinding the counter would reuse it on push.
+    value["next_seq"] = serde_json::Value::from(0u64);
+    // next_seq == max is also stale: the next push must exceed, not meet.
+    let result: Result<EventQueue<i32>, _> = serde_json::from_value(value.clone());
+    assert!(result.is_err(), "next_seq == max must fail to load");
+    value["next_seq"] = serde_json::Value::from(0u64);
+    // And a larger envelope makes the gap explicit: seq 0 with next 0 is
+    // tested above; bump the envelope to seq 10 with next 0.
+    let mut envelopes = value["envelopes"].as_array().unwrap().clone();
+    envelopes[0]["seq"] = serde_json::Value::from(10u64);
+    value["envelopes"] = serde_json::Value::Array(envelopes);
+    let result: Result<EventQueue<i32>, _> = serde_json::from_value(value);
+    assert!(result.is_err(), "next_seq below max must fail to load");
+}
+
+#[test]
+fn deserialize_rejects_duplicate_seq() {
+    let mut queue = EventQueue::new();
+    queue.push(tick(0), 1);
+    queue.push(tick(0), 2);
+    let mut value = serde_json::to_value(&queue).unwrap();
+    let mut envelopes = value["envelopes"].as_array().unwrap().clone();
+    envelopes[1]["seq"] = envelopes[0]["seq"].clone();
+    value["envelopes"] = serde_json::Value::Array(envelopes);
+    let result: Result<EventQueue<i32>, _> = serde_json::from_value(value);
+    assert!(result.is_err(), "duplicate seq must fail to load");
+}
+
+#[test]
+fn deserialize_accepts_drained_counter_and_continues() {
+    let mut queue = EventQueue::new();
+    queue.push(tick(3), 1);
+    queue.push(tick(4), 2);
+    queue.drain();
+    assert!(queue.is_empty());
+    let json = serde_json::to_string(&queue).unwrap();
+    let mut loaded: EventQueue<i32> = serde_json::from_str(&json).unwrap();
+    assert_eq!(loaded, queue);
+    loaded.push(tick(5), 3);
+    let drained = loaded.drain();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].seq, 2);
+}
