@@ -7,7 +7,7 @@
 //! second instance.
 
 use crpg_core::{EntityId, Tick};
-use crpg_sim::{EntityMeta, InitiativeKey, SimEvent, Transform, World};
+use crpg_sim::{EntityMeta, InitiativeKey, SimEvent, Timeline, Transform, World};
 use proptest::prelude::*;
 
 const CASES_10K: u32 = 10_000;
@@ -138,9 +138,12 @@ fn despawn_of_dead_id_is_silent() {
     let events_before = world.events().len();
     assert!(!world.despawn(live));
     assert_eq!(world.events().len(), events_before);
-    // And an id this world never minted is equally silent.
+    // And an id this world never minted is equally silent: the other world
+    // mints twice so its second id (index 1) was never issued locally.
     let mut other = World::new(7);
+    let _ = other.spawn(EntityMeta {});
     let foreign = other.spawn(EntityMeta {});
+    assert!(!world.contains(foreign));
     assert!(!world.despawn(foreign));
     assert_eq!(world.events().len(), events_before);
 }
@@ -213,4 +216,108 @@ fn timeline_iterates_ascending_with_id_tiebreak() {
     assert_eq!(order[0], (InitiativeKey(10), a));
     assert_eq!(order[1], (InitiativeKey(10), b));
     assert_eq!(order[2], (InitiativeKey(30), c));
+}
+
+#[test]
+fn timeline_insert_replaces_the_entity_entry() {
+    let mut world = World::new(21);
+    let id = world.spawn(EntityMeta {});
+    world.timeline_mut().insert(InitiativeKey(10), id);
+    world.timeline_mut().insert(InitiativeKey(30), id);
+    assert_eq!(world.timeline().len(), 1);
+    let order: Vec<_> = world.timeline().iter().collect();
+    assert_eq!(order, vec![(InitiativeKey(30), id)]);
+    assert!(world.timeline_mut().remove(id));
+    assert!(world.timeline().is_empty());
+}
+
+#[test]
+fn timeline_from_vec_replaces_duplicates() {
+    let mut world = World::new(22);
+    let id = world.spawn(EntityMeta {});
+    let timeline = Timeline::from(vec![(InitiativeKey(10), id), (InitiativeKey(30), id)]);
+    assert_eq!(timeline.len(), 1);
+    let order: Vec<_> = timeline.iter().collect();
+    assert_eq!(order, vec![(InitiativeKey(30), id)]);
+}
+
+#[test]
+fn timeline_deserialize_rejects_duplicate_entity() {
+    let mut world = World::new(23);
+    let id = world.spawn(EntityMeta {});
+    let pairs = vec![(InitiativeKey(10), id), (InitiativeKey(30), id)];
+    let json = serde_json::to_value(&pairs).unwrap();
+    let result: Result<Timeline, _> = serde_json::from_value(json);
+    assert!(
+        result.is_err(),
+        "duplicate timeline entries must fail to load"
+    );
+}
+
+#[test]
+fn world_deserialize_rejects_duplicate_timeline_entity() {
+    let mut world = World::new(24);
+    let id = world.spawn(EntityMeta {});
+    world.timeline_mut().insert(InitiativeKey(10), id);
+    let mut value = serde_json::to_value(&world).unwrap();
+    let timeline = value.get_mut("timeline").unwrap().as_array_mut().unwrap();
+    let mut duplicate = timeline[0].clone();
+    // Same entity, different key: a second turn for one entity.
+    duplicate[0] = serde_json::to_value(30).unwrap();
+    timeline.push(duplicate);
+    let result: Result<World, _> = serde_json::from_value(value);
+    assert!(
+        result.is_err(),
+        "a world with two timeline entries for one entity must fail to load"
+    );
+}
+
+#[test]
+fn world_deserialize_rejects_dangling_transform() {
+    let mut world = World::new(25);
+    let _live = world.spawn(EntityMeta {});
+    let mut other = World::new(25);
+    let _ = other.spawn(EntityMeta {});
+    let foreign: EntityId = other.spawn(EntityMeta {});
+    assert!(!world.contains(foreign));
+
+    let mut value = serde_json::to_value(&world).unwrap();
+    let foreign_json = serde_json::to_value(foreign).unwrap();
+    let transform_json = serde_json::to_value(Transform::default()).unwrap();
+    value
+        .get_mut("transforms")
+        .unwrap()
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::Value::Array(vec![foreign_json, transform_json]));
+    let result: Result<World, _> = serde_json::from_value(value);
+    assert!(
+        result.is_err(),
+        "a transform for a non-live entity must fail to load"
+    );
+}
+
+#[test]
+fn world_deserialize_rejects_dangling_timeline() {
+    let mut world = World::new(26);
+    let _live = world.spawn(EntityMeta {});
+    let mut other = World::new(26);
+    let _ = other.spawn(EntityMeta {});
+    let foreign: EntityId = other.spawn(EntityMeta {});
+    assert!(!world.contains(foreign));
+
+    let mut value = serde_json::to_value(&world).unwrap();
+    let foreign_json = serde_json::to_value(foreign).unwrap();
+    let key_json = serde_json::to_value(InitiativeKey(10)).unwrap();
+    value
+        .get_mut("timeline")
+        .unwrap()
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::Value::Array(vec![key_json, foreign_json]));
+    let result: Result<World, _> = serde_json::from_value(value);
+    assert!(
+        result.is_err(),
+        "a timeline entry for a non-live entity must fail to load"
+    );
 }

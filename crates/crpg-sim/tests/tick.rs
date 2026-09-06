@@ -5,7 +5,7 @@
 //! Everything else here pins the pieces that assertion rests on — the
 //! counter, the tick/queue-bytes-in-hash rule, and both advance policies.
 
-use crpg_core::Tick;
+use crpg_core::{EntityId, Tick};
 use crpg_sim::{end_turn, state_hash, tick, EntityMeta, InitiativeKey, SimEvent, Transform, World};
 use proptest::prelude::*;
 
@@ -39,9 +39,41 @@ fn scripted_world(seed: u64) -> World {
 }
 
 fn hash_sequence(seed: u64, ticks: usize) -> Vec<[u8; 32]> {
-    let mut world = scripted_world(seed);
+    let mut world = World::new(seed);
+    let mut minted: Vec<EntityId> = Vec::new();
+    for _ in 0..4 {
+        minted.push(world.spawn(EntityMeta {}));
+    }
     (0..ticks)
-        .map(|_| {
+        .map(|step| {
+            // Interleaved script: spawns, transform writes, timeline inserts,
+            // RNG draws and occasional despawns, every tick before tick+hash.
+            if step % 7 == 0 && minted.len() < 32 {
+                minted.push(world.spawn(EntityMeta {}));
+            }
+            if !minted.is_empty() {
+                let pick = step.wrapping_mul(31).wrapping_add(seed as usize) % minted.len();
+                let id = minted[pick];
+                if world.contains(id) {
+                    let v = step as f32 * 0.5 + (seed % 13) as f32;
+                    world.transforms_mut().insert(
+                        id,
+                        Transform {
+                            position: [v, -v, v / 2.0],
+                            velocity: [1.0, 0.0, -1.0],
+                        },
+                    );
+                    world
+                        .timeline_mut()
+                        .insert(InitiativeKey((step as i32 % 5) - 2), id);
+                }
+                let stream = if step % 2 == 0 { "combat" } else { "ambient" };
+                let _ = world.rng_mut().stream(stream).next_u32();
+                if step % 29 == 0 {
+                    let victim = minted[(step / 29) % minted.len()];
+                    let _ = world.despawn(victim);
+                }
+            }
             tick(&mut world);
             state_hash(&world)
         })
@@ -150,4 +182,73 @@ fn end_turn_pops_ascending_and_never_despawns() {
     // Popping schedules; every entity is still live.
     assert!(world.contains(a) && world.contains(b) && world.contains(c));
     assert_eq!(world.len(), 3);
+}
+
+#[test]
+fn end_turn_changes_nothing_but_the_timeline() {
+    let mut world = World::new(29);
+    let a = world.spawn(EntityMeta {});
+    let b = world.spawn(EntityMeta {});
+    world.transforms_mut().insert(a, Transform::default());
+    world.timeline_mut().insert(InitiativeKey(10), a);
+    world.timeline_mut().insert(InitiativeKey(20), b);
+    let _ = world.rng_mut().stream("combat").next_u32();
+
+    let before = serde_json::to_value(&world).unwrap();
+    let tick_before = world.tick();
+    let popped = end_turn(&mut world);
+    assert_eq!(popped, Some((InitiativeKey(10), a)));
+    let after = serde_json::to_value(&world).unwrap();
+
+    assert_eq!(world.tick(), tick_before);
+    assert_eq!(after.get("tick"), before.get("tick"));
+    assert_eq!(after.get("events"), before.get("events"));
+    assert_eq!(after.get("transforms"), before.get("transforms"));
+    assert_eq!(after.get("rng"), before.get("rng"));
+    assert_ne!(after.get("timeline"), before.get("timeline"));
+}
+
+#[test]
+#[should_panic(expected = "only finite floats")]
+fn state_hash_rejects_nan() {
+    let mut world = World::new(31);
+    let id = world.spawn(EntityMeta {});
+    world.transforms_mut().insert(
+        id,
+        Transform {
+            position: [f32::NAN, 0.0, 0.0],
+            velocity: [0.0; 3],
+        },
+    );
+    let _ = state_hash(&world);
+}
+
+#[test]
+#[should_panic(expected = "only finite floats")]
+fn state_hash_rejects_infinite_velocity() {
+    let mut world = World::new(37);
+    let id = world.spawn(EntityMeta {});
+    world.transforms_mut().insert(
+        id,
+        Transform {
+            position: [0.0; 3],
+            velocity: [f32::INFINITY, 0.0, 0.0],
+        },
+    );
+    let _ = state_hash(&world);
+}
+
+#[test]
+#[should_panic(expected = "only finite floats")]
+fn state_hash_rejects_negative_infinity() {
+    let mut world = World::new(41);
+    let id = world.spawn(EntityMeta {});
+    world.transforms_mut().insert(
+        id,
+        Transform {
+            position: [f32::NEG_INFINITY, 0.0, 0.0],
+            velocity: [0.0; 3],
+        },
+    );
+    let _ = state_hash(&world);
 }

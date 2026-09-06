@@ -27,13 +27,23 @@ use crate::world::World;
 /// No second canonicalizer: if JSON bytes ever stop being canonical, that
 /// task proves it with a failing test first.
 ///
-/// The `.expect()` on serialization is correct, not lazy: `serde_json`
-/// refuses only non-finite floats, and no sim API can produce one — no
-/// division, no parsing, no FFI input — so a NaN in world state means memory
-/// corruption or bridge abuse, and panicking is the honest response. Do not
-/// add a float-scrubbing pass.
+/// Non-finite floats are rejected explicitly before serialization:
+/// `serde_json` serializes NaN/infinity as `null` rather than failing, so
+/// relying on `.expect()` would silently collide distinct corrupted states.
+/// `Transform` fields are public `f32`, so safe code can construct one — a
+/// non-finite value in state means corruption or bridge abuse, and panicking
+/// is the honest response. Do not add a float-scrubbing pass; fix the
+/// producer.
 pub fn state_hash(world: &World) -> [u8; 32] {
+    for (_, transform) in world.transforms().iter() {
+        for value in transform.position.iter().chain(transform.velocity.iter()) {
+            assert!(
+                value.is_finite(),
+                "world state holds only finite floats; see doc comment"
+            );
+        }
+    }
     let bytes =
-        serde_json::to_vec(world).expect("world state holds only finite floats; see doc comment");
+        serde_json::to_vec(world).expect("world serialization must not fail after finite check");
     blake3::hash(&bytes).into()
 }

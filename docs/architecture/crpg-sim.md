@@ -9,8 +9,9 @@ system list, the `Timeline` advance policy for both play modes, and
 components are planned, each with its owning task named in the module docs.
 
 Decisions: [ADR-0006](../adr/0006-crpg-core-primitives.md),
-[ADR-0007](../adr/0007-reserved-arena-generation.md) and
-[ADR-0008](../adr/0008-event-ownership.md).
+[ADR-0007](../adr/0007-reserved-arena-generation.md),
+[ADR-0008](../adr/0008-event-ownership.md) and
+[ADR-0009](../adr/0009-determinism-scope.md).
 Working contract: [`crates/crpg-sim/AGENTS.md`](../../crates/crpg-sim/AGENTS.md).
 
 ---
@@ -35,15 +36,17 @@ substrate (core), the campaign content types (data) and the rules kernel
 ## Modules
 
 - **`world` — `World`, `EntityMeta`.** The skeleton: entity arena plus one
-  store, timeline, event queue, RNG and tick. Spawn/despawn/query only;
-  nothing advances. `EntityMeta` is a reserved placeholder (braced, for the
-  serde reason the module doc states).
+  store, timeline, event queue, RNG and tick. Spawn/despawn/query plus the
+  T008a advance; `EntityMeta` is a reserved placeholder (braced, for the
+  serde reason the module doc states). Deserialization validates the
+  no-dangling shape before a `World` is built.
 - **`store` — `ComponentStore<T>`.** One dense `IndexMap`-backed store per
   component type. Dumb by design: no liveness checks, insertion-order
   iteration, pair-list serde. The no-dangling invariant is `World`'s job.
 - **`timeline` — `Timeline`, `InitiativeKey`.** The container only:
   `BTreeMap<(key, id)>` with replace-on-insert and O(n) removal. Advance
   policy is T008a's (`tick` preserves standing order; `end_turn` pops).
+  Loading rejects duplicate entities; `From<Vec<_>>` keeps the last entry.
 - **`transform` — `Transform`.** `f32` position and velocity, the only
   floating point in the crate (E006-A). No rotation until movement needs it.
 - **`event` — `SimEvent`.** `Spawned` / `Despawned` only. Grows as systems
@@ -52,6 +55,8 @@ substrate (core), the campaign content types (data) and the rules kernel
   both advance primitives. Order is spec §10, handwritten; today one system.
 - **`hash` — `state_hash`.** BLAKE3 over canonical JSON, queue bytes
   included, exclusions none (governed list per ADR-0009, starting empty).
+  Non-finite floats are rejected up front because JSON would collapse them
+  to `null`.
 
 ## Today versus planned
 
@@ -81,3 +86,4 @@ substrate (core), the campaign content types (data) and the rules kernel
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008a · Moved the loop, advance policy and hash into Exists; recorded the governed-empty exclusion list.
+- 2026-09-06 (UTC) · opencode/muse-spark + sim invariant hardening · Recorded validated World/Timeline loading and the explicit non-finite hash guard.

@@ -15,6 +15,10 @@
 //! conversion pair from ADR-0006 Decision 4 — never a derived `Serialize` on
 //! a map with `StatId` keys. If a struct in this module ever holds an
 //! interned handle, that struct does not derive serde; it converts.
+//!
+//! Loading is validated: component and timeline ids must address live
+//! entities, and duplicate timeline entities are rejected alongside the
+//! [`Timeline`](crate::Timeline) guard.
 
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +51,7 @@ pub struct EntityMeta {}
 /// through a message queue on the `Campaign` object, which does not exist
 /// yet. Likewise single-player runs this same struct in-process (spec §2.1);
 /// there is no second world type for it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct World {
     entities: GenerationalArena<EntityMeta>,
     transforms: ComponentStore<Transform>,
@@ -55,6 +59,48 @@ pub struct World {
     events: EventQueue<SimEvent>,
     rng: DeterministicRng,
     tick: Tick,
+}
+
+/// Serialized shape of [`World`], in field order. Deserialization goes
+/// through this shape and then validates cross-field invariants before
+/// constructing a `World`, so persisted state cannot introduce dangling
+/// component or timeline references.
+#[derive(Deserialize)]
+struct WorldRepr {
+    entities: GenerationalArena<EntityMeta>,
+    transforms: ComponentStore<Transform>,
+    timeline: Timeline,
+    events: EventQueue<SimEvent>,
+    rng: DeterministicRng,
+    tick: Tick,
+}
+
+impl<'de> Deserialize<'de> for World {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let repr = WorldRepr::deserialize(deserializer)?;
+        for (id, _) in repr.transforms.iter() {
+            if !repr.entities.contains(id) {
+                return Err(serde::de::Error::custom(format!(
+                    "dangling transform for non-live {id:?}"
+                )));
+            }
+        }
+        for (_, id) in repr.timeline.iter() {
+            if !repr.entities.contains(id) {
+                return Err(serde::de::Error::custom(format!(
+                    "dangling timeline entry for non-live {id:?}"
+                )));
+            }
+        }
+        Ok(Self {
+            entities: repr.entities,
+            transforms: repr.transforms,
+            timeline: repr.timeline,
+            events: repr.events,
+            rng: repr.rng,
+            tick: repr.tick,
+        })
+    }
 }
 
 impl World {

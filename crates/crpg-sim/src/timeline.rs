@@ -35,7 +35,9 @@ pub struct InitiativeKey(pub i32);
 ///
 /// Serde is a list of `(key, id)` pairs, not a map: JSON maps need string
 /// keys and a tuple is not one. The in-memory order is canonical
-/// (`BTreeMap`), so the pair list round-trips exactly.
+/// (`BTreeMap`), so the pair list round-trips exactly. Loading rejects a
+/// list with two entries for one entity; `From<Vec<_>>` keeps the last
+/// entry instead, so the infallible conversion preserves replace semantics.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Timeline {
     entries: BTreeMap<(InitiativeKey, EntityId), ()>,
@@ -45,7 +47,7 @@ impl From<Vec<(InitiativeKey, EntityId)>> for Timeline {
     fn from(pairs: Vec<(InitiativeKey, EntityId)>) -> Self {
         let mut timeline = Timeline::new();
         for (key, id) in pairs {
-            timeline.entries.insert((key, id), ());
+            timeline.insert(key, id);
         }
         timeline
     }
@@ -61,7 +63,19 @@ impl Serialize for Timeline {
 impl<'de> Deserialize<'de> for Timeline {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let pairs = Vec::<(InitiativeKey, EntityId)>::deserialize(deserializer)?;
-        Ok(pairs.into())
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, id) in &pairs {
+            if !seen.insert(*id) {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate timeline entry for {id:?}"
+                )));
+            }
+        }
+        let mut timeline = Timeline::new();
+        for (key, id) in pairs {
+            timeline.entries.insert((key, id), ());
+        }
+        Ok(timeline)
     }
 }
 

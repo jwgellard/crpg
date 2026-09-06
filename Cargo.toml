@@ -10,7 +10,8 @@ license = "MIT OR Apache-2.0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 indexmap = { version = "2", features = ["serde"] }
-# Runtime hash for state_hash (T008a): zero transitive dependencies,
+# Runtime hash for state_hash (T008a): small transitive set (arrayvec, cc,
+# cfg-if, constant_time_eq, cpufeatures per Cargo.lock), crates.io-only, and
 # CC0-1.0 OR Apache-2.0 (passes the license gate via the Apache alternative).
 blake3 = "1"
 # Dev-only deps authorised by ADR-0006. Consumed as dev-dependencies by
