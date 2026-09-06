@@ -45,8 +45,8 @@ ADR that motivated it.
 | T006d | done | 2026-09-05 | `Tick`, `RoundCount`, `Ulid` |
 | T006e | done | 2026-09-05 | `Interner`, `StatId`, `TagId` |
 | T007 | done | 2026-09-06 | `crpg-sim`: `World` (with `EventQueue<SimEvent>`), `ComponentStore<T>`, spawn/despawn/query, `Timeline` container; generic event substrate per ADR-0008 (scoped core exception, see ADR) |
-| **T008a** | **next** | — | `state_hash`, fixed-step tick loop, `Timeline` advance rules (`crpg-sim`; scope ADR-0009) |
-| T008b | open | — | Hash-sequence harness + golden convention (`crpg-testkit`; scope ADR-0009) |
+| T008a | done | 2026-09-06 | `state_hash`, fixed-step tick loop, `Timeline` advance rules (`crpg-sim`; scope ADR-0009) |
+| **T008b** | **next** | — | Hash-sequence harness + golden convention (`crpg-testkit`; scope ADR-0009) |
 | T009 | open | — | Replay record/playback harness (scope ADR-0009) |
 
 T006a–e are spec §24's single T6, split per ADR-0006. T006a established
@@ -175,7 +175,7 @@ Record it here, one line per week.
 
 | Week ending | Merged | Notes |
 |---|---|---|
-| 2026-09-06 | 14 | T001–T005c plus T006a–e and T007, all on `master`. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
+| 2026-09-06 | 15 | T001–T005c plus T006a–e, T007 and T008a, all on `master`. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
 
 ---
 
@@ -189,3 +189,4 @@ Record it here, one line per week.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 merged · Marked T007 done, T008 next, throughput at 14.
 - 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · Split T008 into T008a (sim, next) and T008b (testkit); E011 now blocks T008a, E005 retargeted to T009, `crpgc run` wrapper transferred to T013. Later multi-crate tasks split at Stage 2.
 - 2026-09-06 (UTC) · opencode/muse-spark + E011 filed · ADR-0009 accepted (replay-not-lockstep scope); T008a/T008b/T009 rows cite it, E011 done.
+- 2026-09-06 (UTC) · opencode/muse-spark + T008a merged · Marked T008a done, T008b next, throughput at 15.

@@ -147,6 +147,12 @@ history below is merged work only.
   four substrate tests. Implementation findings now pinned in code and docs:
   stores/timeline serialize as pair lists (struct keys are not JSON keys),
   `EntityMeta` is braced (a unit serializes as `null`, i.e. a vacant slot).
+- T008a measurement + loop in `crpg-sim`: BLAKE3 `state_hash` over canonical
+  JSON (queue bytes in, exclusions none, NaN panics by design), fixed-step
+  `tick` (counter then one-system list), `end_turn` pop primitive. Seven
+  tick tests including the 10,000-tick hash-identity backbone plus seed
+  sensitivity. New runtime deps `blake3` + promoted `serde_json`; `deny`
+  clean.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -177,12 +183,9 @@ history below is merged work only.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T008a `state_hash` + the fixed-step tick loop (with `Timeline` advance
-  rules) in `crpg-sim` — specify first (no task file yet; E004 split it from
-  T008b). Scope ratified in ADR-0009; the `blake3` dependency choice lands in
-  its task file.
 - T008b hash-sequence harness + golden convention in `crpg-testkit` (first
-  testkit code: crate `AGENTS.md` + arch doc due with it).
+  testkit code: crate `AGENTS.md` + arch doc due with it; no task file yet).
+  Then T009 replay, which needs E005 ratified and E020's gate sequencing.
 
 ## Task backlog
 `tasks/BACKLOG.md` is the index of every numbered task with its status, plus
@@ -241,3 +244,4 @@ the carried blockers and the throughput log.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 merged · Recorded the skeleton above; next is T008 with the open E004 split question flagged.
 - 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · T008 is now T008a (sim, specify first) + T008b (testkit); E011 acceptance criterion sits with T008a.
 - 2026-09-06 (UTC) · opencode/muse-spark + E011 filed · ADR-0009 accepted; T008a's scope input is now ratified, leaving only the `blake3` choice for its task file.
+- 2026-09-06 (UTC) · opencode/muse-spark + T008a merged · Recorded the loop and instrument above; next is T008b (specify first), then T009 with E005/E020.
