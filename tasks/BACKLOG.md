@@ -45,9 +45,9 @@ ADR that motivated it.
 | T006d | done | 2026-09-05 | `Tick`, `RoundCount`, `Ulid` |
 | T006e | done | 2026-09-05 | `Interner`, `StatId`, `TagId` |
 | T007 | done | 2026-09-06 | `crpg-sim`: `World` (with `EventQueue<SimEvent>`), `ComponentStore<T>`, spawn/despawn/query, `Timeline` container; generic event substrate per ADR-0008 (scoped core exception, see ADR) |
-| **T008a** | **next** | — | `state_hash`, fixed-step tick loop, `Timeline` advance rules (`crpg-sim`) |
-| T008b | open | — | Hash-sequence harness + golden convention (`crpg-testkit`) |
-| T009 | open | — | Replay record/playback harness |
+| **T008a** | **next** | — | `state_hash`, fixed-step tick loop, `Timeline` advance rules (`crpg-sim`; scope ADR-0009) |
+| T008b | open | — | Hash-sequence harness + golden convention (`crpg-testkit`; scope ADR-0009) |
+| T009 | open | — | Replay record/playback harness (scope ADR-0009) |
 
 T006a–e are spec §24's single T6, split per ADR-0006. T006a established
 `Cargo.toml`, the module layout and `crpg-core/AGENTS.md`; T006b-T006e are
@@ -116,7 +116,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | E008 | done | — | Instruction (not wall-clock) event budget |
 | E009 | done | — | ADR-0008 residue (sketch, diagrams, §24 text) |
 | E010 | open | script | Script budgets + sandbox-strip alignment |
-| E011 | open | T008a | Determinism-scope ADR (spec orders it) |
+| E011 | done | — | Determinism-scope ADR-0009 (replay, not lockstep) |
 | E012 | open | bridge | Binary/crate naming (`crpg-client`, bridge) |
 | E013 | open | — | Diagram direction + "core" meaning |
 | E014 | done | — | `World: Serialize` vs interned-handle caveat (skeleton-only serde) |
@@ -188,3 +188,4 @@ Record it here, one line per week.
 - 2026-09-06 (UTC) · opencode/muse-spark + E006-A/E009/E014/E015 + hygiene · Marked T006e merged (it landed in 8f2e38b; the "on branch" row was stale), corrected the throughput count to 13, locked the T007/T008 scope split (Timeline container vs advance rules), and recorded the four T007-unblocking decisions as done.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 merged · Marked T007 done, T008 next, throughput at 14.
 - 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · Split T008 into T008a (sim, next) and T008b (testkit); E011 now blocks T008a, E005 retargeted to T009, `crpgc run` wrapper transferred to T013. Later multi-crate tasks split at Stage 2.
+- 2026-09-06 (UTC) · opencode/muse-spark + E011 filed · ADR-0009 accepted (replay-not-lockstep scope); T008a/T008b/T009 rows cite it, E011 done.

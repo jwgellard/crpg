@@ -2,6 +2,11 @@
 Record the determinism scope ("replay, not lockstep") in an ADR, as the spec
 itself demands. Human-decision task (new ADR).
 
+> **Decided 2026-09-06, filed as ADR-0009** per the recommended scope:
+> exact-build replay promise, explicit cross-platform non-promise,
+> filename-scoped goldens compared on canonical Linux, governed exclusion
+> list, server-authoritative justification. See the ADR.
+
 ## Why this is deferred
 
 `docs/CRPG_ENGINE_SPEC.md:201` defines the project's central invariant —
@@ -33,3 +38,4 @@ authority behind it.
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: the spec orders this ADR itself and it was never written.
 - 2026-09-06 (UTC) · opencode/muse-spark + E004 split · The `state_hash` acceptance-criterion need sits in T008a now; BACKLOG Blocks retargeted from T008 to T008a accordingly. T009 still needs it too.
+- 2026-09-06 (UTC) · opencode/muse-spark + maintainer sign-off · Adopted the recommended scope and filed ADR-0009 (Accepted); spec §2.4, README and BACKLOG rows now cite it.

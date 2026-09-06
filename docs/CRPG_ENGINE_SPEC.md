@@ -198,7 +198,7 @@ You asked for a reasoned decision, so here is the reasoning rather than the conc
 **Requirements.**
 - Hundreds to low thousands of entities per area, not hundreds of thousands.
 - Turn-based and real-time-with-pause combat. Tick rate 10–20 Hz, not 120.
-- **Replay determinism** is mandatory (same binary, same inputs, same result). Cross-platform lockstep determinism is *not* required, because the server is authoritative. This is a large simplification and should be stated in an ADR.
+- **Replay determinism** is mandatory (same binary, same inputs, same result). Cross-platform lockstep determinism is *not* required, because the server is authoritative. This is a large simplification, stated in ADR-0009 (2026-09-06).
 - Full state must serialize and deserialize losslessly, repeatedly, cheaply.
 - Rules need to inspect arbitrary relational state: "all allies within 30 feet who are not frightened".
 - Modders and AI agents need to add new component types from data.

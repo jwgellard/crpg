@@ -80,7 +80,8 @@ separate "single-player code path."
   and any rule written in GDScript could not run authoritatively. See
   [ADR-0002](docs/adr/0002-rust-for-the-core.md).
 - **Deterministic simulation** — same binary + same inputs ⇒ same result, so
-  replays, saves, and testing are first-class. Backed by lints that ban
+  replays, saves, and testing are first-class. Scope is replay, not lockstep
+  ([ADR-0009](docs/adr/0009-determinism-scope.md)). Backed by lints that ban
   `HashMap` iteration and floating-point in the rules/sim paths.
 - **Toolchain:** Rust 1.98.0 (see `rust-toolchain.toml`), edition 2021.
 

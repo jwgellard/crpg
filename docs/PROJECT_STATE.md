@@ -179,8 +179,8 @@ history below is merged work only.
 ## Next
 - T008a `state_hash` + the fixed-step tick loop (with `Timeline` advance
   rules) in `crpg-sim` — specify first (no task file yet; E004 split it from
-  T008b). Open input: E011 (determinism-scope ADR) is its acceptance
-  criterion, and the `blake3` dependency choice lands in its task file.
+  T008b). Scope ratified in ADR-0009; the `blake3` dependency choice lands in
+  its task file.
 - T008b hash-sequence harness + golden convention in `crpg-testkit` (first
   testkit code: crate `AGENTS.md` + arch doc due with it).
 
@@ -213,6 +213,9 @@ the carried blockers and the throughput log.
   skeleton-only `World` serde caveat (conversion pair owned by T014), and the
   replica/`Timeline` ownership (prediction buffer outside sim, container in
   T007, advance rules in T008). T007 scope is locked.
+- ADR-0009 (2026-09-06): determinism scope is replay-over-exact-build, not
+  lockstep; goldens filename-scoped, compared on canonical Linux; hash
+  exclusion list governed, starting empty. T008a/T009 acceptance criterion.
 - Godot pinned at 4.7.2
 - Toolchain pinned at rustc 1.98.0
 
@@ -237,3 +240,4 @@ the carried blockers and the throughput log.
 - 2026-09-06 (UTC) · opencode/muse-spark + hygiene + T007-unblock · Folded T006e into Done (it landed in 8f2e38b; "complete in working tree" was stale) and recorded E006-A/E009/E014/E015 so T007 can be specified.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 merged · Recorded the skeleton above; next is T008 with the open E004 split question flagged.
 - 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · T008 is now T008a (sim, specify first) + T008b (testkit); E011 acceptance criterion sits with T008a.
+- 2026-09-06 (UTC) · opencode/muse-spark + E011 filed · ADR-0009 accepted; T008a's scope input is now ratified, leaving only the `blake3` choice for its task file.
