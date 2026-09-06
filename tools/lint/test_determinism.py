@@ -89,7 +89,11 @@ pub fn ac() -> f64 { 10.5 }
 pub fn hp() -> i32 { 20 }
 """
 
-FLOAT_SIM_SRC = """
+FLOAT_SIM_F32_SRC = """
+pub struct Transform { x: f32, y: f32 }
+"""
+
+FLOAT_SIM_F64_SRC = """
 pub struct Transform { x: f64, y: f64 }
 """
 
@@ -413,11 +417,11 @@ class TestSkips(LintCase):
 
 
 class TestFloatScope(LintCase):
-    """Floats are banned in crpg-core and crpg-rules, allowed in crpg-sim.
+    """Floats are banned in crpg-core and crpg-rules; f64 is banned in crpg-sim.
 
     crpg-sim holds spatial positions, which spec 2.4 puts in f32 outside the
-    rules path. If that decision is ever revisited, this test is the place it
-    shows up.
+    rules path — so f32 passes there but f64 fails (E006-A). If that decision
+    is ever revisited, this test is the place it shows up.
     """
 
     def test_float_in_core_fails(self):
@@ -426,8 +430,33 @@ class TestFloatScope(LintCase):
     def test_float_in_rules_fails(self):
         self.assert_flags("crpg-rules", FLOAT_SRC, "no-float", "f64 in crpg-rules")
 
-    def test_float_in_sim_passes(self):
-        self.assert_clean("crpg-sim", FLOAT_SIM_SRC, "f64 in crpg-sim is allowed")
+    def test_f32_in_sim_passes(self):
+        self.assert_clean(
+            "crpg-sim", FLOAT_SIM_F32_SRC, "f32 positions are allowed in sim",
+        )
+
+    def test_f64_in_sim_fails(self):
+        self.assert_flags(
+            "crpg-sim", FLOAT_SIM_F64_SRC, "no-f64", "f64 in crpg-sim",
+        )
+
+    def test_f64_suffix_literal_in_sim_fails(self):
+        self.assert_flags(
+            "crpg-sim", FLOAT_LITERAL_SRC, "no-f64",
+            "1.5f64 is an f64 even in sim",
+        )
+
+    def test_f32_suffix_literal_in_sim_passes(self):
+        self.assert_clean(
+            "crpg-sim", FLOAT_UNDERSCORE_LITERAL_SRC,
+            "1.0_f32 is an f32, allowed in sim",
+        )
+
+    def test_unsuffixed_literal_in_sim_passes(self):
+        self.assert_clean(
+            "crpg-sim", UNSUFFIXED_FLOAT_SRC,
+            "unsuffixed literals infer to f32 at f32 sites; allowed in sim",
+        )
 
 
 class TestFloatLiterals(LintCase):

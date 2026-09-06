@@ -2,6 +2,10 @@
 Resolve event ownership (core vs sim) so T007/T008/netcode do not invent
 incompatible event types. Human-decision task — NOT for autonomous execution.
 
+> **Decided 2026-09-05 as A′** (generic substrate in core, `SimEvent` in sim,
+> IR types in data, hooks in rules) — recorded in ADR-0008. The A-vs-B choice
+> below is retained as history.
+
 ## Why this is deferred
 
 The 2026-09-06 full-project review found that the status docs and roadmap are
@@ -42,3 +46,8 @@ event types.
 - Do not add a new dependency.
 - Respect AGENTS.md dependency direction.
 - This is a human decision; do not guess.
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark · Decided with maintainer as A′ and recorded in ADR-0008: generic substrate in core, SimEvent in sim, IR types in data, hooks in rules. BACKLOG, README, and spec tables aligned in the same batch.
+- 2026-09-06 (UTC) · opencode/muse-spark + E009 · Added the decided-as-A′ header so readers stop at the outcome instead of re-litigating A-vs-B; no decision change.

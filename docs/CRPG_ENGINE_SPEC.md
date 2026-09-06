@@ -134,7 +134,7 @@ There are exactly three shipped binaries plus one CLI:
 
 **Single-player runs the same server**, either as an in-process thread using an in-memory transport, or as a spawned child process on loopback. Prefer the in-process thread with a `Transport` trait so both are possible; ship the thread version, keep the process version for debugging isolation.
 
-There is no "single-player code path". This is the single most important structural decision after the Godot decision, and it must be enforced by making the client physically incapable of mutating authoritative state: the client's copy of the world is behind a `ReplicaWorld` type with no mutating methods except `apply_delta`.
+There is no "single-player code path". This is the single most important structural decision after the Godot decision, and it must be enforced by making the client physically incapable of mutating authoritative state: the client's copy of the world is behind a `ReplicaWorld` type with no mutating methods except `apply_delta`. Prediction of own movement uses a buffer outside sim (bridge/client), never a mutable replica; `apply_delta` coverage is reserved here and defined fully in T018 (E015 decision 2026-09-06).
 
 ### 2.2 Layer diagram
 
@@ -162,7 +162,7 @@ There is no "single-player code path". This is the single most important structu
 ├──────────────────────────────────────────────────────────────┤
 │ crpg-data   campaign schema, serde, validation, migration    │
 ├──────────────────────────────────────────────────────────────┤
-│ crpg-core   ids, fixed-point math, RNG, time, events, errors │
+│ crpg-core   ids, Fx16_16, RNG, time, event substrate, errors │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -217,9 +217,8 @@ You asked for a reasoned decision, so here is the reasoning rather than the conc
 **Decision: a purpose-built entity/component store with explicit systems. Call it a "hybrid" if you like; it is really an ECS without the framework.**
 
 ```rust
-// crpg-sim
-pub struct EntityId { index: u32, generation: u32 }
-
+// EntityId lives in crpg-core per ADR-0006 (E002 correction 2026-09-05:
+// a single generational id; T007's arena is GenerationalArena<EntityMeta>).
 pub struct World {
     entities: GenerationalArena<EntityMeta>,
     // Each component type is one dense store. Registered at compile time
@@ -231,7 +230,8 @@ pub struct World {
     // ...
     dynamic:     DynamicComponentStore,  // ruleset/mod-defined, typed by schema
     spatial:     SpatialIndex,           // uniform grid, rebuilt per tick
-    events:      EventQueue,
+    events:      EventQueue<SimEvent>,   // concrete queue in sim; core holds only the generic substrate (ADR-0008, E009 2026-09-06)
+    timeline:    Timeline,              // ordered (InitiativeKey, EntityId); container in T007, advance rules in T008 (E015 2026-09-06)
     rng:         DeterministicRng,
     tick:        Tick,
 }
@@ -242,7 +242,7 @@ Rules for this store, enforced by review and lint:
 1. **Systems are ordinary functions** taking `&mut World` plus explicit parameters, called in a fixed, hand-written order by `fn tick(world: &mut World)`. No scheduler. No parallelism inside a single area's tick.
 2. **No `HashMap` iteration in simulation code.** Use `IndexMap` or `BTreeMap`. Lint-enforced.
 3. **No floating point in rules math.** Positions and velocities use `f32`. Anything a rule reads uses integers or fixed-point. Damage, modifiers, DCs, durations: integers.
-4. **The entire `World` implements `Serialize`/`Deserialize`.** Saves are world snapshots. This is checked by a round-trip property test on every commit.
+4. **The entire `World` implements `Serialize`/`Deserialize`.** Saves are world snapshots. This is checked by a round-trip property test on every commit. (Skeleton only: the derive covers the world skeleton; every interned-handle boundary persists strings through the explicit `to_serializable`/`from_serializable` conversion owned by T014 per ADR-0006 Decision 4 — E014 clarification 2026-09-06.)
 5. **Areas are simulated independently.** One `World` per loaded area. Cross-area effects go through a message queue on the `Campaign` object. This is your future scalability lever and it costs nothing now.
 
 Godot's SceneTree is used on the client only, as a **presentation mirror**: each replicated entity gets a `Node3D` proxy created and destroyed by a single `SceneSyncSystem`. The proxy holds no gameplay state. If you ever find gameplay logic in a Godot node, that is a bug with a specific name: *authority leak*.
@@ -251,7 +251,7 @@ Godot's SceneTree is used on the client only, as a **presentation mirror**: each
 
 - Server tick: **20 Hz fixed** (50 ms). Configurable, but tested at 20.
 - All durations in the rules are expressed in **rounds, turns, or ticks**, never seconds. A "6-second round" is a ruleset constant, not an engine one.
-- Real-time-with-pause and turn-based are both expressed as a **Timeline**: an ordered queue of `(initiative_key, EntityId)`. In real time the timeline advances every tick; in turn-based it advances on `EndTurn`. One mechanism, two policies.
+- Real-time-with-pause and turn-based are both expressed as a **Timeline**: an ordered queue of `(initiative_key, EntityId)`. In real time the timeline advances every tick; in turn-based it advances on `EndTurn`. One mechanism, two policies. Key type is `(InitiativeKey(i32), EntityId)` in a `BTreeMap` (deterministic order, `EntityId` tiebreak). The container is owned by T007; the advance policy — including the §6.2 turn-start vs §10 every-tick mapping — is owned by T008 (E015 decision 2026-09-06).
 - The client renders at display refresh and interpolates between the last two received snapshots with a fixed ~100 ms delay buffer.
 
 ---
@@ -278,7 +278,7 @@ The kernel therefore knows about seven concepts and nothing else:
 
 ### 3.2 The primitives in detail
 
-**Stats.** A `StatBlock` is `IndexMap<StatId, StatValue>` where `StatId` is an interned id declared by the ruleset, and `StatValue` is one of `Int(i32)`, `Fixed(Fx16_16)`, `Bool`, `Enum(EnumId)`, `Dice(DiceExpr)`, `Tags(TagSet)`. Rulesets declare stats in data:
+**Stats.** A `StatBlock` is `IndexMap<StatId, StatValue>` where `StatId` is an interned id declared by the ruleset, and `StatValue` is one of `Int(i32)`, `Fixed(Fx16_16)`, `Bool`, `Enum(EnumId)`, `Dice(DiceExpr)`, `Tags(TagSet)`. Persisted form is the explicit string-keyed conversion pair from ADR-0006 Decision 4, not a derive (E014 clarification 2026-09-06). Rulesets declare stats in data:
 
 ```json
 { "id": "hp", "kind": "int", "min": 0, "derived": null },
@@ -527,7 +527,7 @@ Properties the IR must have:
 
 - **Serializable mid-execution.** A `Wait` node inside a running graph must survive save/load and server restart. Model running graphs as entities with a `ScriptContinuation` component. Get this right early; retrofitting it is painful.
 - **Deterministic.** Node execution order is the edge order in the file. No implicit concurrency.
-- **Budgeted.** A graph gets a maximum node count and wall-clock budget per trigger invocation. Exceeding it aborts the graph, logs an error with the campaign file and node id, and does not stall the tick.
+- **Budgeted.** A graph gets a maximum node count and instruction/bytecode budget per trigger invocation (deterministic; cf ADR-0005 — corrected from wall-clock per E008 2026-09-05, since a wall-clock abort diverges across machines). Exceeding it aborts the graph, logs an error with the campaign file and node id, and does not stall the tick.
 - **Server-only.** Graphs execute on the server. The client receives their *effects*.
 
 The `Action` vocabulary is registered by the engine and by rulesets: `StartDialogue`, `SetVariable`, `GiveItem`, `SpawnEncounter`, `AdvanceQuest`, `OpenDoor`, `PlayCinematic`, `ApplyEffect`, `MoveEntity`, `PlaySound`, `ShowMessage`, `TeleportParty`, and so on. Each action is a Rust function with a declared JSON-schema signature, so the editor can generate its property form automatically. **Do not hand-write editor UI per action.** Generate it from the signature. This is worth a day and saves months.
@@ -983,7 +983,7 @@ crpg/
 │  ├─ contracts/              cross-crate API contracts + invariants
 │  └─ guides/                 authoring guides for campaign creators
 ├─ crates/
-│  ├─ crpg-core/              ids, fixed-point, RNG, tick/time, event bus, errors
+│  ├─ crpg-core/              ids, fixed-point, RNG, tick/time, generic event substrate, errors
 │  ├─ crpg-data/              campaign schema, serde, validation, migrations
 │  ├─ crpg-rules/             stats, modifiers, effects, resolution, resources
 │  ├─ crpg-sim/               world store, systems, tick, spatial, movement, LOS
@@ -1164,7 +1164,7 @@ This one facility gives you: regression detection, bisectable behaviour changes,
 
 ### 16.2 By layer
 
-**`crpg-core`** — property tests: RNG reproducibility and stream independence, fixed-point arithmetic identities, id generation uniqueness, event ordering.
+**`crpg-core`** — property tests: RNG reproducibility and stream independence, fixed-point arithmetic identities, id generation uniqueness, event-queue ordering over the generic envelope (ADR-0008; game payloads covered in sim).
 
 **`crpg-data`** — round-trip property tests (`parse(write(x)) == x`) via `proptest`; every fixture validates; every migration has a before/after golden; canonical formatter idempotence; malicious input tests (deep nesting, huge numbers, duplicate keys, zip bombs, path traversal).
 
@@ -1619,15 +1619,15 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Purpose:* the data structure the entire simulation lives in.
 *Affected:* `crates/crpg-sim`.
 *Dependencies:* T6.
-*Work:* `World` with a generational entity arena, `ComponentStore<T>` (dense, `IndexMap`-backed), spawn/despawn/query, and full `Serialize`/`Deserialize`.
-*Test:* property test that `deserialize(serialize(w)) == w` after random spawn/despawn/mutate sequences; a test that despawn does not leave dangling component entries.
+*Work:* `World` with a generational entity arena, `ComponentStore<T>` (dense, `IndexMap`-backed), spawn/despawn/query, the `Timeline` container (`BTreeMap<(InitiativeKey, EntityId)>`), the generic event substrate (`EventEnvelope<P>`/`EventQueue<P>`) plus `World.events: EventQueue<SimEvent>` (scoped core exception per ADR-0008), and full `Serialize`/`Deserialize` of the skeleton (no `StatBlock` — its string conversion pair is T014's per ADR-0006 D4).
+*Test:* skeleton property test that `deserialize(serialize(w)) == w` after random spawn/despawn/mutate sequences; a test that despawn does not leave dangling component entries.
 *Done when:* round-trip property test passes over 10,000 generated cases.
 
 **T8. State hashing and the fixed-step tick loop**
 *Purpose:* the measurement instrument for every behavioural test in the project.
 *Affected:* `crpg-testkit`, `crpg-sim`.
 *Dependencies:* T7.
-*Work:* `state_hash(&World) -> [u8; 32]` over canonical serialization with an explicit exclusion list; `fn tick(&mut World)` with a hand-written ordered system list (initially one trivial system).
+*Work:* `state_hash(&World) -> [u8; 32]` over canonical serialization with an explicit exclusion list; `fn tick(&mut World)` with a hand-written ordered system list (initially one trivial system); `Timeline` advance policy (every-tick vs `EndTurn`, reconciling §6.2 turn-start AI with the §10 per-tick loop) per E015.
 *Test:* two runs of 10,000 ticks from the same seed produce identical hash sequences; changing the seed changes them.
 *Done when:* `crpgc run --ticks 10000 --hash-every 100` is reproducible.
 
@@ -1643,7 +1643,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Purpose:* the campaign format.
 *Affected:* `crates/crpg-data`, `schemas/`.
 *Dependencies:* T6.
-*Work:* Rust types for `Campaign`, `World`, `Area`, `Creature`, `Item`, `Dialogue`, `Quest`, `Faction`, `Placement`; `schemars` generation into `schemas/`; the canonical JSON writer; the loader building the `id → object` index.
+*Work:* Rust types for `Campaign`, `World`, `Area`, `Creature`, `Item`, `Dialogue`, `Quest`, `Faction`, `Placement`; `schemars` generation into `schemas/`; the canonical JSON writer; the loader building the `id → object` index; event-IR graph types (`Trigger`/`Node`/action signatures) per ADR-0008.
 *Test:* round-trip property tests; canonical-writer idempotence; schema drift check in CI.
 *Done when:* the `one_area_one_creature` fixture loads and re-serializes byte-identically.
 
@@ -1675,7 +1675,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Purpose:* the highest-risk component, built and tested first.
 *Affected:* `crates/crpg-rules`.
 *Dependencies:* T6, T10.
-*Work:* `StatBlock`, `Modifier`, `ModTypeId`, stacking policies as ruleset data, `query(entity, stat, context) -> (Value, ModifierBreakdown)`, derived stats with cycle detection at load.
+*Work:* `StatBlock`, `Modifier`, `ModTypeId`, stacking policies as ruleset data, `query(entity, stat, context) -> (Value, ModifierBreakdown)`, derived stats with cycle detection at load, kernel hook event types (`BeforeRoll`, `OnDeath`, …) per ADR-0008, and `StatBlock`'s persisted string conversion pair plus its round-trip test per ADR-0006 D4 (E014).
 *Test:* a 100+ case table-driven suite; property tests for order-independence within a stacking group and for exact reversal on effect removal.
 *Done when:* every query returns a breakdown, and the `AGENTS.md` invariant "no game-system knowledge" holds under review.
 
@@ -1726,3 +1726,11 @@ The first is **T17**. If the rules kernel survives a second, structurally differ
 The second is **whether you can keep the editor small**. Every CRPG toolkit project that has died, died in the editor. The defences in this plan are generated property forms, headless-first command APIs, and the mandatory list in Section 22. Use them ruthlessly.
 
 Everything else in this document is recoverable. The Godot decision is reversible by construction. The networking model can be extended. The campaign format can be migrated. The rules kernel and the editor's scope are the two places where being wrong is expensive, which is exactly why they are addressed in Phase 3 and Phase 6 rather than later.
+
+---
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark + E002/E008 · §2.4 now references the single core EntityId per ADR-0006 instead of redefining it; §5.2 event-graph budget is instruction/bytecode, not wall-clock, preserving replay determinism. Dated inline notes mark both corrections.
+- 2026-09-05 (UTC) · opencode/muse-spark + E001/ADR-0008 · Layer diagram, repo tree, and §16.2 test line now say generic event queue/substrate in core; SimEvent lives in sim, IR types in data, hooks in rules.
+- 2026-09-06 (UTC) · opencode/muse-spark + E006-A/E009/E014/E015 · E009: World sketch owns `EventQueue<SimEvent>`, core diagram/tree lines say generic substrate, §24 T7/T10/T14 mirror the ADR-0008 assignments. E014: World serde is skeleton-only; interned boundaries persist strings via T014's conversion pair. E015: prediction is a buffer outside sim, `Timeline` is `BTreeMap<(InitiativeKey, EntityId)>` with the container in T007 and advance rules in T008.

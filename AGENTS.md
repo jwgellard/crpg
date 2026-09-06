@@ -18,7 +18,8 @@ Rust workspace. Simulation core has NO game-engine dependency.
   `IndexMap`/`BTreeMap`.
 - No `f32`/`f64` in `crpg-core` or `crpg-rules` — use integers or `Fx16_16`.
   `crpg-sim` may use `f32` for spatial positions only (spec §2.4), never in a
-  rules path.
+  rules path. `f64` is banned in `crpg-sim` as well (E006-A); the determinism
+  lint enforces it as `no-f64`.
 - The two bans above apply to doctests as well as to `tests/` and `#[cfg(test)]`
   modules. A doctest is compiled and run; `determinism.py` scans inside doc
   fences for exactly that reason.
@@ -51,6 +52,16 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - The lint self-tests are in that list on purpose. The lints are what enforce
   the non-negotiables above, so a change that defangs one has to fail
   somewhere, and this is where.
+- Every agent edit to documentation signs itself in the same file and commit:
+  `YYYY-MM-DD (UTC) · <harness/model> + <task or reason> · 1–2 sentence why`.
+  Appends carry their own entry; an append without one fails the rule. Never
+  rewrite or delete a prior entry; supersede by appending. Human edits need no
+  entry; never forge a human entry.
 
 ## Note
 - "Godot4" is available in PATH CLI
+
+## Agent log
+
+- 2026-09-05 · opencode/big-pickle · Established the documentation attribution rule: all agent edits to .md files must carry date/agent/reason signature to keep history auditable and prevent silent doc drift.
+- 2026-09-06 (UTC) · opencode/muse-spark + E006-A · Banned `f64` in `crpg-sim` (`f32`-spatial only); the determinism lint enforces it as `no-f64`.

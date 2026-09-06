@@ -4,7 +4,7 @@ Human-decision task (spec edit).
 
 ## Why this is deferred / blocked
 
-Spec §4 (determinism) — the reviewer flagged §526–531: the event graph budget is
+Spec §5.2 (determinism; section citation corrected per E009 2026-09-06 — was "§4") — the reviewer flagged §526–531: the event graph budget is
 described as (some form of) *wall-clock* time, and when a graph exceeds the
 budget it is aborted. Wall-clock time is nondeterministic; an abort keyed to it
 produces different behavior across machines/runs, which violates the
@@ -26,3 +26,8 @@ is an *instruction* budget (the Lua VM spike already uses one).
 ## Constraints
 - Do not edit crpg sources in this task.
 - Spec edit: human sign-off required.
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark · Applied per maintainer sign-off: §5.2 budget is instruction/bytecode; see spec Agent log.
+- 2026-09-06 (UTC) · opencode/muse-spark + E009 · Fixed the section citation (§4 → §5.2); no decision change.

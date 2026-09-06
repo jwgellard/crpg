@@ -34,7 +34,7 @@ Presentation (Godot 4)          crpg-client, crpg-editor
          crpg-ai  │ crpg-script │ crpg-persist
          crpg-rules   stats, modifiers, effects, resolution, actions
          crpg-data   campaign schema, serde, validation, migration
-         crpg-core   ids, fixed-point math, RNG, time, events, errors
+          crpg-core   ids, fixed-point math, RNG, time, event queue, errors
 ```
 
 There are three shipped binaries plus a CLI:
@@ -53,10 +53,10 @@ separate "single-player code path."
 
 | Crate | Role |
 |---|---|
-| `crpg-core` | Core types: ids, fixed-point math, deterministic RNG, time, events, errors |
+| `crpg-core` | Core types: ids, fixed-point math, deterministic RNG, time, event queue, errors |
 | `crpg-data` | Campaign schema, serde, validation, migration |
 | `crpg-rules` | Rules kernel: stats, modifiers, effects, resolution, actions |
-| `crpg-sim` | Simulation engine: world store, systems, tick, encounters |
+| `crpg-sim` | Simulation engine: world store, systems, tick, encounters, SimEvent stream |
 | `crpg-ai` | AI logic |
 | `crpg-nav` | Navigation / pathfinding |
 | `crpg-net` | Networking, protocol, transport |
@@ -146,3 +146,8 @@ These are non-negotiable and loaded by agents every session ([AGENTS.md](AGENTS.
 `MIT OR Apache-2.0`, at your option — as declared in the workspace
 `Cargo.toml` and enforced for dependencies by [`deny.toml`](deny.toml).
 Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
+
+## Agent log
+
+- 2026-09-05 (UTC) · opencode/muse-spark + E001/ADR-0008 · Core role now says event queue (generic substrate), sim role names the SimEvent stream; no other rows touched.
+- 2026-09-06 (UTC) · opencode/muse-spark + E009 · ASCII layer diagram now says event queue in core, matching the role table; no other rows touched.

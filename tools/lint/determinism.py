@@ -14,9 +14,11 @@ All three crates:
 crpg-core and crpg-rules only:
   - f32 / f64 (rules maths uses integers or fixed-point)
 
-crpg-sim is deliberately exempt from the float ban: spec 2.4 puts spatial
-positions in f32, outside the rules path. Everything a rule reads is Fx16_16
-or an integer, and that is enforced one layer down in crpg-rules.
+crpg-sim only:
+  - f64 (E006-A: spatial positions are f32 per spec 2.4, outside the rules
+    path; f64 has no legitimate sim use. Unsuffixed literals stay allowed in
+    sim — they infer to f32 at f32-typed sites. Everything a rule reads is
+    Fx16_16 or an integer, enforced one layer down in crpg-rules.)
 
 What counts as code:
 
@@ -67,6 +69,9 @@ RULES = [
     # letter instead of a word boundary catches `1.5f64`, `1.0_f64` and
     # `to_f32`, while still leaving an identifier like `buf32` alone.
     ("no-float-crates", "no-float", re.compile(r"(?<![A-Za-z])f(?:32|64)\b")),
+    # E006-A: `f64` is banned in crpg-sim too (`f32`-spatial only). A dedicated
+    # scope so the f32 positions spec 2.4 requires keep passing.
+    ("no-f64-crates", "no-f64", re.compile(r"(?<![A-Za-z])f64\b")),
     # Unsuffixed float literals: `1.5`, `0.5`, `1e3`, `1.0e-2`, `.5`.
     # Requires a digit after `.` so `1..` (range) and `x.foo()` don't match.
     # Each alternative requires a non-identifier character before it so a
@@ -252,6 +257,8 @@ def check_file(crate_name, path):
         applies = ("both",)
         if crate_name in ("crpg-core", "crpg-rules"):
             applies = ("both", "no-float-crates")
+        elif crate_name == "crpg-sim":
+            applies = ("both", "no-f64-crates")
         for scope, rule_name, pattern in RULES:
             if scope not in applies:
                 continue
