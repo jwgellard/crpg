@@ -48,14 +48,15 @@ ADR that motivated it.
 | T008a | done | 2026-09-06 | `state_hash`, fixed-step tick loop, `Timeline` advance rules (`crpg-sim`; scope ADR-0009) |
 | T008b | done | 2026-09-06 | Hash-sequence harness + golden convention (`crpg-testkit`; scope ADR-0009) |
 | — | done | 2026-09-06 | Review 3 follow-up: sim/core/testkit invariant hardening (finite hash guard, validated Timeline/World/EventQueue loading, truthful Mismatch enum) + ADR-0010/0011 |
-| T009a | in progress | uncommitted/unmerged local `master` working tree | Replay format/playback + genuine original Linux verification preserved; T009c correction verified, awaiting review/merge |
-| **T009c** | **next** | uncommitted/unmerged working tree | Windows-primary/Linux-supported policy + independent native replay goldens (`crpg-testkit`; ADR-0012 supersedes only ADR-0009 Decision 3's Linux-only selection); required native Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates passed, awaiting review/merge; see [completion record](T009c.md) |
-| T009b | blocked | T009c landing | Thin `crpgc replay` wrapper (`crpg-cli`; blocked pending T009c review/merge) |
+| T009a | done | 2026-09-07 | Replay format/playback + genuine original Linux verification preserved; corrected by T009c's target policy |
+| T009c | done | 2026-09-07 | Windows-primary/Linux-supported policy + independent native replay goldens (`crpg-testkit`; ADR-0012 supersedes only ADR-0009 Decision 3's Linux-only selection); required native Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates passed and final audit complete; see [completion record](T009c.md) |
+| **T009b** | **next** | — | Thin `crpgc replay` wrapper (`crpg-cli`; unblocked by the T009a/T009c merge) |
 
 Reported T009c results on each native target: 19 testkit tests (6 harness +
 12 portable replay + 1 golden), 135 workspace tests (134 unit/integration + 1 doctest),
 and 65 lint self-tests. Full required-gate results and provenance belong to
-the [T009c completion record](T009c.md); passing gates does not imply landing.
+the [T009c completion record](T009c.md); both tasks merged to `master` on
+2026-09-07.
 
 T006a–e are spec §24's single T6, split per ADR-0006. T006a established
 `Cargo.toml`, the module layout and `crpg-core/AGENTS.md`; T006b-T006e are
@@ -199,7 +200,8 @@ Record it here, one line per week.
 
 | Week ending | Merged | Notes |
 |---|---|---|
-| 2026-09-06 | 16 | T001–T005c plus T006a–e, T007, T008a and T008b are merged. T009a and T009c remain uncommitted/unmerged in the local working tree awaiting review/merge after native verification passed. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
+| 2026-09-06 | 16 | T001–T005c plus T006a–e, T007, T008a and T008b are merged. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
+| 2026-09-07 | 18 | T009a (typed replay) and T009c (Windows-primary/Linux-supported native goldens, ADR-0012) merged. Three review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. T009b's thin `crpgc replay` wrapper is next. |
 
 ---
 
@@ -222,3 +224,4 @@ Record it here, one line per week.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Kept T009a unmerged, T009c next/in progress pending native verification, T009b blocked, and merged throughput unchanged. Indexed shared-host ownership and open E023 native-extension governance with capability-gated product checks.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Recorded the reported native Windows and WSL Ubuntu gate passes and per-target counts, linking the completion record. T009a/T009c remain uncommitted and unmerged, T009c stays next for review/merge, T009b waits for landing, and throughput remains 16.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c count correction · Corrected the active workspace total to 135 (134 unit/integration + 1 doctest), matching the reported breakdown of core 91, sim 24, testkit 19, and core doctest 1. Verification status and merged throughput are unchanged.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Marked T009a and T009c done (merged to `master` in `bb9a702`), T009b next, throughput at 18.

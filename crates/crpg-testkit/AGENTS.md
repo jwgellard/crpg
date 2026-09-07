@@ -1,8 +1,9 @@
 # crpg-testkit — agent contract
 
-Scope note: this file describes the T008b harness, the unmerged T009a replay,
-and the T009c target policy (native gates passed; uncommitted and unmerged,
-awaiting review/merge). See the [T009c completion record](../../tasks/T009c.md).
+Scope note: this file describes the T008b harness, the T009a replay, and the
+T009c target policy (merged 2026-09-07; native gates passed on Windows/MSVC
+and genuine WSL Ubuntu 24.04 Linux/GNU). See the
+[T009c completion record](../../tasks/T009c.md).
 Fixture campaigns, contract conformance suites and any further helpers arrive
 with the tasks that need them; they extend this file, following the module
 docs that already name their owners.
@@ -200,7 +201,7 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   T009a's genuine Linux provenance may support a scope-filename rename, not a
   regeneration claim. T009c native Windows/MSVC and genuine WSL Ubuntu
   Linux/GNU required gates passed; provenance and results belong to the
-  [T009c completion record](../../tasks/T009c.md), not a merge claim.
+  [T009c completion record](../../tasks/T009c.md).
 
 ## Agent log
 
@@ -210,3 +211,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-09-06 (UTC) · opencode/muse-spark + T009a · Extended the contract for the replay: opaque-payload API and validation invariants, the input→tick→hash ordering, boxed typed divergence reusing the ADR-0010 mismatch, the compile-time canonical-Linux gate, and traps for test-vocabulary drift, validation order, and rebless-by-command.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Replaced the active Linux-only contract with independent compile-time Windows/MSVC and Linux/GNU golden requirements. Preserved exact comparison and reviewed provenance rules without claiming pending native verification passed.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Recorded the reported native gate passes and linked the completion record while retaining uncommitted/unmerged status. Corrected the private support-module path without changing policy or code.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the scope note and pending-merge wording to the merged state; T009b is next.

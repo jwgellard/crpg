@@ -16,11 +16,11 @@ campaign format, netcode, AI, and server are untouched.
 > state hashing; and `crpg-testkit` has the hash-sequence and golden-file
 > harness plus versioned replay record/playback. The remaining crates are still
 > scaffolding. The Windows-primary/Linux-supported platform correction and
-> target-scoped replay gates in T009c have implementation and verification
-> complete in the working tree after final audit,
-> awaiting review/merge, and remain the priority before T009b's thin
-> `crpgc replay` wrapper in `crpg-cli`. T009a is also uncommitted; neither
-> task is merged. See the [T009c completion record](tasks/T009c.md) and
+> target-scoped replay gates in T009c are merged (ADR-0012): Windows/MSVC owns
+> the primary behavioural baseline and Linux/GNU the supported server
+> baseline, each compared against its own independently generated golden.
+> T009b's thin `crpgc replay` wrapper in `crpg-cli` is
+> next. See the [T009c completion record](tasks/T009c.md) and
 > [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ---
@@ -189,3 +189,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Recorded Windows-primary and fully supported Linux headless surfaces with shared server authority and independent replay baselines. Supersedes the prior CLI-next status: T009a is uncommitted and T009c is in progress pending native verification.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated active status from the reported passing Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU gates and linked the task completion record. T009c remains the priority awaiting review/merge, with T009a also uncommitted and final audit still running.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported completed final audit and implementation/verification completion in the working tree. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the status block to the merged replay harness and native golden gates; T009b's `crpgc replay` wrapper is next.

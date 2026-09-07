@@ -67,8 +67,8 @@ only Decision 3's Linux-only selection is superseded.
 The existing Windows/Ubuntu workspace-test matrix is the enforcement point;
 no placeholder workflow is needed. Required native Windows/MSVC and genuine
 WSL Ubuntu Linux/GNU gates passed; see the [T009c completion record](T009c.md).
-T009a and T009c remain uncommitted and unmerged; T009c stays the next priority
-awaiting review/merge, and T009b remains blocked pending T009c landing. The
+T009a and T009c are merged on `master` as of 2026-09-07, and T009b is next.
+The
 genuine original T009a Linux record remains separate historical provenance.
 
 Capability-gated activation remains in force. Step 12 must eventually require

@@ -4,14 +4,13 @@ Shared test machinery, built once so it cannot fork across crates.
 
 **State:** the hash-sequence harness is complete (T008b): scripted
 scenario runs, golden-file write/compare, and the convention later tasks
-use. The versioned replay is implemented but unmerged (T009a): opaque-payload
-record/parse/validate/playback through public sim APIs, an exact-tick
-divergence report reusing the harness mismatch, and a checked-in
-initial Linux replay + hash golden. T009c corrects step 9 to the two-target
-policy below; required native Windows/MSVC and genuine WSL Ubuntu Linux/GNU
-gates passed (see the [T009c completion record](../../tasks/T009c.md)). T009a
-and T009c remain uncommitted and unmerged; T009c is the next priority, awaiting
-review/merge, and T009b is blocked pending T009c landing. Fixture
+use. The versioned replay is merged (T009a + T009c, 2026-09-07):
+opaque-payload record/parse/validate/playback through public sim APIs, an
+exact-tick divergence report reusing the harness mismatch, and per-target
+checked-in replay goldens under the two-target policy below. Required native
+Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates passed (see the
+[T009c completion record](../../tasks/T009c.md)); T009b's thin
+`crpgc replay` wrapper in `crpg-cli` is next. Fixture
 campaigns, contract conformance suites and further helpers are planned,
 each owned by the task that first needs it.
 
@@ -67,7 +66,7 @@ not a claim that Cargo cannot compile dev-only cycles.
 | Hash sequences, golden write/compare, error shape | Fixture campaigns (first data task needing one) |
 | Replay format + validation + playback + typed divergence | Contract conformance suites (spec §15.3, first backend) |
 | Determinism/tamper/shape/replay-behaviour tests | — |
-| Scope-header convention and independent Windows/MSVC and Linux/GNU golden gates (T009c, step 9; verified working tree, unmerged) | T009b blocked pending T009c landing |
+| Scope-header convention and independent Windows/MSVC and Linux/GNU golden gates (T009c, step 9; merged 2026-09-07) | T009b `crpgc replay` wrapper (`crpg-cli`) |
 
 ## Target-scoped replay policy
 
@@ -140,3 +139,4 @@ placeholder jobs.
 - 2026-09-06 (UTC) · opencode/muse-spark + T009a · Recorded the replay module (opaque payloads, input→tick→hash ordering, boxed divergence), the checked-in canonical-Linux fixture pair, and CI step 9 going live with T009b/T016 as the named consumers.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Aligned the architecture with Windows-primary and fully supported Linux headless hosting and independent exact-build golden scopes. Distinguished unmerged implementation from pending native verification and deferred host/extension implementation decisions to their owners.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Replaced active pending-verification wording with the reported native gate passes and linked the completion record. Kept T009c the next review/merge priority and T009b blocked on landing, without claiming either replay task committed or merged.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the state and table rows to the merged replay and two-target golden gates; T009b is next.

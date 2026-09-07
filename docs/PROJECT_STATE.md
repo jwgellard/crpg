@@ -6,13 +6,10 @@ Updated: 2026-09-07
 Phase 1 — core skeleton and test harness.
 
 ## Branch state
-All merged work is on local `master`. The working tree holds the uncommitted
-E005/E016/E020 decision edits plus the uncommitted T009a replay work below
-and T009c implementation/verification complete in the working tree, awaiting
-review/merge. All required native gates passed and final audit is complete.
-Neither task is merged.
-The Done history below is merged work only, except where a row names its
-unmerged state.
+All merged work is on local `master`. T009a's typed replay and T009c's
+Windows-primary/Linux-supported correction are merged as of 2026-09-07; the
+working tree is clean. The Done history below is merged work only. T009b's
+thin `crpgc replay` wrapper in `crpg-cli` is next.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -175,7 +172,7 @@ unmerged state.
   the enum, affirming `EventQueue<SimEvent>`. Sim now 24 tests (11 tick +
   13 world, incl. interleaved 10k ops), core event 7, testkit 6. All gates
   green each time.
-- T009a replay in `crpg-testkit` (unmerged working tree): versioned
+- T009a replay in `crpg-testkit` (merged 2026-09-07): versioned
   `.replay` format (format 1: seed, campaign/engine identity, tick count,
   ordered inputs with opaque `serde_json::Value` payloads), validation
   before playback in fixed check order, input→tick→hash playback through
@@ -194,6 +191,25 @@ unmerged state.
   environment under T009a's original policy. This is the historical T009a
   verification record, not verification of T009c's two target-scoped gates;
   ADR-0012 supersedes its Linux-only selection. Sim and CLI untouched.
+- T009c platform correction in `crpg-testkit` (merged 2026-09-07):
+  ADR-0012 makes `x86_64-pc-windows-msvc` the primary development, product,
+  release-gate, and behavioural-baseline target while `x86_64-unknown-linux-gnu`
+  stays fully supported for dedicated server, headless CLI/tooling,
+  server-side extensibility, and tests. Each target compares against its own
+  independently generated golden under pinned Rust 1.98.0 — exact-build
+  determinism, never cross-platform lockstep. Goldens: Windows
+  `replay_basic_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden`
+  (570 B, sha `f2385639...21edb2`) and Linux
+  `replay_basic_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden`
+  (568 B, sha `31998a38...68278d`); fixture `replay_basic.replay`
+  (750 B, sha `2b65e7be...c8bd0`), all LF/no-BOM with `.gitattributes`
+  pinning `*.replay`/`*.golden` to `eol=lf`. Verified on native
+  Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU: 19 testkit tests
+  (6 harness + 12 portable + 1 native golden), 135 workspace tests
+  (134 unit/integration + 1 doctest), and 65 lint self-tests per target,
+  plus the release-profile fallback test and withheld-golden failure proof
+  on each. Final audit reran the gates and byte-audited LF/no-BOM. See the
+  [T009c completion record](../tasks/T009c.md).
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -224,13 +240,9 @@ unmerged state.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T009c is the current priority, implementation/verification complete in the
-  working tree after final audit, awaiting
-  review/merge, ahead of
-  T009b. Platform correction in `crpg-testkit`: make Windows/MSVC primary,
-  retain Linux/GNU as a fully supported headless server/extensibility/test
-  target, and enforce independent native replay goldens. T009b's thin
-  `crpgc replay` wrapper waits for T009c; T010 follows it.
+- T009b thin `crpgc replay` wrapper in `crpg-cli` is now next — the replay
+  harness and both native baselines are merged, so it is unblocked.
+  T010 campaign data follows it.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -256,16 +268,18 @@ unmerged state.
   (134 unit/integration + 1 doctest), and 65 lint self-tests. See the
   [T009c completion record](../tasks/T009c.md) for native commands and
   provenance. This is post-change verification, separate from the retained
-  T009a Linux history above. T009c implementation/verification and final audit
-  are complete in the working tree awaiting review/merge; T009a is also
-  uncommitted.
+  T009a Linux history above. The independent Linux re-verification run
+  confirmed provenance by regenerating both build and goldens on genuine
+  WSL Ubuntu 24.04 with zero tolerance.
 - Final audit fixed code/documentation issues and reran the Windows/Linux
   gates with the totals above. The release-profile portable fallback test
   passed on each native target (1 test each). Byte audit confirmed LF and no
-  BOM; a temporary `GIT_INDEX_FILE` audit confirmed `i/lf w/lf` without
-  changing the user index. The scoped source diff was empty. See the
-  [completion record](../tasks/T009c.md); these results do not imply merge
-  approval or promote T009b.
+  BOM on replay/golden artifacts; a temporary `GIT_INDEX_FILE` audit
+  confirmed `i/lf w/lf` without changing the user index. The scoped source
+  diff was empty. See the
+  [completion record](../tasks/T009c.md) for the pre-merge audit results;
+  T009a and T009c are both merged on `master` as of 2026-09-07 and T009b is
+  next.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -335,9 +349,9 @@ the carried blockers and the throughput log.
 - E020 (2026-09-06): integration gates 7–13 activate only when their
   capabilities exist, never as skipped green placeholders. T009a's historical
   Linux comparison passed on genuine Rust 1.98.0 Linux, 2026-09-06. ADR-0012
-  now requires real target-scoped comparisons in both existing Windows and
-  Linux workspace-test jobs; T009c's native gates passed in the working tree,
-  awaiting review/merge. See the [completion record](../tasks/T009c.md).
+now requires real target-scoped comparisons in both existing Windows and
+  Linux workspace-test jobs; T009a and T009c are merged as of 2026-09-07.
+  See the [completion record](../tasks/T009c.md).
 - E016 (2026-09-06): campaign JSON distinguishes entity and named aggregate
   documents; object references use ULIDs while dependencies use immutable
   package ids; assets/campaign/package manifests have separate hash authority;
@@ -378,3 +392,4 @@ the carried blockers and the throughput log.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status and audit · Recorded the reported passing native gates with 19 testkit tests, 144 workspace tests including one doctest, and 65 lint self-tests per environment, preserving T009a's historical provenance. Linked the completion record and tracked E012/E022/E023 obligations; T009c awaits review/merge with final audit running and T009a also uncommitted.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c count correction · Corrected the active workspace total from the revised native report to 135 (134 unit/integration + 1 doctest): core 91, sim 24, testkit 19, and core doctest 1. The earlier attribution's 144 is superseded, not rewritten; final audit remains running and review/merge is outstanding.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported completed final audit, passing native reruns and release fallback tests, LF/no-BOM byte and temporary-index checks, and empty scoped source diff. Implementation/verification is complete in the working tree awaiting review/merge; T009a remains uncommitted and T009c retains priority before T009b.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Recorded the merge of T009a's typed replay and T009c's Windows-primary/Linux-supported native golden policy onto `master` (commit `bb9a702`, pushed to `origin`). Next is T009b's thin `crpgc replay` wrapper, then T010.

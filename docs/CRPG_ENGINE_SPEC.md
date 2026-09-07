@@ -1221,9 +1221,8 @@ keep portable replay shape/repeatability coverage without reading either
 scoped golden. Step 9 does not wait for unrelated steps 7, 8, or 10–13.
 All required T009c gates passed on native Windows/MSVC and genuine Linux/GNU
 in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md).
-T009c implementation/verification and final audit are complete in the working
-tree awaiting review/merge. T009c remains the priority before T009b; T009a is
-also uncommitted.
+T009a's replay and T009c's native golden gates are merged on `master` as of
+2026-09-07; T009b's thin `crpgc replay` wrapper is next.
 
 A merge queue (GitHub merge queue or a simple `bors`-style bot) rebases each branch onto main and runs the full pipeline before merging. Agents working in parallel then cannot land a combination that individually passed and jointly fails.
 
@@ -1321,9 +1320,8 @@ both environments, including missing-baseline failure proof. Replay/golden
 artifacts must have canonical LF endings in checkout/index/worktree and no
 BOM. T009c's required native gates passed on Windows/MSVC and genuine
 Linux/GNU in WSL Ubuntu 24.04; the [completion record](../tasks/T009c.md)
-records verification and provenance. This is working-tree verification,
-not review/merge approval; final audit and implementation/verification are
-complete in the working tree awaiting review/merge.
+records verification and provenance. T009a and T009c are merged on `master`
+as of 2026-09-07.
 
 This one facility gives you: regression detection, bisectable behaviour changes, save/load verification, multiplayer desync detection, and a scientific answer to "did my refactor change anything?"
 
@@ -1844,7 +1842,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Dependencies:* T8b.
 *Work:* a `.replay` format (seed, campaign id and version, engine version, ordered `(tick, input)` list), record/playback through public simulation APIs, comparison against a golden hash file, and an exact-tick structured divergence report.
 *Test:* portable record/playback behavior tests and exact-tick golden divergence. T009c/ADR-0012 correct the original Linux-only selection to independent Windows/MSVC and Linux/GNU compile-time comparisons (§16.1); a deliberate behaviour change must fail the affected target's gate.
-*Done when:* replay semantics are verified and CI step 9 performs real scoped comparisons without skipped placeholders. T009a's implementation remains uncommitted; its historical Linux verification is retained, not claimed as T009c verification.
+*Done when:* replay semantics are verified and CI step 9 performs real scoped comparisons without skipped placeholders. T009a's replay is merged; its historical Linux verification is retained, not claimed as T009c verification.
 
 **T9c (T009c). Windows-primary platform correction (`crpg-testkit`)**
 *Purpose:* gate the primary Windows authoritative runtime while retaining fully supported Linux headless regression coverage (ADR-0012).
@@ -1852,7 +1850,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Dependencies:* T9a; intentionally before T9b despite the suffix.
 *Work:* independent native target-scoped goldens, compile-time real comparisons, canonical LF replay/golden artifacts, and documentation alignment. Preserve portable tests and exact comparison semantics; no server, loader, packaging, or placeholder product CI implementation.
 *Test:* genuine Windows/MSVC and Linux/GNU generation/verification under pinned Rust 1.98.0, normal test profile, and default features, including missing-baseline failure proofs and the complete native gates/provenance record in `tasks/T009c.md`.
-*Done when:* both supported-target gates and all required verification pass with reviewed provenance. **Current status: implementation/verification complete in the working tree awaiting review/merge; final audit complete.** All required gates passed on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md). T009a is also uncommitted and T009c remains the priority before T009b; neither task is merged.
+*Done when:* both supported-target gates and all required verification pass with reviewed provenance. **Current status: merged on `master` 2026-09-07.** All required gates passed on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md). T009b is next.
 
 **T9b. Replay CLI (`crpg-cli`)**
 *Purpose:* expose T9a's replay behavior without duplicating it in the binary.
@@ -1967,3 +1965,4 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Aligned process/server/editor architecture, replay testing and gates 9/12/13, packaging/extensibility, technical decisions, roadmap, and final recommendation with ADR-0012's Windows-primary/Linux-supported policy. Recorded future host/loader/product-gate obligations without implementation and kept T009a uncommitted and T009c in progress pending native verification; prior attribution and Linux provenance remain intact.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status and audit · Replaced active pending-verification wording with the reported passing native gates and completion-record links, keeping review/merge and final audit outstanding. Corrected replay reporting to identity plus structured mismatch with semantic diff deferred, and linked the open planning-only E023 task without claiming loader implementation.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated active gate and roadmap status to the reported completed final audit and working-tree implementation/verification completion, retaining completion-record links. Review/merge remains outstanding, T009a is also uncommitted, and T009c retains priority before T009b without changing platform policy.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the replay/step-9 status text and the T9a/T9c done-when rows to the merged state; T009b is next.

@@ -93,12 +93,11 @@ Rarely, and deliberately: reviewing a whole phase before starting the next one, 
 
 ## 7. Right now
 
-**Current handoff (2026-09-07):** T009a remains uncommitted; T009c implementation
-and verification are complete in the working tree awaiting review/merge and
-T009c remains the priority before
-T009b. All required gates passed on native Windows/MSVC and genuine Linux/GNU
-in WSL Ubuntu 24.04; final audit is complete. Follow `PROJECT_STATE.md`
-and the [T009c completion record](../tasks/T009c.md). Neither task is merged;
+**Current handoff (2026-09-07):** T009a and T009c are merged on `master`
+(commit `bb9a702`); all required gates passed on native Windows/MSVC and
+genuine Linux/GNU in WSL Ubuntu 24.04 and the final audit is complete.
+T009b's thin `crpgc replay` wrapper is next. Follow `PROJECT_STATE.md`
+and the [T009c completion record](../tasks/T009c.md).
 the bootstrap checklist below is historical, not a
 direction to commit the current working tree or repeat completed setup.
 
@@ -118,3 +117,4 @@ Step 5 is the actual project. Everything above is bookkeeping that makes step 5 
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Made the cold-start prompt carry ADR-0012's Windows-primary/Linux-supported policy and unchanged embedded authority boundary. Distinguished the historical setup checklist from uncommitted T009a and T009c's pending native verification.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated the current handoff to the reported passing native Windows and genuine WSL Ubuntu gates, linking the completion record. Kept T009c ahead of T009b awaiting review/merge, T009a uncommitted, and final audit distinct from native verification.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated the handoff to the reported completed final audit and working-tree implementation/verification completion. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the current handoff to the merged state; T009b is next.

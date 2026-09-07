@@ -86,11 +86,11 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 
 ## Note
 - "Godot4" is available in PATH CLI
-- T009c implementation and verification are complete in the working tree on
-  native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; final audit
-  is complete, with review/merge outstanding. T009a is also uncommitted.
-  T009c remains the priority before T009b;
-  see the [completion record](tasks/T009c.md). Passing gates are not a merge.
+- T009a (typed replay) and T009c (Windows-primary/Linux-supported native
+  golden policy, ADR-0012) are merged on `master` as of 2026-09-07; native
+  Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04 gates passed and the
+  final audit is complete. T009b (thin `crpgc replay` wrapper) is next;
+  see the [completion record](tasks/T009c.md).
 
 ## Agent log
 
@@ -100,3 +100,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Added ADR-0012's platform, authority, portability, and replay invariants without granting dependencies or OS-specific substrate logic. These are policy requirements, not a claim that T009c gates have been verified.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Recorded the reported passing native gates and linked the completion record without changing platform invariants. Both tasks remain uncommitted, T009c retains priority before T009b, and review/merge and final audit remain outstanding.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported final audit completion and completed working-tree implementation/verification without changing platform invariants. Both tasks remain uncommitted, review/merge is outstanding, and T009c remains the priority before T009b.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the note to the merged state: both tasks landed on `master` in `bb9a702` with native gates and final audit complete; T009b is next.

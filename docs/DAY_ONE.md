@@ -31,9 +31,9 @@ The cost is platform drift, since your CI and your eventual dedicated server run
 > not the other target's hashes. Linux GUI support is not promised and Linux
 > headless support must not depend on Godot. All required T009c gates passed
 > on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; see the
-> [completion record](../tasks/T009c.md). T009c implementation/verification and
-> final audit are complete in the working tree awaiting review/merge, and
-> T009c remains the priority before T009b; T009a is also uncommitted.
+> [completion record](../tasks/T009c.md). T009a and T009c are merged on
+> `master` as of 2026-09-07, and T009b's thin `crpgc replay` wrapper is
+> next.
 > The native Windows development
 > recommendation is not a ban on Linux testing in WSL.
 
@@ -534,3 +534,4 @@ The temptation on day two will be to skip ahead to something visible, because li
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Appended a visible ADR-0012 supersession note beside the Linux-only server assumption without rewriting the dated setup text. Clarified shared Windows/Linux server authority and pending native verification, including WSL Ubuntu availability.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated only the active supersession note to reflect the reported passing native gates and link the completion record, preserving the historical setup text. T009c remains awaiting review/merge before T009b, with T009a also uncommitted and final audit still running.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated the active supersession note to the reported completed final audit and working-tree implementation/verification completion, preserving historical setup text. Review/merge remains outstanding and T009c stays ahead of T009b, with T009a also uncommitted.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the active supersession note to the merged state; T009b is next.
