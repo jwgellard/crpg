@@ -86,6 +86,12 @@ version = "0.1.0"
 [[package]]
 name = "crpg-cli"
 version = "0.1.0"
+dependencies = [
+ "crpg-core",
+ "crpg-sim",
+ "crpg-testkit",
+ "serde_json",
+]
 
 [[package]]
 name = "crpg-contracts"

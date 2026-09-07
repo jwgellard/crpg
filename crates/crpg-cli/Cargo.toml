@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# T009b: the replay CLI is a thin consumer of testkit's play_and_verify; the
+# apply names World (crpg-sim), EntityId (crpg-core) and serde_json::Value.
+# All existing workspace crates; the ALLOWED table permits crpg-cli anything
+# except crpg-godot, and none of these import upward.
+crpg-core = { path = "../crpg-core" }
+crpg-sim = { path = "../crpg-sim" }
+crpg-testkit = { path = "../crpg-testkit" }
+serde_json = { workspace = true }
 
 [[bin]]
 name = "crpgc"

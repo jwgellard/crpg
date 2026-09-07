@@ -53,7 +53,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-contracts` | due with its first task | spec §15.1 (human-owned) |
 | `crpg-testkit` | [crpg-testkit.md](crpg-testkit.md) | spec §15.3, §16 |
 | `crpg-server` | due with its first task | spec §10 |
-| `crpg-cli` | due with T013 | spec §24 |
+| `crpg-cli` | [crpg-cli.md](crpg-cli.md) | spec §24 |
 | `crpg-godot` | due with its first task | spec §9, ADR-0001, ADR-0003 |
 
 Writing the doc is part of the **first task that puts real code in a crate**,
@@ -71,3 +71,4 @@ superseded by appending, never rewritten.
 - 2026-09-05 · opencode/big-pickle + agent-attribution rule · Restated the root attribution rule here so agents working on architecture docs see it without leaving the directory; no change to the readiness gate.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Linked the new crpg-sim doc; the §15.6 readiness gate is now satisfied for the second crate.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b · Linked the new crpg-testkit doc; third crate through the gate.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b · Linked the new crpg-cli doc; the replay subcommand is the crate's first real code, so the §15.6 gate is satisfied and the "due with T013" place-holder is retired.
