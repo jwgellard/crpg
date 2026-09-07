@@ -6,10 +6,14 @@ license.workspace = true
 
 [dependencies]
 # Plain testkit -> sim normal dependency: permitted by the ALLOWED table and
-# matching the proposed E005 one-way rule (testkit may reach sim; sim never
-# reaches testkit). The rule itself is still unratified — this edge follows
-# it without declaring it.
+# matching the ratified E005 one-way rule (testkit may reach sim; sim never
+# reaches testkit, including through dev-dependencies).
 crpg-sim = { path = "../crpg-sim" }
+# Replay format (T009a): serde + serde_json via the existing workspace
+# dependencies. Both are already in the workspace graph (crpg-sim serializes
+# through them), so no new package or version enters the lockfile's novel set.
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # Tests name EntityId directly (tracked live ids). Same direction, tests only.

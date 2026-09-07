@@ -1,0 +1,53 @@
+{
+  "format_version": 1,
+  "seed": 20260906,
+  "campaign_id": "testkit-basic",
+  "campaign_version": "0.1.0",
+  "engine_version": "0.1.0",
+  "total_ticks": 8,
+  "inputs": [
+    {
+      "tick": 0,
+      "payload": {
+        "spawn_at": [
+          1,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "tick": 0,
+      "payload": {
+        "spawn_at": [
+          0,
+          2,
+          0
+        ]
+      }
+    },
+    {
+      "tick": 2,
+      "payload": {
+        "timeline": {
+          "slot": 0,
+          "key": 3
+        }
+      }
+    },
+    {
+      "tick": 3,
+      "payload": {
+        "draw": "scout"
+      }
+    },
+    {
+      "tick": 5,
+      "payload": {
+        "despawn": {
+          "slot": 0
+        }
+      }
+    }
+  ]
+}

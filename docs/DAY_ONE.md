@@ -16,6 +16,27 @@ Reasons: the client and editor need real Vulkan access to a real GPU, and Godot 
 
 The cost is platform drift, since your CI and your eventual dedicated server run Linux. That is handled by putting both `ubuntu-latest` and `windows-latest` in the CI matrix from day one, which costs nothing on a public repo. Revisit only if Windows becomes a genuine obstacle.
 
+> **Platform supersession note (2026-09-07):** The setup text above is
+> historical. Its Linux-only eventual-server assumption is superseded by
+> [ADR-0012](adr/0012-windows-primary-platform.md). Windows/MSVC
+> (`x86_64-pc-windows-msvc`) is primary for development, product, release
+> gates, and behavioural baselines, including client, editor, embedded
+> single-player server, dedicated server, and CLI. Linux/GNU
+> (`x86_64-unknown-linux-gnu`) remains fully supported for dedicated server,
+> headless tooling, server-side extensibility, and CI/testing; failures are
+> defects, not best effort. One platform-neutral authoritative server runs
+> in-process for Windows single-player behind an in-memory transport and in
+> Windows/Linux dedicated processes; the client cannot mutate authority.
+> Each target must reproduce its own independently generated replay golden,
+> not the other target's hashes. Linux GUI support is not promised and Linux
+> headless support must not depend on Godot. All required T009c gates passed
+> on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; see the
+> [completion record](../tasks/T009c.md). T009c implementation/verification and
+> final audit are complete in the working tree awaiting review/merge, and
+> T009c remains the priority before T009b; T009a is also uncommitted.
+> The native Windows development
+> recommendation is not a ban on Linux testing in WSL.
+
 **Buy a subscription today?** Not required for today — nothing in day one needs a frontier model, and you should not spend $20 before you have a repo.
 
 But be realistic about what you are choosing between. The free agentic tier is much thinner than it was a year ago: Alibaba closed Qwen Code's free login on 15 April 2026, Google ended free Gemini CLI serving on 18 June, and the student Copilot plan came back in June as roughly 200 monthly credits rather than full Pro. What remains free is real but small and unstable. Plan to decide at the end of week one, and expect the answer to be yes.
@@ -510,3 +531,6 @@ The temptation on day two will be to skip ahead to something visible, because li
 ## Agent log
 
 - 2026-09-05 (UTC) · opencode/muse-spark + stale-pin hygiene · Added a version banner pointing at the live Godot/rustc pins in PROJECT_STATE.md; historical 4.6.x/1.XX.0 strings left intact as bootstrap snapshot.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Appended a visible ADR-0012 supersession note beside the Linux-only server assumption without rewriting the dated setup text. Clarified shared Windows/Linux server authority and pending native verification, including WSL Ubuntu availability.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated only the active supersession note to reflect the reported passing native gates and link the completion record, preserving the historical setup text. T009c remains awaiting review/merge before T009b, with T009a also uncommitted and final audit still running.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated the active supersession note to the reported completed final audit and working-tree implementation/verification completion, preserving historical setup text. Review/merge remains outstanding and T009c stays ahead of T009b, with T009a also uncommitted.

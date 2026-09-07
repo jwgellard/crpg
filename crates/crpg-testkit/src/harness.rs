@@ -19,8 +19,8 @@
 //! (`std::env::consts` OS/arch) and skips on compare — headers never
 //! compare. But the toolchain and profile are not knowable to a library at
 //! runtime, so the full ADR-0009 scope (toolchain + platform + profile, in
-//! the filename, compared on canonical Linux) is enforced by the CI job
-//! (E020's sequencing), not by the compare function. Tolerant comparison —
+//! the filename) is enforced by independent compile-time Windows/MSVC and
+//! Linux/GNU test gates (ADR-0012), not by the compare function. Tolerant comparison —
 //! fuzzy hashes, per-platform goldens chosen at runtime — is rejected here
 //! on purpose: it would re-admit exactly the ambiguity ADR-0009 removed. Do
 //! not "fix" a cross-platform mismatch inside [`verify_golden`]; file it

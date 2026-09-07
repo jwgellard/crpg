@@ -3,6 +3,25 @@
 Rust workspace. Simulation core has NO game-engine dependency.
 
 ## Non-negotiable
+- Platform invariant ([ADR-0012](docs/adr/0012-windows-primary-platform.md)):
+  `x86_64-pc-windows-msvc` is primary for development, product, release gates,
+  and behavioural baselines (client, editor, embedded single-player server,
+  dedicated server, CLI). `x86_64-unknown-linux-gnu` is fully supported for
+  dedicated server, headless CLI/tooling, server-side extensibility, and tests;
+  platform-specific failures are defects, not best effort. Linux GUI builds
+  are not promised; Linux headless support must not depend on Godot.
+- One platform-neutral authoritative server implementation serves Windows
+  embedded single-player and Windows/Linux dedicated hosts. In-memory
+  transport preserves the authority boundary: clients cannot mutate
+  authoritative state directly.
+- Keep OS-specific process, filesystem, service, and presentation logic above
+  `crpg-core`, `crpg-rules`, and `crpg-sim`; no OS-specific branches in those
+  crates. This architectural rule grants no platform dependency permission.
+- Replay determinism is exact-build, not cross-platform lockstep. Windows and
+  Linux must compare their own independently generated target-scoped goldens
+  with the pinned toolchain, normal test profile, and default features, never
+  each other's hashes. Select gates at compile time, never by runtime OS;
+  no tolerance or missing-baseline skips. Re-baselines require review.
 - Only `crpg-godot` may depend on `godot`. Only `crpg-godot` may use `unsafe`;
   every other crate root carries `#![forbid(unsafe_code)]` and `deps.py` fails
   if one does not. Every crate root counts, `src/bin/*.rs` included.
@@ -14,6 +33,13 @@ Rust workspace. Simulation core has NO game-engine dependency.
   `[build-dependencies]`, and the same three under any `[target.*]` block. A
   renamed dependency (`x = { package = "godot" }`) is the crate it names, not
   the key it is filed under.
+- `crpg-testkit` is an integration consumer, not a dependency of the layers it
+  tests. It may depend down through `crpg-sim`; `crpg-core`, `crpg-data`,
+  `crpg-rules`, and `crpg-sim` must not depend on it, including for tests.
+  Their cross-layer integration tests live in `crpg-testkit`. A higher crate
+  may dev-depend on testkit only when every normal dependency testkit brings is
+  already a legal dependency of that crate and testkit does not depend back on
+  it. `tools/lint/deps.py`'s explicit `ALLOWED` table remains authoritative.
 - No `HashMap`/`HashSet` in `crpg-core`, `crpg-rules` or `crpg-sim` — use
   `IndexMap`/`BTreeMap`.
 - No `f32`/`f64` in `crpg-core` or `crpg-rules` — use integers or `Fx16_16`.
@@ -60,8 +86,17 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 
 ## Note
 - "Godot4" is available in PATH CLI
+- T009c implementation and verification are complete in the working tree on
+  native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; final audit
+  is complete, with review/merge outstanding. T009a is also uncommitted.
+  T009c remains the priority before T009b;
+  see the [completion record](tasks/T009c.md). Passing gates are not a merge.
 
 ## Agent log
 
 - 2026-09-05 · opencode/big-pickle · Established the documentation attribution rule: all agent edits to .md files must carry date/agent/reason signature to keep history auditable and prevent silent doc drift.
 - 2026-09-06 (UTC) · opencode/muse-spark + E006-A · Banned `f64` in `crpg-sim` (`f32`-spatial only); the determinism lint enforces it as `no-f64`.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + E005 decision · Ratified testkit as a one-way integration consumer: lower simulation layers keep self-contained tests, while their cross-layer tests live in testkit.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Added ADR-0012's platform, authority, portability, and replay invariants without granting dependencies or OS-specific substrate logic. These are policy requirements, not a claim that T009c gates have been verified.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Recorded the reported passing native gates and linked the completion record without changing platform invariants. Both tasks remain uncommitted, T009c retains priority before T009b, and review/merge and final audit remain outstanding.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported final audit completion and completed working-tree implementation/verification without changing platform invariants. Both tasks remain uncommitted, review/merge is outstanding, and T009c remains the priority before T009b.

@@ -11,9 +11,16 @@ core. If Godot ever disappoints, replacing it is a client rewrite — the rules,
 campaign format, netcode, AI, and server are untouched.
 
 > **Status:** early development (Phase 1 — core skeleton and test harness).
-> `crpg-core` has the planned Phase 1 primitives: entity identity, fixed-point
-> math, named deterministic RNG streams, time counters, ULIDs, runtime string
-> interning, and core errors. Every other crate is still a stub. See
+> `crpg-core` has the planned Phase 1 primitives; `crpg-sim` has the world,
+> component stores, timeline, fixed-step tick loop, events, and deterministic
+> state hashing; and `crpg-testkit` has the hash-sequence and golden-file
+> harness plus versioned replay record/playback. The remaining crates are still
+> scaffolding. The Windows-primary/Linux-supported platform correction and
+> target-scoped replay gates in T009c have implementation and verification
+> complete in the working tree after final audit,
+> awaiting review/merge, and remain the priority before T009b's thin
+> `crpgc replay` wrapper in `crpg-cli`. T009a is also uncommitted; neither
+> task is merged. See the [T009c completion record](tasks/T009c.md) and
 > [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ---
@@ -37,7 +44,7 @@ Presentation (Godot 4)          crpg-client, crpg-editor
           crpg-core   ids, fixed-point math, RNG, time, event queue, errors
 ```
 
-There are three shipped binaries plus a CLI:
+The planned shipped surface is three binaries plus a CLI:
 
 | Binary | Contains | Renders? | Authoritative? |
 |---|---|---|---|
@@ -46,8 +53,29 @@ There are three shipped binaries plus a CLI:
 | `crpg-editor` | Godot host + core in edit mode + privileged net client | Yes | No |
 | `crpgc` | validate / migrate / pack / run / replay / diff | No | n/a |
 
-Single-player runs the same authoritative server in-process. There is no
-separate "single-player code path."
+Windows single-player embeds the same authoritative server implementation
+in-process behind an in-memory client/server transport. Windows and Linux
+dedicated processes wrap that implementation; the client never mutates
+authoritative state directly. There is no separate "single-player code path."
+
+## Platform support
+
+Per [ADR-0012](docs/adr/0012-windows-primary-platform.md),
+`x86_64-pc-windows-msvc` is the primary development, product, release-gating,
+and behavioural-baseline target: client, editor, embedded single-player
+server, dedicated server, and CLI. `x86_64-unknown-linux-gnu` is fully
+supported for dedicated servers, headless CLI/tooling, server-side
+extensibility, and CI/testing. A supported-target failure is a defect, not
+best effort. Linux GUI client/editor builds are not promised, and Linux
+headless support must not depend on Godot.
+
+Replay gates must compare independently generated target-scoped goldens
+under pinned Rust 1.98.0, the normal test profile, and default features.
+Windows owns the primary behavioural baseline; Linux owns a supported server
+regression baseline. Neither is compared to the other: exact-build replay
+determinism is not cross-platform lockstep. All required T009c gates passed
+on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04. Final
+audit is complete; review/merge remains outstanding.
 
 ## Workspace layout
 
@@ -81,7 +109,9 @@ separate "single-player code path."
   [ADR-0002](docs/adr/0002-rust-for-the-core.md).
 - **Deterministic simulation** — same binary + same inputs ⇒ same result, so
   replays, saves, and testing are first-class. Scope is replay, not lockstep
-  ([ADR-0009](docs/adr/0009-determinism-scope.md)). Backed by lints that ban
+  ([ADR-0009](docs/adr/0009-determinism-scope.md), with only Decision 3's
+  canonical-Linux-only selection superseded by
+  [ADR-0012](docs/adr/0012-windows-primary-platform.md)). Backed by lints that ban
   `HashMap` iteration and floating-point in the rules/sim paths.
 - **Toolchain:** Rust 1.98.0 (see `rust-toolchain.toml`), edition 2021.
 
@@ -152,3 +182,10 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 
 - 2026-09-05 (UTC) · opencode/muse-spark + E001/ADR-0008 · Core role now says event queue (generic substrate), sim role names the SimEvent stream; no other rows touched.
 - 2026-09-06 (UTC) · opencode/muse-spark + E009 · ASCII layer diagram now says event queue in core, matching the role table; no other rows touched.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + status accuracy · Updated the early-development summary now that `crpg-sim` and `crpg-testkit` contain the T007/T008 implementation rather than stubs.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + E005/E020 decisions · Removed the resolved dependency/CI qualification from the next-task summary; T009a replay work is now unblocked.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + T009c platform correction plan · Replaced the stale canonical-Linux/CLI-next status: T009c now records Windows as primary while retaining Linux headless support and must land before the replay CLI wrapper.
+- 2026-09-06 (UTC) · opencode/muse-spark + T009a · Replay record/playback with its canonical-Linux golden gate is done in `crpg-testkit`; the `crpgc replay` wrapper is the next task.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Recorded Windows-primary and fully supported Linux headless surfaces with shared server authority and independent replay baselines. Supersedes the prior CLI-next status: T009a is uncommitted and T009c is in progress pending native verification.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated active status from the reported passing Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU gates and linked the task completion record. T009c remains the priority awaiting review/merge, with T009a also uncommitted and final audit still running.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported completed final audit and implementation/verification completion in the working tree. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.

@@ -62,6 +62,10 @@ When you open a new chat with any model, paste this. It is the whole handoff.
 
 > I'm building a purpose-built CRPG engine and campaign editor — a Rust simulation core with no engine dependency, a headless authoritative server, and Godot used only as a presentation host for the client and editor. I'm a solo developer using AI agents, working on Windows.
 >
+> Per [ADR-0012](adr/0012-windows-primary-platform.md), `x86_64-pc-windows-msvc` is primary for development, product, release gates, and behavioural baselines: client, editor, embedded single-player server, dedicated server, and CLI. `x86_64-unknown-linux-gnu` is fully supported for dedicated servers, headless CLI/tooling, server-side extensibility, and testing; target-specific failures are defects. Linux GUI builds are not promised and Linux headless support does not depend on Godot.
+>
+> Windows single-player embeds the same platform-neutral authoritative server that Windows and Linux dedicated processes host. In-memory transport preserves the client/server authority boundary; clients never mutate authoritative state directly. Replay determinism is exact-build, not cross-platform lockstep: each target must reproduce its own independently generated scoped golden, never the other target's hashes.
+>
 > Attached: `PROJECT_STATE.md` and `docs/CRPG_ENGINE_SPEC.md`.
 >
 > Read the state file first. I want help with: [one specific thing].
@@ -89,6 +93,15 @@ Rarely, and deliberately: reviewing a whole phase before starting the next one, 
 
 ## 7. Right now
 
+**Current handoff (2026-09-07):** T009a remains uncommitted; T009c implementation
+and verification are complete in the working tree awaiting review/merge and
+T009c remains the priority before
+T009b. All required gates passed on native Windows/MSVC and genuine Linux/GNU
+in WSL Ubuntu 24.04; final audit is complete. Follow `PROJECT_STATE.md`
+and the [T009c completion record](../tasks/T009c.md). Neither task is merged;
+the bootstrap checklist below is historical, not a
+direction to commit the current working tree or repeat completed setup.
+
 1. `git add docs/ tasks/ AGENTS.md` and commit.
 2. Write `PROJECT_STATE.md` with your real Godot and rustc versions in it.
 3. Write ADR-0001 and ADR-0002 — one page each, why you're not forking Godot and why Rust.
@@ -102,3 +115,6 @@ Step 5 is the actual project. Everything above is bookkeeping that makes step 5 
 ## Agent log
 
 - 2026-09-05 (UTC) · opencode/muse-spark + stale-pin hygiene · Annotated the template pin lines with the live Godot 4.7.2 / rustc 1.98.0 values; template history otherwise untouched.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Made the cold-start prompt carry ADR-0012's Windows-primary/Linux-supported policy and unchanged embedded authority boundary. Distinguished the historical setup checklist from uncommitted T009a and T009c's pending native verification.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated the current handoff to the reported passing native Windows and genuine WSL Ubuntu gates, linking the completion record. Kept T009c ahead of T009b awaiting review/merge, T009a uncommitted, and final audit distinct from native verification.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated the handoff to the reported completed final audit and working-tree implementation/verification completion. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.

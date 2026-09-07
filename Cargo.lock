@@ -156,6 +156,8 @@ version = "0.1.0"
 dependencies = [
  "crpg-core",
  "crpg-sim",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

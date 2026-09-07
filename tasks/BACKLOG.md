@@ -5,7 +5,7 @@ The index of every numbered task. Derived from `docs/CRPG_ENGINE_SPEC.md` §24
 detail lives in `tasks/TNNN.md`. Rows with no file yet (T007 and later) are
 intentional — task files are written when the task is specified (Stage 2).
 
-Status: `done` · `on branch` · `next` · `open` · `blocked` · `human` (needs a
+Status: `done` · `on branch` · `in progress` · `next` · `open` · `blocked` · `human` (needs a
 person, not an agent).
 
 `done` means merged to `master`. **`on branch` means the work is finished and
@@ -48,7 +48,14 @@ ADR that motivated it.
 | T008a | done | 2026-09-06 | `state_hash`, fixed-step tick loop, `Timeline` advance rules (`crpg-sim`; scope ADR-0009) |
 | T008b | done | 2026-09-06 | Hash-sequence harness + golden convention (`crpg-testkit`; scope ADR-0009) |
 | — | done | 2026-09-06 | Review 3 follow-up: sim/core/testkit invariant hardening (finite hash guard, validated Timeline/World/EventQueue loading, truthful Mismatch enum) + ADR-0010/0011 |
-| **T009** | **next** | — | Replay record/playback harness (scope ADR-0009; needs E005 + E020 first) |
+| T009a | in progress | uncommitted/unmerged local `master` working tree | Replay format/playback + genuine original Linux verification preserved; T009c correction verified, awaiting review/merge |
+| **T009c** | **next** | uncommitted/unmerged working tree | Windows-primary/Linux-supported policy + independent native replay goldens (`crpg-testkit`; ADR-0012 supersedes only ADR-0009 Decision 3's Linux-only selection); required native Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates passed, awaiting review/merge; see [completion record](T009c.md) |
+| T009b | blocked | T009c landing | Thin `crpgc replay` wrapper (`crpg-cli`; blocked pending T009c review/merge) |
+
+Reported T009c results on each native target: 19 testkit tests (6 harness +
+12 portable replay + 1 golden), 135 workspace tests (134 unit/integration + 1 doctest),
+and 65 lint self-tests. Full required-gate results and provenance belong to
+the [T009c completion record](T009c.md); passing gates does not imply landing.
 
 T006a–e are spec §24's single T6, split per ADR-0006. T006a established
 `Cargo.toml`, the module layout and `crpg-core/AGENTS.md`; T006b-T006e are
@@ -66,10 +73,10 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T010 | open | — | `crpg-data`: schema types, canonical writer, loader; event-IR graph types per ADR-0008 |
+| T010 | open | — | `crpg-data`: entity/aggregate schemas, package ids, canonical writer, resolver/lock APIs, loader/index, tick-wait event IR |
 | T011 | open | — | Validation and positioned diagnostics, `crpgc validate --json` |
 | T012 | open | — | Migration framework |
-| T013 | open | — | Scaffolding and introspection CLI |
+| T013 | open | — | Scaffolding/introspection CLI, including thin `crpgc lock` and run wrappers |
 
 ## Phase 3 — Rules kernel
 
@@ -111,24 +118,25 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | E002 | done | — | Single `EntityId` in core (spec §2.4 fix) |
 | E003 | open | T018 | Contracts placement (Transport trait home) |
 | E004 | done | — | One-task-one-crate → split (T008a sim / T008b testkit; later splits at Stage 2) |
-| E005 | open | T009 | Testkit dev-cycle ownership |
+| E005 | done | — | Testkit is a one-way integration consumer; lower-layer integration tests live there |
 | E006 | done | — | `f64`-in-sim → banned (E006-A: `no-f64` lint for sim) |
 | E007 | open | — | ADR immutability wording |
 | E008 | done | — | Instruction (not wall-clock) event budget |
 | E009 | done | — | ADR-0008 residue (sketch, diagrams, §24 text) |
 | E010 | open | script | Script budgets + sandbox-strip alignment |
 | E011 | done | — | Determinism-scope ADR-0009 (replay, not lockstep) |
-| E012 | open | bridge | Binary/crate naming (`crpg-client`, bridge) |
+| E012 | open | bridge/server | Binary/crate naming and shared authoritative host package placement with E022 |
 | E013 | open | — | Diagram direction + "core" meaning |
 | E014 | done | — | `World: Serialize` vs interned-handle caveat (skeleton-only serde) |
 | E015 | done | — | Replica/prediction model + `Timeline` owner (buffer outside sim) |
-| E016 | open | T010 | Campaign envelope contradictions |
+| E016 | done | — | Entity/aggregate documents, lock authorities, package ids, tick waits |
 | E017 | open | T018 | T018 interface debt (intents, registry, caps) |
 | E018 | open | server | Privileged-channel capability model |
 | E019 | open | CI | Perf measurability + `crpgc bench` task |
-| E020 | open | T009 | Gate steps 7–13 + testkit ownership |
+| E020 | done | — | Gates 7–13 activate with capabilities; T009c supersedes its Linux-only T009a gate assignment |
 | E021 | open | — | Embedded-contract hygiene + T004 file |
-| E022 | open | post-T018 | Server/editor/bridge API-shape ledger |
+| E022 | open | post-T018 | Server/editor/bridge API-shape ledger; one authoritative host for Windows embedded/dedicated and Linux dedicated adapters with E012 |
+| E023 | open | native extensions | T0 target-specific artifacts, ABI/loading and packaging decisions for Windows/MSVC and Linux/GNU; reconcile unsafe governance before implementation |
 
 ## Not yet numbered
 
@@ -167,6 +175,21 @@ are meaningful once `crpg-contracts` has traits in it, and authoring guides
 once there is a campaign format to author against. They stay on the scaffolding
 list above rather than being a rule the project is failing to keep.
 
+## Integration gate activation
+
+E020 rejects skipped green placeholders. The unavailable spec §15.4 gates
+remain backlog obligations and become mandatory with these capabilities:
+
+| Step | Activates with |
+|---|---|
+| 7 schema drift | T010 schema generation |
+| 8 fixture/ruleset validation | T011's per-crate data + CLI split |
+| 9 golden replay | T009a implementation corrected by T009c: independent Windows/MSVC and Linux/GNU comparisons in the existing workspace-test matrix |
+| 10 save/load equivalence | Persistence implementation task |
+| 11 performance | E019 benchmark task |
+| 12 product builds | Each real binary task: Windows client/editor/server and Linux headless server artifacts; no placeholder jobs |
+| 13 integrated smoke | Post-T018 real capabilities: Windows embedded-server and dedicated-server smoke tests plus Linux dedicated-server smoke test; no placeholder jobs |
+
 ---
 
 ## Throughput
@@ -176,7 +199,7 @@ Record it here, one line per week.
 
 | Week ending | Merged | Notes |
 |---|---|---|
-| 2026-09-06 | 16 | T001–T005c plus T006a–e, T007, T008a and T008b, all on `master`. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
+| 2026-09-06 | 16 | T001–T005c plus T006a–e, T007, T008a and T008b are merged. T009a and T009c remain uncommitted/unmerged in the local working tree awaiting review/merge after native verification passed. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
 
 ---
 
@@ -193,3 +216,9 @@ Record it here, one line per week.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008a merged · Marked T008a done, T008b next, throughput at 15.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b merged · Marked T008b done, T009 next (blocked: E005 + E020), throughput at 16.
 - 2026-09-06 (UTC) · opencode/muse-spark + review 3 follow-up · Recorded the sim/core/testkit hardening and ADR-0010/0011 as done (fixes, not counted in throughput per the review 1/2 precedent); T009 still next, still blocked on E005 + E020.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + E005/E016/E020 decisions · Marked all three decisions done, split T009 into testkit and CLI tasks, expanded T010/T013 ownership, and indexed capability-based activation for integration gates 7–13.
+- 2026-09-06 (UTC) · opencode/muse-spark + T009a merged · Marked T009a done (replay format/playback, canonical-Linux golden generated and green on genuine Rust 1.98.0 Linux, CI step 9 live), T009b next, throughput at 17.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + T009c platform correction plan · Corrected the prior unmerged-as-done record and made T009c the next priority: Windows/MSVC becomes primary while Linux/GNU retains an independently enforced server replay baseline; T009b waits for that policy correction.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Kept T009a unmerged, T009c next/in progress pending native verification, T009b blocked, and merged throughput unchanged. Indexed shared-host ownership and open E023 native-extension governance with capability-gated product checks.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Recorded the reported native Windows and WSL Ubuntu gate passes and per-target counts, linking the completion record. T009a/T009c remain uncommitted and unmerged, T009c stays next for review/merge, T009b waits for landing, and throughput remains 16.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c count correction · Corrected the active workspace total to 135 (134 unit/integration + 1 doctest), matching the reported breakdown of core 91, sim 24, testkit 19, and core doctest 1. Verification status and merged throughput are unchanged.

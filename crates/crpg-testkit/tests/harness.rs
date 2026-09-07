@@ -3,6 +3,8 @@
 //! script shapes through the one fixed interleaving. All deterministic;
 //! no proptest needed — these pin wiring, not distributions.
 
+#![forbid(unsafe_code)]
+
 use std::path::PathBuf;
 
 use crpg_core::EntityId;

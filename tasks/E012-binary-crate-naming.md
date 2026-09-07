@@ -31,6 +31,31 @@ cannot be tasked until the crate boundary is named.
 - Doc-only except the possible lint-table row. Human sign-off; renames
   propagate to every future task file.
 
+## T009c Platform Obligations
+
+Status remains open. ADR-0012/T009c fixes Windows/MSVC as primary, supporting
+client, editor, embedded single-player server, dedicated server, and CLI.
+Linux/GNU dedicated server, headless CLI/tooling, server-side extensibility,
+and testing are fully supported, not best effort. Linux GUI client/editor
+builds are not promised; headless support must not depend on Godot.
+
+With E022, assign one reusable platform-neutral authoritative host
+implementation to Windows embedded, Windows dedicated, and Linux dedicated
+adapters. Decide whether that reusable code is a library target in
+`crpg-server` or belongs in another existing crate; this appendix chooses
+neither package placement nor API. In-process transport must preserve the
+client/server boundary: the client never mutates authoritative state directly.
+OS-specific process, filesystem, service, and presentation concerns stay above
+core/rules/sim.
+
+The eventual target/package mapping must cover real Windows client/editor/
+server and Linux headless server artifacts. Owning implementation tasks must
+activate Windows embedded-server and dedicated-server smoke tests plus Linux
+dedicated-server smoke tests as those capabilities exist (E020: no placeholder
+jobs). Coordinate target-specific native-extension artifacts with open E023;
+do not choose a loader, ABI, dependency, or unsafe exception here.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: three names for the bridge, two incompatible binary counts.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Added the shared authoritative host packaging obligation and supported product targets while leaving package/API placement open with E022. Recorded capability-gated product checks and the E023 extension decision boundary without selecting an implementation.

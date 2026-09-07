@@ -30,6 +30,16 @@ crpg-core (Rust, no Godot)   ← rules, world state, simulation, campaign data,
 
 Godot ships as a **pinned upstream tag plus a small patch queue**, consumed through GDExtension. Not a fork. If the patch queue exceeds roughly 5,000 lines or 20 touched files, that is a defect in the plan, not a milestone.
 
+**Platform policy ([ADR-0012](adr/0012-windows-primary-platform.md)):**
+`x86_64-pc-windows-msvc` is primary for development, product, release gating,
+and behavioural baselines: client, editor, embedded single-player server,
+dedicated server, and CLI. `x86_64-unknown-linux-gnu` is fully supported for
+dedicated server, headless CLI/tooling, server-side extensibility, and
+CI/testing. A platform-specific failure is a defect, not best effort. Linux
+GUI client/editor builds are not promised; Linux headless support must not
+depend on Godot. Other targets require an explicit support decision and
+their own build/test scope.
+
 ### 0.2 Why this instead of a fork
 
 Your own requirements argue against a deep fork more strongly than any general advice could:
@@ -123,7 +133,9 @@ If, after a two-week spike (Task 1 in Section 24), GDExtension cannot render a s
 
 ### 2.1 Process architecture
 
-There are exactly three shipped binaries plus one CLI:
+The planned product surface is three binaries plus one CLI, not a claim that
+the current scaffolding ships them. Windows/MSVC supports all four; Linux/GNU
+supports the headless dedicated server and CLI/tooling (ADR-0012):
 
 | Binary | Contains | Renders? | Authoritative? |
 |---|---|---|---|
@@ -132,9 +144,21 @@ There are exactly three shipped binaries plus one CLI:
 | `crpg-editor` | Godot host + core in edit mode + privileged net client | Yes | No |
 | `crpgc` (CLI) | validate / migrate / pack / run / replay / diff | No | n/a |
 
-**Single-player runs the same server**, either as an in-process thread using an in-memory transport, or as a spawned child process on loopback. Prefer the in-process thread with a `Transport` trait so both are possible; ship the thread version, keep the process version for debugging isolation.
+**Windows single-player embeds the same platform-neutral authoritative server
+implementation in-process**, behind an in-memory `Transport` boundary.
+Windows and Linux dedicated processes wrap that same implementation; a child
+process on loopback remains a debugging-isolation option, not a separate
+simulation. E012/E022 own the reusable host API/package decision, including
+whether it is a library target in `crpg-server` or code in another existing
+crate. This policy does not decide that placement or implement hosting.
 
 There is no "single-player code path". This is the single most important structural decision after the Godot decision, and it must be enforced by making the client physically incapable of mutating authoritative state: the client's copy of the world is behind a `ReplicaWorld` type with no mutating methods except `apply_delta`. Prediction of own movement uses a buffer outside sim (bridge/client), never a mutable replica; `apply_delta` coverage is reserved here and defined fully in T018 (E015 decision 2026-09-06).
+
+The authority boundary is unchanged when transport is in-memory. Keep
+OS-specific process, filesystem, service, and presentation logic above
+`crpg-core`, `crpg-rules`, and `crpg-sim`; no OS-specific branches belong in
+those crates. This architectural constraint grants no permission for new
+platform dependencies (ADR-0012).
 
 ### 2.2 Layer diagram
 
@@ -198,7 +222,7 @@ You asked for a reasoned decision, so here is the reasoning rather than the conc
 **Requirements.**
 - Hundreds to low thousands of entities per area, not hundreds of thousands.
 - Turn-based and real-time-with-pause combat. Tick rate 10–20 Hz, not 120.
-- **Replay determinism** is mandatory (same binary, same inputs, same result). Cross-platform lockstep determinism is *not* required, because the server is authoritative. This is a large simplification, stated in ADR-0009 (2026-09-06).
+- **Replay determinism** is mandatory over an exact build (same binary, same inputs, same result). Cross-platform lockstep is *not* required because the server is authoritative (ADR-0009). ADR-0012 supersedes only ADR-0009 Decision 3's canonical-Linux-only selection: Windows/MSVC and Linux/GNU each reproduce an independently generated target-scoped golden under the pinned toolchain, normal test profile, and default features, never each other's hashes.
 - Full state must serialize and deserialize losslessly, repeatedly, cheaply.
 - Rules need to inspect arbitrary relational state: "all allies within 30 feet who are not frightened".
 - Modders and AI agents need to add new component types from data.
@@ -361,7 +385,16 @@ Given that AI agents must generate and modify campaigns, and that campaigns must
 
 ### 4.2 Format decision: canonical JSON + generated JSON Schema
 
-**Source form: one document per file, JSON, one object per file, canonicalised.**
+**Source form: one document per file, one canonical JSON value per file.**
+
+There are two document categories (E016, 2026-09-06). An **entity document**
+contains one independently identified authored object. An **aggregate
+document** contains the ordered collection or keyed table owned by one parent
+scope; `placements.json`, `triggers.json`, locale tables, and
+`variables/campaign_state.json` are the explicit initial aggregate documents.
+An aggregate entry that can be referenced independently still carries a stable
+object id. Adding another aggregate-document kind is a schema decision, not an
+implicit exception to the entity-document rule.
 
 Rejected alternatives and why:
 - **RON**: elegant and Rust-native, but LLMs are markedly less fluent in it and tooling outside Rust is thin.
@@ -389,17 +422,25 @@ Every authored object has:
 }
 ```
 
-- `id` is a **ULID**, generated once, never reused, never changed. All cross-references use `id`.
+- `id` is an **object ULID**, generated once, never reused, never changed. All cross-references between authored objects use this `id`.
 - `slug` is human-facing, unique within its type, and may be renamed freely.
 - File paths are **irrelevant to identity**. Moving `creatures/goblin.json` to `creatures/humanoids/goblin.json` breaks nothing. This is what makes reorganisation and agent-driven refactors safe.
 - The loader builds an index `id → (type, path)`. `crpgc validate` reports every dangling reference with the file and JSON pointer of the referrer.
+
+Dependency coordinates occupy a separate identity domain. A **package id** is
+an immutable, human-readable ASCII identifier matching
+`[a-z0-9]+(?:[.-][a-z0-9]+)*`, such as `pf2e` or
+`example.greenhollow`; it identifies a versioned campaign, module, or ruleset,
+not an authored object. It is stable after publication and is not a renameable
+object slug. Manifest dependency entries call this field `package` so package
+coordinates cannot be mistaken for object ULIDs.
 
 ### 4.4 Layout
 
 ```
 my-campaign/
   campaign.json              manifest: id, name, version, requires[], entry point
-  campaign.lock              resolved dependency versions + asset hashes
+  campaign.lock              resolved package versions/checksums + assets.lock digest
   schemas/                   copies of the schemas this campaign validates against
   worlds/
     aurelia.json             world: metadata, area graph, global variables
@@ -432,7 +473,12 @@ Notes on specific choices:
 - **`placements.json` is separate from `area.json`** so that the high-churn file (object placement, edited constantly) is separate from the low-churn file (area settings). This matters for merge conflicts.
 - **Localisation from day one, cheaply.** Every user-visible string is a key into `locale/en.json`. The editor writes the key and the English string simultaneously. Retrofitting this later is a multi-week rewrite of every editor form. Doing it now costs a helper function.
 - **The navmesh is a build artifact**, not source. Same for lightmaps, imported textures, and compiled scripts. `build/` is gitignored.
-- **`assets.lock`** records content hashes so the server can verify what clients loaded and so packaging is reproducible.
+- **`assets.lock` is the source-asset authority.** It records each source asset
+  path, BLAKE3 content hash, and import settings so imports are reproducible.
+  `campaign.lock` does not duplicate those entries: it owns exact resolved
+  package versions and package checksums, plus one digest of `assets.lock`.
+  The packaged `manifest.json` separately owns hashes of final packaged
+  content. Each stage therefore has one hash authority.
 
 ### 4.5 Versioning and migration
 
@@ -450,18 +496,19 @@ Notes on specific choices:
 {
   "schema": "crpg.campaign/1",
   "id": "01J...",
+  "package": "example.greenhollow",
   "name": "The Greenhollow Incident",
   "version": "0.3.1",
   "engine": ">=0.4.0",
   "requires": [
-    { "kind": "ruleset", "id": "pf2e",       "version": "^1.2" },
-    { "kind": "module",  "id": "core-assets","version": "^0.4" }
+    { "kind": "ruleset", "package": "pf2e",        "version": "^1.2" },
+    { "kind": "module",  "package": "core-assets", "version": "^0.4" }
   ],
   "entry": { "world": "01J...", "area": "01J...", "spawn": "start" }
 }
 ```
 
-Resolution is deliberately primitive: flat list, semver ranges, single version per id, error on conflict. No diamond resolution, no vendoring, no registry. `campaign.lock` pins exact versions and hashes. Build a registry only if the project ever has users who need one.
+Resolution is deliberately primitive: flat list, semver ranges, single version per package id, error on conflict. No diamond resolution, no vendoring, no registry. `campaign.lock` pins exact package versions and checksums and records the `assets.lock` digest; it does not repeat per-asset hashes. Build a registry only if the project ever has users who need one.
 
 ### 4.7 Packaging and security
 
@@ -476,10 +523,17 @@ signature          optional Ed25519 detached signature over manifest.json
 
 Security posture:
 
-- **The package contains no executable code except Lua scripts, which run server-side only, in a sandbox** (Section 5.4). A downloaded campaign cannot run code on a player's machine.
+- **The T1 campaign package contains no executable code except Lua scripts, which run in the authoritative server role only, in a sandbox** (Section 5.4). On Windows single-player that server is embedded on the player's machine; server-side is an authority boundary, not a promise of a remote host. A downloaded campaign cannot execute native code or client-side scripts.
 - The client receives a **filtered subset**: presentation assets, UI definitions, and display text. It does not receive quest logic, hidden creature stats, trap locations, or DC values it should not know. Compute this filter server-side; do not rely on the client to ignore data it has.
 - Hash-verify every asset against `manifest.json` at load. Reject on mismatch.
 - Zip extraction must reject absolute paths, `..`, symlinks, and pathological compression ratios. Use a hardened extractor and write a test with a malicious archive fixture.
+
+T1 campaign data and sandboxed Lua/ruleset content remain portable across
+Windows/MSVC and Linux/GNU (ADR-0012). Platform-specific imported presentation
+assets do not impose a Godot dependency on Linux headless loading. T0 native
+extensions are separately operator-installed, target-specific artifacts, not
+portable campaign payloads; their loading and packaging decision is deferred
+to the open E023 decision in §12.1. No loader or ABI is specified here.
 
 ### 4.8 Making it AI-friendly
 
@@ -518,7 +572,7 @@ Node    := Condition(expr)              -> true/false ports
          | Action(action_id, args)      -> next
          | Branch(expr, cases)          -> n ports
          | Sequence([Node])
-         | Wait(duration)               -> next        (suspends, persists)
+         | Wait(ticks: u64)             -> next        (relative simulation ticks; suspends, persists)
          | CallScript(script_id, args)  -> next
          | CallGraph(graph_id, args)    -> next
 ```
@@ -526,6 +580,10 @@ Node    := Condition(expr)              -> true/false ports
 Properties the IR must have:
 
 - **Serializable mid-execution.** A `Wait` node inside a running graph must survive save/load and server restart. Model running graphs as entities with a `ScriptContinuation` component. Get this right early; retrofitting it is painful.
+- **Tick-based waits.** `Wait` stores a relative count of simulation ticks,
+  never seconds, rounds, or turns. Ticks exist in every simulation mode and
+  resume exactly after save/load; a ruleset that exposes round- or turn-based
+  waiting translates that concept into explicit rules scheduling.
 - **Deterministic.** Node execution order is the edge order in the file. No implicit concurrency.
 - **Budgeted.** A graph gets a maximum node count and instruction/bytecode budget per trigger invocation (deterministic; cf ADR-0005 — corrected from wall-clock per E008 2026-09-05, since a wall-clock abort diverges across machines). Exceeding it aborts the graph, logs an error with the campaign file and node id, and does not stall the tick.
 - **Server-only.** Graphs execute on the server. The client receives their *effects*.
@@ -775,6 +833,14 @@ Use Godot's `AnimationTree` with a **fixed set of animation slots** (`idle`, `wa
 
 ## 10. Server architecture
 
+This is one platform-neutral authoritative implementation, with Windows
+in-process single-player hosting and Windows/Linux dedicated process adapters
+(ADR-0012). The diagram separates dedicated startup from reusable host logic;
+E012/E022 must decide its actual API/package allocation before implementation.
+Neither embedded hosting nor editor Play grants the client direct mutation
+access. OS-specific adapters stay above core/rules/sim, and all headless
+server surfaces remain Godot-free.
+
 ```
 crpg-server
 ├── main: config, campaign load, listener, admin console
@@ -815,7 +881,11 @@ The server has a `--headless-deterministic` mode: no network, inputs from a repl
 
 **The editor is a privileged client of a running server.**
 
-Press Play, and the editor launches an in-process server with the current campaign, then attaches as a client with GM privileges. This single decision gives you:
+On the primary Windows target, press Play and the editor launches the same
+authoritative server implementation in-process with the current campaign,
+then attaches through in-memory transport as a client with GM privileges
+(ADR-0012). It cannot mutate authoritative state directly. Linux editor GUI
+support is not promised. This single decision gives you:
 
 - Instant test-play from any point in the campaign, at almost no additional cost.
 - Live editing of a running session (move an NPC, give an item, fire a trigger).
@@ -905,7 +975,7 @@ Three UX commitments that distinguish this from every hobby editor:
 - **Script editor.** Adequate, not ambitious. Syntax highlighting, LSP-backed completion for the exposed API (ship a generated Lua definition file), error markers from the sandbox. Do not build a debugger; add print-to-console and breakpoint-on-error, and let people use external editors.
 - **Campaign debugger.** Attached to a running session: entity inspector, variable watch, quest state, active effects with sources, the modifier breakdown for any value, the event log with filtering, a rules trace showing every roll and its inputs, and time controls (pause, step one tick, step one round).
 - **Multiplayer testing.** "Launch N clients" spawns real client processes against the editor's server, tiled on screen, with a network condition simulator (latency, jitter, loss) in front of them. Building this in Phase 10 rather than Phase 13 is the difference between multiplayer that works and multiplayer that is theoretically supported.
-- **Packaging.** One dialog: validate, pick target platforms, choose whether to bundle the ruleset, sign, and export `.crpg` plus optional dedicated-server config. Refuse to package with unresolved errors.
+- **Packaging.** One dialog: validate, select supported target artifacts, choose whether to bundle the portable ruleset content, sign, and export `.crpg` plus optional Windows/Linux dedicated-server config. T1 data and sandboxed Lua remain portable; T0 native artifacts are target-specific and their loading/packaging decision is deferred (§12.1, ADR-0012). Refuse to package with unresolved errors; this dialog does not promise Linux GUI builds.
 
 ---
 
@@ -921,21 +991,44 @@ Three UX commitments that distinguish this from every hobby editor:
 
 The dangerous idea to reject explicitly: **do not let clients download and run campaign scripts.** If a player connects to a server, they receive data and events, never logic. This keeps the "join a stranger's server" case safe, which is the one that would otherwise sink the project's reputation.
 
+Here "server-side" denotes the authority role, including the Windows embedded
+single-player server, not Linux or a necessarily remote machine. T1 campaign
+data and sandboxed Lua/ruleset content are portable; T0 native extensions need
+separate Windows/MSVC and Linux/GNU artifacts (ADR-0012). Linux server-side
+extensibility is fully supported, and must not depend on Godot.
+
+**Open planning-only decision:**
+[E023: native-extension loading and packaging](../tasks/E023-native-extension-loading-and-packaging.md)
+tracks T0 native loading and packaging across both supported targets. It must
+reconcile target artifacts and ABI/loading with the rule that only
+`crpg-godot` may use `unsafe`. No loader, dependency, unsafe exception, or
+stable ABI claim is authorized by T009c; the mechanism remains separately
+decided. The planning task exists; no loader or packaging implementation is
+claimed.
+
 ### 12.2 Ruleset modding
 
 Rulesets are packages with the same structure as campaigns: `ruleset.json` manifest, data documents, Lua hooks, optionally a native Rust crate (T0). A ruleset declares which stats, conditions, damage types, outcome tables, and actions it provides. A campaign may override any ruleset document locally.
+
+Data and sandboxed Lua portability does not make an optional T0 native crate
+a portable binary. Operators need the artifact for their target; the future
+§12.1 decision owns its delivery/loading mechanism (ADR-0012).
 
 Total conversions are the acceptance test: someone should be able to ship "Traveller-like sci-fi" as a ruleset plus an asset pack, with no engine change. Keep that user story in a doc and check every rules-kernel PR against it.
 
 ### 12.3 Client-side asset replacement and fairness
 
-A client replacing a goblin model with a bright pink box is fine in single-player and a competitive question in multiplayer. Policy: the server publishes an `asset_policy` (`open` / `hash-locked`), and hash-locked servers verify the client's `assets.lock` against the campaign manifest. Do not build an anti-cheat beyond this.
+A client replacing a goblin model with a bright pink box is fine in single-player and a competitive question in multiplayer. Policy: the server publishes an `asset_policy` (`open` / `hash-locked`), and hash-locked servers verify the digest of the client's `assets.lock` against the resolved `campaign.lock` or packaged manifest. Do not build an anti-cheat beyond this.
 
 ---
 
 ## 13. Performance targets and what to defer
 
 ### 13.1 Targets to design against (not to hit today)
+
+Windows owns the primary product/performance baseline (ADR-0012). Linux
+server performance remains a future supported-target concern; T009c does
+not implement a new performance gate or define cross-target equality.
 
 | Quantity | Target | Notes |
 |---|---|---|
@@ -995,7 +1088,7 @@ crpg/
 │  ├─ crpg-edit/              campaign document, edit commands, undo, validation
 │  ├─ crpg-contracts/         shared traits ONLY. Human-owned. Rarely changes.
 │  ├─ crpg-testkit/           fixtures, harnesses, replay runner, state hashing
-│  ├─ crpg-server/            [bin] dedicated + embedded server
+│  ├─ crpg-server/            dedicated binary; shared embedded host placement owned by E012/E022
 │  ├─ crpg-cli/               [bin] crpgc: validate, fmt, migrate, pack, run, replay
 │  └─ crpg-godot/             [cdylib] GDExtension bridge for client + editor
 ├─ apps/
@@ -1098,14 +1191,39 @@ Every change, human or agent, passes the same pipeline. This is the "integration
 6.  cargo test --workspace
 7.  schema drift check            (regenerate schemas, diff against schemas/)
 8.  validate every fixture campaign + rulesets/*  (crpgc validate)
-9.  golden replay tests           (state hash after N ticks, per fixture)
+9.  golden replay tests           (independent Windows/MSVC and Linux/GNU scoped goldens)
 10. save/load equivalence test
 11. perf gate                     (crpgc bench vs stored baseline, 20% tolerance)
-12. build client + editor + server for one platform
-13. smoke test: headless server + scripted client completes the fixture campaign
+12. build Windows client + editor + server and Linux headless server artifacts
+13. smoke tests: Windows embedded + dedicated server, Linux dedicated server,
+    each with a scripted client completing the fixture campaign
 ```
 
 Steps 4, 5, 9, and 13 are the ones that specifically catch agent mistakes that a compiler will not. Write them early; they pay for themselves within weeks.
+
+Steps 7–13 are **capability-gated**, not placeholder jobs (E020, 2026-09-06).
+A gate becomes mandatory in the task that first supplies something real for
+it to check: schema drift with T10; fixture validation with T11's data/CLI
+split; replay with T9a corrected by T009c/ADR-0012; save/load equivalence with
+persistence; performance with E019's benchmark task; and product builds and
+smokes as their capabilities exist. Future product acceptance requires real
+Windows client/editor/server and Linux headless server artifacts plus Windows
+embedded-server and dedicated-server smokes and a Linux dedicated-server
+smoke. Linux headless gates must not depend on Godot. An unavailable gate is
+roadmap work, not a skipped green CI job; T009c adds no placeholder jobs.
+
+T009c must make the existing Windows and Linux `cargo test --workspace` jobs
+each perform a real `play_and_verify` comparison against that target's own
+independently generated scoped golden (ADR-0012, §16.1). Selection is at
+compile time, not by runtime OS. A missing baseline fails with `Io(NotFound)`;
+no tolerance or skipped-green fallback is allowed. Other targets/profiles
+keep portable replay shape/repeatability coverage without reading either
+scoped golden. Step 9 does not wait for unrelated steps 7, 8, or 10–13.
+All required T009c gates passed on native Windows/MSVC and genuine Linux/GNU
+in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md).
+T009c implementation/verification and final audit are complete in the working
+tree awaiting review/merge. T009c remains the priority before T009b; T009a is
+also uncommitted.
 
 A merge queue (GitHub merge queue or a simple `bors`-style bot) rebases each branch onto main and runs the full pipeline before merging. Agents working in parallel then cannot land a combination that individually passed and jointly fails.
 
@@ -1158,7 +1276,54 @@ crpg-server --deterministic --campaign campaigns/fixtures/combat_basic \
             --ticks 2000 --hash-every 100 --out-hashes result.txt
 ```
 
-`state_hash(world)` is a stable BLAKE3 hash over the canonical serialization of the world, excluding presentation-only and non-deterministic fields. Golden files store expected hash sequences. A change in behaviour shows as a hash divergence at a specific tick, which the harness reports along with a diff of the world state at that tick.
+`state_hash(world)` is a stable BLAKE3 hash over the canonical serialization
+of the world, subject to the governed exclusions below. Golden files store
+expected hash sequences. A change in behaviour shows as a hash divergence
+at a specific tick. Replay reporting carries replay identity and a structured
+mismatch with only the present sides (ADR-0010); it does not provide a
+semantic world-state diff. Semantic diff tooling is deferred.
+
+Exclusions are governed by ADR-0009, not discretionary: the list starts
+empty, tick and queue bytes are included, and a proposed exclusion requires
+a test proving it cannot affect behaviour. Presentation-only caches require
+test plus review; admitting non-deterministic `World` state or changing that
+governance requires an ADR. ADR-0012 changes only Decision 3's Linux-only
+comparison selection, not this rule or the exact-build scope.
+
+**Replay baseline contract (ADR-0012):** Windows/MSVC owns the primary
+behavioural baseline; Linux/GNU owns a fully supported server regression
+baseline. Neither target compares its hashes to the other. Under pinned
+Rust 1.98.0, normal test profile, and default features, the portable
+`crates/crpg-testkit/fixtures/replay_basic.replay` must be compared against:
+
+```
+crates/crpg-testkit/goldens/replay_basic_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden
+crates/crpg-testkit/goldens/replay_basic_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden
+```
+
+The real comparison branches are selected with
+`cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc", debug_assertions))`
+and
+`cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu", debug_assertions))`.
+No runtime OS selection, tolerance, cross-target equality assertion, or
+missing-baseline skip is allowed. Unsupported targets/profiles retain
+portable parse/play repeatability and shape tests without scoped goldens.
+The toolchain, full target triple, profile, and feature set are filename
+scope; changing any element requires reviewed re-baselining.
+
+Generate independently in genuine native environments through production
+`read_replay` -> `play_replay` -> `write_golden`, never by copying Linux hashes
+to Windows even if they match. T009a's genuine Ubuntu 24.04/Rust 1.98.0 Linux
+provenance is retained; renaming its matching baseline is allowed but is not
+regeneration, and post-change Linux verification is still required. Record
+commands, `rustc -vV` target, results, test counts, and golden SHA-256 for
+both environments, including missing-baseline failure proof. Replay/golden
+artifacts must have canonical LF endings in checkout/index/worktree and no
+BOM. T009c's required native gates passed on Windows/MSVC and genuine
+Linux/GNU in WSL Ubuntu 24.04; the [completion record](../tasks/T009c.md)
+records verification and provenance. This is working-tree verification,
+not review/merge approval; final audit and implementation/verification are
+complete in the working tree awaiting review/merge.
 
 This one facility gives you: regression detection, bisectable behaviour changes, save/load verification, multiplayer desync detection, and a scientific answer to "did my refactor change anything?"
 
@@ -1172,6 +1337,18 @@ This one facility gives you: regression detection, bisectable behaviour changes,
 
 **`crpg-sim`** — deterministic scenario tests: a fixture world, a scripted input sequence, assertions on the resulting state. Save/load equivalence after every scenario. Tick-budget tests. Spatial index correctness against brute force (property test).
 
+**`crpg-testkit`**: portable replay behaviour plus the two compile-time
+Windows/MSVC and Linux/GNU exact comparisons in §16.1. Each supported target
+must fail on its own regression or missing baseline, not merely pass a shape
+check. Cross-layer tests remain in this integration consumer, not dependencies
+of the core/data/rules/sim layers.
+
+**Authoritative hosting**: once implemented, exercise the same host through
+Windows embedded and dedicated adapters and the Linux dedicated adapter,
+including scripted-client fixture completion and the unchanged authority
+boundary. Linux headless tooling and server-side extension tests are fully
+supported, Godot-free gates, not best-effort coverage (ADR-0012).
+
 **`crpg-script`** — sandbox escape tests (attempt `io`, `os.execute`, `require`, `debug`, FFI; all must fail); budget enforcement tests (infinite loop must abort, not hang); continuation serialization tests (a graph paused in `Wait` survives save/load); determinism tests (`pairs` ordering, `math.random`).
 
 **`crpg-net`** — codec round-trip property tests; a simulated-network transport with configurable latency/jitter/loss/reorder; **malicious client tests as a first-class suite**: oversized packets, malformed frames, intents for entities not owned, intents at illegal times, flooding, replay of old packets, requesting entities outside the interest set. Every one of these must produce a clean rejection and a log line, never a panic. Desync test: run server and client replicas over the simulated network for 5,000 ticks and assert the replica's visible state matches the server's filtered projection.
@@ -1180,9 +1357,9 @@ This one facility gives you: regression detection, bisectable behaviour changes,
 
 **Campaign level** — for each fixture campaign, a scripted playthrough that must complete: enter area, talk, accept quest, fight, loot, complete quest, save, load, verify state. Run in CI on every commit. When this test breaks, the product is broken.
 
-**Client/rendering** — the weakest area, and that is acceptable. Do smoke tests (client launches, connects, loads an area, renders 60 frames without error) and a handful of screenshot comparisons with generous tolerance for UI layout. Do not build a rendering test framework.
+**Client/rendering** — on primary Windows/MSVC, the weakest area, and that is acceptable. Do smoke tests (client launches, connects, loads an area, renders 60 frames without error) and a handful of screenshot comparisons with generous tolerance for UI layout, never for replay hashes. Do not build a rendering test framework; Linux GUI support is not promised (ADR-0012).
 
-**Editor** — headless tests of the document API cover the important logic. For UI, a scripted-input smoke test that opens each editor type and saves without error. Nothing more.
+**Editor** — headless tests of the document API cover the important logic on both supported targets. For Windows UI, a scripted-input smoke test that opens each editor type and saves without error. Nothing more; Linux headless tooling must not require Godot (ADR-0012).
 
 ### 16.3 Fixtures
 
@@ -1245,7 +1422,7 @@ I have reordered your phases in four places, for reasons given below.
 **Deliverables:** `crpg-core`, `crpg-sim` (entities, components, a trivial movement system), `crpg-testkit` with state hashing and the replay runner, `crpg-cli` with `run`/`replay`, CI pipeline steps 1–6 and 9.
 **Dependencies:** Phase 0.
 **Tests:** replay determinism over 10,000 ticks; save/load equivalence.
-**Definition of done:** `crpgc replay fixture.replay` produces identical hashes on two machines running the same binary, and CI enforces it.
+**Definition of done:** `crpgc replay fixture.replay` reproduces the exact-build hash sequence, and CI enforces independent Windows/MSVC and Linux/GNU target-scoped goldens under the pinned toolchain, normal test profile, and default features (ADR-0012). Two machines running the same binary must agree; different targets are not compared. T009c precedes T009b despite its suffix.
 **Do not build:** networking, rendering, rules, or an editor.
 
 > **Reordering note:** the deterministic harness moves from Phase 6 to Phase 1. It is infrastructure, not a feature, and everything after this is cheaper because it exists.
@@ -1275,6 +1452,10 @@ I have reordered your phases in four places, for reasons given below.
 **Deliverables:** `crpg-net` (protocol, codec, quinn, sessions, interest sets, per-client filtering), `crpg-server` binary, simulated-network test transport, malicious-client suite.
 **Tests:** desync test over 5,000 ticks with loss and jitter; every malicious-client case; reconnection.
 **Definition of done:** two headless scripted clients connect, move, fight, and end with identical visible state.
+**Platform acceptance (ADR-0012):** one reusable authoritative host serves
+Windows embedded single-player, Windows dedicated, and Linux dedicated
+adapters, with real smoke tests as each exists. E012/E022 own the API/package
+decision; headless Linux builds must not depend on Godot.
 **Do not build:** prediction polish, AOI within areas, a master server.
 
 ### Phase 5 — Client (6–8 weeks)
@@ -1306,7 +1487,7 @@ Utility scoring, AI profiles as data, behaviour trees for schedules, party AI, t
 
 ### Phase 10 — Multiplayer hardening (4–6 weeks)
 
-Multi-client editor testing with a network simulator, reconnection, party management, host migration decision (recommend: no host migration, dedicated server only), admin tooling, and the first public dedicated-server build.
+Multi-client editor testing with a network simulator, reconnection, party management, host migration decision (recommend: no multiplayer host migration, not removal of Windows embedded single-player), admin tooling, and public Windows/MSVC and Linux/GNU dedicated-server builds (ADR-0012).
 
 ### Phase 11 — PF2e (12–20 weeks, and it will be more)
 
@@ -1315,6 +1496,13 @@ Levels 1–5. Core action economy. About 40 classes-worth of features cut to 4 c
 ### Phase 12 — Modding, packaging, distribution (4–6 weeks)
 
 Ruleset packaging, campaign publishing, dependency resolution, signing, the third-party server extension story (WASM if needed), and documentation.
+
+Windows is the primary product/release target; Linux dedicated server,
+headless tooling, and server-side extensibility remain fully supported.
+Portable T1 data/sandboxed Lua and target-specific T0 native artifacts must
+remain distinct. Resolve §12.1's open native-loading/packaging decision before
+implementing it, without assuming a stable ABI or an unsafe exception
+(ADR-0012).
 
 ### Phase 13 — Polish, performance, platforms
 
@@ -1411,13 +1599,13 @@ These are real backlog items, ordered roughly as they become available.
 | 5 | Godot base | **Latest stable 4.x at Phase 0, pinned by tag; upgrade deliberately once per minor release** | Track master; freeze forever | Pinning keeps builds reproducible; deliberate upgrades keep the patch queue honest | High | Medium: upgrade churn |
 | 6 | Renderer | **Godot Forward+ (Vulkan), unmodified** | Custom wgpu; Bevy; Mobile renderer | Best quality-per-effort available; not on the critical path | High (core is renderer-agnostic) | Low |
 | 7 | Simulation substrate | **Purpose-built entity/component store, explicit systems, fixed order** | bevy_ecs; hecs; Godot SceneTree; OOP hierarchy | Determinism, serializability, agent comprehension; ECS perf is irrelevant at these counts | Medium | Low, but must resist framework creep |
-| 8 | Determinism scope | **Replay determinism on one binary. Not cross-platform lockstep.** | Full bit-determinism | Server is authoritative, so lockstep buys nothing and costs a great deal | High | Low |
+| 8 | Determinism scope | **Exact-build replay; independent Windows/MSVC primary and Linux/GNU server regression goldens (ADR-0009, ADR-0012). No cross-platform lockstep.** | Full bit-determinism; Linux-only gate | Both authoritative hosts need real regression gates, not cross-target hash equality | High | Low |
 | 9 | Physics | **Rapier/Parry server-side for queries; no client physics authority** | Godot physics; custom | Server has no Godot; queries (LOS, capsule sweeps, overlaps) are all a CRPG needs | Medium | Low |
 | 10 | Navigation | **Recast/Detour in Rust; navmesh baked as a build artifact** | Godot NavigationServer; custom grid | Must run server-side; server and client must share the identical mesh | Medium | Medium: binding maturity |
 | 11 | Networking transport | **QUIC via `quinn`** | ENet; raw UDP; TCP; WebRTC; Godot HLAPI | Encryption, reliable streams and datagrams, flow control, migration, all in one | Medium | Medium: QUIC through consumer NAT |
 | 12 | Replication model | **Server-authoritative deltas + sim event stream; predict only own movement** | Lockstep; rollback; client authority | Correct for the genre; removes an entire bug class | Low | Low |
 | 13 | Wire serialization | **`postcard` (compact binary) with an explicit protocol version** | bincode; protobuf; flatbuffers; JSON | Small, fast, serde-native, no schema compiler | High | Low |
-| 14 | Campaign format | **Canonical JSON, one object per file, ULID identity, generated JSON Schema** | RON; YAML; TOML; SQLite; custom DSL | LLM fluency, git diffs, tooling, schema validation | Medium (a converter is writable) | Medium: verbosity |
+| 14 | Campaign format | **Canonical JSON, entity or explicit aggregate document per file, object ULIDs plus package ids, generated JSON Schema** | RON; YAML; TOML; SQLite; custom DSL | LLM fluency, git diffs, tooling, schema validation | Medium (a converter is writable) | Medium: verbosity |
 | 15 | Save format | **`postcard` + `zstd` world snapshot, atomic write** | JSON; SQLite; custom | Fast, small, exact; snapshot semantics are simplest to verify | High (trait-backed) | Low |
 | 16 | Persistent-world DB | **Deferred. `PersistenceBackend` trait now, SQLite later** | Build SQLite now; Postgres | Premature; the trait costs nothing | High | Low |
 | 17 | Scripting | **Lua 5.4 via `mlua`, hard-sandboxed, server-only** | GDScript (impossible); Rhai; Wren; WASM; C# | Precedent, LLM fluency, budgetable, sandboxable | Medium | Medium: sandbox correctness |
@@ -1427,10 +1615,11 @@ These are real backlog items, ordered roughly as they become available.
 | 21 | AI architecture | **Utility scoring for combat; behaviour trees for schedules; influence maps later** | FSM only; GOAP; planners; ML | Best quality-per-complexity for CRPG combat | High | Low |
 | 22 | Asset format | **glTF 2.0 in, Godot's import pipeline, content-hashed in `assets.lock`** | FBX; custom | Open, tool-supported, agent-inspectable | Medium | Low |
 | 23 | Test framework | **`cargo test` + `proptest` + `insta` (snapshots) + custom replay harness** | Bespoke framework; nextest only | Built-in beats bespoke; the replay harness is the only custom piece | High | Low |
-| 24 | CI | **GitHub Actions + merge queue + self-hosted runner if builds get slow** | GitLab; Jenkins; local only | Free tier is adequate; merge queue is the agent-safety mechanism | High | Low |
-| 25 | Modding boundary | **T0 native / T1 server-only sandboxed Lua / T2 client data-only** | Client scripting; unsandboxed | Joining a stranger's server must be safe | Low | Medium |
+| 24 | CI | **GitHub Actions Windows/MSVC + Linux/GNU gates; Windows primary product runner; merge queue; capability-gated builds/smokes (ADR-0012)** | Linux-only baselines; placeholder jobs | Both targets need independent replay and real product coverage as implemented | High | Low |
+| 25 | Modding boundary | **Target-specific T0 native artifacts (loader/ABI decision deferred) / portable T1 server-only sandboxed Lua and data / T2 client data-only (ADR-0012)** | Client scripting; unsandboxed | Joining a stranger's server must be safe; embedded hosting preserves authority | Low | Medium |
 | 26 | Localisation | **String keys from day one; `locale/<lang>.json`** | Retrofit later | Retrofitting touches every editor form and every content file | Low | Low |
 | 27 | Licence | **MIT or Apache-2.0 for the engine; ruleset packages licensed separately** | GPL; proprietary | Permissive maximises adoption and keeps Godot compatibility trivial | Low | Low |
+| 28 | Platform and hosting | **Windows/MSVC primary development/product/release/baseline; Linux/GNU fully supported headless server/tooling/extensions/tests; one authoritative host (ADR-0012)** | Linux-only server; separate single-player sim | Windows embedded and Windows/Linux dedicated adapters preserve the same client/server authority boundary | Explicit support decision required | Target-specific failures are defects |
 
 ---
 
@@ -1518,10 +1707,18 @@ If I were building this project as a solo developer using AI agents, this is exa
 
 **One sentence:** a Rust simulation core with no engine dependency, a headless authoritative server, and two Godot applications (client and editor) that are thin views over that core, with Godot consumed as a pinned upstream dependency rather than forked.
 
+**Platform commitment (ADR-0012):** Windows/MSVC is primary for development,
+product, release gates, and behavioural baselines, including client, editor,
+embedded single-player server, dedicated server, and CLI. Linux/GNU is fully
+supported for dedicated server, headless tooling, server-side extensibility,
+and testing; failures are defects. Linux GUI builds are not promised and
+Linux headless support is Godot-free. Each target reproduces its own
+independently generated exact-build replay golden, never the other's hashes.
+
 **The five decisions that define the project:**
 
 1. **The simulation is Godot-free Rust.** This is the decision everything else hangs from. It makes the server clean, the tests deterministic, the agents productive, and the engine choice reversible.
-2. **The server is the only authority, and single-player runs the same server.** There is no second code path, so there is no second set of bugs.
+2. **The server is the only authority: one platform-neutral implementation serves Windows embedded single-player and Windows/Linux dedicated processes.** In-memory transport preserves the boundary; clients never mutate authoritative state directly. OS-specific hosting logic stays above core/rules/sim.
 3. **The rules kernel has seven primitives and no game-system knowledge.** It is proven by two throwaway rulesets before PF2e is touched.
 4. **Campaign data is canonical JSON with ULID identity and generated schemas**, designed so an LLM with a schema and a CLI can author valid content without a GUI.
 5. **The editor is a privileged client of a running server**, and every editor operation exists as a headless command first.
@@ -1641,19 +1838,39 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 
 (T8a/T8b are spec §24's single T8, split per E004 Option A: one task, one crate.)
 
-**T9. Replay record/playback harness**
+**T9a. Replay record/playback harness (`crpg-testkit`)**
 *Purpose:* turn behaviour into a regression-testable artifact.
-*Affected:* `crpg-testkit`, `crpg-cli`.
-*Dependencies:* T8.
-*Work:* a `.replay` format (seed, campaign id and version, engine version, ordered `(tick, input)` list); `crpgc replay` runs it and compares against a golden hash file; on divergence it prints the tick and a structured diff of the world.
-*Test:* a golden replay in CI; a deliberate one-line behaviour change makes it fail with a useful message.
-*Done when:* CI step 9 from Section 15.4 is live.
+*Affected:* `crates/crpg-testkit`.
+*Dependencies:* T8b.
+*Work:* a `.replay` format (seed, campaign id and version, engine version, ordered `(tick, input)` list), record/playback through public simulation APIs, comparison against a golden hash file, and an exact-tick structured divergence report.
+*Test:* portable record/playback behavior tests and exact-tick golden divergence. T009c/ADR-0012 correct the original Linux-only selection to independent Windows/MSVC and Linux/GNU compile-time comparisons (§16.1); a deliberate behaviour change must fail the affected target's gate.
+*Done when:* replay semantics are verified and CI step 9 performs real scoped comparisons without skipped placeholders. T009a's implementation remains uncommitted; its historical Linux verification is retained, not claimed as T009c verification.
+
+**T9c (T009c). Windows-primary platform correction (`crpg-testkit`)**
+*Purpose:* gate the primary Windows authoritative runtime while retaining fully supported Linux headless regression coverage (ADR-0012).
+*Affected:* `crates/crpg-testkit` only for code, plus the policy/artifact/task scope listed in `tasks/T009c.md`.
+*Dependencies:* T9a; intentionally before T9b despite the suffix.
+*Work:* independent native target-scoped goldens, compile-time real comparisons, canonical LF replay/golden artifacts, and documentation alignment. Preserve portable tests and exact comparison semantics; no server, loader, packaging, or placeholder product CI implementation.
+*Test:* genuine Windows/MSVC and Linux/GNU generation/verification under pinned Rust 1.98.0, normal test profile, and default features, including missing-baseline failure proofs and the complete native gates/provenance record in `tasks/T009c.md`.
+*Done when:* both supported-target gates and all required verification pass with reviewed provenance. **Current status: implementation/verification complete in the working tree awaiting review/merge; final audit complete.** All required gates passed on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md). T009a is also uncommitted and T009c remains the priority before T009b; neither task is merged.
+
+**T9b. Replay CLI (`crpg-cli`)**
+*Purpose:* expose T9a's replay behavior without duplicating it in the binary.
+*Affected:* `crates/crpg-cli`.
+*Dependencies:* T9a and T009c; blocked until T009c's platform correction and verification are complete.
+*Work:* `crpgc replay` loads a replay and its scoped golden through the T9a API, exits successfully on equality, and prints the structured divergence on failure. It inherits ADR-0012's exact-build target scope, not the superseded Linux-only policy; it adds no cross-platform equality or replay semantics.
+*Test:* CLI success, divergence, malformed replay, and missing-file cases assert exit status and diagnostics.
+*Done when:* the CLI is a thin consumer of T9a and no replay semantics live in `crpg-cli`.
+
+(T9a/T9b are spec §24's original T9, split per E004 and sequenced by E020;
+T009c/ADR-0012 insert the corrective platform gate between them: one task,
+one crate.)
 
 **T10. `crpg-data`: schema types, canonical writer, loader**
 *Purpose:* the campaign format.
 *Affected:* `crates/crpg-data`, `schemas/`.
 *Dependencies:* T6.
-*Work:* Rust types for `Campaign`, `World`, `Area`, `Creature`, `Item`, `Dialogue`, `Quest`, `Faction`, `Placement`; `schemars` generation into `schemas/`; the canonical JSON writer; the loader building the `id → object` index; event-IR graph types (`Trigger`/`Node`/action signatures) per ADR-0008.
+*Work:* Rust types for `Campaign`, `World`, `Area`, `Creature`, `Item`, `Dialogue`, `Quest`, `Faction`, `Placement`, explicit aggregate documents, package ids, `campaign.lock`, and `assets.lock`; `schemars` generation into `schemas/`; the canonical JSON writer; deterministic flat dependency resolution; lockfile read/write APIs with the E016 authority split; the loader building the object-ULID `id → (type, path)` index; event-IR graph types (`Trigger`/`Node`/action signatures), including tick-count `Wait`, per ADR-0008.
 *Test:* round-trip property tests; canonical-writer idempotence; schema drift check in CI.
 *Done when:* the `one_area_one_creature` fixture loads and re-serializes byte-identically.
 
@@ -1677,7 +1894,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Purpose:* make the campaign format usable by AI agents without the editor.
 *Affected:* `crpg-cli`.
 *Dependencies:* T11.
-*Work:* `crpgc new <type> --slug <s>`, `crpgc schema <type>`, `crpgc explain <id>` (object plus inbound/outbound references), `crpgc fmt`, and the `crpgc run --ticks N --hash-every M` wrapper over the T008b harness (transferred from T008 per E004, 2026-09-06).
+*Work:* `crpgc new <type> --slug <s>`, `crpgc schema <type>`, `crpgc explain <id>` (object plus inbound/outbound references), `crpgc fmt`, `crpgc lock` as a thin caller of T10's resolver/lock writer, and the `crpgc run --ticks N --hash-every M` wrapper over the T008b harness (transferred from T008 per E004, 2026-09-06).
 *Test:* the literal acceptance test from Phase 2 — give an LLM only `crpgc schema creature` output and have it produce a file that passes `crpgc validate` on the first attempt. Record the transcript.
 *Done when:* that test passes for creature, item, dialogue, and quest.
 
@@ -1745,3 +1962,8 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-09-05 (UTC) · opencode/muse-spark + E001/ADR-0008 · Layer diagram, repo tree, and §16.2 test line now say generic event queue/substrate in core; SimEvent lives in sim, IR types in data, hooks in rules.
 - 2026-09-06 (UTC) · opencode/muse-spark + E006-A/E009/E014/E015 · E009: World sketch owns `EventQueue<SimEvent>`, core diagram/tree lines say generic substrate, §24 T7/T10/T14 mirror the ADR-0008 assignments. E014: World serde is skeleton-only; interned boundaries persist strings via T014's conversion pair. E015: prediction is a buffer outside sim, `Timeline` is `BTreeMap<(InitiativeKey, EntityId)>` with the container in T007 and advance rules in T008.
 - 2026-09-06 (UTC) · opencode/muse-spark + E004 decided (Option A) · §24 T8 is now T8a (sim: `state_hash`, tick loop, advance) + T8b (testkit: hash harness, first testkit code); the `crpgc run` wrapper moved to T13. Rule itself unchanged.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + E020 decision · Made gates 7–13 capability-gated instead of skipped placeholders and split T9 into testkit replay semantics plus a later CLI wrapper; T9a activates the real canonical-Linux golden gate in the existing test job.
+- 2026-09-06 (UTC) · opencode/gpt-5.6-sol + E016 decision · Defined entity versus aggregate JSON documents, separated object ULIDs from package ids, assigned one authority to each lock/manifest stage, made IR waits tick-based, and assigned data behavior to T10 with a thin T13 lock CLI.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Aligned process/server/editor architecture, replay testing and gates 9/12/13, packaging/extensibility, technical decisions, roadmap, and final recommendation with ADR-0012's Windows-primary/Linux-supported policy. Recorded future host/loader/product-gate obligations without implementation and kept T009a uncommitted and T009c in progress pending native verification; prior attribution and Linux provenance remain intact.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status and audit · Replaced active pending-verification wording with the reported passing native gates and completion-record links, keeping review/merge and final audit outstanding. Corrected replay reporting to identity plus structured mismatch with semantic diff deferred, and linked the open planning-only E023 task without claiming loader implementation.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated active gate and roadmap status to the reported completed final audit and working-tree implementation/verification completion, retaining completion-record links. Review/merge remains outstanding, T009a is also uncommitted, and T009c retains priority before T009b without changing platform policy.

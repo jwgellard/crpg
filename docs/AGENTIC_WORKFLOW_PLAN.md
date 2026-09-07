@@ -4,6 +4,14 @@
 **Constraint:** solo developer, one paid AI subscription maximum, free GitHub Copilot via the Student Developer Pack, two consumer machines.
 **Hardware:** Lenovo LOQ (RTX 4060 Laptop, 8 GB VRAM, 24 GB RAM) and a desktop (GTX 1080, 8 GB VRAM, 16 GB RAM).
 
+**Platform policy:** [ADR-0012](adr/0012-windows-primary-platform.md) makes
+`x86_64-pc-windows-msvc` primary for development, product, release gates, and
+behavioural baselines, including client/editor, embedded single-player server,
+dedicated server, and CLI. `x86_64-unknown-linux-gnu` is fully supported for
+dedicated server, headless CLI/tooling, server-side extensibility, and tests;
+target-specific failures are defects, not best effort. Linux GUI builds are
+not promised and Linux headless support must not depend on Godot.
+
 > **Pricing volatility warning.** The AI tooling market moved violently through 2026, and the free agentic tier took most of the damage. Alibaba cut Qwen Code's free OAuth quota tenfold and then closed it entirely on 15 April. GitHub paused Copilot signups in April and switched to usage-based AI Credits on 1 June; the free student tier came back thinner. Google discontinued free Gemini CLI serving on 18 June and replaced it with Antigravity CLI on a far smaller quota. Every number in this document was checked in early September 2026 and some of it will be wrong within a quarter. **Verify against vendor pricing pages before you commit money.** The *workflow* design below is deliberately built so that swapping a provider is a one-line config change, because it will happen more than once.
 
 ---
@@ -167,11 +175,19 @@ Do the arithmetic before you start. At Sonnet-class rates of roughly $2 per mill
 **Desktop — GTX 1080 8 GB / 16 GB RAM. Role: server and CI.**
 
 Its primary jobs are not inference:
-1. **Self-hosted GitHub Actions runner** for the expensive CI jobs: Godot client and editor builds, the perf gate, the full golden replay suite. This removes the slowest jobs from your laptop and from Actions queues.
-2. **Dedicated-server test box.** From Phase 4 onward you need a `crpg-server` running on a different machine from the client to test networking honestly. Loopback multiplayer hides an enormous number of bugs.
+1. **Windows/MSVC self-hosted GitHub Actions runner** for primary product work: Windows Godot client/editor and server builds, the primary perf gate, and expanded Windows golden replay coverage as those capabilities exist. This removes the slowest jobs from your laptop and from Actions queues; it does not replace the hosted Windows/Linux replay gates.
+2. **Dedicated-server test box.** From Phase 4 onward you need a `crpg-server` running on a different machine from the client to test networking honestly. Exercise Windows and Linux dedicated adapters of the same authoritative host, with genuine environments for each; do not assume one desktop provides both. Loopback multiplayer hides an enormous number of bugs.
 3. **Overnight batch inference.** A 7B Q4 model here can run generate-validate-repair loops on campaign content while you sleep, at zero marginal cost.
 
 Set the runner to only execute jobs from branches in your own repository. On a public repo, a self-hosted runner that accepts fork pull requests will run arbitrary attacker code on your desktop. Restrict `pull_request` jobs to GitHub-hosted runners and reserve the self-hosted runner for `push` on your own branches and for manually dispatched workflows.
+
+Runner labels must identify the actual execution target, not just hardware.
+Keep Linux hosted tests/server checks on genuine Linux/GNU; add a separate
+Linux runner or verified Linux environment for heavy server work when needed.
+All required T009c gates passed on native Windows/MSVC and genuine Linux/GNU
+in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md).
+Actual native execution, not WSL availability alone or cross-compilation,
+provides generation and verification evidence.
 
 ### 6.2 The generate-validate-repair loop
 
@@ -264,8 +280,19 @@ Tell the agent to run this itself. Every compile error the agent fixes locally i
 
 The pipeline from `CRPG_ENGINE_SPEC.md` §15.4, in two layers:
 
-- **GitHub-hosted, on every push:** fmt, clippy, deny, dependency lint, determinism lint, `cargo test --workspace`, schema drift, campaign validation. Target: under 8 minutes with `Swatinem/rust-cache` or `sccache`.
-- **Self-hosted on the desktop, on merge to main and nightly:** golden replay suite, save/load equivalence, perf gate, Godot client and editor builds, the headless end-to-end smoke test.
+- **GitHub-hosted, on every push:** retain Windows/MSVC and Linux/GNU workspace tests, including their real target-scoped replay comparisons required by T009c, plus fmt, clippy, deny, architecture/determinism lints and their self-tests. Schema drift and campaign validation activate when implemented. Target: under 8 minutes with `Swatinem/rust-cache` or `sccache`.
+- **Windows self-hosted, on integration and nightly:** expanded Windows golden coverage, save/load equivalence, primary perf gate, Windows client/editor/server product builds, and Windows embedded-server and dedicated-server smoke tests when implemented.
+- **Linux hosted or separately provisioned Linux runner:** retain Linux headless tests and its independent server regression golden; activate real Linux headless server artifacts and dedicated-server smoke checks when implemented. Linux headless support must not pull in Godot.
+
+These are allocation requirements, not claims that future jobs exist. E020's
+capability gating forbids unavailable or skipped-green placeholders. Windows
+single-player must host the same platform-neutral server as Windows/Linux
+dedicated processes, behind the unchanged client/server transport boundary.
+Each target must generate and verify its own golden under the pinned toolchain,
+normal test profile, and default features. Select comparisons at compile time,
+never by runtime OS; missing baselines fail, and neither tolerance nor comparison
+to the other target is permitted. Re-baselines require review and native
+provenance (commands, `rustc -vV`, results, counts, SHA-256), not copied hashes.
 
 Splitting it this way keeps the feedback loop fast and keeps the slow jobs off the critical path.
 
@@ -435,7 +462,7 @@ Roughly one day of work. Do it before writing any project code.
 
 **CI**
 15. GitHub Actions workflow with the fast layer, plus Rust caching.
-16. Self-hosted runner on the desktop, restricted to your own branches, running the slow layer.
+16. Windows/MSVC self-hosted runner on the desktop, restricted to your own branches, for primary product/golden work; retain Linux hosted coverage and provision genuine Linux execution separately for heavy headless/server gates as needed.
 17. Enable the merge queue.
 
 **Working practice**
@@ -448,3 +475,16 @@ Roughly one day of work. Do it before writing any project code.
 ## 16. The plan in one paragraph
 
 Buy one $20 subscription and use it only for architecture and the hard 25% of implementation. Run OpenCode against whatever free models exist this month as your everyday implementer, with at least three providers configured so no single shutdown stops you. Run a 7B local model on both machines for campaign content, doc comments, and compile repair, verified by `crpgc validate` and the compiler rather than by judgement. Use Copilot's unlimited completions while you type and hoard its credits. Make the repository public so CI is free, and put the GTX 1080 desktop to work as a self-hosted runner and a real remote server for network testing rather than as an inference box. Move work between tiers by writing precise task files, because the task file is the interface that lets a cheap model do expensive-looking work. Review every test diff, never re-bless a golden without understanding it, and keep two agents running at most, because your reviewing capacity is the real bottleneck. Re-verify every price in this document quarterly, because in this market they will have changed.
+
+Assign primary product and behavioural-baseline work to a Windows/MSVC runner;
+retain genuine Linux/GNU hosted tests and server checks against its independent
+baseline. This is exact-build replay verification, not cross-platform lockstep.
+T009c implementation/verification and final audit are complete in the working
+tree awaiting review/merge. T009c remains the priority before T009b; T009a is
+also uncommitted.
+
+## Agent log
+
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c documentation alignment · Assigned primary product/golden work to Windows while retaining genuine Linux headless/server gates and independent replay provenance. Kept future CI capability-gated and distinguished available native Windows/WSL Ubuntu environments from verified T009c results.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Linked the completion record for the reported passing native Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates while preserving runner and provenance requirements. T009c remains the priority awaiting review/merge, T009a is also uncommitted, and final audit is still running.
+- 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported final audit completion and completed working-tree implementation/verification while preserving runner and provenance requirements. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
