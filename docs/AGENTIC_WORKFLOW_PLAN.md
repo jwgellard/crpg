@@ -479,8 +479,8 @@ Buy one $20 subscription and use it only for architecture and the hard 25% of im
 Assign primary product and behavioural-baseline work to a Windows/MSVC runner;
 retain genuine Linux/GNU hosted tests and server checks against its independent
 baseline. This is exact-build replay verification, not cross-platform lockstep.
-T009a and T009c are merged on `master` as of 2026-09-07 (commit `bb9a702`); the
-next task is T009b's thin `crpgc replay` wrapper.
+T009a, T009c, and T009b are merged on `master` as of 2026-09-07 (T009a/T009c
+in commit `bb9a702`); the next task is T010 campaign data.
 
 ## Agent log
 
@@ -488,3 +488,4 @@ next task is T009b's thin `crpgc replay` wrapper.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Linked the completion record for the reported passing native Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates while preserving runner and provenance requirements. T009c remains the priority awaiting review/merge, T009a is also uncommitted, and final audit is still running.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported final audit completion and completed working-tree implementation/verification while preserving runner and provenance requirements. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the runner paragraph to the merged state; T009b is next.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the runner paragraph to the merged `crpgc replay` wrapper; T010 campaign data is next.

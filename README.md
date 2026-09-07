@@ -20,7 +20,10 @@ campaign format, netcode, AI, and server are untouched.
 > the primary behavioural baseline and Linux/GNU the supported server
 > baseline, each compared against its own independently generated golden.
 > T009b's thin `crpgc replay` wrapper in `crpg-cli` is
-> next. See the [T009c completion record](tasks/T009c.md) and
+> merged: `crpgc replay <path> [--golden <path>]` verifies a replay against
+> its native golden with exit codes 0/1/2. T010 campaign data is next. See
+> the [T009c completion record](tasks/T009c.md),
+> [T009b](tasks/T009b.md) and
 > [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ---
@@ -190,3 +193,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated active status from the reported passing Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU gates and linked the task completion record. T009c remains the priority awaiting review/merge, with T009a also uncommitted and final audit still running.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported completed final audit and implementation/verification completion in the working tree. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the status block to the merged replay harness and native golden gates; T009b's `crpgc replay` wrapper is next.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the status block to the merged `crpgc replay` wrapper; T010 campaign data is next.

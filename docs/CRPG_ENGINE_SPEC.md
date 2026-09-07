@@ -1221,8 +1221,8 @@ keep portable replay shape/repeatability coverage without reading either
 scoped golden. Step 9 does not wait for unrelated steps 7, 8, or 10–13.
 All required T009c gates passed on native Windows/MSVC and genuine Linux/GNU
 in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md).
-T009a's replay and T009c's native golden gates are merged on `master` as of
-2026-09-07; T009b's thin `crpgc replay` wrapper is next.
+T009a's replay, T009c's native golden gates, and T009b's thin `crpgc replay`
+wrapper are merged on `master` as of 2026-09-07; T010 is next.
 
 A merge queue (GitHub merge queue or a simple `bors`-style bot) rebases each branch onto main and runs the full pipeline before merging. Agents working in parallel then cannot land a combination that individually passed and jointly fails.
 
@@ -1850,7 +1850,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Dependencies:* T9a; intentionally before T9b despite the suffix.
 *Work:* independent native target-scoped goldens, compile-time real comparisons, canonical LF replay/golden artifacts, and documentation alignment. Preserve portable tests and exact comparison semantics; no server, loader, packaging, or placeholder product CI implementation.
 *Test:* genuine Windows/MSVC and Linux/GNU generation/verification under pinned Rust 1.98.0, normal test profile, and default features, including missing-baseline failure proofs and the complete native gates/provenance record in `tasks/T009c.md`.
-*Done when:* both supported-target gates and all required verification pass with reviewed provenance. **Current status: merged on `master` 2026-09-07.** All required gates passed on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md). T009b is next.
+*Done when:* both supported-target gates and all required verification pass with reviewed provenance. **Current status: merged on `master` 2026-09-07.** All required gates passed on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04; see the [completion record](../tasks/T009c.md). T009b landed on `master` 2026-09-07.
 
 **T9b. Replay CLI (`crpg-cli`)**
 *Purpose:* expose T9a's replay behavior without duplicating it in the binary.
@@ -1858,7 +1858,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Dependencies:* T9a and T009c; blocked until T009c's platform correction and verification are complete.
 *Work:* `crpgc replay` loads a replay and its scoped golden through the T9a API, exits successfully on equality, and prints the structured divergence on failure. It inherits ADR-0012's exact-build target scope, not the superseded Linux-only policy; it adds no cross-platform equality or replay semantics.
 *Test:* CLI success, divergence, malformed replay, and missing-file cases assert exit status and diagnostics.
-*Done when:* the CLI is a thin consumer of T9a and no replay semantics live in `crpg-cli`.
+*Done when:* the CLI is a thin consumer of T9a and no replay semantics live in `crpg-cli`. **Current status: merged on `master` 2026-09-07.** Thin `crpgc replay` over `play_and_verify` with the 0/1/2 exit-code contract and a provisional caller-owned reference apply; native-golden verification green on Windows/MSVC and genuine Linux/GNU; see [tasks/T009b.md](../tasks/T009b.md). T010 is next.
 
 (T9a/T9b are spec §24's original T9, split per E004 and sequenced by E020;
 T009c/ADR-0012 insert the corrective platform gate between them: one task,
@@ -1966,3 +1966,4 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status and audit · Replaced active pending-verification wording with the reported passing native gates and completion-record links, keeping review/merge and final audit outstanding. Corrected replay reporting to identity plus structured mismatch with semantic diff deferred, and linked the open planning-only E023 task without claiming loader implementation.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated active gate and roadmap status to the reported completed final audit and working-tree implementation/verification completion, retaining completion-record links. Review/merge remains outstanding, T009a is also uncommitted, and T009c retains priority before T009b without changing platform policy.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the replay/step-9 status text and the T9a/T9c done-when rows to the merged state; T009b is next.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the step 9/phase-1 status, the T9b done-when row, and the T9c done-when tail to the merged `crpgc replay` wrapper; T010 is next.

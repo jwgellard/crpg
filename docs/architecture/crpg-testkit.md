@@ -10,7 +10,8 @@ exact-tick divergence report reusing the harness mismatch, and per-target
 checked-in replay goldens under the two-target policy below. Required native
 Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates passed (see the
 [T009c completion record](../../tasks/T009c.md)); T009b's thin
-`crpgc replay` wrapper in `crpg-cli` is next. Fixture
+`crpgc replay` wrapper in `crpg-cli` is merged (2026-09-07; see
+[tasks/T009b.md](../../tasks/T009b.md)). Fixture
 campaigns, contract conformance suites and further helpers are planned,
 each owned by the task that first needs it.
 
@@ -66,7 +67,7 @@ not a claim that Cargo cannot compile dev-only cycles.
 | Hash sequences, golden write/compare, error shape | Fixture campaigns (first data task needing one) |
 | Replay format + validation + playback + typed divergence | Contract conformance suites (spec §15.3, first backend) |
 | Determinism/tamper/shape/replay-behaviour tests | — |
-| Scope-header convention and independent Windows/MSVC and Linux/GNU golden gates (T009c, step 9; merged 2026-09-07) | T009b `crpgc replay` wrapper (`crpg-cli`) |
+| Scope-header convention and independent Windows/MSVC and Linux/GNU golden gates (T009c, step 9; merged 2026-09-07); T009b `crpgc replay` wrapper (merged 2026-09-07) | T016 headless combat (next replay consumer) |
 
 ## Target-scoped replay policy
 
@@ -140,3 +141,4 @@ placeholder jobs.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Aligned the architecture with Windows-primary and fully supported Linux headless hosting and independent exact-build golden scopes. Distinguished unmerged implementation from pending native verification and deferred host/extension implementation decisions to their owners.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Replaced active pending-verification wording with the reported native gate passes and linked the completion record. Kept T009c the next review/merge priority and T009b blocked on landing, without claiming either replay task committed or merged.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the state and table rows to the merged replay and two-target golden gates; T009b is next.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the policy paragraph and the Exists/Planned table to the merged `crpgc replay` wrapper; the next replay consumer is T016.

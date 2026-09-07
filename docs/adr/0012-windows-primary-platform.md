@@ -119,7 +119,8 @@ Acceptance records policy, not merge approval. All required T009c gates
 passed on native Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04;
 see the [completion record](../../tasks/T009c.md). T009a's replay and
 T009c's native golden gates are merged on `master` as of 2026-09-07;
-T009b's thin `crpgc replay` wrapper is next. Future shared-host,
+T009a's replay, T009c's native golden gates, and T009b's thin `crpgc replay`
+wrapper are merged on `master` as of 2026-09-07; T010 campaign data is next. Future shared-host,
 extension-loading/packaging, and product-gate obligations remain tracked by
 E012/E022/E023, not implemented by replay-gate verification.
 
@@ -129,3 +130,4 @@ E012/E022/E023, not implemented by replay-gate verification.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification status · Updated implementation status from the reported passing native Windows and genuine WSL Ubuntu gates, linking the completion record and open planning-only E023 task without changing the accepted decisions. T009c awaits review/merge before T009b, T009a is also uncommitted, and final audit remains running.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported final audit completion and completed working-tree implementation/verification, keeping review/merge outstanding and T009c ahead of T009b with T009a also uncommitted. Replaced documentation-pass scope wording with the timeless LF/no-BOM artifact requirement and completion-record link without changing the accepted decisions.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated implementation status to the merged state (commit `bb9a702`) without changing the accepted decisions; T009b is next.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated implementation status to the merged `crpgc replay` wrapper; the accepted platform decisions and host/extension/product obligations are unchanged.

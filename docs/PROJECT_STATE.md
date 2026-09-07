@@ -6,10 +6,10 @@ Updated: 2026-09-07
 Phase 1 — core skeleton and test harness.
 
 ## Branch state
-All merged work is on local `master`. T009a's typed replay and T009c's
-Windows-primary/Linux-supported correction are merged as of 2026-09-07; the
-working tree is clean. The Done history below is merged work only. T009b's
-thin `crpgc replay` wrapper in `crpg-cli` is next.
+All merged work is on local `master`. T009a's typed replay, T009c's
+Windows-primary/Linux-supported correction, and T009b's thin `crpgc replay`
+wrapper are merged as of 2026-09-07; the working tree is clean. The Done
+history below is merged work only. T010 campaign data is next.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -210,6 +210,18 @@ thin `crpgc replay` wrapper in `crpg-cli` is next.
   plus the release-profile fallback test and withheld-golden failure proof
   on each. Final audit reran the gates and byte-audited LF/no-BOM. See the
   [T009c completion record](../tasks/T009c.md).
+- T009b `crpgc replay` in `crpg-cli` (merged 2026-09-07): a thin
+  `crpgc replay <path> [--golden <path>]` over `crpg_testkit::play_and_verify`
+  with the clap-convention exit codes 0/1/2 (hand-rolled args for one
+  subcommand; clap revisited at T013), a provisional reference-intents apply
+  (`spawn_at`/`timeline`/`draw`/`despawn` over public `World` APIs,
+  superseded when T014/T016 land), and no replay semantics in the crate. The
+  task opened the crate: arch doc + crate `AGENTS.md` + architecture README
+  row from "due with T013". 23 CLI tests (10 unit + 13 integration) pass on
+  Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU, including real
+  comparisons against each target's golden; workspace 158 and 65 lint
+  self-tests pass per target. No new package in the lockfile; strictly
+  verify-only (no rebless command).
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -240,9 +252,9 @@ thin `crpgc replay` wrapper in `crpg-cli` is next.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T009b thin `crpgc replay` wrapper in `crpg-cli` is now next — the replay
-  harness and both native baselines are merged, so it is unblocked.
-  T010 campaign data follows it.
+- T010 campaign data in `crpg-data` is next — the replay harness, both native
+  baselines, and the `crpgc replay` wrapper are all merged, so it is
+  unblocked.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -278,8 +290,8 @@ thin `crpgc replay` wrapper in `crpg-cli` is next.
   confirmed `i/lf w/lf` without changing the user index. The scoped source
   diff was empty. See the
   [completion record](../tasks/T009c.md) for the pre-merge audit results;
-  T009a and T009c are both merged on `master` as of 2026-09-07 and T009b is
-  next.
+  T009a and T009c are both merged on `master` as of 2026-09-07; T009b's
+  `crpgc replay` wrapper is merged too (2026-09-07), and T010 is next.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -367,8 +379,8 @@ now requires real target-scoped comparisons in both existing Windows and
 ## Known problems
 - Scaffolding from workflow plan §15 still missing, none of it blocking:
   `tools/preflight.ps1`, `docs/adr/0000-template.md`, per-crate `AGENTS.md`
-  for every crate except `crpg-core` (T006a), `crpg-sim` (T007) and
-  `crpg-testkit` (T008b).
+  for every crate except `crpg-core` (T006a), `crpg-sim` (T007),
+  `crpg-testkit` (T008b) and `crpg-cli` (T009b).
 - Spec §14's `docs/contracts/` and `docs/guides/` still do not exist. Neither
   has a gate depending on it: contracts matter once `crpg-contracts` holds
   traits, guides once there is a campaign format to author against.
@@ -393,3 +405,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c count correction · Corrected the active workspace total from the revised native report to 135 (134 unit/integration + 1 doctest): core 91, sim 24, testkit 19, and core doctest 1. The earlier attribution's 144 is superseded, not rewritten; final audit remains running and review/merge is outstanding.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported completed final audit, passing native reruns and release fallback tests, LF/no-BOM byte and temporary-index checks, and empty scoped source diff. Implementation/verification is complete in the working tree awaiting review/merge; T009a remains uncommitted and T009c retains priority before T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Recorded the merge of T009a's typed replay and T009c's Windows-primary/Linux-supported native golden policy onto `master` (commit `bb9a702`, pushed to `origin`). Next is T009b's thin `crpgc replay` wrapper, then T010.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Recorded the `crpgc replay` wrapper (thin consumer of `play_and_verify`, exit codes 0/1/2, provisional reference apply, crate-opened docs) landed on `master` with both native gates green; next is T010 campaign data in `crpg-data`.

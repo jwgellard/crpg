@@ -67,7 +67,7 @@ only Decision 3's Linux-only selection is superseded.
 The existing Windows/Ubuntu workspace-test matrix is the enforcement point;
 no placeholder workflow is needed. Required native Windows/MSVC and genuine
 WSL Ubuntu Linux/GNU gates passed; see the [T009c completion record](T009c.md).
-T009a and T009c are merged on `master` as of 2026-09-07, and T009b is next.
+T009a, T009c, and T009b are merged on `master` as of 2026-09-07.
 The
 genuine original T009a Linux record remains separate historical provenance.
 
@@ -85,3 +85,4 @@ in T009c.
 
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Appended a supersession of the Linux-only step 9 assignment without rewriting the historical decision or logs. Retained the no-placeholder rule and recorded future platform-specific product gates and pending native verification.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Updated only the active supersession status to reflect reported native gate passes and link the completion record. Preserved the original decision and all prior attributions; review/merge remains outstanding and T009b waits for landing.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the active supersession status to the merged `crpgc replay` wrapper landing; the step 9 enforcement point is unchanged.

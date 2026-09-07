@@ -50,7 +50,7 @@ ADR that motivated it.
 | — | done | 2026-09-06 | Review 3 follow-up: sim/core/testkit invariant hardening (finite hash guard, validated Timeline/World/EventQueue loading, truthful Mismatch enum) + ADR-0010/0011 |
 | T009a | done | 2026-09-07 | Replay format/playback + genuine original Linux verification preserved; corrected by T009c's target policy |
 | T009c | done | 2026-09-07 | Windows-primary/Linux-supported policy + independent native replay goldens (`crpg-testkit`; ADR-0012 supersedes only ADR-0009 Decision 3's Linux-only selection); required native Windows/MSVC and genuine WSL Ubuntu Linux/GNU gates passed and final audit complete; see [completion record](T009c.md) |
-| **T009b** | **next** | — | Thin `crpgc replay` wrapper (`crpg-cli`; unblocked by the T009a/T009c merge) |
+| T009b | done | 2026-09-07 | Thin `crpgc replay` wrapper (`crpg-cli`): `play_and_verify` over the T9a API, exit codes 0/1/2, provisional caller-owned reference intents, verify-only; real native-golden verification on both ADR-0012 targets |
 
 Reported T009c results on each native target: 19 testkit tests (6 harness +
 12 portable replay + 1 golden), 135 workspace tests (134 unit/integration + 1 doctest),
@@ -74,7 +74,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T010 | open | — | `crpg-data`: entity/aggregate schemas, package ids, canonical writer, resolver/lock APIs, loader/index, tick-wait event IR |
+| **T010** | **next** | — | `crpg-data`: entity/aggregate schemas, package ids, canonical writer, resolver/lock APIs, loader/index, tick-wait event IR |
 | T011 | open | — | Validation and positioned diagnostics, `crpgc validate --json` |
 | T012 | open | — | Migration framework |
 | T013 | open | — | Scaffolding/introspection CLI, including thin `crpgc lock` and run wrappers |
@@ -201,7 +201,7 @@ Record it here, one line per week.
 | Week ending | Merged | Notes |
 |---|---|---|
 | 2026-09-06 | 16 | T001–T005c plus T006a–e, T007, T008a and T008b are merged. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
-| 2026-09-07 | 18 | T009a (typed replay) and T009c (Windows-primary/Linux-supported native goldens, ADR-0012) merged. Three review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. T009b's thin `crpgc replay` wrapper is next. |
+| 2026-09-07 | 19 | T009a (typed replay), T009c (Windows-primary/Linux-supported native goldens, ADR-0012) and T009b (thin `crpgc replay` wrapper) merged. Three review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. T010 campaign data is next. |
 
 ---
 
@@ -225,3 +225,4 @@ Record it here, one line per week.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Recorded the reported native Windows and WSL Ubuntu gate passes and per-target counts, linking the completion record. T009a/T009c remain uncommitted and unmerged, T009c stays next for review/merge, T009b waits for landing, and throughput remains 16.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c count correction · Corrected the active workspace total to 135 (134 unit/integration + 1 doctest), matching the reported breakdown of core 91, sim 24, testkit 19, and core doctest 1. Verification status and merged throughput are unchanged.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Marked T009a and T009c done (merged to `master` in `bb9a702`), T009b next, throughput at 18.
+- 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Marked T009b done (merged to `master`), T010 next, throughput at 19.
