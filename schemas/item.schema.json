@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authored item prefab.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "schema": {
+          "const": "crpg.item/1",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        },
+        "stats": {
+          "additionalProperties": {
+            "format": "int32",
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "description": "Symbolic stat keys mapped to raw fixed-point values.",
+          "type": "object"
+        },
+        "tags": {
+          "description": "Symbolic tags in authored order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "stats",
+        "tags"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Item"
+}

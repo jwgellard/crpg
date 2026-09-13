@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authored creature prefab with symbolic stats and tags.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "faction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UlidText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Faction reference; explicit null is required when absent."
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "inventory": {
+          "description": "Item identities in authored order.",
+          "items": {
+            "$ref": "#/$defs/UlidText"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "schema": {
+          "const": "crpg.creature/1",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        },
+        "stats": {
+          "additionalProperties": {
+            "format": "int32",
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "description": "Symbolic stat keys mapped to raw fixed-point values.",
+          "type": "object"
+        },
+        "tags": {
+          "description": "Symbolic tags in authored order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "stats",
+        "tags",
+        "faction",
+        "inventory"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Creature"
+}

@@ -1,0 +1,236 @@
+{
+  "$defs": {
+    "AssetRecord": {
+      "additionalProperties": false,
+      "description": "Source-asset digest and tagged import settings supplied by the caller.",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/Digest",
+          "description": "Source content digest; the library does not read the source asset."
+        },
+        "import": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DataValue"
+          },
+          "description": "Named tagged import settings.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "hash",
+        "import"
+      ],
+      "type": "object"
+    },
+    "DataValue": {
+      "description": "Explicitly tagged values; signed and unsigned integers remain distinct.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Boolean value.",
+          "properties": {
+            "type": {
+              "const": "bool",
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Signed integer.",
+          "properties": {
+            "type": {
+              "const": "integer",
+              "type": "string"
+            },
+            "value": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Unsigned integer.",
+          "properties": {
+            "type": {
+              "const": "unsigned",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Raw fixed-point integer on the wire.",
+          "properties": {
+            "type": {
+              "const": "fixed",
+              "type": "string"
+            },
+            "value": {
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Literal text, including Unicode.",
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Authored-object reference.",
+          "properties": {
+            "type": {
+              "const": "object_ref",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UlidText"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered heterogeneous values.",
+          "properties": {
+            "type": {
+              "const": "list",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/DataValue"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Lexically keyed heterogeneous values.",
+          "properties": {
+            "type": {
+              "const": "map",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": {
+                "$ref": "#/$defs/DataValue"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Digest": {
+      "description": "A BLAKE3 content digest encoded as exactly 64 lowercase hex characters.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Source-asset authority, separate from package and final packaged-byte locks.",
+      "properties": {
+        "_note": {
+          "description": "Preserved annotation included in the canonical digest.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "assets": {
+          "additionalProperties": false,
+          "description": "Campaign-relative source paths and their records.",
+          "patternProperties": {
+            "^(?!\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._-]+)*$": {
+              "$ref": "#/$defs/AssetRecord"
+            }
+          },
+          "type": "object"
+        },
+        "schema": {
+          "const": "crpg.assets-lock/1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "assets"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "AssetsLock"
+}

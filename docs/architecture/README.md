@@ -41,7 +41,7 @@ govern it (as links), and what consumers inherit from it.
 | Crate | Doc | Governed by |
 |---|---|---|
 | `crpg-core` | [crpg-core.md](crpg-core.md) | ADR-0006, ADR-0007 |
-| `crpg-data` | due with T010 | spec §4 |
+| `crpg-data` | [crpg-data.md](crpg-data.md) | spec §4, E016, ADR-0008/0011 |
 | `crpg-rules` | due with T014 | spec §3, §15.1 |
 | `crpg-sim` | [crpg-sim.md](crpg-sim.md) | spec §2.4 |
 | `crpg-nav` | due with its first task | spec §6.3 |
@@ -72,3 +72,4 @@ superseded by appending, never rewritten.
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Linked the new crpg-sim doc; the §15.6 readiness gate is now satisfied for the second crate.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b · Linked the new crpg-testkit doc; third crate through the gate.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b · Linked the new crpg-cli doc; the replay subcommand is the crate's first real code, so the §15.6 gate is satisfied and the "due with T013" place-holder is retired.
+- 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Linked the data architecture document before source implementation. The opening documents describe the approved contract; completion remains gated by T010 verification.

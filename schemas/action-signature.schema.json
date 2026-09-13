@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "ActionParameter": {
+      "additionalProperties": false,
+      "description": "Declarative action parameter.",
+      "properties": {
+        "name": {
+          "description": "Argument name.",
+          "type": "string"
+        },
+        "required": {
+          "description": "Whether the caller must supply this argument.",
+          "type": "boolean"
+        },
+        "value_type": {
+          "$ref": "#/$defs/ValueType",
+          "description": "Accepted category."
+        }
+      },
+      "required": [
+        "name",
+        "value_type",
+        "required"
+      ],
+      "type": "object"
+    },
+    "ValueType": {
+      "description": "Declarative value category; containers hold tagged heterogeneous values.",
+      "oneOf": [
+        {
+          "const": "bool",
+          "description": "Boolean.",
+          "type": "string"
+        },
+        {
+          "const": "integer",
+          "description": "Signed integer.",
+          "type": "string"
+        },
+        {
+          "const": "unsigned",
+          "description": "Unsigned integer.",
+          "type": "string"
+        },
+        {
+          "const": "fixed",
+          "description": "Fixed-point value.",
+          "type": "string"
+        },
+        {
+          "const": "text",
+          "description": "Text.",
+          "type": "string"
+        },
+        {
+          "const": "object_ref",
+          "description": "Authored-object reference.",
+          "type": "string"
+        },
+        {
+          "const": "list",
+          "description": "Ordered tagged values.",
+          "type": "string"
+        },
+        {
+          "const": "map",
+          "description": "Named tagged values.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Schema-able declaration of an action's parameter surface.",
+  "properties": {
+    "action_id": {
+      "description": "Symbolic action vocabulary key.",
+      "type": "string"
+    },
+    "parameters": {
+      "description": "Parameters in declaration order.",
+      "items": {
+        "$ref": "#/$defs/ActionParameter"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "action_id",
+    "parameters"
+  ],
+  "title": "ActionSignature",
+  "type": "object"
+}

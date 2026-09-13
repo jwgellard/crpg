@@ -1,0 +1,416 @@
+{
+  "$defs": {
+    "ActionCall": {
+      "additionalProperties": false,
+      "description": "Declarative action invocation, without function pointers or a registry.",
+      "properties": {
+        "action_id": {
+          "description": "Symbolic action vocabulary key.",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DataValue"
+          },
+          "description": "Named tagged arguments.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "action_id",
+        "args"
+      ],
+      "type": "object"
+    },
+    "DataValue": {
+      "description": "Explicitly tagged values; signed and unsigned integers remain distinct.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Boolean value.",
+          "properties": {
+            "type": {
+              "const": "bool",
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Signed integer.",
+          "properties": {
+            "type": {
+              "const": "integer",
+              "type": "string"
+            },
+            "value": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Unsigned integer.",
+          "properties": {
+            "type": {
+              "const": "unsigned",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Raw fixed-point integer on the wire.",
+          "properties": {
+            "type": {
+              "const": "fixed",
+              "type": "string"
+            },
+            "value": {
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Literal text, including Unicode.",
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Authored-object reference.",
+          "properties": {
+            "type": {
+              "const": "object_ref",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UlidText"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered heterogeneous values.",
+          "properties": {
+            "type": {
+              "const": "list",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/DataValue"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Lexically keyed heterogeneous values.",
+          "properties": {
+            "type": {
+              "const": "map",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": {
+                "$ref": "#/$defs/DataValue"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DialogueBody": {
+      "description": "Dialogue operation, without presentation or execution semantics.\n\nDeserialization rejects unknown fields for every variant, including the unit\n`End` shape, because serde's derived `deny_unknown_fields` ignores trailing\nfields on internally tagged unit variants.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "NPC speech.",
+          "properties": {
+            "conditions": {
+              "description": "Opaque conditions in authored order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "npc_line",
+              "type": "string"
+            },
+            "next": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UlidText"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional continuation; explicit null is required when absent."
+            },
+            "on_enter": {
+              "description": "Entry actions in authored order.",
+              "items": {
+                "$ref": "#/$defs/ActionCall"
+              },
+              "type": "array"
+            },
+            "speaker": {
+              "$ref": "#/$defs/UlidText",
+              "description": "Speaker object identity."
+            },
+            "text_key": {
+              "description": "Locale key for speech text.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "speaker",
+            "text_key",
+            "conditions",
+            "on_enter",
+            "next"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Player-selectable response.",
+          "properties": {
+            "conditions": {
+              "description": "Opaque conditions in authored order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "player_choice",
+              "type": "string"
+            },
+            "next": {
+              "$ref": "#/$defs/UlidText",
+              "description": "Continuation identity."
+            },
+            "on_select": {
+              "description": "Selection actions in authored order.",
+              "items": {
+                "$ref": "#/$defs/ActionCall"
+              },
+              "type": "array"
+            },
+            "text_key": {
+              "description": "Locale key for choice text.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text_key",
+            "conditions",
+            "on_select",
+            "next"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Jump to a dialogue node.",
+          "properties": {
+            "kind": {
+              "const": "jump",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/UlidText",
+              "description": "Target identity."
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Link to another dialogue object.",
+          "properties": {
+            "kind": {
+              "const": "link",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/UlidText",
+              "description": "Target identity."
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "End the dialogue.",
+          "properties": {
+            "kind": {
+              "const": "end",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DialogueNode": {
+      "additionalProperties": false,
+      "description": "Identified dialogue entry.",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/DialogueBody",
+          "description": "Dialogue operation."
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable node identity."
+        }
+      },
+      "required": [
+        "id",
+        "body"
+      ],
+      "type": "object"
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authored dialogue and identified nodes.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Initial dialogue node identity."
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "nodes": {
+          "description": "Identified nodes in authored order.",
+          "items": {
+            "$ref": "#/$defs/DialogueNode"
+          },
+          "type": "array"
+        },
+        "schema": {
+          "const": "crpg.dialogue/1",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "entry",
+        "nodes"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Dialogue"
+}

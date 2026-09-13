@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "Digest": {
+      "description": "A BLAKE3 content digest encoded as exactly 64 lowercase hex characters.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "PackageId": {
+      "description": "Immutable publication coordinate, distinct from an object ULID or slug.",
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PackageKind": {
+      "description": "Publication kind, in the specified catalog normalization order.",
+      "oneOf": [
+        {
+          "const": "campaign",
+          "description": "Campaign package.",
+          "type": "string"
+        },
+        {
+          "const": "module",
+          "description": "Reusable content module.",
+          "type": "string"
+        },
+        {
+          "const": "ruleset",
+          "description": "Ruleset package.",
+          "type": "string"
+        }
+      ]
+    },
+    "ResolvedPackage": {
+      "additionalProperties": false,
+      "description": "Selected exact package version and supplied checksum.",
+      "properties": {
+        "checksum": {
+          "$ref": "#/$defs/Digest",
+          "description": "Supplied package content digest."
+        },
+        "kind": {
+          "$ref": "#/$defs/PackageKind",
+          "description": "Package category."
+        },
+        "package": {
+          "$ref": "#/$defs/PackageId",
+          "description": "Immutable coordinate."
+        },
+        "version": {
+          "$ref": "#/$defs/VersionText",
+          "description": "Exact locked version."
+        }
+      },
+      "required": [
+        "kind",
+        "package",
+        "version",
+        "checksum"
+      ],
+      "type": "object"
+    },
+    "VersionText": {
+      "description": "Semantic version string; semver 1.x parsing is authoritative.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authority over package resolution and the canonical assets-lock digest.",
+      "properties": {
+        "_note": {
+          "description": "Preserved annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "assets_lock": {
+          "$ref": "#/$defs/Digest",
+          "description": "BLAKE3 of complete canonical assets.lock document bytes."
+        },
+        "packages": {
+          "description": "Unique packages, already strictly ascending by package id.",
+          "items": {
+            "$ref": "#/$defs/ResolvedPackage"
+          },
+          "type": "array"
+        },
+        "schema": {
+          "const": "crpg.campaign-lock/1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "packages",
+        "assets_lock"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "CampaignLock"
+}

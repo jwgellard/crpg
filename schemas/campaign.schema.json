@@ -1,0 +1,158 @@
+{
+  "$defs": {
+    "EntryPoint": {
+      "additionalProperties": false,
+      "description": "Authored-object references defining the campaign entry point.",
+      "properties": {
+        "area": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Starting area identity."
+        },
+        "spawn": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Placement identity whose transform supplies the spawn point."
+        },
+        "world": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Starting world identity."
+        }
+      },
+      "required": [
+        "world",
+        "area",
+        "spawn"
+      ],
+      "type": "object"
+    },
+    "PackageId": {
+      "description": "Immutable publication coordinate, distinct from an object ULID or slug.",
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "PackageKind": {
+      "description": "Publication kind, in the specified catalog normalization order.",
+      "oneOf": [
+        {
+          "const": "campaign",
+          "description": "Campaign package.",
+          "type": "string"
+        },
+        {
+          "const": "module",
+          "description": "Reusable content module.",
+          "type": "string"
+        },
+        {
+          "const": "ruleset",
+          "description": "Ruleset package.",
+          "type": "string"
+        }
+      ]
+    },
+    "PackageRequirement": {
+      "additionalProperties": false,
+      "description": "One authored flat dependency constraint.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/PackageKind",
+          "description": "Required package category."
+        },
+        "package": {
+          "$ref": "#/$defs/PackageId",
+          "description": "Immutable coordinate."
+        },
+        "version": {
+          "$ref": "#/$defs/RequirementText",
+          "description": "Accepted semantic version range."
+        }
+      },
+      "required": [
+        "kind",
+        "package",
+        "version"
+      ],
+      "type": "object"
+    },
+    "RequirementText": {
+      "description": "Semantic version requirement string; semver 1.x parsing and prerelease matching are authoritative.",
+      "type": "string"
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    },
+    "VersionText": {
+      "description": "Semantic version string; semver 1.x parsing is authoritative.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Campaign manifest and explicit entry placement.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engine": {
+          "$ref": "#/$defs/RequirementText",
+          "description": "Compatible engine version range."
+        },
+        "entry": {
+          "$ref": "#/$defs/EntryPoint",
+          "description": "Starting world, area and placement."
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "package": {
+          "$ref": "#/$defs/PackageId",
+          "description": "Immutable publication coordinate."
+        },
+        "requires": {
+          "description": "Flat dependency requirements, retaining authored order.",
+          "items": {
+            "$ref": "#/$defs/PackageRequirement"
+          },
+          "type": "array"
+        },
+        "schema": {
+          "const": "crpg.campaign/1",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/VersionText",
+          "description": "Published semantic version."
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "package",
+        "version",
+        "engine",
+        "requires",
+        "entry"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Campaign"
+}

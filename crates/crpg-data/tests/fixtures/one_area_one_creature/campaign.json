@@ -1,0 +1,16 @@
+{
+  "_note": "T010 canonical fixture",
+  "engine": ">=0.1.0, <1.0.0",
+  "entry": {
+    "area": "00000000000000000000000003",
+    "spawn": "00000000000000000000000005",
+    "world": "00000000000000000000000002"
+  },
+  "id": "00000000000000000000000001",
+  "name": "fixture.campaign",
+  "package": "fixture.one-area",
+  "requires": [],
+  "schema": "crpg.campaign/1",
+  "slug": "campaign",
+  "version": "0.1.0"
+}

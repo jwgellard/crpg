@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Explicit campaign-owned localized string table.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "campaign": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Owning campaign identity."
+        },
+        "locale": {
+          "description": "Locale matching the file stem.",
+          "type": "string"
+        },
+        "schema": {
+          "const": "crpg.locale/1",
+          "type": "string"
+        },
+        "strings": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Locale keys mapped to display text.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema",
+        "campaign",
+        "locale",
+        "strings"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "LocaleDocument"
+}
