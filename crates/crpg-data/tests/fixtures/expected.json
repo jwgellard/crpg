@@ -1,0 +1,12 @@
+[
+  {
+    "expect": "diagnostics",
+    "root": "broken_references",
+    "snapshot": "tests/snapshots/broken_references.diagnostics.json"
+  },
+  {
+    "expect": "clean",
+    "root": "one_area_one_creature",
+    "snapshot": null
+  }
+]

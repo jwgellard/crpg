@@ -1,0 +1,15 @@
+{
+  "campaign": "00000000000000000000000001",
+  "schema": "crpg.variables/1",
+  "variables": [
+    {
+      "default": {
+        "type": "bool",
+        "value": true
+      },
+      "name": "broken",
+      "scope": "campaign",
+      "value_type": "integer"
+    }
+  ]
+}

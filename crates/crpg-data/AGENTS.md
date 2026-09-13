@@ -2,16 +2,19 @@
 
 Read the root rules and [T010](../../tasks/T010.md), the binding initial API and
 acceptance contract. Architecture: [crpg-data](../../docs/architecture/crpg-data.md).
-This document describes the verified T010 implementation; results live in T010.
+This document describes the verified T010 implementation plus the T011a
+semantic-validation layer; results live in T010 and [T011a](../../tasks/T011a.md).
 
 ## Public surface
 
 Public modules `types`, `ir`, `document`, `canonical`, `package`, `loader`,
-`schema`, `error` re-export their public items at the root. T010 lists every
+`schema`, `error`, `validation` re-export their public items at the root. T010 lists every
 required model, field and variant. Operations are `read_document`,
 `write_document`, `canonical_json`, `generated_schemas`, `resolve_packages`,
 `assets_lock_digest`, `make_campaign_lock`, both lock read/write pairs,
-`load_campaign`, and `serialize_campaign`. Primitive newtypes expose validated
+`load_campaign`, `serialize_campaign`, plus T011a's `validate`,
+`validate_files`, `diagnostic_for_data_error`, and `campaign_document_path`
+with the `Diagnostic`, `DiagnosticCode`, and `Severity` model. Primitive newtypes expose validated
 parsing plus their prescribed accessors. Do not extend the surface casually.
 
 ## Wire and validation traps
@@ -44,6 +47,21 @@ parsing plus their prescribed accessors. Do not extend the surface casually.
   `{"kind":"end","extra":0}`; keep the manual impls and the unknown-field tests
   that pin them. `Serialize`/`JsonSchema` stay derived so schemas keep
   `additionalProperties: false`.
+- Semantic validation is collected and positioned, never fail-fast: rebuild
+  occurrence/ownership tables from `documents` in lexical-path, authored order
+  and ignore the caller-mutable index entirely. Sort findings by file, pointer,
+  code, severity, message, fix; emit at most one diagnostic per reference and
+  never judge an edge port or reachability from an unresolved endpoint.
+  Aggregate owners get one specialized check, never a generic reference too.
+- `campaign_document_path` shares the loader's `family`/`area_file`/
+  `locale_shape` predicates; a second path-family list is a drift defect.
+  Classifier rejections stay `invalid_path` through `diagnostic_for_data_error`;
+  `io` belongs to filesystem-owning callers only.
+- Fixture and snapshot bytes are read-only in tests: `one_area_one_creature`
+  validates to zero diagnostics, `broken_references` to exactly its 15
+  checked-in findings, and `expected.json` lists exactly those two roots for
+  T011b's generic gate. Never bless, rewrite, or invent a normal case for the
+  snapshot comparison.
 
 ## Scope and dependencies
 
@@ -68,6 +86,7 @@ cargo test -p crpg-data --test canonical --locked
 cargo test -p crpg-data --test loader --locked
 cargo test -p crpg-data --test resolver --locked
 cargo test -p crpg-data --test locks --locked
+cargo test -p crpg-data --test validation --locked
 cargo test -p crpg-data --test schema_drift --locked
 cargo test -p crpg-data --locked
 cargo fmt --all
@@ -90,3 +109,4 @@ blesses drift. Retain property regression seeds; never weaken existing tests.
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established the API, validation, dependency and verification working rules before implementation. The task remains subject to all its acceptance gates.
 - 2026-09-10 (UTC) · opencode/muse-spark + T010 implementation · Reconciled the contract with the verified tree and recorded the hand-written kind-tag deserializer trap.
+- 2026-09-13 (UTC) · opencode/muse-spark + T011a implementation · Extended the surface with the validation API, recorded the collected-diagnostics and classifier-ownership traps, and added the validation focused command.

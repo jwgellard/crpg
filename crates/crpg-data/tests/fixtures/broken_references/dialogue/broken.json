@@ -1,0 +1,26 @@
+{
+  "entry": "0000000000000000000000000N",
+  "id": "0000000000000000000000000M",
+  "name": "fixture.dialogue-broken",
+  "nodes": [
+    {
+      "body": {
+        "conditions": [],
+        "kind": "npc_line",
+        "next": null,
+        "on_enter": [],
+        "speaker": "00000000000000000000000004",
+        "text_key": "fixture.missing-key"
+      },
+      "id": "0000000000000000000000000N"
+    },
+    {
+      "body": {
+        "kind": "end"
+      },
+      "id": "0000000000000000000000000P"
+    }
+  ],
+  "schema": "crpg.dialogue/1",
+  "slug": "broken-dialogue"
+}

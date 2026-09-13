@@ -1,0 +1,16 @@
+{
+  "campaign": "00000000000000000000000001",
+  "locale": "en",
+  "schema": "crpg.locale/1",
+  "strings": {
+    "fixture.campaign": "Campaign",
+    "fixture.creature": "Creature",
+    "fixture.dialogue-broken": "Broken dialogue",
+    "fixture.on-enter": "On enter",
+    "fixture.quest-broken": "Broken quest",
+    "fixture.quest-state-broken": "Broken state",
+    "fixture.spawn": "Spawn",
+    "fixture.start": "Start",
+    "fixture.world": "World"
+  }
+}

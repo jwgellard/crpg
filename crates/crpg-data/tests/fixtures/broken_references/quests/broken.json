@@ -1,0 +1,16 @@
+{
+  "entry": "0000000000000000000000000Z",
+  "id": "0000000000000000000000000Y",
+  "name": "fixture.quest-broken",
+  "schema": "crpg.quest/1",
+  "slug": "broken-quest",
+  "states": [
+    {
+      "id": "0000000000000000000000000Z",
+      "name": "fixture.quest-state-broken",
+      "on_enter": [],
+      "terminal": false,
+      "transitions": []
+    }
+  ]
+}

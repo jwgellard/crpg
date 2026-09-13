@@ -13,6 +13,7 @@ pub mod loader;
 pub mod package;
 pub mod schema;
 pub mod types;
+pub mod validation;
 
 pub use canonical::*;
 pub use document::*;
@@ -22,3 +23,4 @@ pub use loader::*;
 pub use package::*;
 pub use schema::*;
 pub use types::*;
+pub use validation::*;

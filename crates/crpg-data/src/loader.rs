@@ -80,15 +80,23 @@ fn check_paths<'a>(paths: impl Iterator<Item = &'a SourcePath>) -> Result<(), Da
     Ok(())
 }
 
-fn family(path: &str, prefix: &str) -> bool {
+pub(crate) fn family(path: &str, prefix: &str) -> bool {
     path.strip_prefix(prefix)
         .is_some_and(|rest| rest.ends_with(".json") && rest.len() > 5)
 }
 
-fn area_file(path: &str, name: &str) -> bool {
+pub(crate) fn area_file(path: &str, name: &str) -> bool {
     path.strip_prefix("areas/")
         .and_then(|rest| rest.strip_suffix(name))
         .is_some_and(|middle| middle.len() > 1 && middle.ends_with('/'))
+}
+
+/// Shape of a locale document path, without checking document contents.
+/// Shared with the validation path classifier so the two lists cannot drift.
+pub(crate) fn locale_shape(path: &str) -> bool {
+    path.strip_prefix("locale/")
+        .and_then(|s| s.strip_suffix(".json"))
+        .is_some_and(|stem| !stem.is_empty() && !stem.contains('/'))
 }
 
 fn check_layout(documents: &BTreeMap<SourcePath, Document>) -> Result<(), DataError> {
@@ -109,12 +117,12 @@ fn check_layout(documents: &BTreeMap<SourcePath, Document>) -> Result<(), DataEr
             Document::Placements(_) => area_file(p, "placements.json"),
             Document::Triggers(_) => area_file(p, "triggers.json"),
             Document::Variables(_) => p == "variables/campaign_state.json",
-            Document::Locale(locale) => p
-                .strip_prefix("locale/")
-                .and_then(|s| s.strip_suffix(".json"))
-                .is_some_and(|stem| {
-                    !stem.is_empty() && !stem.contains('/') && stem == locale.locale
-                }),
+            Document::Locale(locale) => {
+                locale_shape(p)
+                    && p.strip_prefix("locale/")
+                        .and_then(|s| s.strip_suffix(".json"))
+                        .is_some_and(|stem| stem == locale.locale)
+            }
         };
         // A required path must also contain its own required kind.
         let reserved = match p {

@@ -1,0 +1,10 @@
+{
+  "faction": null,
+  "id": "00000000000000000000000018",
+  "inventory": [],
+  "name": "fixture.creature",
+  "schema": "crpg.creature/1",
+  "slug": "creature",
+  "stats": {},
+  "tags": []
+}

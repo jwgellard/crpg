@@ -1,0 +1,22 @@
+{
+  "ambience": "assets/missing.ogg",
+  "bounds": {
+    "max": [
+      65536,
+      65536,
+      65536
+    ],
+    "min": [
+      0,
+      0,
+      0
+    ]
+  },
+  "id": "00000000000000000000000003",
+  "name": "fixture.start",
+  "neighbours": [
+    "000000000000000000000000W5"
+  ],
+  "schema": "crpg.area/1",
+  "slug": "start"
+}

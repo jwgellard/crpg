@@ -1,0 +1,122 @@
+[
+  {
+    "code": "missing_asset",
+    "file": "areas/start/area.json",
+    "message": "asset key \"assets/missing.ogg\" is not in assets.lock",
+    "pointer": "/ambience",
+    "severity": "error",
+    "suggested_fix": "add the asset to assets.lock or fix the key"
+  },
+  {
+    "code": "dangling_reference",
+    "file": "areas/start/area.json",
+    "message": "dangling area neighbour reference to 000000000000000000000000W5",
+    "pointer": "/neighbours/0",
+    "severity": "error",
+    "suggested_fix": "point at an existing object id or create the target"
+  },
+  {
+    "code": "aggregate_owner_mismatch",
+    "file": "areas/start/placements.json",
+    "message": "placements owner 00000000000000000000000002 does not match the required owner 00000000000000000000000003",
+    "pointer": "/area",
+    "severity": "error",
+    "suggested_fix": "set the owner to the sibling or root id"
+  },
+  {
+    "code": "dangling_reference",
+    "file": "areas/start/placements.json",
+    "message": "dangling object reference to 000000000000000000000000W7",
+    "pointer": "/placements/0/overrides/broken/value",
+    "severity": "error",
+    "suggested_fix": "point at an existing object id or create the target"
+  },
+  {
+    "code": "wrong_reference_kind",
+    "file": "areas/start/placements.json",
+    "message": "wrong kind for placement prefab reference to 00000000000000000000000002: found world, expected creature or item",
+    "pointer": "/placements/0/prefab",
+    "severity": "error",
+    "suggested_fix": "point at an object of the expected kind"
+  },
+  {
+    "code": "graph_port_mismatch",
+    "file": "areas/start/triggers.json",
+    "message": "edge port true is not allowed for wait source node",
+    "pointer": "/graphs/0/edges/0/port",
+    "severity": "error",
+    "suggested_fix": "use the port allowed by the source node body"
+  },
+  {
+    "code": "dangling_reference",
+    "file": "campaign.json",
+    "message": "dangling entry area reference to 000000000000000000000000W4",
+    "pointer": "/entry/area",
+    "severity": "error",
+    "suggested_fix": "point at an existing object id or create the target"
+  },
+  {
+    "code": "wrong_reference_kind",
+    "file": "campaign.json",
+    "message": "wrong kind for entry world reference to 00000000000000000000000003: found area, expected world",
+    "pointer": "/entry/world",
+    "severity": "error",
+    "suggested_fix": "point at an object of the expected kind"
+  },
+  {
+    "code": "wrong_reference_kind",
+    "file": "creatures/creature.json",
+    "message": "wrong kind for creature faction reference to 00000000000000000000000004: found creature, expected faction",
+    "pointer": "/faction",
+    "severity": "error",
+    "suggested_fix": "point at an object of the expected kind"
+  },
+  {
+    "code": "dangling_reference",
+    "file": "creatures/creature.json",
+    "message": "dangling creature inventory item reference to 000000000000000000000000W6",
+    "pointer": "/inventory/0",
+    "severity": "error",
+    "suggested_fix": "point at an existing object id or create the target"
+  },
+  {
+    "code": "duplicate_slug",
+    "file": "creatures/z-duplicate.json",
+    "message": "duplicate slug \"creature\" for creature (first at creatures/creature.json/slug)",
+    "pointer": "/slug",
+    "severity": "error",
+    "suggested_fix": "rename the later slug to a unique value within its type"
+  },
+  {
+    "code": "missing_locale_key",
+    "file": "dialogue/broken.json",
+    "message": "locale key \"fixture.missing-key\" is missing from locale \"en\"",
+    "pointer": "/nodes/0/body/text_key",
+    "severity": "error",
+    "suggested_fix": "add \"fixture.missing-key\" to locale \"en\""
+  },
+  {
+    "code": "unreachable_node",
+    "file": "dialogue/broken.json",
+    "message": "dialogue node 0000000000000000000000000P is unreachable from the entry",
+    "pointer": "/nodes/1",
+    "severity": "error",
+    "suggested_fix": "connect the node from the entry or remove it"
+  },
+  {
+    "code": "quest_no_completion_path",
+    "file": "quests/broken.json",
+    "message": "quest has no reachable terminal state",
+    "pointer": "/entry",
+    "severity": "error",
+    "suggested_fix": "add a transition path to a terminal state"
+  },
+  {
+    "code": "value_type_mismatch",
+    "file": "variables/campaign_state.json",
+    "message": "variable \"broken\" declares integer but the default is bool",
+    "pointer": "/variables/0/default",
+    "severity": "error",
+    "suggested_fix": "change the default value or the declared type"
+  }
+]

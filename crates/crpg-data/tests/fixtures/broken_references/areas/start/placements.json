@@ -1,0 +1,35 @@
+{
+  "area": "00000000000000000000000002",
+  "placements": [
+    {
+      "id": "00000000000000000000000005",
+      "name": "fixture.spawn",
+      "overrides": {
+        "broken": {
+          "type": "object_ref",
+          "value": "000000000000000000000000W7"
+        }
+      },
+      "prefab": "00000000000000000000000002",
+      "slug": "spawn",
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          65536,
+          65536,
+          65536
+        ]
+      }
+    }
+  ],
+  "schema": "crpg.placements/1"
+}
