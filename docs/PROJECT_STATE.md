@@ -1,15 +1,16 @@
 # Project state
 
-Updated: 2026-09-07
+Updated: 2026-09-17
 
 ## Phase
-Phase 1 — core skeleton and test harness.
+Phase 2 — campaign data format (T010/T011 landed; T012 next).
 
 ## Branch state
-All merged work is on local `master`. T009a's typed replay, T009c's
-Windows-primary/Linux-supported correction, and T009b's thin `crpgc replay`
-wrapper are merged as of 2026-09-07; the working tree is clean. The Done
-history below is merged work only. T010 campaign data is next.
+All merged work is on `origin/master` through `d45f1b1`. T010's campaign
+format, T011a's positioned validation plus its slug/graph coverage follow-up,
+and T011b's thin `crpgc validate` wrapper were pushed on 2026-09-17; the
+working tree is clean. The Done history below is merged work only. T012
+migration framework is next.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -221,7 +222,25 @@ history below is merged work only. T010 campaign data is next.
   Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU, including real
   comparisons against each target's golden; workspace 158 and 65 lint
   self-tests pass per target. No new package in the lockfile; strictly
-  verify-only (no rebless command).
+   verify-only (no rebless command).
+- T010 campaign data format and schema gate in `crpg-data` (merged
+  `15ac9fb`): typed entity/aggregate documents, 17 schemars-generated schemas
+  with a real read-only drift test (gate 7), canonical JSON writer, flat
+  package resolver/lock APIs, loader/index, tick-wait event IR, and the
+  ten-file `one_area_one_creature` fixture that loads and reserializes
+  byte-identically.
+- T011a positioned validation in `crpg-data` (merged `2f801b5`): collected
+  `validate`/`validate_files` over the `Diagnostic` model, shared path
+  classifier, exact 15-diagnostic `broken_references` snapshot plus the
+  data-owned `expected.json` gate manifest; followed by a test-only hardening
+  (`ab7d208`) pinning duplicate slugs for every slug-bearing kind and
+  embedded-graph reachability.
+- T011b `crpgc validate` in `crpg-cli` (merged `d45f1b1`): thin read-only
+  traversal over T011a's API with plain/canonical-JSON rendering and 0/1/2
+  exits, plus the authorized replay first-position-flag usage fix; gate 8 is
+  live as an ordinary manifest-driven black-box test. Native Windows/MSVC
+  gates green (data 46, CLI 75, full workspace, 65 lint self-tests, deny
+  clean); Linux results recorded in the task files.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -252,9 +271,8 @@ history below is merged work only. T010 campaign data is next.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T010 campaign data in `crpg-data` is next — the replay harness, both native
-  baselines, and the `crpgc replay` wrapper are all merged, so it is
-  unblocked.
+- T012 migration framework in `crpg-data` is next — the campaign format,
+  validation, and `crpgc validate` gate are all merged, so it is unblocked.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -406,3 +424,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported completed final audit, passing native reruns and release fallback tests, LF/no-BOM byte and temporary-index checks, and empty scoped source diff. Implementation/verification is complete in the working tree awaiting review/merge; T009a remains uncommitted and T009c retains priority before T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Recorded the merge of T009a's typed replay and T009c's Windows-primary/Linux-supported native golden policy onto `master` (commit `bb9a702`, pushed to `origin`). Next is T009b's thin `crpgc replay` wrapper, then T010.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Recorded the `crpgc replay` wrapper (thin consumer of `play_and_verify`, exit codes 0/1/2, provisional reference apply, crate-opened docs) landed on `master` with both native gates green; next is T010 campaign data in `crpg-data`.
+- 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Recorded the pushed campaign format, positioned validation with its slug/graph test hardening, and thin `crpgc validate` wrapper with live gate 8; next is T012 migration framework.

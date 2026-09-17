@@ -93,11 +93,13 @@ Rarely, and deliberately: reviewing a whole phase before starting the next one, 
 
 ## 7. Right now
 
-**Current handoff (2026-09-07):** T009a, T009c, and T009b are merged on
-`master`; all required gates passed on native Windows/MSVC and genuine
-Linux/GNU in WSL Ubuntu 24.04. T010 campaign data is next. Follow
-`PROJECT_STATE.md` and the completion records
-[T009c](../tasks/T009c.md) and [T009b](../tasks/T009b.md).
+**Current handoff (2026-09-17):** T010, T011a (plus its slug/graph coverage
+follow-up), and T011b are merged on `origin/master` through `d45f1b1`;
+the Windows/MSVC gates passed on every commit and the Linux/GNU results are
+recorded in the task files. T012 migration framework is next. Follow
+`PROJECT_STATE.md` and the task records
+[T010](../tasks/T010.md), [T011a](../tasks/T011a.md) and
+[T011b](../tasks/T011b.md).
 the bootstrap checklist below is historical, not a
 direction to commit the current working tree or repeat completed setup.
 
@@ -119,3 +121,4 @@ Step 5 is the actual project. Everything above is bookkeeping that makes step 5 
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated the handoff to the reported completed final audit and working-tree implementation/verification completion. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the current handoff to the merged state; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the current handoff to the merged `crpgc replay` wrapper; T010 campaign data is next.
+- 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Updated the current handoff to the merged campaign format, validation, and `crpgc validate` wrapper; T012 migration framework is next.

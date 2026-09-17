@@ -21,9 +21,14 @@ campaign format, netcode, AI, and server are untouched.
 > baseline, each compared against its own independently generated golden.
 > T009b's thin `crpgc replay` wrapper in `crpg-cli` is
 > merged: `crpgc replay <path> [--golden <path>]` verifies a replay against
-> its native golden with exit codes 0/1/2. T010 campaign data is next. See
+> its native golden with exit codes 0/1/2. T010's campaign data format
+> (schemas, canonical writer, loader) plus T011a's positioned validation and
+> T011b's thin `crpgc validate <campaign-root> [--json]` wrapper are merged,
+> with the schema-drift gate and the fixture-validation gate live. T012
+> migration framework is next. See
 > the [T009c completion record](tasks/T009c.md),
-> [T009b](tasks/T009b.md) and
+> [T009b](tasks/T009b.md), [T010](tasks/T010.md),
+> [T011a](tasks/T011a.md), [T011b](tasks/T011b.md) and
 > [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ---
@@ -194,3 +199,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported completed final audit and implementation/verification completion in the working tree. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the status block to the merged replay harness and native golden gates; T009b's `crpgc replay` wrapper is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the status block to the merged `crpgc replay` wrapper; T010 campaign data is next.
+- 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Updated the status block to the merged campaign format, positioned validation, and `crpgc validate` wrapper with both gates live; T012 migration framework is next.

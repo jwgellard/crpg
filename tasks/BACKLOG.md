@@ -74,9 +74,10 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| **T010** | **next** | — | `crpg-data`: entity/aggregate schemas, package ids, canonical writer, resolver/lock APIs, loader/index, tick-wait event IR |
-| T011 | open | — | Validation and positioned diagnostics, `crpgc validate --json` |
-| T012 | open | — | Migration framework |
+| **T010** | **done** | 2026-09-17 | `crpg-data`: entity/aggregate schemas, package ids, canonical writer, resolver/lock APIs, loader/index, tick-wait event IR |
+| **T011a** | **done** | 2026-09-17 | `crpg-data`: deterministic positioned validation, `Diagnostic` model, 15-diagnostic `broken_references` snapshot + `expected.json` manifest (E004 split half) |
+| **T011b** | **done** | 2026-09-17 | Thin `crpgc validate` wrapper (`crpg-cli`): read-only traversal, 0/1/2 exits, gate-8 fixture gate over the data-owned manifest (E004 split half) |
+| **T012** | **next** | — | Migration framework |
 | T013 | open | — | Scaffolding/introspection CLI, including thin `crpgc lock` and run wrappers |
 
 ## Phase 3 — Rules kernel
@@ -202,6 +203,7 @@ Record it here, one line per week.
 |---|---|---|
 | 2026-09-06 | 16 | T001–T005c plus T006a–e, T007, T008a and T008b are merged. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
 | 2026-09-07 | 19 | T009a (typed replay), T009c (Windows-primary/Linux-supported native goldens, ADR-0012) and T009b (thin `crpgc replay` wrapper) merged. Three review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. T010 campaign data is next. |
+| 2026-09-17 | 22 | T010 (campaign data format and schema gate), T011a (positioned validation in `crpg-data`) and T011b (thin `crpgc validate` wrapper) merged and pushed to `origin`. The T011a slug/graph coverage follow-up merged alongside T011a and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T012 migration framework is next. |
 
 ---
 
@@ -226,3 +228,4 @@ Record it here, one line per week.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c count correction · Corrected the active workspace total to 135 (134 unit/integration + 1 doctest), matching the reported breakdown of core 91, sim 24, testkit 19, and core doctest 1. Verification status and merged throughput are unchanged.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Marked T009a and T009c done (merged to `master` in `bb9a702`), T009b next, throughput at 18.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Marked T009b done (merged to `master`), T010 next, throughput at 19.
+- 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Marked T010, T011a and T011b done (pushed to `origin` in `15ac9fb`, `2f801b5`/`ab7d208` and `d45f1b1`), T012 next, throughput at 22; the slug/graph coverage follow-up is a fix, not a counted task.
