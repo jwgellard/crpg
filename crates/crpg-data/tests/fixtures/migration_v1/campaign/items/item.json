@@ -1,0 +1,9 @@
+{
+  "_note": "T012 migration fixture",
+  "id": "00000000000000000000000008",
+  "name": "fixture.creature",
+  "schema": "crpg.item/1",
+  "slug": "item",
+  "stats": {},
+  "tags": []
+}

@@ -28,7 +28,7 @@
           "type": "string"
         },
         "schema": {
-          "const": "crpg.item/1",
+          "const": "crpg.item/2",
           "type": "string"
         },
         "slug": {

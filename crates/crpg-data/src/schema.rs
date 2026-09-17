@@ -108,7 +108,7 @@ pub fn generated_schemas() -> Result<BTreeMap<String, Vec<u8>>, DataError> {
     document_schema!(World, "crpg.world/1", "world.schema.json");
     document_schema!(Area, "crpg.area/1", "area.schema.json");
     document_schema!(Creature, "crpg.creature/1", "creature.schema.json");
-    document_schema!(Item, "crpg.item/1", "item.schema.json");
+    document_schema!(Item, "crpg.item/2", "item.schema.json");
     document_schema!(Dialogue, "crpg.dialogue/1", "dialogue.schema.json");
     document_schema!(Quest, "crpg.quest/1", "quest.schema.json");
     document_schema!(Faction, "crpg.faction/1", "faction.schema.json");

@@ -172,7 +172,7 @@ fn extra_entities(files: &mut Files) {
     for (p, value) in [
         (
             "items/nested/item.json",
-            json!({"schema":"crpg.item/1","id":id(10),"slug":"i","name":"i","stats":{},"tags":[]}),
+            json!({"schema":"crpg.item/2","id":id(10),"slug":"i","name":"i","stats":{},"tags":[]}),
         ),
         (
             "factions/faction.json",
@@ -393,6 +393,70 @@ fn lexical_read_and_layout_order_and_illegal_placements() {
     assert!(
         matches!(load_campaign(&files,&engine()), Err(DataError::Layout { path:Some(p), .. }) if p == path("campaign.lock"))
     );
+}
+
+#[test]
+fn migration_sits_inside_reads_with_fixed_precedence() {
+    // Syntax wins over an old tag that would otherwise migrate.
+    assert!(matches!(
+        read_document(b"{\"schema\":\"crpg.item/1\",\"stats\":1.0}"),
+        Err(DataError::Malformed { path: None, .. })
+    ));
+    // Unsupported still wins over typed-field errors; old invalid payloads
+    // fail as malformed rather than silently repairing.
+    assert!(matches!(
+        read_document(b"{\"schema\":\"crpg.item/1\"}"),
+        Err(DataError::Malformed { path: None, .. })
+    ));
+    // Required-file and collision checks beat migration errors.
+    let mut files = support::fixture_files();
+    files.remove(&path("campaign.json"));
+    files.insert(
+        path("items/item.json"),
+        b"{\"schema\":\"crpg.item/1\"}".to_vec(),
+    );
+    assert!(matches!(
+        load_campaign(&files, &engine()),
+        Err(DataError::Layout { path: None, .. })
+    ));
+    // Lexical first read failure wins: items/... migrates badly before worlds/... parses badly.
+    let mut files = support::fixture_files();
+    files.insert(
+        path("items/item.json"),
+        b"{\"schema\":\"crpg.item/1\"}".to_vec(),
+    );
+    files.insert(path("worlds/world.json"), b"invalid".to_vec());
+    assert!(matches!(
+        load_campaign(&files, &engine()),
+        Err(DataError::Malformed { path: Some(p), .. }) if p == path("items/item.json")
+    ));
+    // Migration failure beats a layout error whose own read succeeds.
+    let mut files = support::fixture_files();
+    files.insert(
+        path("items/item.json"),
+        b"{\"schema\":\"crpg.item/1\"}".to_vec(),
+    );
+    files.insert(
+        path("unknown.json"),
+        files[&path("creatures/creature.json")].clone(),
+    );
+    assert!(matches!(
+        load_campaign(&files, &engine()),
+        Err(DataError::Malformed { path: Some(p), .. }) if p == path("items/item.json")
+    ));
+    // Old and new item bytes converge through one dispatcher; locks keep current tags.
+    let old = canonical_json(&json!({"schema":"crpg.item/1","id":Ulid::from_u128(8),"slug":"item","name":"fixture.creature","stats":{},"tags":[]})).unwrap();
+    let Document::Item(migrated) = read_document(&old).unwrap() else {
+        panic!("migrated item")
+    };
+    assert_eq!(migrated.id, Ulid::from_u128(8));
+    let current = write_document(&Document::Item(migrated.clone())).unwrap();
+    let current_value: Value = serde_json::from_slice(&current).unwrap();
+    assert_eq!(current_value["schema"], json!("crpg.item/2"));
+    assert_eq!(read_document(&current).unwrap(), Document::Item(migrated));
+    let fixture = support::fixture_files();
+    assert!(read_campaign_lock(&fixture[&path("campaign.lock")]).is_ok());
+    assert!(read_assets_lock(&fixture[&path("assets/assets.lock")]).is_ok());
 }
 
 #[test]

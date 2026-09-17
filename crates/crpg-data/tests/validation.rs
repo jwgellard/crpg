@@ -193,7 +193,7 @@ fn broken_fixture_loads_and_matches_checked_in_snapshot() {
         fs::read(snapshot_path).unwrap()
     );
     assert_eq!(validate_files(&files, &engine()), diagnostics);
-    // The data-owned gate manifest lists exactly these two roots in order.
+    // The data-owned gate manifest lists exactly three roots in sorted order.
     let manifest: Value = serde_json::from_slice(
         &fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/expected.json"))
             .unwrap(),
@@ -204,6 +204,7 @@ fn broken_fixture_loads_and_matches_checked_in_snapshot() {
         json!([
             {"expect": "diagnostics", "root": "broken_references",
              "snapshot": "tests/snapshots/broken_references.diagnostics.json"},
+            {"expect": "clean", "root": "migration_v1/campaign", "snapshot": null},
             {"expect": "clean", "root": "one_area_one_creature", "snapshot": null},
         ])
     );

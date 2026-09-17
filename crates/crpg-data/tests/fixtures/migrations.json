@@ -1,0 +1,10 @@
+[
+  {
+    "document": "items/item.json",
+    "from": 1,
+    "golden": "migration_v1/expected.json",
+    "root": "migration_v1/campaign",
+    "schema_type": "crpg.item",
+    "to": 2
+  }
+]

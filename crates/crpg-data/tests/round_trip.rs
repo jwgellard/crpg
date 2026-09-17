@@ -442,3 +442,30 @@ fn required_nullable_and_unknown_fields_at_every_shape() {
         serde_json::from_value::<DataValue>(json!({"type":"bool","value":true,"extra":0})).is_err()
     );
 }
+
+#[test]
+fn old_and_new_item_bytes_converge_to_current() {
+    let item = Item {
+        id: Ulid::from_u128(8),
+        slug: "item".into(),
+        name: "fixture.creature".into(),
+        note: Some("T012 migration fixture".into()),
+        stats: BTreeMap::new(),
+        tags: Vec::new(),
+    };
+    let current_bytes = write_document(&Document::Item(item.clone())).unwrap();
+    let current_value: serde_json::Value = serde_json::from_slice(&current_bytes).unwrap();
+    assert_eq!(current_value["schema"], json!("crpg.item/2"));
+    let mut old_value = current_value.clone();
+    old_value["schema"] = json!("crpg.item/1");
+    let old_bytes = canonical_json(&old_value).unwrap();
+    assert_eq!(
+        read_document(&old_bytes).unwrap(),
+        Document::Item(item.clone())
+    );
+    assert_eq!(read_document(&current_bytes).unwrap(), Document::Item(item));
+    assert_eq!(
+        write_document(&read_document(&old_bytes).unwrap()).unwrap(),
+        current_bytes
+    );
+}

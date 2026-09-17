@@ -6,6 +6,11 @@
   },
   {
     "expect": "clean",
+    "root": "migration_v1/campaign",
+    "snapshot": null
+  },
+  {
+    "expect": "clean",
     "root": "one_area_one_creature",
     "snapshot": null
   }

@@ -17,12 +17,14 @@ The only internal dependency is `crpg-core`.
 - `loader` accepts a logical path-to-bytes map and derives the complete object index.
 - `schema` generates 17 self-contained draft-2020-12 schemas from Rust shapes.
 - `error` exposes fail-fast structural errors, without collected diagnostics.
+- `migrations` owns the single production registry, pure per-type chains and the
+  public `SchemaVersion` view consumed by the byte reader and the coverage gate.
 
-Document reading passes through canonical parsing, schema selection, typed decoding,
-then lock-local checks. Loading adds layout, engine compatibility, object indexing,
-package coverage and assets-lock digest checks. Serialization shares those checks
-except engine compatibility and derives identity independently of the mutable index.
-Callers own filesystem I/O.
+Document reading passes through canonical parsing, envelope checks, current-or-
+migrated schema selection, typed decoding, then lock-local checks. Loading adds
+layout, engine compatibility, object indexing, package coverage and assets-lock
+digest checks. Serialization shares those checks except engine compatibility and
+derives identity independently of the mutable index. Callers own filesystem I/O.
 
 ## Authorities and consumers
 
@@ -39,8 +41,9 @@ campaign.lock, and future packaged-byte authority to a separate manifest.
 relative integer ticks; no execution or live-event dispatch belongs here.
 
 Future rules conversion, editor, script and CLI consumers inherit portable source
-bytes and typed references, never persisted interned handles. T012 migrations,
-T013 wrappers and T014 conversion remain separate work.
+bytes and typed references, never persisted interned handles. T012a migrations
+are implemented as described below; T013 wrappers and T014 conversion remain
+separate work.
 
 ## Semantic validation (T011a)
 
@@ -82,8 +85,52 @@ and tests never write it. The read-only `schema_drift` integration test compares
 the entire 17-file set and exact bytes in the existing Windows/Linux workspace
 test jobs. Scoped attributes pin schema and fixture bytes to LF.
 
+## Migrations (T012a)
+
+`migrations` holds one sorted fifteen-family registry backing both the
+dispatcher and `schema_versions`; only `crpg.item` is at version 2 behind a
+tag-only `1 -> 2` edge, while the other fourteen families and both locks stay
+at version 1 with no edges. `read_document` keeps syntax and envelope phases,
+then migrates a complete historical chain in memory before strict typed decode
+and lock-local checks, preserving syntax-over-unsupported-over-typed precedence
+and per-file lexical order; `load_campaign` runs those migrated reads inside
+its lexical-read phase before layout, engine, index, coverage and digest
+phases, never erasing engine requirements. Locks are covered without edges and
+never repaired: resolutions, checksums and the assets-lock digest stay with
+their T010 authorities. The eleven-file `migration_v1/campaign` fixture pins
+ten byte-identical `one_area_one_creature` files plus one `crpg.item/1` item,
+its `migration_v1/expected.json` golden maps every path to current canonical
+text with only the item tag advanced, `migrations.json` carries the single
+edge, and the three-root gate manifest lets T011b validate the old campaign to
+`[]` read-only. Immediate-edge oracles for superseded edges would live under
+`migration_steps/<type>/<from>-to-<to>.json`; latest edges use their campaign
+goldens. The unignored `migrations` and `migration_coverage` suites prove the
+golden, registry, schema and serde agreement plus every prescribed failure on
+in-memory copies without touching tracked files.
+
 ## Agent log
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established approved module and authority boundaries before source implementation. This opening record does not claim completed implementation or passing gates.
 - 2026-09-10 (UTC) · opencode/muse-spark + T010 implementation · Reconciled the opening record with the verified implementation, documenting the hand-written kind-tag deserializers and the checked-in schema/fixture bytes.
 - 2026-09-13 (UTC) · opencode/muse-spark + T011a implementation · Documented the collected semantic-validation flow, the diagnostic and classifier authorities shared with the loader, and the broken snapshot plus gate-manifest consumers owned for T011b.
+- 2026-09-17 (UTC) · opencode/muse-spark + T012a implementation · Documented the single-registry migration flow, the item-only current tags, the historical golden and coverage gate, superseding the migrations-deferred line without copying ADR rationale.
+
+## Migration gate hardening after review
+
+The test-only `tests/support/migration_gate.rs` now supplies shared validation
+for immutable fixture snapshots, strict manifest rows, registry/schema/serde
+agreement, contiguous edge coverage, full campaign output maps and immediate
+oracle inventory. Both positive gates and negative mutation tests call these
+validators. This replaces the initial negative checks that only compared
+changed values or exercised JSON parsing independently of the gate.
+
+Private registry tests compare actual registered edges with manifest rows and
+execute each edge directly against its checked-in source/destination oracle.
+Historical destinations use the conventional step file; current destinations
+use the named document in their campaign golden. Inventory comparison rejects
+extra files as well as missing ones. A two-edge private test demonstrates that
+whole-chain output cannot substitute for an earlier immediate destination.
+Only tests include this support module; production loading remains pure and
+the public API, Item-only version bump and lock authorities are unchanged.
+
+- 2026-09-17 (UTC) · opencode/gpt-6-astra + T012a review fixes · Documented the shared hard gate and direct registered-edge oracle checks, superseding the initial claim that all prescribed negative checks were already proven. Wider manifest numbers now fail strict u32 decoding instead of truncating into valid edges.

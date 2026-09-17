@@ -207,6 +207,23 @@ fn every_asset_authority_field_changes_digest() {
 }
 
 #[test]
+fn lock_readers_accept_current_and_reject_future_without_repair() {
+    let files = support::fixture_files();
+    let campaign_bytes = &files[&"campaign.lock".parse().unwrap()];
+    let assets_bytes = &files[&"assets/assets.lock".parse().unwrap()];
+    assert!(read_campaign_lock(campaign_bytes).is_ok());
+    assert!(read_assets_lock(assets_bytes).is_ok());
+    assert!(matches!(
+        read_document(b"{\"schema\":\"crpg.campaign-lock/2\",\"packages\":[],\"assets_lock\":\"957bc137f1abb3cde6cee277d10c099b1dcd2f8814a5fd0e29b1df3506ee44fb\"}"),
+        Err(DataError::UnsupportedSchema { .. })
+    ));
+    assert!(matches!(
+        read_document(b"{\"schema\":\"crpg.assets-lock/2\",\"assets\":{}}"),
+        Err(DataError::UnsupportedSchema { .. })
+    ));
+}
+
+#[test]
 fn pathful_and_pathless_errors_render_logical_locations() {
     assert_eq!(
         DataError::Malformed {

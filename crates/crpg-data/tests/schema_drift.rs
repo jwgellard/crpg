@@ -166,10 +166,12 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
         if embedded {
             assert!(shape["properties"].get("schema").is_none());
         } else {
-            assert_eq!(
-                shape["properties"]["schema"]["const"],
+            let expected = if name == "item" {
+                "crpg.item/2".to_string()
+            } else {
                 format!("crpg.{name}/1")
-            );
+            };
+            assert_eq!(shape["properties"]["schema"]["const"], expected);
             assert!(required.contains(&json!("schema")));
         }
         assert!(!required.contains(&json!("_note")));

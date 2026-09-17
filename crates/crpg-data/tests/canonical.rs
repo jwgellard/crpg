@@ -92,6 +92,8 @@ fn rejects_illegal_json_before_schema_selection() {
         b"{\"schema\":\"future/1\",\"schema\":\"future/1\"}",
         b"{\"schema\":\"future/1\",\"x\":[{\"a\":1,\"a\":2}]}",
         b"{\"schema\":\"future/1\",",
+        b"{\"schema\":\"crpg.item/1\",\"x\":1.0}",
+        b"{\"schema\":\"crpg.item/1\",\"x\":-0}",
         b"\xff",
         b"\xef\xbb\xbf{}",
         b"{} {}",

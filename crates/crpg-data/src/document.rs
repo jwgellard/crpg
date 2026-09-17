@@ -392,7 +392,10 @@ pub struct VariablesDocument {
     pub note: Option<String>,
 }
 
-/// Complete version-1 persistence envelope; fields share the schema-tag object.
+/// Complete persistence envelope; fields share the schema-tag object.
+///
+/// All families remain at version 1 except the item family, whose current
+/// tag is `crpg.item/2` behind the registered `1 -> 2` migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum Document {
@@ -409,7 +412,7 @@ pub enum Document {
     #[serde(rename = "crpg.creature/1")]
     Creature(Creature),
     /// Item prefab.
-    #[serde(rename = "crpg.item/1")]
+    #[serde(rename = "crpg.item/2")]
     Item(Item),
     /// Dialogue entity.
     #[serde(rename = "crpg.dialogue/1")]
@@ -443,41 +446,30 @@ pub enum Document {
     AssetsLock(crate::AssetsLock),
 }
 
-pub(crate) const SCHEMA_IDS: [&str; 15] = [
-    "crpg.campaign/1",
-    "crpg.world/1",
-    "crpg.area/1",
-    "crpg.creature/1",
-    "crpg.item/1",
-    "crpg.dialogue/1",
-    "crpg.quest/1",
-    "crpg.faction/1",
-    "crpg.graph/1",
-    "crpg.placements/1",
-    "crpg.triggers/1",
-    "crpg.locale/1",
-    "crpg.variables/1",
-    "crpg.campaign-lock/1",
-    "crpg.assets-lock/1",
-];
-
-/// Reads syntax, envelope, supported schema, typed fields, then local invariants.
-pub fn read_document(bytes: &[u8]) -> Result<Document, DataError> {
-    let value = crate::canonical::parse(bytes)?;
-    let schema = value
-        .as_object()
-        .and_then(|o| o.get("schema"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| crate::error::malformed("expected object with string schema"))?;
-    if !SCHEMA_IDS.contains(&schema) {
-        return Err(DataError::UnsupportedSchema {
-            path: None,
-            found: schema.into(),
-        });
-    }
-    let document = serde_json::from_value(value).map_err(crate::error::malformed)?;
+/// Decodes one current-tagged value with strict typed rules and lock checks.
+///
+/// Shared by the byte reader and the migration driver so historical values
+/// are validated through one helper rather than recursing through
+/// [`read_document`]. Missing or unknown fields fail as malformed; lock-local
+/// failures retain their existing lock errors.
+pub(crate) fn decode_current(value: Value) -> Result<Document, DataError> {
+    let document: Document = serde_json::from_value(value).map_err(crate::error::malformed)?;
     validate_local(&document)?;
     Ok(document)
+}
+
+/// Reads syntax, envelope, current or migrated schema, typed fields, then local invariants.
+///
+/// Phase 1 parses duplicate-rejecting integer-only JSON, phase 2 requires an
+/// object with a string schema, phase 3 selects a supported current tag or a
+/// complete registered historical chain and applies it in memory, phase 4
+/// decodes the resulting current document with unchanged strict typed rules,
+/// and phase 5 enforces lock-local invariants. Syntax still wins over an
+/// unsupported schema, which still wins over typed-field errors.
+pub fn read_document(bytes: &[u8]) -> Result<Document, DataError> {
+    let mut value = crate::canonical::parse(bytes)?;
+    crate::migrations::migrate_to_current(&mut value)?;
+    decode_current(value)
 }
 
 /// Checks local invariants and writes a complete canonical schema envelope.
