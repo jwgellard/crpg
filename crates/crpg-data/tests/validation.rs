@@ -326,6 +326,164 @@ fn duplicate_slugs_fail_for_every_slug_bearing_kind() {
         assert_eq!(diagnostics[0].pointer, "/slug");
         assert!(diagnostics[0].message.contains(file));
     }
+    // Pair-inserted kinds with no fixture presence also collide within kind.
+    // Each pair uses an existing locale key so no missing-locale diagnostic
+    // leaks in alongside the duplicate slug.
+    let item_pair = |n: u128, slug: &str| {
+        Document::Item(Item {
+            id: id(n),
+            slug: slug.into(),
+            name: "fixture.creature".into(),
+            note: None,
+            stats: BTreeMap::new(),
+            tags: Vec::new(),
+        })
+    };
+    let mut campaign = valid_loaded();
+    campaign
+        .documents
+        .insert(path("items/a.json"), item_pair(9301, "dup-item"));
+    campaign
+        .documents
+        .insert(path("items/z-extra.json"), item_pair(9302, "dup-item"));
+    let diagnostics = validate(&campaign);
+    assert_eq!(
+        only_codes(&diagnostics),
+        vec![DiagnosticCode::DuplicateSlug]
+    );
+    assert_eq!(
+        diagnostics[0].file.as_ref().map(SourcePath::as_str),
+        Some("items/z-extra.json")
+    );
+    assert_eq!(diagnostics[0].pointer, "/slug");
+    let faction_pair = |n: u128, slug: &str| {
+        Document::Faction(Faction {
+            id: id(n),
+            slug: slug.into(),
+            name: "fixture.creature".into(),
+            note: None,
+            relations: Vec::new(),
+        })
+    };
+    let mut campaign = valid_loaded();
+    campaign
+        .documents
+        .insert(path("factions/a.json"), faction_pair(9311, "dup-faction"));
+    campaign.documents.insert(
+        path("factions/z-extra.json"),
+        faction_pair(9312, "dup-faction"),
+    );
+    let diagnostics = validate(&campaign);
+    assert_eq!(
+        only_codes(&diagnostics),
+        vec![DiagnosticCode::DuplicateSlug]
+    );
+    assert_eq!(
+        diagnostics[0].file.as_ref().map(SourcePath::as_str),
+        Some("factions/z-extra.json")
+    );
+    assert_eq!(diagnostics[0].pointer, "/slug");
+    let dialogue_pair = |n: u128, node: u128, slug: &str| {
+        Document::Dialogue(Dialogue {
+            id: id(n),
+            slug: slug.into(),
+            name: "fixture.creature".into(),
+            note: None,
+            entry: id(node),
+            nodes: vec![DialogueNode {
+                id: id(node),
+                body: DialogueBody::End,
+            }],
+        })
+    };
+    let mut campaign = valid_loaded();
+    campaign.documents.insert(
+        path("dialogue/a.json"),
+        dialogue_pair(9321, 9323, "dup-dialogue"),
+    );
+    campaign.documents.insert(
+        path("dialogue/z-extra.json"),
+        dialogue_pair(9322, 9324, "dup-dialogue"),
+    );
+    let diagnostics = validate(&campaign);
+    assert_eq!(
+        only_codes(&diagnostics),
+        vec![DiagnosticCode::DuplicateSlug]
+    );
+    assert_eq!(
+        diagnostics[0].file.as_ref().map(SourcePath::as_str),
+        Some("dialogue/z-extra.json")
+    );
+    assert_eq!(diagnostics[0].pointer, "/slug");
+    let quest_pair = |n: u128, state: u128, slug: &str| {
+        Document::Quest(Quest {
+            id: id(n),
+            slug: slug.into(),
+            name: "fixture.creature".into(),
+            note: None,
+            entry: id(state),
+            states: vec![QuestState {
+                id: id(state),
+                name: "fixture.creature".into(),
+                terminal: true,
+                on_enter: Vec::new(),
+                transitions: Vec::new(),
+            }],
+        })
+    };
+    let mut campaign = valid_loaded();
+    campaign
+        .documents
+        .insert(path("quests/a.json"), quest_pair(9331, 9333, "dup-quest"));
+    campaign.documents.insert(
+        path("quests/z-extra.json"),
+        quest_pair(9332, 9334, "dup-quest"),
+    );
+    let diagnostics = validate(&campaign);
+    assert_eq!(
+        only_codes(&diagnostics),
+        vec![DiagnosticCode::DuplicateSlug]
+    );
+    assert_eq!(
+        diagnostics[0].file.as_ref().map(SourcePath::as_str),
+        Some("quests/z-extra.json")
+    );
+    assert_eq!(diagnostics[0].pointer, "/slug");
+    let graph_pair = |n: u128, node: u128, slug: &str| {
+        Document::Graph(EventGraph {
+            id: id(n),
+            slug: slug.into(),
+            name: "fixture.creature".into(),
+            note: None,
+            entry: Trigger::AreaEnter,
+            start: id(node),
+            nodes: vec![Node {
+                id: id(node),
+                body: NodeBody::Wait { ticks: 0 },
+            }],
+            edges: Vec::new(),
+            locals: Vec::new(),
+        })
+    };
+    let mut campaign = valid_loaded();
+    campaign.documents.insert(
+        path("scripts/graphs/a.json"),
+        graph_pair(9341, 9343, "dup-graph"),
+    );
+    campaign.documents.insert(
+        path("scripts/graphs/z-extra.json"),
+        graph_pair(9342, 9344, "dup-graph"),
+    );
+    let diagnostics = validate(&campaign);
+    assert_eq!(
+        only_codes(&diagnostics),
+        vec![DiagnosticCode::DuplicateSlug]
+    );
+    assert_eq!(
+        diagnostics[0].file.as_ref().map(SourcePath::as_str),
+        Some("scripts/graphs/z-extra.json")
+    );
+    assert_eq!(diagnostics[0].pointer, "/slug");
     // Embedded placement and graph entries participate in the same rule.
     let mut campaign = valid_loaded();
     let Document::Placements(placements) = campaign
@@ -735,6 +893,29 @@ fn graph_ports_case_bounds_duplicates_and_reachability() {
         vec![DiagnosticCode::UnreachableNode]
     );
     assert_eq!(diagnostics[0].pointer, "/nodes/1");
+    // The same reachability rule applies inside an embedded triggers graph.
+    let mut campaign = valid_loaded();
+    let Document::Triggers(triggers) = campaign
+        .documents
+        .get_mut(&path("areas/start/triggers.json"))
+        .unwrap()
+    else {
+        panic!("triggers doc")
+    };
+    triggers.graphs[0].nodes.push(Node {
+        id: id(9504),
+        body: NodeBody::Wait { ticks: 0 },
+    });
+    let diagnostics = validate(&campaign);
+    assert_eq!(
+        only_codes(&diagnostics),
+        vec![DiagnosticCode::UnreachableNode]
+    );
+    assert_eq!(
+        diagnostics[0].file.as_ref().map(SourcePath::as_str),
+        Some("areas/start/triggers.json")
+    );
+    assert_eq!(diagnostics[0].pointer, "/graphs/0/nodes/1");
     // Sequence children count as reachable; an invalid start suppresses
     // reachability instead of cascading.
     let graph_id = id(9511);
