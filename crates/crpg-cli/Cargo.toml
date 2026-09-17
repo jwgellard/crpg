@@ -10,6 +10,11 @@ license.workspace = true
 # All existing workspace crates; the ALLOWED table permits crpg-cli anything
 # except crpg-godot, and none of these import upward.
 crpg-core = { path = "../crpg-core" }
+# T011b: crpgc validate is a thin consumer of crpg-data's validate_files,
+# campaign_document_path, diagnostic_for_data_error and canonical_json;
+# directory traversal and process behavior stay in this crate, every
+# validation semantic stays in data. Same legal data-to-CLI direction.
+crpg-data = { path = "../crpg-data" }
 crpg-sim = { path = "../crpg-sim" }
 crpg-testkit = { path = "../crpg-testkit" }
 serde_json = { workspace = true }

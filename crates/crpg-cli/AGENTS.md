@@ -2,8 +2,10 @@
 
 Scope note: this file describes the T009b opening of the crate: the `replay`
 subcommand, the provisional reference-intents apply, and the exit-code
-contract. Later subcommands (`validate`, `migrate`, `pack`, `run`, `diff`
-and the T013 argument-parsing decision) extend this file with their tasks.
+contract — plus the T011b `validate` thin wrapper, its read-only traversal
+ownership, and its gate-8 fixture gate. Later subcommands (`migrate`, `pack`,
+`run`, `diff` and the T013 argument-parsing decision) extend this file with
+their tasks.
 
 ## Purpose
 
@@ -67,11 +69,72 @@ CLI may call them in new combinations, never reimplement their semantics.
 ## Allowed dependencies
 
 `crpg-testkit` (path), `crpg-sim` (path), `crpg-core` (path), `serde_json`
-(workspace). The ALLOWED table grants this crate everything except
-`crpg-godot`, so additions beyond these are legal but still need the usual
-task-file justification — especially any parser crate, which is exactly what
-T013 must decide. Do not add a dependency to work around a lower-crate API
-gap.
+(workspace), plus `crpg-data` (path, T011b thin edge for `validate_files`,
+the path classifier, error conversion, and the canonical writer). The ALLOWED
+table grants this crate everything except `crpg-godot`, so additions beyond
+these are legal but still need the usual task-file justification — especially
+any parser crate, which is exactly what T013 must decide. Do not add a
+dependency to work around a lower-crate API gap.
+
+## Validate contract (T011b)
+
+`crpgc validate <campaign-root> [--json]`:
+
+- `--json` may appear once before or after the root. Duplicate flags, extra
+  positionals, unknown flags, and a missing root are usage errors (exit 2).
+  A non-Unicode root parses successfully and fails later as one exit-1 `io`
+  diagnostic — argument handling uses `args_os` end to end, never `args`.
+- Exit `0` when validation returns no `Severity::Error` (warnings print in
+  plain mode and are included in JSON mode but never fail); exit `1` on any
+  `Error` — I/O, structural, or semantic — and on the two fixed-text
+  internal failures (unparsable compile-time engine version, canonical
+  serialization failure); exit `2` on usage. These are the same three
+  buckets as replay, extended, not replaced.
+- The binary collects classified bytes, calls
+  `crpg_data::validate_files(files, package engine version)` once, and
+  renders exactly what data returns, in returned order. Zero validation
+  semantics live here.
+
+## Validate invariants
+
+1. **Data owns semantics; the CLI owns traversal and process behavior.**
+   No kind tables, dangling-reference walks, graph traversal, diagnostic
+   sorting, or second diagnostic shape may exist in `crpg-cli`. The only
+   classifier is `crpg_data::campaign_document_path`; its rejections pass
+   through `diagnostic_for_data_error` unchanged as `invalid_path`.
+2. **Read-only sorted depth-first pre-order walk, `std` only.** List a
+   directory, sort entry names by file-name bytes, visit each entry
+   (symlink check via `symlink_metadata`, then classify, then read) before
+   the next sibling. Never intentionally follow symlinks — not even a
+   symlinked root. Logical paths are `/`-joined component text, never
+   native separators. The first failure in walk order wins.
+3. **One CLI-owned diagnostic shape: `io`.** Always `Error`, empty pointer,
+   no fix, portable `cannot <op> <logical>: <kind>` text (`open root`,
+   `list`, `classify`, `read`; stable snake_case kinds; literal
+   `<campaign-root>` when no logical path exists). Never embed raw
+   `io::Error` text, native separators, or absolute paths. Never
+   lossy-convert a non-Unicode component.
+4. **Output streams are fixed.** Plain: `Display` lines to stderr, stdout
+   empty, clean runs silent. JSON: data's `canonical_json` array to stdout
+   (`[]\n` when clean), stderr empty. Usage is always one `crpgc: ...`
+   line on stderr with exit 2; `--json` never promises JSON for an
+   unparsable command line.
+5. **Gate 8 is the ordinary black-box test, never a placeholder.** The
+   `gate_8_manifest_drives_every_fixture_campaign` test reads T011a's
+   data-owned `expected.json` as data, requires discovered `campaign.json`
+   roots to equal manifest roots exactly (non-vacuous), and invokes the
+   shipped binary per entry. Future fixtures extend the manifest in
+   `crpg-data`; this test picks them up generically with no CLI edit.
+6. **Replay stays byte-for-byte, exit-for-exit** — plus the one authorized
+   T011b repair: a flag in first position (`replay --bogus`,
+   `replay --golden g`) is usage exit 2, not missing-file exit 1, with
+   regression tests on both sides. No other replay semantic, default, or
+   golden behavior may change here.
+7. **No new dependencies for validate.** `std` plus the existing
+   `crpg-data` path edge (thin data direction), `serde_json`, and the path
+   crates only. The engine version type is inferred from `validate_files`,
+   so no semver edge exists. No parser, walker, error, snapshot, or
+   tempfile crate — T013 still owns the parser-framework decision.
 
 ## Definition of done for any change
 
@@ -109,7 +172,17 @@ either is a defect, not a best-effort gap.
 - **Exit code 2 is usage, not file trouble.** Unknown subcommand, missing
   replay path, unknown flag, missing `--golden` value. Keep filesystem and
   content failures in 1 so scripts can distinguish "user error" from "CI
-  failure".
+  failure". Validate inherits the same buckets: a missing campaign root
+  argument is usage (2); a supplied-but-unreadable root is `io` (1).
+- **Validate tests are black-box first, seams second.** `tests/validate.rs`
+  drives `env!("CARGO_BIN_EXE_crpgc")` over real fixture copies and asserts
+  exit codes plus exact stream bytes. `main.rs` unit tests cover only the
+  private parser matrix, the `io`/exit/render mapping with synthetic values
+  (warnings-only exit 0 exists only synthetically — T011a emits Error
+  today), and the `WalkFs`-injected collector seams (unreadable entries,
+  symlinks, non-Unicode names, walk-order oracles). Real-symlink and
+  case-collision process tests are compile-time cfg-gated where creation is
+  guaranteed, never runtime-skipped.
 - **No `--golden` defaulting into the fixture set.** The default golden is a
   sibling of the replay path, never a search through testkit's goldens. A
   CLI run must verify what it is told to verify.
@@ -120,3 +193,8 @@ either is a defect, not a best-effort gap.
   for the opening task: the exit-code contract, the thin-consumer invariant,
   the verify-only line, the frozen reference apply and its drift trap, and
   the ADR-0012 cfg-gated test gate.
+- 2026-09-13 (UTC) · opencode/muse-spark + T011b implementation · Extended
+  the contract with the validate parser, read-only traversal ownership,
+  plain/canonical output rules, the live gate-8 fixture gate, the semver
+  inference dependency note, and the black-box-first test rules while
+  retaining every replay invariant.

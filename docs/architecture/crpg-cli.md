@@ -8,7 +8,11 @@ diff — headless, no Godot, no rendering.
 golden, plays through `crpg-testkit::play_and_verify`, and exits `0` on
 equality, `1` on any typed replay failure with the single-pathed diagnostic on
 stderr, `2` on a usage error. It is a thin consumer: no replay semantics live
-in this crate. Every other subcommand is planned (T013 owns the first real
+in this crate. The validate subcommand is live (T011b, 2026-09-13):
+`crpgc validate <campaign-root> [--json]` deterministically collects campaign
+document bytes, calls T011a's data-owned `validate_files`, and renders
+human or canonical machine diagnostics with the same `0/1/2` exit buckets.
+Every other subcommand is planned (T013 owns the first real
 argument parsing decision).
 
 Decisions: the platform and determinism policy it inherits is
@@ -80,8 +84,58 @@ omitting it is a path decision, never a "use any golden" trap.
 | Exists (T009b) | Planned (owner) |
 |---|---|
 | `crpgc replay` thin wrapper: args, exit codes, provisional intents | T013: first real argument-parsing decision (clap vs hand-rolled again) for the five-plus subcommand surface: `new`, `schema`, `explain`, `fmt`, `lock`, `run` |
+| `crpgc validate` thin wrapper (T011b): read-only traversal, data-owned validation, plain/canonical diagnostics, gate-8 fixture enumeration | Spec §24 remaining subcommands (`migrate`, `pack`, `diff`) as their specs land |
 | Crate-opening docs (arch doc + AGENTS.md) | Spec §24 subcommands (`validate`, `migrate`, `pack`, `diff`) as their specs land |
 | Verify-only replay gate on ADR-0012 targets | `crpgc` in product/driver roles once server capabilities exist (E020) |
+
+## CLI contract (T011b `validate`)
+
+```
+crpgc validate <campaign-root> [--json]
+
+  <campaign-root>  directory containing campaign.json
+  --json           emit one canonical JSON diagnostic array to stdout
+
+exit 0  campaign loads and has no Severity::Error diagnostic
+exit 1  I/O, structural load, or semantic Error failure
+exit 2  usage error
+```
+
+`--json` may appear once either before or after the root. Warnings print
+(plain) or are included (JSON) but never fail: exit stays `0` when no `Error`
+is present. The engine version is the compile-time Cargo package version
+parsed as semver; an unparsable version is exit 1 with a fixed internal
+line, never a panic.
+
+## Validate flow and boundaries (T011b)
+
+The implementation flow is exactly parse (`args_os`, so a non-Unicode root
+never panics) → collect classified files in sorted depth-first pre-order →
+`crpg_data::validate_files(files, package engine version)` → render the
+returned diagnostics → map no-Error/any-Error to `0/1`. Filesystem traversal
+lives in `main` behind a `WalkFs` seam (`std` only, read-only, never follows
+symlinks, `/`-joined logical paths, `campaign_document_path` as the only
+classifier); every validation semantic lives in `crpg-data`, unchanged and
+un-duplicated here — no kind tables, graph walks, diagnostic sorts, or second
+diagnostic shape. The `WalkFs` trait exists so tests can inject unreadable
+files, symlinks, non-Unicode names, and walk-order oracles without platform
+privileges; production implements it with `symlink_metadata`, unordered
+`read_dir` (the walker sorts by file-name bytes), and plain reads.
+
+Plain mode prints one data-owned `Display` line per diagnostic to stderr in
+returned order (stdout empty; a clean run is silent). JSON mode writes the
+complete vector through `crpg_data::canonical_json` to stdout (`[]\n` when
+clean; stderr empty). Collection `io` failures are the single CLI-owned
+diagnostic shape — always `Error`, empty pointer, no fix, portable
+`cannot <op> <logical>: <kind>` text with no raw OS detail — while
+classifier rejections pass through `diagnostic_for_data_error` unchanged as
+`invalid_path`. Gate 8 is the ordinary black-box test over T011a's
+data-owned `expected.json` manifest: manifest roots must equal the
+discovered `campaign.json` roots exactly, and each root is invoked through
+the shipped binary (`clean` → exit `0` with exact `[]\n`; `diagnostics` →
+exit `1` with stdout byte-equal to the checked-in snapshot). A future
+fixture-owning task extends the manifest in `crpg-data`; this test picks it
+up generically with no CLI edit.
 
 ## What consumers inherit
 
@@ -106,3 +160,7 @@ omitting it is a path decision, never a "use any golden" trap.
   reference-intents apply (caller-owns-payload), hand-rolled args with clap
   revisited at T013, and the exit-code contract that makes the CLI a
   scriptable gate.
+- 2026-09-13 (UTC) · opencode/muse-spark + T011b implementation · Documented
+  the thin `crpgc validate` wrapper: data/OS boundary with traversal
+  ownership, plain/canonical output with the 0/1/2 exit contract, gate-8
+  manifest enumeration, and the unchanged T013 parser decision.
