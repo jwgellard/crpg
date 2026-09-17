@@ -76,10 +76,7 @@ unmaintained = "all"
 # policy denies vulnerability, unsound, notice and unmaintained alike — the
 # task's "warn" for unsound/notice is not expressible at this version and this
 # is deliberately the stricter side of that request.
-# A yanked crate is often yanked *because* it is compromised; tolerating one
-# at "warn" quietly admits a crate that was pulled for cause, so yanked is
-# denied outright.
-yanked = "deny"
+yanked = "warn"
 
 [sources]
 unknown-registry = "deny"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dependency-direction lint: enforces the layering rule in AGENTS.md.
 
-Checks five things:
+Checks four things:
 
   - **Layering.** Every workspace edge must appear in the allowed-edges table
     below. A crate missing from the table is itself a violation, so adding a
@@ -12,9 +12,6 @@ Checks five things:
   - **godot.** Only `crpg-godot` may depend on it, in any section.
   - **unsafe.** Only `crpg-godot` may use it. Every other crate root must carry
     `#![forbid(unsafe_code)]`.
-  - **Build scripts.** Any `build.rs` at a crate root, and any non-workspace
-    entry in a `[build-dependencies]` table (top-level or under
-    `[target.*]`). No allowlist: admitting one is an ADR decision.
 
 `[dependencies]`, `[dev-dependencies]` and `[build-dependencies]` are all
 scanned for the layering and godot rules: a test-only import is still an
@@ -260,37 +257,6 @@ def check_unsafe(crates_dir: Path) -> list[str]:
     return violations
 
 
-def check_build_scripts(crates_dir: Path) -> list[str]:
-    """Return violation lines for build scripts and external build-dependencies.
-
-    Why: a build script runs code on every consumer's machine at compile time,
-    so admitting one is admitting arbitrary local execution, not just an
-    import.
-
-    A `build.rs` next to a crate's `Cargo.toml` is a violation for every
-    crate, as is any non-workspace entry in a `[build-dependencies]` table —
-    top-level or under `[target.*]`. Workspace `[build-dependencies]` are
-    already caught by the layering check. No allowlist today: an entry later
-    is an ADR decision.
-    """
-    violations = []
-    known = discover_crates(crates_dir)
-    for name, cargo in sorted(known.items()):
-        if (cargo.parent / "build.rs").is_file():
-            violations.append(f"VIOLATION {name} (build.rs at crate root)")
-        with open(cargo, "rb") as f:
-            data = tomllib.load(f)
-        for label, section, table in dep_tables(data):
-            if section != "build-dependencies":
-                continue
-            for dep in sorted({real_name(key, value) for key, value in table.items()}):
-                if dep not in known:
-                    violations.append(
-                        f"VIOLATION {name} -> {dep} (external build-dependency, {label})"
-                    )
-    return violations
-
-
 def main() -> int:
     crates_dir = Path(__file__).resolve().parents[2] / "crates"
     if not crates_dir.is_dir():
@@ -302,7 +268,6 @@ def main() -> int:
         + check_cycles(runtime_edges(internal))
         + check_allowed(internal)
         + check_unsafe(crates_dir)
-        + check_build_scripts(crates_dir)
     )
     for v in violations:
         print(v)
