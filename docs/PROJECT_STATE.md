@@ -418,15 +418,17 @@ now requires real target-scoped comparisons in both existing Windows and
   has a gate depending on it: contracts matter once `crpg-contracts` holds
   traits, guides once there is a campaign format to author against.
    (`docs/architecture/` was the one with a gate — §15.6 — and now exists.)
-- S001 public-repo attack surface (open, on branch `task/S001`): the security
-  review's four gaps — defangable lints, no `build.rs` ban, no secret scan,
-  and unenforced self-hosted-runner restriction — plus `yanked = "warn"` are
-  closed by S001's guard/trusted-lint jobs, `build.rs`/external
-  `[build-dependencies]` ban, `gitleaks` scan, enforced runner rule, and
-  `yanked = "deny"`. The remaining boundary is human: branch protection with
-  required status checks and maintainer review for `tools/lint/**` and
-  `.github/workflows/**` (S001 Definition of done, still to be enabled in
-  repo settings).
+- S001 public-repo attack surface (open, on branch `task/S001`, commit
+  `8f349be`): the security review's four gaps — defangable lints, no
+  `build.rs` ban, no secret scan, and unenforced self-hosted-runner
+  restriction — plus `yanked = "warn"` are closed by S001's guard/trusted-lint
+  jobs, `build.rs`/external `[build-dependencies]` ban, `gitleaks` scan,
+  enforced runner rule, and `yanked = "deny"`. Human-done 2026-09-18: the
+  `master-protection.` ruleset is active on `master` with all nine CI checks
+  (guard, secrets, check x2, deny, both lints, selftest x2) required, PR-only
+  merging, and no bypass actors (verified via API). Path-scoped review stays
+  procedural for a solo maintainer; enforcing it by path needs CODEOWNERS,
+  which S001 keeps out of scope.
 
 ---
 
@@ -451,3 +453,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Recorded the pushed campaign format, positioned validation with its slug/graph test hardening, and thin `crpgc validate` wrapper with live gate 8; next is T012 migration framework.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Recorded the committed data-half migration framework (registry, Item dummy edge, `migration_v1` golden, coverage gate) with T012b next; branch state moved past the stale `d45f1b1` pin and Known problems now lists all five live per-crate `AGENTS.md` files.
 - 2026-09-17 (UTC) · opencode/muse-spark + S001 known-problems · Noted S001's open attack-surface closure and the remaining human branch-protection step, so the guard jobs are not mistaken for the boundary itself.
+- 2026-09-18 (UTC) · opencode/muse-spark + S001 human-done · Recorded the maintainer's active `master-protection.` ruleset (nine required checks incl. guard/secrets, PR-only, no bypass, API-verified) and the CODEOWNERS follow-up for path-scoped review.
