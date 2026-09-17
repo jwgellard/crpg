@@ -93,13 +93,15 @@ Rarely, and deliberately: reviewing a whole phase before starting the next one, 
 
 ## 7. Right now
 
-**Current handoff (2026-09-17):** T010, T011a (plus its slug/graph coverage
-follow-up), and T011b are merged on `origin/master` through `d45f1b1`;
+**Current handoff (2026-09-18):** T010, T011a (plus its slug/graph coverage
+follow-up), T011b, and T012a (plus its review-fix follow-up) are committed
+on `master` through `3a62487`, including the T012/T012b Stage-2 specs;
 the Windows/MSVC gates passed on every commit and the Linux/GNU results are
-recorded in the task files. T012 migration framework is next. Follow
+recorded in the task files. T012b thin `crpgc migrate` wrapper is next. Follow
 `PROJECT_STATE.md` and the task records
-[T010](../tasks/T010.md), [T011a](../tasks/T011a.md) and
-[T011b](../tasks/T011b.md).
+[T010](../tasks/T010.md), [T011a](../tasks/T011a.md),
+[T011b](../tasks/T011b.md), [T012](../tasks/T012.md) and
+[T012b](../tasks/T012b.md).
 the bootstrap checklist below is historical, not a
 direction to commit the current working tree or repeat completed setup.
 
@@ -122,3 +124,4 @@ Step 5 is the actual project. Everything above is bookkeeping that makes step 5 
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the current handoff to the merged state; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the current handoff to the merged `crpgc replay` wrapper; T010 campaign data is next.
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Updated the current handoff to the merged campaign format, validation, and `crpgc validate` wrapper; T012 migration framework is next.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Updated the current handoff to the committed data-half migration framework with T012b next.

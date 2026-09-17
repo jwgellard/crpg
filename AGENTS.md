@@ -91,8 +91,11 @@ python -m unittest discover -s tools/lint -p "test_*.py"
   Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04 gates passed and the
   final audit is complete. T009b's thin `crpgc replay` wrapper (`crpg-cli`)
   is merged on `master` as of 2026-09-07 with both native gates green; T010
-  campaign data is next. See the [completion record](tasks/T009c.md) and
-  [T009b](tasks/T009b.md).
+  campaign data format, T011a positioned validation, T011b's `crpgc validate`
+  wrapper, and T012a migration framework (data half) are merged on `master`;
+  T012b's thin `crpgc migrate` wrapper is next. See the [completion record](tasks/T009c.md),
+  [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
+  [T011b](tasks/T011b.md), [T012](tasks/T012.md) and [T012b](tasks/T012b.md).
 
 ## Agent log
 
@@ -104,3 +107,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported final audit completion and completed working-tree implementation/verification without changing platform invariants. Both tasks remain uncommitted, review/merge is outstanding, and T009c remains the priority before T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the note to the merged state: both tasks landed on `master` in `bb9a702` with native gates and final audit complete; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the note to the merged state: `crpgc replay` landed on `master` with both native gates green; T010 campaign data is next.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012a/doc-status catch-up · Updated the note past the stale T010-next pointer to the merged T010/T011a/T011b/T012a state with T012b next.

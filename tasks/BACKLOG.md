@@ -77,7 +77,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | **T010** | **done** | 2026-09-17 | `crpg-data`: entity/aggregate schemas, package ids, canonical writer, resolver/lock APIs, loader/index, tick-wait event IR |
 | **T011a** | **done** | 2026-09-17 | `crpg-data`: deterministic positioned validation, `Diagnostic` model, 15-diagnostic `broken_references` snapshot + `expected.json` manifest (E004 split half) |
 | **T011b** | **done** | 2026-09-17 | Thin `crpgc validate` wrapper (`crpg-cli`): read-only traversal, 0/1/2 exits, gate-8 fixture gate over the data-owned manifest (E004 split half) |
-| **T012** | **next** | — | Migration framework |
+| **T012a** | **done** | 2026-09-18 | `crpg-data`: per-type migration chains, in-memory old-campaign loading, Item `v1 → v2` dummy edge, `migration_v1` golden + non-vacuous coverage gate (E004 split half) |
+| **T012b** | **next** | — | Thin `crpgc migrate` wrapper (`crpg-cli`): explicit source-save over the data loader/writer (E004 split half) |
 | T013 | open | — | Scaffolding/introspection CLI, including thin `crpgc lock` and run wrappers |
 
 ## Phase 3 — Rules kernel
@@ -152,13 +153,16 @@ generated property form (#25), problems panel (#26).
 
 Missing scaffolding from the workflow plan §15 checklist, none of it blocking:
 `tools/preflight.ps1` (+ `.sh`), `docs/adr/0000-template.md`, per-crate
-`AGENTS.md` beyond `crpg-core`'s, and a self-hosted runner for the slow CI
-layer.
+`AGENTS.md` beyond the five that exist (`crpg-core`, `crpg-sim`,
+`crpg-testkit`, `crpg-cli`, `crpg-data`), and a self-hosted runner for the
+slow CI layer.
 
-`docs/architecture/` now exists, with its README and `crpg-core.md`. Spec
+`docs/architecture/` now exists, with its README and five docs
+(`crpg-core.md`, `crpg-sim.md`, `crpg-testkit.md`, `crpg-cli.md`,
+`crpg-data.md`). Spec
 §15.6's rule — "if a crate has no architecture doc, it is not ready for agent
 work" — is a readiness gate rather than a documentation quota, so the remaining
-fourteen docs are **due with the first task that puts real code in each crate**,
+ten docs are **due with the first task that puts real code in each crate**,
 not written up front against designs that have not been decided.
 `docs/architecture/README.md` holds the index and the per-crate status.
 
@@ -204,6 +208,7 @@ Record it here, one line per week.
 | 2026-09-06 | 16 | T001–T005c plus T006a–e, T007, T008a and T008b are merged. Two review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. |
 | 2026-09-07 | 19 | T009a (typed replay), T009c (Windows-primary/Linux-supported native goldens, ADR-0012) and T009b (thin `crpgc replay` wrapper) merged. Three review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. T010 campaign data is next. |
 | 2026-09-17 | 22 | T010 (campaign data format and schema gate), T011a (positioned validation in `crpg-data`) and T011b (thin `crpgc validate` wrapper) merged and pushed to `origin`. The T011a slug/graph coverage follow-up merged alongside T011a and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T012 migration framework is next. |
+| 2026-09-18 | 23 | T012a (data-half migration framework, with the T012/T012b Stage-2 specs) merged. The T012a review-fix follow-up merged alongside T012a and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T012b is next. |
 
 ---
 
@@ -229,3 +234,4 @@ Record it here, one line per week.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Marked T009a and T009c done (merged to `master` in `bb9a702`), T009b next, throughput at 18.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Marked T009b done (merged to `master`), T010 next, throughput at 19.
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Marked T010, T011a and T011b done (pushed to `origin` in `15ac9fb`, `2f801b5`/`ab7d208` and `d45f1b1`), T012 next, throughput at 22; the slug/graph coverage follow-up is a fix, not a counted task.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Marked T012a done (E004 data half; T012b next), split the single T012 row into the T012a/T012b pair, refreshed the scaffolding counts to the five live crate docs, and moved throughput to 23; the review-fix follow-up is a fix, not a counted task.

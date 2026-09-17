@@ -73,3 +73,4 @@ superseded by appending, never rewritten.
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b · Linked the new crpg-testkit doc; third crate through the gate.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b · Linked the new crpg-cli doc; the replay subcommand is the crate's first real code, so the §15.6 gate is satisfied and the "due with T013" place-holder is retired.
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Linked the data architecture document before source implementation. The opening documents describe the approved contract; completion remains gated by T010 verification.
+- 2026-09-18 (UTC) · opencode/muse-spark + T010–T012a landing catch-up · Noted the data doc opened at T010 and extended through T011a/T011b validation and the T012a migration framework; the index already links all five live crate docs.

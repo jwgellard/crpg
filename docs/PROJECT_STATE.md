@@ -1,16 +1,17 @@
 # Project state
 
-Updated: 2026-09-17
+Updated: 2026-09-18
 
 ## Phase
-Phase 2 — campaign data format (T010/T011 landed; T012 next).
+Phase 2 — campaign data format (T010/T011/T012a landed; T012b next).
 
 ## Branch state
-All merged work is on `origin/master` through `d45f1b1`. T010's campaign
+All merged work is on `master` through `3a62487`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
-and T011b's thin `crpgc validate` wrapper were pushed on 2026-09-17; the
-working tree is clean. The Done history below is merged work only. T012
-migration framework is next.
+T011b's thin `crpgc validate` wrapper, and T012a's data-half migration
+framework (plus the T012/T012b Stage-2 specs) are committed; the
+working tree is clean. The Done history below is merged work only. T012b's
+thin `crpgc migrate` wrapper is next.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -241,6 +242,16 @@ migration framework is next.
   live as an ordinary manifest-driven black-box test. Native Windows/MSVC
   gates green (data 46, CLI 75, full workspace, 65 lint self-tests, deny
   clean); Linux results recorded in the task files.
+- T012a migration framework data half in `crpg-data` (committed `3a62487`,
+  with the T012/T012b Stage-2 specs): single-registry per-type version
+  chains with clone-then-publish dispatch, Item-only `crpg.item/1 → /2`
+  dummy edge through the loader, `migration_v1` golden campaign plus
+  `migrations.json` manifest, and the non-vacuous `migration_coverage`
+  gate. 17 schemas unchanged in count (one-line item tag bump); `Cargo.lock`,
+  workflows, deny policy and every other crate untouched. Native
+  Windows/MSVC gates green (data 69, full workspace 279, 65 lint
+  self-tests, deny clean); Linux results live in `tasks/T012.md`.
+  `crpgc migrate` itself is still absent — that is T012b in `crpg-cli`.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -271,8 +282,9 @@ migration framework is next.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T012 migration framework in `crpg-data` is next — the campaign format,
-  validation, and `crpgc validate` gate are all merged, so it is unblocked.
+- T012b thin `crpgc migrate` wrapper in `crpg-cli` is next — the data-half
+  migration framework, golden campaign, and coverage gate are all committed,
+  so it is unblocked.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -307,9 +319,11 @@ migration framework is next.
   BOM on replay/golden artifacts; a temporary `GIT_INDEX_FILE` audit
   confirmed `i/lf w/lf` without changing the user index. The scoped source
   diff was empty. See the
-  [completion record](../tasks/T009c.md) for the pre-merge audit results;
-  T009a and T009c are both merged on `master` as of 2026-09-07; T009b's
-  `crpgc replay` wrapper is merged too (2026-09-07), and T010 is next.
+   [completion record](../tasks/T009c.md) for the pre-merge audit results;
+   T009a and T009c are both merged on `master` as of 2026-09-07; T009b's
+   `crpgc replay` wrapper is merged too (2026-09-07). T010/T011a/T011b are
+   merged, T012a's data-half migration framework is committed (`3a62487`),
+   and T012b's `crpgc migrate` wrapper is next.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -398,7 +412,8 @@ now requires real target-scoped comparisons in both existing Windows and
 - Scaffolding from workflow plan §15 still missing, none of it blocking:
   `tools/preflight.ps1`, `docs/adr/0000-template.md`, per-crate `AGENTS.md`
   for every crate except `crpg-core` (T006a), `crpg-sim` (T007),
-  `crpg-testkit` (T008b) and `crpg-cli` (T009b).
+  `crpg-testkit` (T008b), `crpg-cli` (T009b) and `crpg-data`
+  (T010, extended through T012a).
 - Spec §14's `docs/contracts/` and `docs/guides/` still do not exist. Neither
   has a gate depending on it: contracts matter once `crpg-contracts` holds
   traits, guides once there is a campaign format to author against.
@@ -425,3 +440,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Recorded the merge of T009a's typed replay and T009c's Windows-primary/Linux-supported native golden policy onto `master` (commit `bb9a702`, pushed to `origin`). Next is T009b's thin `crpgc replay` wrapper, then T010.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Recorded the `crpgc replay` wrapper (thin consumer of `play_and_verify`, exit codes 0/1/2, provisional reference apply, crate-opened docs) landed on `master` with both native gates green; next is T010 campaign data in `crpg-data`.
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Recorded the pushed campaign format, positioned validation with its slug/graph test hardening, and thin `crpgc validate` wrapper with live gate 8; next is T012 migration framework.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Recorded the committed data-half migration framework (registry, Item dummy edge, `migration_v1` golden, coverage gate) with T012b next; branch state moved past the stale `d45f1b1` pin and Known problems now lists all five live per-crate `AGENTS.md` files.
