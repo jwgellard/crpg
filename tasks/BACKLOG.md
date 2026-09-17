@@ -151,6 +151,14 @@ round-trip (#19, T018), simulated transport (#20, T018), Recast bake (#21),
 Godot proxy spawning (#22), interpolation buffer (#23), editor tree (#24),
 generated property form (#25), problems panel (#26).
 
+Deferred input-hardening requirements (S001; land with the tasks that own
+them, not here): T010 `crpg-data` loader caps — campaign JSON file size and
+nesting-depth ceilings (`serde_json` recursion is a stack-overflow DoS); T018
+`crpg-net` postcard decode caps — message size and `Vec`/`String` length
+ceilings (a hostile length field is an OOM); `SnapshotBackend`
+(`crpg-persist`) decompression-bomb cap on `zstd` saves — input size *and*
+decompressed-size ceiling.
+
 Missing scaffolding from the workflow plan §15 checklist, none of it blocking:
 `tools/preflight.ps1` (+ `.sh`), `docs/adr/0000-template.md`, per-crate
 `AGENTS.md` beyond the five that exist (`crpg-core`, `crpg-sim`,
@@ -235,3 +243,4 @@ Record it here, one line per week.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Marked T009b done (merged to `master`), T010 next, throughput at 19.
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Marked T010, T011a and T011b done (pushed to `origin` in `15ac9fb`, `2f801b5`/`ab7d208` and `d45f1b1`), T012 next, throughput at 22; the slug/graph coverage follow-up is a fix, not a counted task.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Marked T012a done (E004 data half; T012b next), split the single T012 row into the T012a/T012b pair, refreshed the scaffolding counts to the five live crate docs, and moved throughput to 23; the review-fix follow-up is a fix, not a counted task.
+- 2026-09-17 (UTC) · opencode/muse-spark + S001 deferred input caps · Recorded the three deferred input-cap requirements with their owning tasks, so loader/postcard/snapshot hardening lands where the code lives.
