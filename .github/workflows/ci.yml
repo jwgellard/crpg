@@ -1,4 +1,5 @@
 name: ci
+# Policy: fork PRs run on GitHub-hosted runners only; CI and lint changes from fork PRs are rejected by the guard job; the self-hosted runner never receives a pull_request-triggered job.
 on:
   push:
     branches: [master]
@@ -10,14 +11,23 @@ on:
   schedule:
     - cron: "0 6 * * 1"
 
-# Action pins: the three JavaScript actions below sit on moving major tags,
+# Action pins: the JavaScript actions below sit on moving major tags,
 # so they pick up fixes without a bump here. They are on the majors that
 # declare the node24 runtime -- GitHub is retiring node20, and an action
 # still asking for it will stop starting when the compatibility shim goes.
 # checkout v5+ requires a runner at v2.327.1 or newer, which matters only if
 # the self-hosted runner in workflow plan section 15 ever lands.
-# cargo-deny-action is the exception twice over: a docker action, and pinned
-# exactly (see the comment on the deny job).
+# cargo-deny-action and gitleaks-action are the exceptions twice over: pinned
+# exactly (see the comments on the deny and secrets jobs). A floating pin on
+# either would change the enforced policy without a diff here.
+
+# Self-hosted-runner rule (S001): the self-hosted runner executes only `push`
+# on the base repo's own branches, or `workflow_dispatch`; no
+# `pull_request`-triggered job may use a custom `runs-on:` label. Every job
+# below runs on GitHub-hosted runners, so a fork PR can never reach
+# self-hosted execution; a workflow change smuggling in a custom label is
+# rejected by the guard job's protected-paths rule over
+# `.github/workflows/**`. This is an enforced rule, not a configuration note.
 
 # Read-only by default; no job here writes to the repository.
 permissions:
@@ -30,6 +40,65 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
+  guard:
+    # Fork-PR tripwire + trusted-lint gate (S001). Plain git/bash and the
+    # existing Python lint invocations only; no new third-party action.
+    # There is no automation bypass for sub-check (b): the override for a
+    # legitimate lint change is ordinary maintainer review and merge, never a
+    # secret, variable, or comment convention. Fail closed is the point.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Protected paths (fork PRs may not touch lint or workflows)
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE_SHA" --depth=1 || true
+          MERGE_BASE="$(git merge-base HEAD "$BASE_SHA")"
+          echo "merge-base: $MERGE_BASE"
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "fork PR detected (${{ github.event.pull_request.head.repo.full_name }} != ${{ github.repository }}); checking protected paths"
+            if git diff --name-only "$MERGE_BASE...HEAD" -- 'tools/lint/**' '.github/workflows/**' | grep -q .; then
+              echo "guard: fork PR touches tools/lint/** or .github/workflows/**, which is rejected by policy (same-repo maintainer PR required)"
+              git diff --name-only "$MERGE_BASE...HEAD" -- 'tools/lint/**' '.github/workflows/**'
+              exit 1
+            fi
+            echo "protected-paths check passed"
+          else
+            echo "same-repo PR: protected-paths sub-check (a) exempt"
+          fi
+      - name: Trusted-lint gate (merge-base tools/lint judges the PR tree)
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE_SHA" --depth=1 || true
+          MERGE_BASE="$(git merge-base HEAD "$BASE_SHA")"
+          git checkout "$MERGE_BASE" -- tools/lint
+          python tools/lint/deps.py
+          python tools/lint/determinism.py
+          python -m unittest discover -s tools/lint -p "test_*.py" -v
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Pinned to an exact version on purpose, like the deny job below:
+      # a floating pin would change what "default rules" means without a
+      # diff here. Default gitleaks rules, no allowlist.
+      - uses: gitleaks/gitleaks-action@v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   check:
     strategy:
       matrix:

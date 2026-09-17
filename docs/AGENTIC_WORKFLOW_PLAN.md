@@ -179,7 +179,7 @@ Its primary jobs are not inference:
 2. **Dedicated-server test box.** From Phase 4 onward you need a `crpg-server` running on a different machine from the client to test networking honestly. Exercise Windows and Linux dedicated adapters of the same authoritative host, with genuine environments for each; do not assume one desktop provides both. Loopback multiplayer hides an enormous number of bugs.
 3. **Overnight batch inference.** A 7B Q4 model here can run generate-validate-repair loops on campaign content while you sleep, at zero marginal cost.
 
-Set the runner to only execute jobs from branches in your own repository. On a public repo, a self-hosted runner that accepts fork pull requests will run arbitrary attacker code on your desktop. Restrict `pull_request` jobs to GitHub-hosted runners and reserve the self-hosted runner for `push` on your own branches and for manually dispatched workflows.
+Enforced rule: the self-hosted runner executes only `push` on the base repo's own branches, or `workflow_dispatch`; a `pull_request`-triggered job using a custom `runs-on:` label is a CI failure — enforced by the guard job's protected-paths rule over `.github/workflows/**` — not a configuration accident. On a public repo, a self-hosted runner that accepts fork pull requests would run arbitrary attacker code on your desktop. Restrict `pull_request` jobs to GitHub-hosted runners and reserve the self-hosted runner for `push` on your own branches and for manually dispatched workflows.
 
 Runner labels must identify the actual execution target, not just hardware.
 Keep Linux hosted tests/server checks on genuine Linux/GNU; add a separate
@@ -462,7 +462,7 @@ Roughly one day of work. Do it before writing any project code.
 
 **CI**
 15. GitHub Actions workflow with the fast layer, plus Rust caching.
-16. Windows/MSVC self-hosted runner on the desktop, restricted to your own branches, for primary product/golden work; retain Linux hosted coverage and provision genuine Linux execution separately for heavy headless/server gates as needed.
+16. Windows/MSVC self-hosted runner on the desktop, enforced rule: executes only `push` on the base repo's own branches, or `workflow_dispatch`; a `pull_request`-triggered job using a custom `runs-on:` label is a CI failure enforced by the guard job's protected-paths rule over `.github/workflows/**`, not a configuration accident; retain Linux hosted coverage and provision genuine Linux execution separately for heavy headless/server gates as needed.
 17. Enable the merge queue.
 
 **Working practice**
@@ -489,3 +489,4 @@ in commit `bb9a702`); the next task is T010 campaign data.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Recorded the reported final audit completion and completed working-tree implementation/verification while preserving runner and provenance requirements. Review/merge remains outstanding, T009a is also uncommitted, and T009c stays ahead of T009b.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the runner paragraph to the merged state; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the runner paragraph to the merged `crpgc replay` wrapper; T010 campaign data is next.
+- 2026-09-17 (UTC) · opencode/muse-spark + S001 runner rule · Rewrote the self-hosted restriction as the enforced push-or-dispatch rule with the guard-job CI failure, so a fork PR can never reach self-hosted execution by configuration accident.

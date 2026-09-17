@@ -41,8 +41,9 @@ def _make_tree(tmp: Path, crates: dict) -> None:
     `crates` maps a crate name to either a list of runtime deps, or a dict with
     any of the keys `dependencies`, `dev-dependencies`, `build-dependencies`,
     `target` (a `{cfg: {section: [deps]}}` mapping), `root` (the text of
-    src/lib.rs, defaulting to a compliant stub) and `bins` (a
-    `{filename: text}` mapping written under src/bin/).
+    src/lib.rs, defaulting to a compliant stub), `bins` (a
+    `{filename: text}` mapping written under src/bin/) and `build_rs`
+    (truthy writes a stub build.rs at the crate root).
 
     A dependency entry may be a bare name or a `(key, package)` tuple, which
     renders as `key = { package = "..." }` — the rename form.
@@ -82,6 +83,11 @@ def _make_tree(tmp: Path, crates: dict) -> None:
             bin_dir.mkdir(parents=True, exist_ok=True)
             (bin_dir / filename).write_text(text, encoding="utf-8")
 
+        if spec.get("build_rs"):
+            (crate_dir / "build.rs").write_text(
+                'fn main() {}\n', encoding="utf-8"
+            )
+
 
 class TreeCase(unittest.TestCase):
     """Base class that builds a fixture tree and tears it down."""
@@ -100,6 +106,7 @@ class TreeCase(unittest.TestCase):
             + deps.check_cycles(deps.runtime_edges(internal))
             + deps.check_allowed(internal)
             + deps.check_unsafe(tmp)
+            + deps.check_build_scripts(tmp)
         )
 
 
@@ -342,6 +349,66 @@ class TestUnsafeRule(TreeCase):
         self.assertEqual(self.all_violations({
             "crpg-cli": {"bins": {"helper.rs": FORBID + "fn main() {}\n"}},
         }), [])
+
+
+class TestBuildScripts(TreeCase):
+    """A build script is local execution, not just an import.
+
+    A `build.rs` runs code on every consumer's machine at compile time, so
+    the ban fails closed on both the script file and any external
+    `[build-dependencies]` entry (top-level or under `[target.*]`).
+    Workspace build edges stay with the layering check.
+    """
+
+    def test_crate_root_build_rs_fails(self):
+        violations = self.all_violations({
+            "crpg-core": {"build_rs": True},
+        })
+        self.assertTrue(
+            any("crpg-core (build.rs at crate root)" in v for v in violations),
+            violations,
+        )
+
+    def test_external_top_level_build_dependency_fails(self):
+        violations = self.all_violations({
+            "crpg-core": {"build-dependencies": ["cc"]},
+        })
+        self.assertTrue(
+            any("crpg-core -> cc (external build-dependency, build-dependencies)" in v
+                for v in violations),
+            violations,
+        )
+
+    def test_external_target_build_dependency_fails(self):
+        violations = self.all_violations({
+            "crpg-core": {"target": {"'cfg(windows)'": {"build-dependencies": ["cc"]}}},
+        })
+        self.assertTrue(
+            any("external build-dependency, target.cfg(windows).build-dependencies" in v
+                for v in violations),
+            violations,
+        )
+
+    def test_workspace_build_edge_does_not_trip_the_external_ban(self):
+        """Workspace build edges belong to the layering check, not this one."""
+        tmp = self.tree({
+            "crpg-core": [],
+            "crpg-data": {"build-dependencies": ["crpg-core"]},
+        })
+        violations = deps.check_build_scripts(tmp)
+        self.assertEqual(violations, [])
+        # And the allowed edge itself is legal, so the whole tree is clean.
+        self.assertEqual(self.all_violations({
+            "crpg-core": [],
+            "crpg-data": {"build-dependencies": ["crpg-core"]},
+        }), [])
+
+    def test_clean_tree_has_no_build_script_violations(self):
+        tmp = self.tree({
+            "crpg-core": [],
+            "crpg-data": ["crpg-core"],
+        })
+        self.assertEqual(deps.check_build_scripts(tmp), [])
 
 
 if __name__ == "__main__":
