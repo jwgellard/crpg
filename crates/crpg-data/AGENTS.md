@@ -9,15 +9,16 @@ T010, [T011a](../../tasks/T011a.md) and [T012](../../tasks/T012.md).
 ## Public surface
 
 Public modules `types`, `ir`, `document`, `canonical`, `package`, `loader`,
-`schema`, `error`, `validation`, `migrations` re-export their public items at
-the root. T010 lists every required model, field and variant. Operations are
-`read_document`, `write_document`, `canonical_json`, `generated_schemas`,
-`resolve_packages`, `assets_lock_digest`, `make_campaign_lock`, both lock
-read/write pairs, `load_campaign`, `serialize_campaign`, plus T011a's
-`validate`, `validate_files`, `diagnostic_for_data_error`, and
-`campaign_document_path` with the `Diagnostic`, `DiagnosticCode`, and
-`Severity` model, plus T012a's `SchemaVersion` with `schema_versions` and
-`migrate_document`. Primitive newtypes expose validated parsing plus their
+`schema`, `error`, `validation`, `migrations`, `introspection` re-export their
+public items at the root. T010 lists every required model, field and variant.
+Operations are `read_document`, `write_document`, `canonical_json`,
+`generated_schemas`, `resolve_packages`, `assets_lock_digest`,
+`make_campaign_lock`, both lock read/write pairs, `load_campaign`,
+`serialize_campaign`, plus T011a's `validate`, `validate_files`,
+`diagnostic_for_data_error`, and `campaign_document_path` with the `Diagnostic`,
+`DiagnosticCode`, and `Severity` model, plus T012a's `SchemaVersion` with
+`schema_versions` and `migrate_document`, plus T013a's `explain_object` returning
+canonical report bytes. Primitive newtypes expose validated parsing plus their
 prescribed accessors. Do not extend the surface casually.
 
 ## Wire and validation traps
@@ -67,6 +68,16 @@ prescribed accessors. Do not extend the surface casually.
   `locale_shape` predicates; a second path-family list is a drift defect.
   Classifier rejections stay `invalid_path` through `diagnostic_for_data_error`;
   `io` belongs to filesystem-owning callers only.
+- Introspection shares one private `inventory` for identity locations, typed
+  traversal, and pointer construction with validation and the loader; a second
+  reference-field list is a drift defect. `explain_object` reuses the writer's
+  structural check with writer precedence, rebuilds locations without trusting
+  the index, extracts the current canonical subtree (root keeps its envelope,
+  nested keeps its shape), and orders edges by `(file, pointer, target)`
+  lexically. Sources are nearest-enclosing ids (null outside identified
+  objects); only absent identities have null target locations. Null optionals
+  contribute no edge; never scan strings for ULIDs. No CLI semantics here:
+  id-text parsing and `None` exit treatment belong to T013.
 - Fixture and snapshot bytes are read-only in tests: `one_area_one_creature`
   validates to zero diagnostics, `broken_references` to exactly its 15
   checked-in findings, and `expected.json` lists exactly three roots including
@@ -76,7 +87,8 @@ prescribed accessors. Do not extend the surface casually.
   never by computing from actuals. Superseded edges would keep immediate
   oracles under `migration_steps/<type>/<from>-to-<to>.json`, never as new
   campaign roots. Never bless, rewrite, or invent a normal case for the
-  snapshot comparison.
+  snapshot comparison. Introspection expected reports/edges are independently
+  authored with the same no-bless rule; missing fixtures fail hard.
 
 ## Scope and dependencies
 
@@ -106,8 +118,10 @@ cargo test -p crpg-data --test loader --locked
 cargo test -p crpg-data --test resolver --locked
 cargo test -p crpg-data --test locks --locked
 cargo test -p crpg-data --test validation --locked
+cargo test -p crpg-data --test introspection --locked
 cargo test -p crpg-data --test schema_drift --locked
 cargo test -p crpg-cli --test validate --locked
+cargo test -p crpg-cli --test migrate --locked
 cargo test -p crpg-data --locked
 cargo fmt --all
 cargo clippy -p crpg-data --all-targets -- -D warnings
@@ -131,6 +145,7 @@ blesses drift. Retain property regression seeds; never weaken existing tests.
 - 2026-09-10 (UTC) · opencode/muse-spark + T010 implementation · Reconciled the contract with the verified tree and recorded the hand-written kind-tag deserializer trap.
 - 2026-09-13 (UTC) · opencode/muse-spark + T011a implementation · Extended the surface with the validation API, recorded the collected-diagnostics and classifier-ownership traps, and added the validation focused command.
 - 2026-09-17 (UTC) · opencode/muse-spark + T012a implementation · Recorded the single-registry item-only migration surface, the strict read precedence with clone-then-publish rollback, the three-root fixture and golden-authoring rule, and the migration coverage commands.
+- 2026-09-18 (UTC) · opencode/muse-spark + T013a implementation · Extended the surface with the introspection report API, recorded the single-inventory ownership/subtree/ordering traps with no CLI semantics here, and added the introspection plus migrate regression commands.
 
 ## T012a review fixes
 

@@ -8,6 +8,7 @@
 pub mod canonical;
 pub mod document;
 pub mod error;
+pub mod introspection;
 pub mod ir;
 pub mod loader;
 pub mod migrations;
@@ -16,9 +17,12 @@ pub mod schema;
 pub mod types;
 pub mod validation;
 
+mod inventory;
+
 pub use canonical::*;
 pub use document::*;
 pub use error::*;
+pub use introspection::*;
 pub use ir::*;
 pub use loader::*;
 pub use migrations::*;

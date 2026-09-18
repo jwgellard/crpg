@@ -11,6 +11,7 @@
 //! [`campaign_document_path`] is the data-owned classifier between a caller's
 //! directory walk and the loader's accepted layout.
 
+use crate::inventory as shared;
 use crate::{
     DataError, DataValue, DialogueBody, Document, EventGraph, LoadedCampaign, NodeBody, ObjectKind,
     Port, SourcePath, ValueType, VarDecl,
@@ -263,35 +264,11 @@ pub fn campaign_document_path(value: &str) -> Result<Option<SourcePath>, DataErr
 }
 
 /// Stable lowercase kind word used inside diagnostic messages.
+///
+/// Shared with the inventory so reference messages cannot drift from the
+/// single identity authority.
 fn kind_name(kind: ObjectKind) -> &'static str {
-    match kind {
-        ObjectKind::Campaign => "campaign",
-        ObjectKind::World => "world",
-        ObjectKind::Area => "area",
-        ObjectKind::Creature => "creature",
-        ObjectKind::Item => "item",
-        ObjectKind::Dialogue => "dialogue",
-        ObjectKind::Quest => "quest",
-        ObjectKind::Faction => "faction",
-        ObjectKind::Placement => "placement",
-        ObjectKind::Graph => "graph",
-        ObjectKind::Node => "node",
-        ObjectKind::DialogueNode => "dialogue node",
-        ObjectKind::QuestState => "quest state",
-    }
-}
-
-/// Escapes one RFC 6901 reference-token segment.
-fn escape(segment: &str) -> String {
-    let mut out = String::with_capacity(segment.len());
-    for c in segment.chars() {
-        match c {
-            '~' => out.push_str("~0"),
-            '/' => out.push_str("~1"),
-            _ => out.push(c),
-        }
-    }
-    out
+    shared::diagnostic_kind_name(kind)
 }
 
 /// Stable wire word for a declared value category.
@@ -388,23 +365,6 @@ fn port_key(port: &Port) -> String {
         Port::Case { index } => format!("case:{index}"),
     }
 }
-
-/// Every indexed object kind; object references accept any of them.
-const ALL_KINDS: [ObjectKind; 13] = [
-    ObjectKind::Campaign,
-    ObjectKind::World,
-    ObjectKind::Area,
-    ObjectKind::Creature,
-    ObjectKind::Item,
-    ObjectKind::Dialogue,
-    ObjectKind::Quest,
-    ObjectKind::Faction,
-    ObjectKind::Placement,
-    ObjectKind::Graph,
-    ObjectKind::Node,
-    ObjectKind::DialogueNode,
-    ObjectKind::QuestState,
-];
 
 /// Lookup tables rebuilt from documents, never from the caller-mutable index.
 struct Tables {
@@ -514,65 +474,19 @@ fn check_ref(
     }
 }
 
-/// Recursively checks object references inside one tagged value.
+/// Checks one variable declaration's default type.
 ///
-/// The reference diagnostic sits at the tagged value's `/value` member; list
-/// and map segments extend the base pointer with escaping.
-fn walk_value(
-    tables: &Tables,
-    out: &mut Vec<Diagnostic>,
-    file: &SourcePath,
-    base: String,
-    value: &DataValue,
-) {
-    match value {
-        DataValue::ObjectRef(id) => {
-            let mut pointer = base;
-            pointer.push_str("/value");
-            check_ref(tables, out, file, pointer, *id, &ALL_KINDS, None, "object");
-        }
-        DataValue::List(items) => {
-            for (i, item) in items.iter().enumerate() {
-                walk_value(tables, out, file, format!("{base}/{i}"), item);
-            }
-        }
-        DataValue::Map(entries) => {
-            for (key, item) in entries {
-                walk_value(tables, out, file, format!("{base}/{}", escape(key)), item);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Checks one named argument map of tagged values.
-fn walk_args(
-    tables: &Tables,
-    out: &mut Vec<Diagnostic>,
-    file: &SourcePath,
-    base: String,
-    args: &BTreeMap<String, DataValue>,
-) {
-    for (key, value) in args {
-        walk_value(tables, out, file, format!("{base}/{}", escape(key)), value);
-    }
-}
-
-/// Checks one variable declaration's default type and nested references.
-fn walk_var(
-    tables: &Tables,
-    out: &mut Vec<Diagnostic>,
-    file: &SourcePath,
-    base: String,
-    decl: &VarDecl,
-) {
+/// Nested object references inside the default are inventoried by the shared
+/// enumeration; this helper emits only the declared-type mismatch so the two
+/// consumers cannot grow independent reference lists.
+fn walk_var(out: &mut Vec<Diagnostic>, file: &SourcePath, base: String, decl: &VarDecl) {
     let mut at_default = base;
     at_default.push_str("/default");
     if !var_outer_matches(decl) {
         push(
             out,
             file,
-            at_default.clone(),
+            at_default,
             DiagnosticCode::ValueTypeMismatch,
             format!(
                 "variable {:?} declares {} but the default is {}",
@@ -583,7 +497,6 @@ fn walk_var(
             Some("change the default value or the declared type"),
         );
     }
-    walk_value(tables, out, file, at_default, &decl.default);
 }
 
 /// Validates a loaded campaign and returns every finding in stable order.
@@ -594,78 +507,8 @@ fn walk_var(
 /// message, then suggested fix; a clean campaign yields an empty vector.
 pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
     let docs = &campaign.documents;
-    // Occurrence order matches the loader: lexical paths, root first, then
-    // identified array entries in authored order.
-    let mut occurrences: Vec<(Ulid, ObjectKind, &SourcePath, String)> = Vec::new();
-    for (path, document) in docs {
-        let root = match document {
-            Document::Campaign(v) => Some((v.id, ObjectKind::Campaign)),
-            Document::World(v) => Some((v.id, ObjectKind::World)),
-            Document::Area(v) => Some((v.id, ObjectKind::Area)),
-            Document::Creature(v) => Some((v.id, ObjectKind::Creature)),
-            Document::Item(v) => Some((v.id, ObjectKind::Item)),
-            Document::Dialogue(v) => Some((v.id, ObjectKind::Dialogue)),
-            Document::Quest(v) => Some((v.id, ObjectKind::Quest)),
-            Document::Faction(v) => Some((v.id, ObjectKind::Faction)),
-            Document::Graph(v) => Some((v.id, ObjectKind::Graph)),
-            _ => None,
-        };
-        if let Some((id, kind)) = root {
-            occurrences.push((id, kind, path, String::new()));
-        }
-        match document {
-            Document::Placements(v) => {
-                for (i, p) in v.placements.iter().enumerate() {
-                    occurrences.push((
-                        p.id,
-                        ObjectKind::Placement,
-                        path,
-                        format!("/placements/{i}"),
-                    ));
-                }
-            }
-            Document::Triggers(v) => {
-                for (i, graph) in v.graphs.iter().enumerate() {
-                    occurrences.push((graph.id, ObjectKind::Graph, path, format!("/graphs/{i}")));
-                    for (j, node) in graph.nodes.iter().enumerate() {
-                        occurrences.push((
-                            node.id,
-                            ObjectKind::Node,
-                            path,
-                            format!("/graphs/{i}/nodes/{j}"),
-                        ));
-                    }
-                }
-            }
-            Document::Graph(v) => {
-                for (i, node) in v.nodes.iter().enumerate() {
-                    occurrences.push((node.id, ObjectKind::Node, path, format!("/nodes/{i}")));
-                }
-            }
-            Document::Dialogue(v) => {
-                for (i, node) in v.nodes.iter().enumerate() {
-                    occurrences.push((
-                        node.id,
-                        ObjectKind::DialogueNode,
-                        path,
-                        format!("/nodes/{i}"),
-                    ));
-                }
-            }
-            Document::Quest(v) => {
-                for (i, state) in v.states.iter().enumerate() {
-                    occurrences.push((
-                        state.id,
-                        ObjectKind::QuestState,
-                        path,
-                        format!("/states/{i}"),
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-
+    // Shared identity enumeration: lexical paths, root first, then identified
+    // array entries in authored order. Never trusts the caller-mutable index.
     let mut tables = Tables {
         first: BTreeMap::new(),
         node_owner: BTreeMap::new(),
@@ -675,14 +518,18 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
     let mut out: Vec<Diagnostic> = Vec::new();
     // First occurrence wins for lookup; every later one is a duplicate id at
     // its own `/id` pointer naming the first location.
-    for (id, kind, path, pointer) in occurrences {
+    for occurrence in shared::object_occurrences(docs) {
+        let id = occurrence.id;
+        let kind = occurrence.kind;
+        let path = occurrence.path;
+        let pointer = occurrence.pointer;
         match tables.first.get(&id) {
             Some(seen) => {
                 let mut at_id = pointer;
                 at_id.push_str("/id");
                 push(
                     &mut out,
-                    path,
+                    &path,
                     at_id,
                     DiagnosticCode::DuplicateId,
                     format!(
@@ -707,34 +554,11 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
         }
     }
 
-    // Ownership tables, first wins in the same order.
-    for document in docs.values() {
-        match document {
-            Document::Triggers(v) => {
-                for graph in &v.graphs {
-                    for node in &graph.nodes {
-                        tables.node_owner.entry(node.id).or_insert(graph.id);
-                    }
-                }
-            }
-            Document::Graph(v) => {
-                for node in &v.nodes {
-                    tables.node_owner.entry(node.id).or_insert(v.id);
-                }
-            }
-            Document::Dialogue(v) => {
-                for node in &v.nodes {
-                    tables.dnode_owner.entry(node.id).or_insert(v.id);
-                }
-            }
-            Document::Quest(v) => {
-                for state in &v.states {
-                    tables.state_owner.entry(state.id).or_insert(v.id);
-                }
-            }
-            _ => {}
-        }
-    }
+    // Shared ownership tables, first wins in the same order.
+    let (node_owner, dnode_owner, state_owner) = shared::ownership_tables(docs);
+    tables.node_owner = node_owner;
+    tables.dnode_owner = dnode_owner;
+    tables.state_owner = state_owner;
 
     // Locale tables in lexical file order for coverage checks.
     let mut locales: Vec<(&SourcePath, &str, &BTreeMap<String, String>)> = Vec::new();
@@ -795,6 +619,10 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
     // (file, pointer, key) for the later locale coverage pass.
     let mut locale_refs: Vec<(SourcePath, String, String)> = Vec::new();
 
+    // Slugs, locale keys, variable default types, asset membership, and
+    // graph/dialogue/quest reachability. Typed reference occurrences themselves
+    // come from the shared inventory below so the two consumers share one
+    // field list; this loop emits no reference diagnostics.
     for (path, document) in docs {
         match document {
             Document::Campaign(v) => {
@@ -802,36 +630,6 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                 pointer.push_str("/slug");
                 slugs.push((ObjectKind::Campaign, v.slug.clone(), path.clone(), pointer));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
-                check_ref(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/entry/world".into(),
-                    v.entry.world,
-                    &[ObjectKind::World],
-                    None,
-                    "entry world",
-                );
-                check_ref(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/entry/area".into(),
-                    v.entry.area,
-                    &[ObjectKind::Area],
-                    None,
-                    "entry area",
-                );
-                check_ref(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/entry/spawn".into(),
-                    v.entry.spawn,
-                    &[ObjectKind::Placement],
-                    None,
-                    "entry spawn",
-                );
             }
             Document::World(v) => {
                 slugs.push((
@@ -841,20 +639,8 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     "/slug".into(),
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
-                for (i, area) in v.areas.iter().enumerate() {
-                    check_ref(
-                        &tables,
-                        &mut out,
-                        path,
-                        format!("/areas/{i}"),
-                        *area,
-                        &[ObjectKind::Area],
-                        None,
-                        "world area",
-                    );
-                }
                 for (i, decl) in v.variables.iter().enumerate() {
-                    walk_var(&tables, &mut out, path, format!("/variables/{i}"), decl);
+                    walk_var(&mut out, path, format!("/variables/{i}"), decl);
                 }
             }
             Document::Area(v) => {
@@ -865,18 +651,6 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     "/slug".into(),
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
-                for (i, neighbour) in v.neighbours.iter().enumerate() {
-                    check_ref(
-                        &tables,
-                        &mut out,
-                        path,
-                        format!("/neighbours/{i}"),
-                        *neighbour,
-                        &[ObjectKind::Area],
-                        None,
-                        "area neighbour",
-                    );
-                }
                 if let Some(key) = &v.ambience {
                     let known = docs
                         .values()
@@ -905,30 +679,6 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     "/slug".into(),
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
-                if let Some(faction) = v.faction {
-                    check_ref(
-                        &tables,
-                        &mut out,
-                        path,
-                        "/faction".into(),
-                        faction,
-                        &[ObjectKind::Faction],
-                        None,
-                        "creature faction",
-                    );
-                }
-                for (i, item) in v.inventory.iter().enumerate() {
-                    check_ref(
-                        &tables,
-                        &mut out,
-                        path,
-                        format!("/inventory/{i}"),
-                        *item,
-                        &[ObjectKind::Item],
-                        None,
-                        "creature inventory item",
-                    );
-                }
             }
             Document::Item(v) => {
                 slugs.push((
@@ -947,128 +697,26 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     "/slug".into(),
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
-                check_ref(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/entry".into(),
-                    v.entry,
-                    &[ObjectKind::DialogueNode],
-                    Some(OwnerCheck {
-                        found: tables.dnode_owner.get(&v.entry).copied(),
-                        mine: v.id,
-                        container: "dialogue",
-                    }),
-                    "dialogue entry",
-                );
                 for (i, node) in v.nodes.iter().enumerate() {
                     let nbase = format!("/nodes/{i}");
-                    let owned = |id: &Ulid| OwnerCheck {
-                        found: tables.dnode_owner.get(id).copied(),
-                        mine: v.id,
-                        container: "dialogue",
-                    };
                     match &node.body {
-                        DialogueBody::NpcLine {
-                            speaker,
-                            text_key,
-                            on_enter,
-                            next,
-                            ..
-                        } => {
-                            check_ref(
-                                &tables,
-                                &mut out,
-                                path,
-                                format!("{nbase}/body/speaker"),
-                                *speaker,
-                                &[ObjectKind::Creature, ObjectKind::Placement],
-                                None,
-                                "dialogue speaker",
-                            );
+                        DialogueBody::NpcLine { text_key, .. } => {
                             locale_refs.push((
                                 path.clone(),
                                 format!("{nbase}/body/text_key"),
                                 text_key.clone(),
                             ));
-                            for (a, call) in on_enter.iter().enumerate() {
-                                walk_args(
-                                    &tables,
-                                    &mut out,
-                                    path,
-                                    format!("{nbase}/body/on_enter/{a}/args"),
-                                    &call.args,
-                                );
-                            }
-                            if let Some(next) = next {
-                                check_ref(
-                                    &tables,
-                                    &mut out,
-                                    path,
-                                    format!("{nbase}/body/next"),
-                                    *next,
-                                    &[ObjectKind::DialogueNode],
-                                    Some(owned(next)),
-                                    "dialogue next",
-                                );
-                            }
                         }
-                        DialogueBody::PlayerChoice {
-                            text_key,
-                            on_select,
-                            next,
-                            ..
-                        } => {
+                        DialogueBody::PlayerChoice { text_key, .. } => {
                             locale_refs.push((
                                 path.clone(),
                                 format!("{nbase}/body/text_key"),
                                 text_key.clone(),
                             ));
-                            for (a, call) in on_select.iter().enumerate() {
-                                walk_args(
-                                    &tables,
-                                    &mut out,
-                                    path,
-                                    format!("{nbase}/body/on_select/{a}/args"),
-                                    &call.args,
-                                );
-                            }
-                            check_ref(
-                                &tables,
-                                &mut out,
-                                path,
-                                format!("{nbase}/body/next"),
-                                *next,
-                                &[ObjectKind::DialogueNode],
-                                Some(owned(next)),
-                                "dialogue choice next",
-                            );
                         }
-                        DialogueBody::Jump { target } => {
-                            check_ref(
-                                &tables,
-                                &mut out,
-                                path,
-                                format!("{nbase}/body/target"),
-                                *target,
-                                &[ObjectKind::DialogueNode],
-                                Some(owned(target)),
-                                "dialogue jump",
-                            );
-                        }
-                        DialogueBody::Link { target } => {
-                            check_ref(
-                                &tables,
-                                &mut out,
-                                path,
-                                format!("{nbase}/body/target"),
-                                *target,
-                                &[ObjectKind::Dialogue],
-                                None,
-                                "dialogue link",
-                            );
-                        }
-                        DialogueBody::End => {}
+                        DialogueBody::Jump { .. }
+                        | DialogueBody::Link { .. }
+                        | DialogueBody::End => {}
                     }
                 }
                 walk_dialogue_reachability(&tables, &mut out, path, v);
@@ -1081,48 +729,9 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     "/slug".into(),
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
-                check_ref(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/entry".into(),
-                    v.entry,
-                    &[ObjectKind::QuestState],
-                    Some(OwnerCheck {
-                        found: tables.state_owner.get(&v.entry).copied(),
-                        mine: v.id,
-                        container: "quest",
-                    }),
-                    "quest entry",
-                );
                 for (i, state) in v.states.iter().enumerate() {
                     let sbase = format!("/states/{i}");
                     locale_refs.push((path.clone(), format!("{sbase}/name"), state.name.clone()));
-                    for (a, call) in state.on_enter.iter().enumerate() {
-                        walk_args(
-                            &tables,
-                            &mut out,
-                            path,
-                            format!("{sbase}/on_enter/{a}/args"),
-                            &call.args,
-                        );
-                    }
-                    for (j, transition) in state.transitions.iter().enumerate() {
-                        check_ref(
-                            &tables,
-                            &mut out,
-                            path,
-                            format!("{sbase}/transitions/{j}/target"),
-                            transition.target,
-                            &[ObjectKind::QuestState],
-                            Some(OwnerCheck {
-                                found: tables.state_owner.get(&transition.target).copied(),
-                                mine: v.id,
-                                container: "quest",
-                            }),
-                            "quest transition",
-                        );
-                    }
                 }
                 walk_quest_completion(&tables, &mut out, path, v);
             }
@@ -1134,29 +743,8 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     "/slug".into(),
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
-                for (i, relation) in v.relations.iter().enumerate() {
-                    check_ref(
-                        &tables,
-                        &mut out,
-                        path,
-                        format!("/relations/{i}/faction"),
-                        relation.faction,
-                        &[ObjectKind::Faction],
-                        None,
-                        "faction relation",
-                    );
-                }
             }
             Document::Placements(v) => {
-                check_owner(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/area",
-                    v.area,
-                    sibling_area(path, "placements.json"),
-                    "placements",
-                );
                 for (i, placement) in v.placements.iter().enumerate() {
                     let pbase = format!("/placements/{i}");
                     slugs.push((
@@ -1170,37 +758,9 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                         format!("{pbase}/name"),
                         placement.name.clone(),
                     ));
-                    check_ref(
-                        &tables,
-                        &mut out,
-                        path,
-                        format!("{pbase}/prefab"),
-                        placement.prefab,
-                        &[ObjectKind::Creature, ObjectKind::Item],
-                        None,
-                        "placement prefab",
-                    );
-                    for (key, value) in &placement.overrides {
-                        walk_value(
-                            &tables,
-                            &mut out,
-                            path,
-                            format!("{pbase}/overrides/{}", escape(key)),
-                            value,
-                        );
-                    }
                 }
             }
             Document::Triggers(v) => {
-                check_owner(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/area",
-                    v.area,
-                    sibling_area(path, "triggers.json"),
-                    "triggers",
-                );
                 for (i, graph) in v.graphs.iter().enumerate() {
                     walk_graph(
                         &tables,
@@ -1224,47 +784,59 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     v,
                 );
             }
-            Document::Locale(v) => {
-                check_owner(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/campaign",
-                    v.campaign,
-                    root_campaign,
-                    "locale",
-                );
-            }
+            Document::Locale(_) => {}
             Document::Variables(v) => {
-                check_owner(
-                    &tables,
-                    &mut out,
-                    path,
-                    "/campaign",
-                    v.campaign,
-                    root_campaign,
-                    "variables",
-                );
                 for (i, decl) in v.variables.iter().enumerate() {
-                    walk_var(&tables, &mut out, path, format!("/variables/{i}"), decl);
+                    walk_var(&mut out, path, format!("/variables/{i}"), decl);
                 }
             }
             Document::CampaignLock(_) | Document::AssetsLock(_) => {}
         }
     }
 
-    // Asset import settings may also carry object references.
-    for (path, document) in docs {
-        if let Document::AssetsLock(lock) = document {
-            for (asset, record) in &lock.assets {
-                walk_args(
+    // Shared typed reference inventory: generic checks plus specialized
+    // aggregate ownership. Edge endpoints are inventoried for introspection
+    // but skipped here; ports and reachability already ran above.
+    for occurrence in shared::reference_occurrences(docs) {
+        match occurrence.policy {
+            shared::RefPolicy::Generic {
+                allowed,
+                owner,
+                what,
+            } => {
+                let owner = owner.map(|o| OwnerCheck {
+                    found: o.found,
+                    mine: o.mine,
+                    container: o.container,
+                });
+                check_ref(
                     &tables,
                     &mut out,
-                    path,
-                    format!("/assets/{}/import", escape(asset.as_str())),
-                    &record.import,
+                    &occurrence.file,
+                    occurrence.pointer,
+                    occurrence.target,
+                    allowed,
+                    owner,
+                    what,
                 );
             }
+            shared::RefPolicy::AggregateOwner { what } => {
+                let expected = match what {
+                    "placements" => sibling_area(&occurrence.file, "placements.json"),
+                    "triggers" => sibling_area(&occurrence.file, "triggers.json"),
+                    _ => root_campaign,
+                };
+                check_owner(
+                    &tables,
+                    &mut out,
+                    &occurrence.file,
+                    &occurrence.pointer,
+                    occurrence.target,
+                    expected,
+                    what,
+                );
+            }
+            shared::RefPolicy::EdgeEndpoint => {}
         }
     }
 
@@ -1347,8 +919,11 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
     out
 }
 
-/// Validates one event graph: references, edge ports, then reachability.
+/// Validates one event graph: slugs, locale keys, default types, edge ports,
+/// then reachability.
 ///
+/// Typed references themselves come from the shared inventory; this helper
+/// emits no reference diagnostics so the two consumers share one field list.
 /// `gbase` is the graph object's pointer within its file (empty for a
 /// standalone graph document, `/graphs/{i}` when embedded in triggers).
 #[allow(clippy::too_many_arguments)]
@@ -1369,75 +944,7 @@ fn walk_graph(
     ));
     locale_refs.push((file.clone(), format!("{gbase}/name"), graph.name.clone()));
     for (i, decl) in graph.locals.iter().enumerate() {
-        walk_var(tables, out, file, format!("{gbase}/locals/{i}"), decl);
-    }
-    check_ref(
-        tables,
-        out,
-        file,
-        format!("{gbase}/start"),
-        graph.start,
-        &[ObjectKind::Node],
-        Some(OwnerCheck {
-            found: tables.node_owner.get(&graph.start).copied(),
-            mine: graph.id,
-            container: "graph",
-        }),
-        "graph start",
-    );
-    for (j, node) in graph.nodes.iter().enumerate() {
-        let nbase = format!("{gbase}/nodes/{j}");
-        match &node.body {
-            NodeBody::Condition { .. } | NodeBody::Wait { .. } => {}
-            NodeBody::Action { call } => {
-                walk_args(
-                    tables,
-                    out,
-                    file,
-                    format!("{nbase}/body/call/args"),
-                    &call.args,
-                );
-            }
-            NodeBody::Branch { cases, .. } => {
-                for (k, case) in cases.iter().enumerate() {
-                    walk_value(tables, out, file, format!("{nbase}/body/cases/{k}"), case);
-                }
-            }
-            NodeBody::Sequence { nodes } => {
-                for (k, child) in nodes.iter().enumerate() {
-                    check_ref(
-                        tables,
-                        out,
-                        file,
-                        format!("{nbase}/body/nodes/{k}"),
-                        *child,
-                        &[ObjectKind::Node],
-                        Some(OwnerCheck {
-                            found: tables.node_owner.get(child).copied(),
-                            mine: graph.id,
-                            container: "graph",
-                        }),
-                        "sequence child",
-                    );
-                }
-            }
-            NodeBody::CallScript { args, .. } => {
-                walk_args(tables, out, file, format!("{nbase}/body/args"), args);
-            }
-            NodeBody::CallGraph { graph_id, args } => {
-                check_ref(
-                    tables,
-                    out,
-                    file,
-                    format!("{nbase}/body/graph_id"),
-                    *graph_id,
-                    &[ObjectKind::Graph],
-                    None,
-                    "graph call",
-                );
-                walk_args(tables, out, file, format!("{nbase}/body/args"), args);
-            }
-        }
+        walk_var(out, file, format!("{gbase}/locals/{i}"), decl);
     }
     // Node lookup for port and reachability analysis, first wins.
     let mut nodes: BTreeMap<Ulid, &NodeBody> = BTreeMap::new();
