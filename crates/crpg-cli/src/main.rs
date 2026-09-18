@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-//! `crpgc` — the campaign toolchain CLI: validate, replay, and the later
-//! migrate, pack, run and diff subcommands. No Godot, no rendering. T009b
+//! `crpgc` — the campaign toolchain CLI: validate, migrate, replay, and the
+//! later pack, run and diff subcommands. No Godot, no rendering. T009b
 //! shipped the `replay` subcommand; T011b adds the thin `validate` wrapper
-//! over `crpg-data` validation. T013 still owns the parser-framework decision,
-//! so both subcommands extend the same hand-rolled `args_os` parser.
+//! over `crpg-data` validation; T012b adds the thin `migrate` explicit-save
+//! wrapper over T012a migration-aware loading and the canonical writer.
+//! T013 still owns the parser-framework decision, so all subcommands extend
+//! the same hand-rolled `args_os` parser.
 
 mod apply;
 
@@ -13,7 +15,6 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -28,6 +29,19 @@ const REPLAY_USAGE: &str = "crpgc replay <replay-path> [--golden <golden-path>]"
 /// contract in `tasks/T011b.md`.
 const VALIDATE_USAGE: &str = "crpgc validate <campaign-root> [--json]";
 
+/// Usage line printed for the `migrate` subcommand, kept in sync with the
+/// contract in `tasks/T012b.md`. Exactly one root, no flags.
+const MIGRATE_USAGE: &str = "crpgc migrate <campaign-root>";
+
+/// Exact stderr bytes when the compile-time engine version does not parse as
+/// semver for `migrate`. A release-process bug, never user input.
+const MIGRATE_ENGINE_FAILURE: &str = "crpgc migrate: internal engine version failure\n";
+
+/// Exact stderr bytes when the data writer returns a different document set
+/// than was collected. An implementation defect, never user input; reported
+/// before any write starts.
+const DOCUMENT_SET_FAILURE: &str = "crpgc migrate: internal document set failure\n";
+
 /// Exact stderr bytes when the compile-time engine version does not parse as
 /// semver. A release-process bug, never user input, so the text is fixed.
 const ENGINE_VERSION_FAILURE: &str = "crpgc validate: internal engine version failure\n";
@@ -37,7 +51,7 @@ const ENGINE_VERSION_FAILURE: &str = "crpgc validate: internal engine version fa
 const SERIALIZATION_FAILURE: &str = "crpgc validate: internal serialization failure\n";
 
 /// Parsed command line. One variant per subcommand; T009b owns `Replay`,
-/// T011b owns `Validate`.
+/// T011b owns `Validate`, T012b owns `Migrate`.
 #[derive(Debug)]
 enum Command {
     Replay {
@@ -47,6 +61,9 @@ enum Command {
     Validate {
         root: PathBuf,
         json: bool,
+    },
+    Migrate {
+        root: PathBuf,
     },
 }
 
@@ -125,6 +142,7 @@ fn parse_args(args: &[OsString]) -> Result<Command, CliError> {
     match sub.to_str() {
         Some("replay") => parse_replay(&args[1..]),
         Some("validate") => parse_validate(&args[1..]),
+        Some("migrate") => parse_migrate(&args[1..]),
         Some(other) => Err(CliError::Usage(format!("unknown subcommand '{other}'"))),
         None => Err(CliError::Usage(format!(
             "unknown subcommand '{}'",
@@ -223,10 +241,46 @@ fn parse_validate(args: &[OsString]) -> Result<Command, CliError> {
     })
 }
 
+/// Parses the `migrate` subcommand's arguments. Exactly one campaign root and
+/// no flags: a missing root, an extra positional, or any flag (including
+/// `--json`, `--check`, `--dry-run`, `--to` and `--golden`) is a usage error
+/// with exit 2. A non-Unicode root parses successfully here: it is an exit-1
+/// `io` diagnostic from the collector, never a usage error and never a panic.
+/// The hand-rolled parser is extended; S13 still owns the parser-framework
+/// decision. Replay and validate contracts are preserved unchanged.
+fn parse_migrate(args: &[OsString]) -> Result<Command, CliError> {
+    let mut root: Option<&OsString> = None;
+    for arg in args {
+        match flag_text(arg) {
+            Some(other) => {
+                return Err(CliError::Usage(format!("unknown flag '{other}'")));
+            }
+            None => {
+                if root.is_some() {
+                    return Err(CliError::Usage(format!(
+                        "unexpected argument '{}'",
+                        arg.to_string_lossy()
+                    )));
+                }
+                root = Some(arg);
+            }
+        }
+    }
+    let root =
+        root.ok_or_else(|| CliError::Usage(format!("{MIGRATE_USAGE}: missing <campaign-root>")))?;
+    Ok(Command::Migrate {
+        root: PathBuf::from(root),
+    })
+}
+
 /// Stable snake_case kind for `cannot <op> <logical>: <kind>` messages.
 /// Only the distinguished filesystem conditions keep their identity;
 /// everything else collapses to `io_error` so diagnostics never embed raw
-/// OS error text, native separators, or absolute paths.
+/// OS error text, native separators, or absolute paths. `migrate` adds
+/// `source_changed` (prewrite re-read differs from the collected original)
+/// and `not_a_file` (a rewrite target that is a directory or other
+/// non-regular file) for its explicit prewrite checks; no new diagnostic
+/// enum variant is introduced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IoKind {
     NotFound,
@@ -235,6 +289,8 @@ enum IoKind {
     SymlinkAtDocumentPath,
     NonUnicodeComponent,
     IoError,
+    SourceChanged,
+    NotAFile,
 }
 
 impl fmt::Display for IoKind {
@@ -247,6 +303,8 @@ impl fmt::Display for IoKind {
             Self::SymlinkAtDocumentPath => "symlink_at_document_path",
             Self::NonUnicodeComponent => "non_unicode_component",
             Self::IoError => "io_error",
+            Self::SourceChanged => "source_changed",
+            Self::NotAFile => "not_a_file",
         };
         f.write_str(text)
     }
@@ -488,6 +546,235 @@ fn collect_file_entry(
     }
 }
 
+/// Joins a `/`-separated logical path onto a campaign root without
+/// lossy conversion or native-separator leakage. Logical components are
+/// data-validated ASCII, so only the root can carry non-Unicode text; that
+/// case is reported as `non_unicode_component` by the caller, never
+/// lossy-converted here.
+fn disk_path(root: &Path, logical: &str) -> PathBuf {
+    let mut disk = root.to_path_buf();
+    for component in logical.split('/') {
+        disk.push(component);
+    }
+    disk
+}
+
+/// One open file handle for the migrate rewrite phase. Object-safe so the
+/// production file and injected test fakes share the same `open_truncate`
+/// seam. Production writes through an existing-file handle with truncation,
+/// then `sync_all`; tests inject open/write/sync failures per path.
+trait RewriteHandle {
+    /// Writes the complete new bytes; maps to `cannot write <logical>`.
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    /// Persists the written bytes; maps to `cannot sync <logical>`.
+    fn sync_all(&mut self) -> std::io::Result<()>;
+}
+
+/// Production rewrite handle: an already-truncated existing file.
+struct RealHandle(std::fs::File);
+
+impl RewriteHandle for RealHandle {
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        <std::fs::File as std::io::Write>::write_all(&mut self.0, bytes)
+    }
+
+    fn sync_all(&mut self) -> std::io::Result<()> {
+        self.0.sync_all()
+    }
+}
+
+/// Filesystem operations the migrate rewrite phase needs. Production
+/// implements this with `std` only and never intentionally follows symlinks
+/// during rechecks (`symlink_metadata`); tests inject fakes through this
+/// seam to cover ancestor/target symlinks, changed sources, missing or
+/// non-regular targets, and open/write/sync failures without platform
+/// privileges or runtime skips.
+trait RewriteFs {
+    /// Observes `path` without following a terminal symlink.
+    fn metadata(&self, path: &Path) -> std::io::Result<EntryKind>;
+    /// Re-reads a rewrite target for the prewrite equality check.
+    fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>>;
+    /// Opens an existing file for truncation; never creates a missing file.
+    fn open_truncate(&self, path: &Path) -> std::io::Result<Box<dyn RewriteHandle>>;
+}
+
+impl RewriteFs for RealFs {
+    fn metadata(&self, path: &Path) -> std::io::Result<EntryKind> {
+        path.symlink_metadata()
+            .map(|meta| entry_kind(&meta.file_type()))
+    }
+
+    fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        fs::read(path)
+    }
+
+    fn open_truncate(&self, path: &Path) -> std::io::Result<Box<dyn RewriteHandle>> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map(|file| Box::new(RealHandle(file)) as Box<dyn RewriteHandle>)
+    }
+}
+
+/// Renders one diagnostic as the single stderr line for `migrate`: the
+/// data- or CLI-owned `Display` plus exactly one LF. Stdout stays empty.
+fn diagnostic_line(diagnostic: &Diagnostic) -> Vec<u8> {
+    let mut stderr = diagnostic.to_string().into_bytes();
+    stderr.push(b'\n');
+    stderr
+}
+
+/// Executes the rewrite phase for already-computed byte-different files in
+/// lexical logical-path order, stopping at the first failure.
+///
+/// For each target this rechecks root/ancestor/target metadata without
+/// intentionally following symlinks, then re-reads the target and requires
+/// its bytes to equal the collected original, then opens the existing file
+/// with truncation, writes the new bytes, and syncs. Canonical-current files
+/// are never opened because the caller only passes differing files.
+///
+/// Bounded contract: this deliberately does not promise atomic replacement,
+/// rollback, crash recovery, or a whole-directory transaction. An I/O failure
+/// can leave earlier files replaced and the failing file partially written.
+/// Concurrent changes after a recheck remain unspecified; no locking or
+/// secure live-tree snapshot is introduced. A future atomic save design is
+/// separate scope.
+fn execute_rewrites(
+    fs: &impl RewriteFs,
+    root: &Path,
+    originals: &BTreeMap<SourcePath, Vec<u8>>,
+    updates: &[(SourcePath, Vec<u8>)],
+) -> Result<(), Diagnostic> {
+    for (path, new_bytes) in updates {
+        let logical = path.as_str();
+        if root.to_str().is_none() {
+            return Err(io_diagnostic(
+                "check",
+                Some(path.clone()),
+                logical,
+                IoKind::NonUnicodeComponent,
+            ));
+        }
+        match fs.metadata(root) {
+            Err(error) => {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    io_kind(&error),
+                ));
+            }
+            Ok(EntryKind::Directory) => {}
+            Ok(EntryKind::Symlink) => {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    IoKind::SymlinkAtDocumentPath,
+                ));
+            }
+            Ok(EntryKind::File) | Ok(EntryKind::Other) => {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    IoKind::NotADirectory,
+                ));
+            }
+        }
+        let components: Vec<&str> = logical.split('/').collect();
+        for index in 1..components.len() {
+            let ancestor_logical = components[..index].join("/");
+            let disk_ancestor = disk_path(root, &ancestor_logical);
+            match fs.metadata(&disk_ancestor) {
+                Err(error) => {
+                    return Err(io_diagnostic(
+                        "check",
+                        Some(path.clone()),
+                        logical,
+                        io_kind(&error),
+                    ));
+                }
+                Ok(EntryKind::Directory) => {}
+                Ok(EntryKind::Symlink) => {
+                    return Err(io_diagnostic(
+                        "check",
+                        Some(path.clone()),
+                        logical,
+                        IoKind::SymlinkAtDocumentPath,
+                    ));
+                }
+                Ok(EntryKind::File) | Ok(EntryKind::Other) => {
+                    return Err(io_diagnostic(
+                        "check",
+                        Some(path.clone()),
+                        logical,
+                        IoKind::NotADirectory,
+                    ));
+                }
+            }
+        }
+        let disk_target = disk_path(root, logical);
+        match fs.metadata(&disk_target) {
+            Err(error) => {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    io_kind(&error),
+                ));
+            }
+            Ok(EntryKind::File) => {}
+            Ok(EntryKind::Symlink) => {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    IoKind::SymlinkAtDocumentPath,
+                ));
+            }
+            Ok(EntryKind::Directory) | Ok(EntryKind::Other) => {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    IoKind::NotAFile,
+                ));
+            }
+        }
+        let current = fs.read_file(&disk_target).map_err(|error| {
+            io_diagnostic("check", Some(path.clone()), logical, io_kind(&error))
+        })?;
+        let Some(original) = originals.get(path) else {
+            return Err(io_diagnostic(
+                "check",
+                Some(path.clone()),
+                logical,
+                IoKind::SourceChanged,
+            ));
+        };
+        if current != *original {
+            return Err(io_diagnostic(
+                "check",
+                Some(path.clone()),
+                logical,
+                IoKind::SourceChanged,
+            ));
+        }
+        let mut handle = fs
+            .open_truncate(&disk_target)
+            .map_err(|error| io_diagnostic("open", Some(path.clone()), logical, io_kind(&error)))?;
+        handle.write_all(new_bytes).map_err(|error| {
+            io_diagnostic("write", Some(path.clone()), logical, io_kind(&error))
+        })?;
+        handle
+            .sync_all()
+            .map_err(|error| io_diagnostic("sync", Some(path.clone()), logical, io_kind(&error)))?;
+    }
+    Ok(())
+}
+
 /// Parses the package engine version and validates the collected files.
 /// Split from [`run_validate`] so tests can pin the internal-version
 /// fallback with a synthetic bad version string: `env!` text always parses
@@ -499,6 +786,28 @@ fn validate_with_engine_version(
 ) -> Result<Vec<Diagnostic>, ()> {
     let engine = engine_text.parse().map_err(|_| ())?;
     Ok(crpg_data::validate_files(files, &engine))
+}
+
+/// Loads the collected files through T012a's migration-aware loader with the
+/// supplied engine text. The version type is inferred from `load_campaign`,
+/// exactly as T011b does, so no semver edge is added.
+fn load_with_engine_version(
+    files: &BTreeMap<SourcePath, Vec<u8>>,
+    engine_text: &str,
+) -> Result<crpg_data::LoadedCampaign, Outcome> {
+    let engine = engine_text.parse().map_err(|_| Outcome {
+        code: 1,
+        stdout: Vec::new(),
+        stderr: MIGRATE_ENGINE_FAILURE.as_bytes().to_vec(),
+    })?;
+    crpg_data::load_campaign(files, &engine).map_err(|error| {
+        let diagnostic = crpg_data::diagnostic_for_data_error(&error);
+        Outcome {
+            code: 1,
+            stdout: Vec::new(),
+            stderr: diagnostic_line(&diagnostic),
+        }
+    })
 }
 
 /// Exit mapping: any `Error` fails with 1; warnings print but never fail.
@@ -574,8 +883,126 @@ fn run_validate(root: &Path, json: bool) -> Outcome {
     }
 }
 
+/// Runs the parsed `migrate` command: the explicit save action for S §4.5.
+///
+/// Flow is parse (`args_os`) → the existing T011b read-only collector →
+/// `load_campaign` once with the compile-time package engine version →
+/// `serialize_campaign` once → compare returned bytes with collected
+/// originals → replace differing recognized files in lexical `SourcePath`
+/// order. All collection, load, and serialization work succeeds for the
+/// entire map before any write starts, so preflight failures perform zero
+/// writes. This command performs structural migration/save only: it never
+/// calls `validate_files`, individual migration steps, or any semantic check,
+/// and it never changes a schema tag, decodes campaign JSON, recomputes a
+/// digest, or implements a version decision outside data.
+///
+/// Bounded partial-write limitation: writes stop at the first failure without
+/// atomic replacement, rollback, crash recovery, or a whole-directory
+/// transaction. An I/O failure can leave earlier files replaced and the
+/// failing file partially written.
+fn run_migrate_with<W: WalkFs, R: RewriteFs>(
+    walk_fs: &W,
+    rewrite_fs: &R,
+    root: &Path,
+    engine_text: &str,
+) -> Outcome {
+    let files = match collect_campaign_files_with(walk_fs, root) {
+        Ok(files) => files,
+        Err(diagnostic) => {
+            return Outcome {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: diagnostic_line(&diagnostic),
+            };
+        }
+    };
+    let loaded = match load_with_engine_version(&files, engine_text) {
+        Ok(loaded) => loaded,
+        Err(outcome) => return outcome,
+    };
+    let serialized = match crpg_data::serialize_campaign(&loaded) {
+        Ok(serialized) => serialized,
+        Err(error) => {
+            let diagnostic = crpg_data::diagnostic_for_data_error(&error);
+            return Outcome {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: diagnostic_line(&diagnostic),
+            };
+        }
+    };
+    let updates = match plan_updates(&files, &serialized) {
+        Ok(updates) => updates,
+        Err(()) => {
+            return Outcome {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: DOCUMENT_SET_FAILURE.as_bytes().to_vec(),
+            };
+        }
+    };
+    match execute_rewrites(rewrite_fs, root, &files, &updates) {
+        Ok(()) => Outcome::success(),
+        Err(diagnostic) => Outcome {
+            code: 1,
+            stdout: Vec::new(),
+            stderr: diagnostic_line(&diagnostic),
+        },
+    }
+}
+
+/// Compares collected originals with the canonical writer output and returns
+/// the byte-different files in lexical `SourcePath` order. The returned key
+/// set must equal the collected set; a mismatch is an internal failure
+/// reported before any write starts. Split from [`run_migrate_with`] so
+/// tests can pin the internal document-set fallback with an injected
+/// mismatched map without touching the filesystem.
+fn plan_updates(
+    files: &BTreeMap<SourcePath, Vec<u8>>,
+    serialized: &BTreeMap<SourcePath, Vec<u8>>,
+) -> Result<Vec<(SourcePath, Vec<u8>)>, ()> {
+    if files.keys().collect::<Vec<_>>() != serialized.keys().collect::<Vec<_>>() {
+        return Err(());
+    }
+    let mut updates = Vec::new();
+    for (path, new_bytes) in serialized {
+        if let Some(original) = files.get(path) {
+            if original != new_bytes {
+                updates.push((path.clone(), new_bytes.clone()));
+            }
+        }
+    }
+    Ok(updates)
+}
+
+/// Production `migrate` entry: the real filesystem for both collection and
+/// the rewrite phase, with the compile-time package engine version.
+fn run_migrate(root: &Path) -> Outcome {
+    let fs = RealFs;
+    run_migrate_with(&fs, &fs, root, env!("CARGO_PKG_VERSION"))
+}
+
+/// Writes an [`Outcome`] to the supplied streams without panicking and
+/// without recursively reporting a broken stream. Returns the process exit
+/// code: the outcome code when both writes succeed, otherwise `1`.
+fn emit_code(
+    stdout: &mut dyn std::io::Write,
+    stderr: &mut dyn std::io::Write,
+    outcome: &Outcome,
+) -> u8 {
+    let stdout_ok = stdout.write_all(&outcome.stdout).is_ok();
+    let stderr_ok = stderr.write_all(&outcome.stderr).is_ok();
+    if stdout_ok && stderr_ok {
+        outcome.code
+    } else {
+        1
+    }
+}
+
 /// Runs a parsed command. Replay stays the thin testkit consumer it was at
-/// T009b; validate joins data-owned validation to OS-owned traversal.
+/// T009b; validate joins data-owned validation to OS-owned traversal;
+/// migrate joins the same collector to T012a's migration-aware loader and
+/// canonical writer plus its explicit save phase.
 fn run(command: Command) -> Outcome {
     match command {
         Command::Replay {
@@ -590,6 +1017,7 @@ fn run(command: Command) -> Outcome {
             Err(error) => Outcome::cli_error(&CliError::Replay(error)),
         },
         Command::Validate { root, json } => run_validate(&root, json),
+        Command::Migrate { root } => run_migrate(&root),
     }
 }
 
@@ -599,9 +1027,8 @@ fn main() -> ExitCode {
         Ok(command) => run(command),
         Err(error) => Outcome::cli_error(&error),
     };
-    let _ = std::io::stdout().write_all(&outcome.stdout);
-    let _ = std::io::stderr().write_all(&outcome.stderr);
-    ExitCode::from(outcome.code)
+    let code = emit_code(&mut std::io::stdout(), &mut std::io::stderr(), &outcome);
+    ExitCode::from(code)
 }
 
 #[cfg(test)]
@@ -621,8 +1048,10 @@ mod tests {
 
     #[test]
     fn unknown_subcommand_is_usage() {
+        // `migrate` is known since T012b; use a truly unknown name to pin the
+        // unknown-subcommand path rather than the missing-root path.
         assert!(matches!(
-            parse_args(&args(&["migrate"])),
+            parse_args(&args(&["frobnicate"])),
             Err(CliError::Usage(_))
         ));
     }
@@ -646,7 +1075,7 @@ mod tests {
                 assert_eq!(replay_path, PathBuf::from("run/replay_basic.replay"));
                 assert_eq!(golden_path, PathBuf::from("run/replay_basic.golden"));
             }
-            Command::Validate { .. } => panic!("expected replay"),
+            Command::Validate { .. } | Command::Migrate { .. } => panic!("expected replay"),
         }
     }
 
@@ -663,7 +1092,7 @@ mod tests {
             Command::Replay { golden_path, .. } => {
                 assert_eq!(golden_path, PathBuf::from("g.golden"));
             }
-            Command::Validate { .. } => panic!("expected replay"),
+            Command::Validate { .. } | Command::Migrate { .. } => panic!("expected replay"),
         }
     }
 
@@ -1365,6 +1794,725 @@ mod tests {
         assert_eq!(
             error.message,
             "cannot open root <campaign-root>: not_a_directory"
+        );
+    }
+
+    #[test]
+    fn migrate_root_only_parses() {
+        match parse_args(&args(&["migrate", "campaigns/demo"])) {
+            Ok(Command::Migrate { root }) => {
+                assert_eq!(root, PathBuf::from("campaigns/demo"));
+            }
+            other => panic!("expected migrate: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn migrate_parser_rejects_bad_syntax_as_usage() {
+        let cases = [
+            args(&["migrate"]),
+            args(&["migrate", "a", "b"]),
+            args(&["migrate", "--json", "a"]),
+            args(&["migrate", "a", "--json"]),
+            args(&["migrate", "--check", "a"]),
+            args(&["migrate", "--dry-run", "a"]),
+            args(&["migrate", "--to", "a"]),
+            args(&["migrate", "--golden", "a"]),
+            args(&["migrate", "a", "--golden", "g"]),
+            args(&["migrate", "--bogus", "a"]),
+            args(&["migrate", "a", "--bogus"]),
+        ];
+        for argv in &cases {
+            match parse_args(argv) {
+                Err(CliError::Usage(_)) => {}
+                other => panic!("expected usage for {argv:?}: {other:?}"),
+            }
+        }
+        assert_eq!(
+            Outcome::cli_error(
+                &parse_args(&args(&["migrate"])).expect_err("missing root is usage")
+            )
+            .code,
+            2
+        );
+    }
+
+    #[test]
+    fn migrate_missing_root_names_usage() {
+        match parse_args(&args(&["migrate"])) {
+            Err(CliError::Usage(message)) => {
+                assert!(message.contains("missing <campaign-root>"), "{message}");
+            }
+            other => panic!("expected usage: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn migrate_unknown_subcommand_stays_usage() {
+        assert!(matches!(
+            parse_args(&args(&["migrate2", "a"])),
+            Err(CliError::Usage(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_non_unicode_root_parses_for_io() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut argv = vec![OsString::from("migrate")];
+        argv.push(OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]));
+        match parse_args(&argv) {
+            Ok(Command::Migrate { .. }) => {}
+            other => panic!("non-Unicode root must parse, failing later as io: {other:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn migrate_non_unicode_root_parses_for_io() {
+        use std::os::windows::ffi::OsStringExt;
+        let mut argv = vec![OsString::from("migrate")];
+        argv.push(OsString::from_wide(&[0x0066, 0xD800]));
+        match parse_args(&argv) {
+            Ok(Command::Migrate { .. }) => {}
+            other => panic!("non-Unicode root must parse, failing later as io: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn io_kind_migrate_spellings_are_stable() {
+        assert_eq!(IoKind::SourceChanged.to_string(), "source_changed");
+        assert_eq!(IoKind::NotAFile.to_string(), "not_a_file");
+    }
+
+    #[test]
+    fn disk_path_joins_logical_with_native_separators() {
+        let root = PathBuf::from("/fake/root");
+        assert_eq!(
+            disk_path(&root, "campaign.json"),
+            PathBuf::from("/fake/root").join("campaign.json")
+        );
+        assert_eq!(
+            disk_path(&root, "areas/start/area.json"),
+            PathBuf::from("/fake/root")
+                .join("areas")
+                .join("start")
+                .join("area.json")
+        );
+    }
+
+    /// Injected rewrite filesystem for migrate unit seams. Scripted metadata
+    /// shapes, file bytes, and per-path open/write/sync failures, with a full
+    /// operation log. Sorting, lexical update order, classification (real
+    /// data-owned functions), and message construction stay live.
+    struct FakeRewriteFs {
+        kinds: BTreeMap<PathBuf, EntryKind>,
+        metadata_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        contents: BTreeMap<PathBuf, Vec<u8>>,
+        read_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        open_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        write_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        sync_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        log: std::rc::Rc<RefCell<Vec<String>>>,
+        written: std::rc::Rc<RefCell<BTreeMap<PathBuf, Vec<u8>>>>,
+    }
+
+    /// Injected failing handle for the rewrite seam. Logs its own write/sync
+    /// calls and optionally fails each stage with a stable `ErrorKind`.
+    struct FakeHandle {
+        path: PathBuf,
+        write_err: Option<std::io::ErrorKind>,
+        sync_err: Option<std::io::ErrorKind>,
+        log: std::rc::Rc<RefCell<Vec<String>>>,
+        written: std::rc::Rc<RefCell<BTreeMap<PathBuf, Vec<u8>>>>,
+    }
+
+    impl RewriteHandle for FakeHandle {
+        fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+            self.log
+                .borrow_mut()
+                .push(format!("write {}", portable(&self.path)));
+            if let Some(kind) = self.write_err {
+                return Err(std::io::Error::new(kind, "fake: cannot write"));
+            }
+            self.written
+                .borrow_mut()
+                .insert(self.path.clone(), bytes.to_vec());
+            Ok(())
+        }
+
+        fn sync_all(&mut self) -> std::io::Result<()> {
+            self.log
+                .borrow_mut()
+                .push(format!("sync {}", portable(&self.path)));
+            if let Some(kind) = self.sync_err {
+                return Err(std::io::Error::new(kind, "fake: cannot sync"));
+            }
+            Ok(())
+        }
+    }
+
+    impl FakeRewriteFs {
+        fn new() -> Self {
+            Self {
+                kinds: BTreeMap::new(),
+                metadata_err: BTreeMap::new(),
+                contents: BTreeMap::new(),
+                read_err: BTreeMap::new(),
+                open_err: BTreeMap::new(),
+                write_err: BTreeMap::new(),
+                sync_err: BTreeMap::new(),
+                log: std::rc::Rc::new(RefCell::new(Vec::new())),
+                written: std::rc::Rc::new(RefCell::new(BTreeMap::new())),
+            }
+        }
+
+        fn dir(&mut self, path: &Path) {
+            self.kinds.insert(path.to_path_buf(), EntryKind::Directory);
+        }
+
+        fn file(&mut self, path: &Path, bytes: &[u8]) {
+            self.kinds.insert(path.to_path_buf(), EntryKind::File);
+            self.contents.insert(path.to_path_buf(), bytes.to_vec());
+        }
+
+        fn symlink(&mut self, path: &Path) {
+            self.kinds.insert(path.to_path_buf(), EntryKind::Symlink);
+        }
+
+        fn other(&mut self, path: &Path) {
+            self.kinds.insert(path.to_path_buf(), EntryKind::Other);
+        }
+    }
+
+    impl RewriteFs for FakeRewriteFs {
+        fn metadata(&self, path: &Path) -> std::io::Result<EntryKind> {
+            self.log
+                .borrow_mut()
+                .push(format!("metadata {}", portable(path)));
+            if let Some(kind) = self.metadata_err.get(path) {
+                return Err(std::io::Error::new(*kind, "fake: cannot stat"));
+            }
+            self.kinds.get(path).copied().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "fake: no such entry")
+            })
+        }
+
+        fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            self.log
+                .borrow_mut()
+                .push(format!("read {}", portable(path)));
+            if let Some(kind) = self.read_err.get(path) {
+                return Err(std::io::Error::new(*kind, "fake: cannot read"));
+            }
+            self.contents.get(path).cloned().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "fake: no such file")
+            })
+        }
+
+        fn open_truncate(&self, path: &Path) -> std::io::Result<Box<dyn RewriteHandle>> {
+            self.log
+                .borrow_mut()
+                .push(format!("open {}", portable(path)));
+            if let Some(kind) = self.open_err.get(path) {
+                return Err(std::io::Error::new(*kind, "fake: cannot open"));
+            }
+            Ok(Box::new(FakeHandle {
+                path: path.to_path_buf(),
+                write_err: self.write_err.get(path).copied(),
+                sync_err: self.sync_err.get(path).copied(),
+                log: std::rc::Rc::clone(&self.log),
+                written: std::rc::Rc::clone(&self.written),
+            }))
+        }
+    }
+
+    fn migrate_path(value: &str) -> SourcePath {
+        value.parse().expect("valid logical path")
+    }
+
+    /// Sets up a rewrite fake for one logical file under `/fake/root`: root
+    /// and every ancestor as directories, the target as a file with
+    /// `original` bytes. Returns the root and the target disk path.
+    fn rewrite_single_fixture(
+        fs: &mut FakeRewriteFs,
+        logical: &str,
+        original: &[u8],
+    ) -> (PathBuf, PathBuf) {
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        let components: Vec<&str> = logical.split('/').collect();
+        for index in 1..components.len() {
+            let ancestor = components[..index].join("/");
+            fs.dir(&disk_path(&root, &ancestor));
+        }
+        let disk_target = disk_path(&root, logical);
+        fs.file(&disk_target, original);
+        (root, disk_target)
+    }
+
+    #[test]
+    fn rewrite_empty_updates_perform_zero_writes() {
+        let fs = FakeRewriteFs::new();
+        let originals = BTreeMap::new();
+        let updates: Vec<(SourcePath, Vec<u8>)> = Vec::new();
+        let root = PathBuf::from("/fake/root");
+        execute_rewrites(&fs, &root, &originals, &updates).expect("empty is ok");
+        assert!(
+            fs.log.borrow().is_empty(),
+            "zero updates must not touch the filesystem: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn rewrite_single_file_success_writes_and_syncs() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let (root, disk_target) = rewrite_single_fixture(&mut fs, logical, b"old");
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        execute_rewrites(&fs, &root, &originals, &updates).expect("writes");
+        assert_eq!(
+            fs.written.borrow().get(&disk_target),
+            Some(&b"new".to_vec())
+        );
+        let log = fs.log.borrow();
+        assert!(log
+            .iter()
+            .any(|entry| entry == &format!("open {}", portable(&disk_target))));
+        assert!(log
+            .iter()
+            .any(|entry| entry == &format!("write {}", portable(&disk_target))));
+        assert!(log
+            .iter()
+            .any(|entry| entry == &format!("sync {}", portable(&disk_target))));
+    }
+
+    #[test]
+    fn rewrite_target_symlink_is_check_failure_before_open() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        let disk_target = disk_path(&root, logical);
+        fs.symlink(&disk_target);
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error =
+            execute_rewrites(&fs, &root, &originals, &updates).expect_err("symlink refused");
+        assert_eq!(error.code, DiagnosticCode::Io);
+        assert_eq!(
+            error.message,
+            "cannot check campaign.json: symlink_at_document_path"
+        );
+        assert_eq!(error.file.expect("names target").as_str(), logical);
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .all(|entry| !entry.starts_with("open")),
+            "symlink must fail before open: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn rewrite_ancestor_symlink_names_target_and_skips_open() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "areas/start/area.json";
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        fs.symlink(&disk_path(&root, "areas"));
+        let disk_target = disk_path(&root, logical);
+        fs.file(&disk_target, b"old");
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error =
+            execute_rewrites(&fs, &root, &originals, &updates).expect_err("ancestor symlink");
+        assert_eq!(
+            error.message,
+            "cannot check areas/start/area.json: symlink_at_document_path"
+        );
+        assert_eq!(error.file.expect("names target").as_str(), logical);
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .all(|entry| !entry.starts_with("open")),
+            "ancestor failure must precede open: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn rewrite_changed_source_is_source_changed_without_open() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let (root, _) = rewrite_single_fixture(&mut fs, logical, b"live-bytes");
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"collected-bytes".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("changed source");
+        assert_eq!(error.message, "cannot check campaign.json: source_changed");
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .all(|entry| !entry.starts_with("open")),
+            "changed source must fail before open: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn rewrite_missing_target_is_check_not_found() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        // No target entry: metadata reports NotFound.
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("missing");
+        assert_eq!(error.message, "cannot check campaign.json: not_found");
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .all(|entry| !entry.starts_with("open")),
+            "missing target must fail before open: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn rewrite_directory_target_is_not_a_file() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        let disk_target = disk_path(&root, logical);
+        fs.dir(&disk_target);
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("dir target");
+        assert_eq!(error.message, "cannot check campaign.json: not_a_file");
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .all(|entry| !entry.starts_with("open")),
+            "nonregular target must fail before open: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn rewrite_other_target_is_not_a_file() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        let disk_target = disk_path(&root, logical);
+        fs.other(&disk_target);
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("other target");
+        assert_eq!(error.message, "cannot check campaign.json: not_a_file");
+    }
+
+    #[test]
+    fn rewrite_open_failure_is_open_op_with_stable_kind() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let (root, disk_target) = rewrite_single_fixture(&mut fs, logical, b"old");
+        fs.open_err
+            .insert(disk_target.clone(), std::io::ErrorKind::PermissionDenied);
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("open fails");
+        assert_eq!(
+            error.message,
+            "cannot open campaign.json: permission_denied"
+        );
+        assert!(
+            fs.written.borrow().is_empty(),
+            "open failure writes nothing"
+        );
+    }
+
+    #[test]
+    fn rewrite_write_failure_reports_write_without_rollback_claim() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let (root, disk_target) = rewrite_single_fixture(&mut fs, logical, b"old");
+        fs.write_err
+            .insert(disk_target.clone(), std::io::ErrorKind::PermissionDenied);
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("write fails");
+        assert_eq!(
+            error.message,
+            "cannot write campaign.json: permission_denied"
+        );
+        assert!(
+            !error.message.contains("rollback"),
+            "must not claim rollback: {}",
+            error.message
+        );
+        assert!(
+            fs.written.borrow().is_empty(),
+            "failed write stores nothing"
+        );
+    }
+
+    #[test]
+    fn rewrite_sync_failure_reports_sync() {
+        let mut fs = FakeRewriteFs::new();
+        let logical = "campaign.json";
+        let (root, disk_target) = rewrite_single_fixture(&mut fs, logical, b"old");
+        fs.sync_err.insert(disk_target, std::io::ErrorKind::Other);
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path(logical), b"old".to_vec());
+        let updates = vec![(migrate_path(logical), b"new".to_vec())];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("sync fails");
+        assert_eq!(error.message, "cannot sync campaign.json: io_error");
+    }
+
+    #[test]
+    fn rewrite_first_lexical_failure_stops_and_keeps_prefix() {
+        let mut fs = FakeRewriteFs::new();
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        for logical in ["campaign.json", "creatures/creature.json"] {
+            let components: Vec<&str> = logical.split('/').collect();
+            for index in 1..components.len() {
+                fs.dir(&disk_path(&root, &components[..index].join("/")));
+            }
+            fs.file(&disk_path(&root, logical), b"old");
+        }
+        // Second file fails on write; first must already be written.
+        let second_disk = disk_path(&root, "creatures/creature.json");
+        fs.write_err
+            .insert(second_disk.clone(), std::io::ErrorKind::PermissionDenied);
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path("campaign.json"), b"old".to_vec());
+        originals.insert(migrate_path("creatures/creature.json"), b"old".to_vec());
+        let updates = vec![
+            (migrate_path("campaign.json"), b"new".to_vec()),
+            (migrate_path("creatures/creature.json"), b"new".to_vec()),
+        ];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("second fails");
+        assert_eq!(
+            error.message,
+            "cannot write creatures/creature.json: permission_denied"
+        );
+        assert_eq!(
+            fs.written.borrow().get(&disk_path(&root, "campaign.json")),
+            Some(&b"new".to_vec()),
+            "earlier lexical file stays written: no rollback"
+        );
+        assert!(
+            !error.message.contains("rollback"),
+            "must not claim rollback: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn rewrite_first_failure_prevents_second_attempt() {
+        let mut fs = FakeRewriteFs::new();
+        let root = PathBuf::from("/fake/root");
+        fs.dir(&root);
+        for logical in ["campaign.json", "campaign.lock"] {
+            fs.file(&disk_path(&root, logical), b"old");
+        }
+        // First file's re-read differs, so it fails before any open.
+        let mut originals = BTreeMap::new();
+        originals.insert(migrate_path("campaign.json"), b"stale".to_vec());
+        originals.insert(migrate_path("campaign.lock"), b"old".to_vec());
+        // Rewrite fake holds live bytes `old` for the first file, which
+        // differs from the collected `stale`, forcing source_changed.
+        let updates = vec![
+            (migrate_path("campaign.json"), b"new".to_vec()),
+            (migrate_path("campaign.lock"), b"new".to_vec()),
+        ];
+        let error = execute_rewrites(&fs, &root, &originals, &updates).expect_err("first fails");
+        assert_eq!(error.message, "cannot check campaign.json: source_changed");
+        let log = fs.log.borrow();
+        assert!(
+            log.iter()
+                .all(|entry| !entry.contains("campaign.lock") || entry.contains("metadata")),
+            "second file must not be attempted after first lexical failure, yet log is {log:?}"
+        );
+        // More precisely, no open for the second file.
+        let second_disk = portable(&disk_path(&root, "campaign.lock"));
+        assert!(
+            log.iter()
+                .all(|entry| entry != &format!("open {second_disk}")),
+            "second open must not happen: {log:?}"
+        );
+        assert!(
+            fs.written.borrow().is_empty(),
+            "first failure writes nothing"
+        );
+    }
+
+    #[test]
+    fn plan_updates_detects_key_mismatch_without_panic() {
+        let mut files = BTreeMap::new();
+        files.insert(migrate_path("campaign.json"), b"old".to_vec());
+        let mut serialized = BTreeMap::new();
+        serialized.insert(migrate_path("campaign.json"), b"old".to_vec());
+        serialized.insert(migrate_path("campaign.lock"), b"new".to_vec());
+        assert_eq!(plan_updates(&files, &serialized), Err(()));
+        let mut files = BTreeMap::new();
+        files.insert(migrate_path("campaign.json"), b"old".to_vec());
+        files.insert(migrate_path("campaign.lock"), b"old".to_vec());
+        let mut serialized = BTreeMap::new();
+        serialized.insert(migrate_path("campaign.json"), b"old".to_vec());
+        assert_eq!(plan_updates(&files, &serialized), Err(()));
+    }
+
+    #[test]
+    fn plan_updates_returns_only_differing_files_in_lexical_order() {
+        let mut files = BTreeMap::new();
+        files.insert(migrate_path("campaign.json"), b"same".to_vec());
+        files.insert(migrate_path("campaign.lock"), b"old".to_vec());
+        files.insert(migrate_path("worlds/world.json"), b"old".to_vec());
+        let mut serialized = BTreeMap::new();
+        serialized.insert(migrate_path("campaign.json"), b"same".to_vec());
+        serialized.insert(migrate_path("campaign.lock"), b"new".to_vec());
+        serialized.insert(migrate_path("worlds/world.json"), b"newer".to_vec());
+        let updates = plan_updates(&files, &serialized).expect("plans");
+        let logicals: Vec<&str> = updates.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(logicals, ["campaign.lock", "worlds/world.json"]);
+    }
+
+    #[test]
+    fn run_migrate_with_bad_engine_is_internal_failure_with_zero_writes() {
+        let root = PathBuf::from("/fake/root");
+        let mut walk = FakeFs::new();
+        walk.dir(&root, &["campaign.json"]);
+        walk.file(&root.join("campaign.json"), b"{}");
+        let rewrite = FakeRewriteFs::new();
+        let outcome = run_migrate_with(&walk, &rewrite, &root, "not-a-version");
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.stderr, MIGRATE_ENGINE_FAILURE.as_bytes());
+        assert!(
+            rewrite.log.borrow().is_empty(),
+            "version failure must not touch rewrite fs: {:?}",
+            rewrite.log.borrow()
+        );
+    }
+
+    #[test]
+    fn run_migrate_with_preflight_failure_performs_zero_rewrite_writes() {
+        let root = PathBuf::from("/fake/root");
+        let mut walk = FakeFs::new();
+        // Collects one document but misses the other required files, so the
+        // data loader fails layout before any rewrite starts.
+        walk.dir(&root, &["campaign.json"]);
+        walk.file(&root.join("campaign.json"), b"{}");
+        let rewrite = FakeRewriteFs::new();
+        let outcome = run_migrate_with(&walk, &rewrite, &root, "0.1.0");
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert!(!outcome.stderr.is_empty());
+        assert!(
+            rewrite.log.borrow().is_empty(),
+            "preflight failure must perform zero writes: {:?}",
+            rewrite.log.borrow()
+        );
+    }
+
+    #[test]
+    fn document_set_failure_bytes_are_exact() {
+        assert_eq!(
+            DOCUMENT_SET_FAILURE,
+            "crpgc migrate: internal document set failure\n"
+        );
+        assert_eq!(
+            MIGRATE_ENGINE_FAILURE,
+            "crpgc migrate: internal engine version failure\n"
+        );
+    }
+
+    struct FailWriter;
+
+    impl std::io::Write for FailWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fake: stream is broken",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fake: stream is broken",
+            ))
+        }
+    }
+
+    struct VecWriter<'a>(&'a mut Vec<u8>);
+
+    impl std::io::Write for VecWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emit_code_returns_outcome_code_on_success_and_1_on_stream_failure() {
+        let outcome = Outcome {
+            code: 0,
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = {
+            let mut stdout_writer = VecWriter(&mut stdout);
+            let mut stderr_writer = VecWriter(&mut stderr);
+            emit_code(&mut stdout_writer, &mut stderr_writer, &outcome)
+        };
+        assert_eq!(code, 0);
+        assert_eq!(stdout, b"out");
+        assert_eq!(stderr, b"err");
+
+        let mut failing_stdout = FailWriter;
+        let mut ok_stderr = Vec::new();
+        let mut ok_stderr_writer = VecWriter(&mut ok_stderr);
+        assert_eq!(
+            emit_code(&mut failing_stdout, &mut ok_stderr_writer, &outcome),
+            1,
+            "stdout failure must exit 1 without panic"
+        );
+
+        let mut ok_stdout = Vec::new();
+        let mut ok_stdout_writer = VecWriter(&mut ok_stdout);
+        let mut failing_stderr = FailWriter;
+        assert_eq!(
+            emit_code(&mut ok_stdout_writer, &mut failing_stderr, &outcome),
+            1,
+            "stderr failure must exit 1 without panic"
         );
     }
 }

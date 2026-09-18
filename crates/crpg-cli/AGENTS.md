@@ -3,9 +3,10 @@
 Scope note: this file describes the T009b opening of the crate: the `replay`
 subcommand, the provisional reference-intents apply, and the exit-code
 contract — plus the T011b `validate` thin wrapper, its read-only traversal
-ownership, and its gate-8 fixture gate. Later subcommands (`migrate`, `pack`,
-`run`, `diff` and the T013 argument-parsing decision) extend this file with
-their tasks.
+ownership, and its gate-8 fixture gate — plus the T012b `migrate`
+explicit-save wrapper, its preflight/rewrite boundary, and its data-golden
+gate. Later subcommands (`pack`, `run`, `diff` and the T013
+argument-parsing decision) extend this file with their tasks.
 
 ## Purpose
 
@@ -136,6 +137,58 @@ dependency to work around a lower-crate API gap.
    so no semver edge exists. No parser, walker, error, snapshot, or
    tempfile crate — T013 still owns the parser-framework decision.
 
+## Migrate contract (T012b)
+
+`crpgc migrate <campaign-root>`:
+
+- Exactly one root and no flags: a missing argument, an extra positional, or
+  any flag (including `--json`, `--check`, `--dry-run`, `--to` and `--golden`)
+  is usage exit 2 with one `crpgc: ...` line. A non-Unicode root parses and
+  fails later as exit-1 `io` — `args_os` end to end, never `args`.
+- Exit `0` silent (both streams empty, including a second no-op run) when all
+  required canonical replacements completed or no change was needed; exit `1`
+  on collection, structural/migration, serialization, or write failure with
+  one data-owned `Display` line or one CLI-owned `io` line on stderr; exit
+  `2` on usage. Stdout is always empty.
+- The binary reuses the T011b read-only collector verbatim, calls
+  `crpg_data::load_campaign(files, package engine version)` once and
+  `crpg_data::serialize_campaign(loaded)` once, compares bytes, and replaces
+  differing recognized files in lexical `SourcePath` order. No
+  `validate_files`, no individual migration steps, no schema-tag, digest, or
+  semantic logic lives here.
+
+## Migrate invariants
+
+1. **Data owns version chains; the CLI owns the explicit save.** No
+   path-family table, version parser, tag mutation, JSON decode, digest
+   recomputation, or semantic check may exist in `crpg-cli`. The only
+   classifier is `crpg_data::campaign_document_path`; T012a alone owns chain
+   semantics and their insertion into T010's fixed read order.
+2. **Preflight first, zero writes on failure.** All collection, load, and
+   serialization work succeeds for the entire map before any write starts. A
+   key-set mismatch is `crpgc migrate: internal document set failure` before
+   writing; an unparsable compile-time engine version is `crpgc migrate:
+   internal engine version failure`. Serialization `DataError` converts
+   through `diagnostic_for_data_error` unchanged.
+3. **Bounded rewrite, no atomicity promise.** Per differing file in lexical
+   order: recheck root/ancestor/target metadata without following symlinks,
+   re-read and require equality with the collected original (`source_changed`
+   on drift, `not_a_file` for a directory/other target), open the existing
+   file with truncation, `write_all`, `sync_all`; stop at the first failure.
+   Earlier files may stay replaced and the failing file partially written —
+   never claim rollback, atomic replacement, crash recovery, or a directory
+   transaction. `check`/`open`/`write`/`sync` with stable `cannot <op>
+   <logical>: <kind>` text are the only CLI-owned diagnostics; ancestor
+   failures name the target logical path.
+4. **No new dependencies for migrate.** `std` plus the existing `crpg-data`
+   edge only. The engine version type is inferred from `load_campaign`, so no
+   semver edge exists. No clap, walker, tempfile, error, platform, or
+   atomic-write crate — T013 still owns the parser-framework decision.
+5. **No lower-crate edits.** Consume committed T012a data APIs, schemas, and
+   fixtures without editing them. If the public API or fixture contract is
+   insufficient, stop and report the data gap; do not patch data from this
+   crate.
+
 ## Definition of done for any change
 
 ```
@@ -183,6 +236,20 @@ either is a defect, not a best-effort gap.
   symlinks, non-Unicode names, walk-order oracles). Real-symlink and
   case-collision process tests are compile-time cfg-gated where creation is
   guaranteed, never runtime-skipped.
+- **Migrate tests are black-box first, writer seams second.**
+  `tests/migrate.rs` drives `env!("CARGO_BIN_EXE_crpgc")` over private temp
+  copies of T012a's `migration_v1/campaign` and compares the full resulting
+  file-to-byte map with the checked-in `expected.json` golden; the source
+  tree is never migrated and expected bytes are never generated from actuals.
+  `main.rs` unit tests cover only the private parser matrix, the
+  `plan_updates`/key-set seam, the `RewriteFs`-injected rewrite seams
+  (ancestor/target symlinks, changed source, missing/nonregular target,
+  open/write/sync failures, first-lexical-failure stop, zero-write on empty
+  updates and on preflight failure, prefix-retained bounded partial writes),
+  and the `emit_code` stream-failure seam. Real-symlink and non-Unicode
+  process tests are compile-time cfg-gated; permission shapes use injected
+  `ErrorKind`s, never runtime skips. Second-migration zero writes are pinned
+  through the writer seam, not timestamps.
 - **No `--golden` defaulting into the fixture set.** The default golden is a
   sibling of the replay path, never a search through testkit's goldens. A
   CLI run must verify what it is told to verify.
@@ -198,3 +265,9 @@ either is a defect, not a best-effort gap.
   plain/canonical output rules, the live gate-8 fixture gate, the semver
   inference dependency note, and the black-box-first test rules while
   retaining every replay invariant.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012b implementation · Extended
+  the contract with the migrate parser/process contract, the reused
+  collector plus `load_campaign`/`serialize_campaign` calls, the
+  `RewriteFs` writer/error seams with bounded partial-write limits, the
+  black-box golden plus seam test rules, and the no-lower-crate-edit rule
+  while retaining every replay/validate invariant.
