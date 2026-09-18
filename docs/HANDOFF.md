@@ -94,14 +94,15 @@ Rarely, and deliberately: reviewing a whole phase before starting the next one, 
 ## 7. Right now
 
 **Current handoff (2026-09-18):** T010, T011a (plus its slug/graph coverage
-follow-up), T011b, and T012a (plus its review-fix follow-up) are committed
-on `master` through `3a62487`, including the T012/T012b Stage-2 specs;
-the Windows/MSVC gates passed on every commit and the Linux/GNU results are
-recorded in the task files. T012b thin `crpgc migrate` wrapper is next. Follow
-`PROJECT_STATE.md` and the task records
+follow-up), T011b, T012a (plus its review-fix follow-up), T012b (PR #5),
+S001 (PRs #2/#4/#6, branch protection human-done), and T013a data-owned
+introspection (PR #7, reviewed with a stale-index test fix) are merged on
+`master` through `e84b13e`; the Windows/MSVC gates passed on every commit
+and the Linux/GNU results are recorded in the task files. T013 CLI is next.
+Follow `PROJECT_STATE.md` and the task records
 [T010](../tasks/T010.md), [T011a](../tasks/T011a.md),
-[T011b](../tasks/T011b.md), [T012](../tasks/T012.md) and
-[T012b](../tasks/T012b.md).
+[T011b](../tasks/T011b.md), [T012](../tasks/T012.md),
+[T012b](../tasks/T012b.md) and [T013a](../tasks/T013a.md).
 the bootstrap checklist below is historical, not a
 direction to commit the current working tree or repeat completed setup.
 
@@ -125,3 +126,5 @@ Step 5 is the actual project. Everything above is bookkeeping that makes step 5 
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the current handoff to the merged `crpgc replay` wrapper; T010 campaign data is next.
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Updated the current handoff to the merged campaign format, validation, and `crpgc validate` wrapper; T012 migration framework is next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Updated the current handoff to the committed data-half migration framework with T012b next.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012b merged/T013a on-branch catch-up · Updated the current handoff to the merged T012b/S001 state on `master` through `289e7db`, with T013a implemented and verified on its branch as the next landing before T013.
+- 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Updated the current handoff to the merged T013a data-owned introspection prerequisite (`e84b13e`, PR #7) on `master`, with T013 CLI next.
