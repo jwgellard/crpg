@@ -68,7 +68,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| S001 | open | — | Fork-PR guard over `tools/lint/` and workflows, `build.rs` ban, secret scan, self-hosted-runner rule, `yanked = "deny"` |
+| S001 | done | 2026-09-17 | Fork-PR guard over `tools/lint/` and workflows, `build.rs` ban, secret scan, self-hosted-runner rule, `yanked = "deny"` (PR #2, all 9 checks green; branch protection human-done; revert PR #3 closed unmerged) |
 
 ## Phase 2 — Campaign data format
 
@@ -244,3 +244,4 @@ Record it here, one line per week.
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Marked T010, T011a and T011b done (pushed to `origin` in `15ac9fb`, `2f801b5`/`ab7d208` and `d45f1b1`), T012 next, throughput at 22; the slug/graph coverage follow-up is a fix, not a counted task.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Marked T012a done (E004 data half; T012b next), split the single T012 row into the T012a/T012b pair, refreshed the scaffolding counts to the five live crate docs, and moved throughput to 23; the review-fix follow-up is a fix, not a counted task.
 - 2026-09-17 (UTC) · opencode/muse-spark + S001 deferred input caps · Recorded the three deferred input-cap requirements with their owning tasks, so loader/postcard/snapshot hardening lands where the code lives.
+- 2026-09-18 (UTC) · opencode/muse-spark + S001 merged · Marked S001 done (PR #2 merged 2026-09-17, all 9 checks green, branch protection human-done, revert PR #3 closed unmerged); S-series, so throughput unchanged per the fix-not-counted precedent.
