@@ -887,6 +887,20 @@ fn forged_indexes_are_ignored_and_structural_errors_win() {
         explain_object(&emptied, id(5)).unwrap().expect("empty"),
         baseline
     );
+    // A stale entry for a real id (wrong kind, file, and pointer) is ignored too.
+    let mut stale = campaign.clone();
+    stale.index.insert(
+        id(5),
+        IndexEntry {
+            kind: ObjectKind::Creature,
+            path: path("creatures/creature.json"),
+            pointer: String::new(),
+        },
+    );
+    assert_eq!(
+        explain_object(&stale, id(5)).unwrap().expect("stale"),
+        baseline
+    );
     // Mutated documents with duplicate ids return the writer's error before lookup.
     let mut duplicate = campaign.clone();
     let Document::Creature(creature) = duplicate
