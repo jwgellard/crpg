@@ -145,72 +145,44 @@ fn build_index(
     documents: &BTreeMap<SourcePath, Document>,
 ) -> Result<BTreeMap<Ulid, IndexEntry>, DataError> {
     let mut index: BTreeMap<Ulid, IndexEntry> = BTreeMap::new();
-    for (path, document) in documents {
-        let mut insert = |id, kind, pointer: String| -> Result<(), DataError> {
-            match index.entry(id) {
-                Entry::Occupied(first) => Err(DataError::DuplicateId {
-                    id,
+    for occurrence in crate::inventory::object_occurrences(documents) {
+        match index.entry(occurrence.id) {
+            Entry::Occupied(first) => {
+                return Err(DataError::DuplicateId {
+                    id: occurrence.id,
                     first: first.get().path.clone(),
-                    second: path.clone(),
-                }),
-                Entry::Vacant(entry) => {
-                    entry.insert(IndexEntry {
-                        kind,
-                        path: path.clone(),
-                        pointer,
-                    });
-                    Ok(())
-                }
+                    second: occurrence.path,
+                });
             }
-        };
-        let root = match document {
-            Document::Campaign(v) => Some((v.id, ObjectKind::Campaign)),
-            Document::World(v) => Some((v.id, ObjectKind::World)),
-            Document::Area(v) => Some((v.id, ObjectKind::Area)),
-            Document::Creature(v) => Some((v.id, ObjectKind::Creature)),
-            Document::Item(v) => Some((v.id, ObjectKind::Item)),
-            Document::Dialogue(v) => Some((v.id, ObjectKind::Dialogue)),
-            Document::Quest(v) => Some((v.id, ObjectKind::Quest)),
-            Document::Faction(v) => Some((v.id, ObjectKind::Faction)),
-            Document::Graph(v) => Some((v.id, ObjectKind::Graph)),
-            _ => None,
-        };
-        if let Some((id, kind)) = root {
-            insert(id, kind, String::new())?;
-        }
-        match document {
-            Document::Placements(v) => {
-                for (i, p) in v.placements.iter().enumerate() {
-                    insert(p.id, ObjectKind::Placement, format!("/placements/{i}"))?;
-                }
+            Entry::Vacant(entry) => {
+                entry.insert(IndexEntry {
+                    kind: occurrence.kind,
+                    path: occurrence.path,
+                    pointer: occurrence.pointer,
+                });
             }
-            Document::Triggers(v) => {
-                for (i, graph) in v.graphs.iter().enumerate() {
-                    insert(graph.id, ObjectKind::Graph, format!("/graphs/{i}"))?;
-                    for (j, node) in graph.nodes.iter().enumerate() {
-                        insert(node.id, ObjectKind::Node, format!("/graphs/{i}/nodes/{j}"))?;
-                    }
-                }
-            }
-            Document::Graph(v) => {
-                for (i, node) in v.nodes.iter().enumerate() {
-                    insert(node.id, ObjectKind::Node, format!("/nodes/{i}"))?;
-                }
-            }
-            Document::Dialogue(v) => {
-                for (i, node) in v.nodes.iter().enumerate() {
-                    insert(node.id, ObjectKind::DialogueNode, format!("/nodes/{i}"))?;
-                }
-            }
-            Document::Quest(v) => {
-                for (i, state) in v.states.iter().enumerate() {
-                    insert(state.id, ObjectKind::QuestState, format!("/states/{i}"))?;
-                }
-            }
-            _ => {}
         }
     }
     Ok(index)
+}
+
+/// Structural acceptance shared by the writer and introspection.
+///
+/// Checks required files and case collisions, layout, document-local
+/// invariants, duplicate identities, and lock consistency in the writer's
+/// relative order. Engine compatibility is not checked because no engine
+/// version is supplied.
+pub(crate) fn structural_check(
+    documents: &BTreeMap<SourcePath, Document>,
+) -> Result<(), DataError> {
+    check_paths(documents.keys())?;
+    check_layout(documents)?;
+    for document in documents.values() {
+        crate::document::validate_local(document)?;
+    }
+    build_index(documents)?;
+    check_locks(documents)?;
+    Ok(())
 }
 
 fn manifest(documents: &BTreeMap<SourcePath, Document>) -> &crate::Campaign {
@@ -297,13 +269,7 @@ pub fn load_campaign(
 pub fn serialize_campaign(
     campaign: &LoadedCampaign,
 ) -> Result<BTreeMap<SourcePath, Vec<u8>>, DataError> {
-    check_paths(campaign.documents.keys())?;
-    check_layout(&campaign.documents)?;
-    for document in campaign.documents.values() {
-        crate::document::validate_local(document)?;
-    }
-    build_index(&campaign.documents)?;
-    check_locks(&campaign.documents)?;
+    structural_check(&campaign.documents)?;
     campaign
         .documents
         .iter()

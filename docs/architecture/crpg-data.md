@@ -108,6 +108,36 @@ goldens. The unignored `migrations` and `migration_coverage` suites prove the
 golden, registry, schema and serde agreement plus every prescribed failure on
 in-memory copies without touching tracked files.
 
+## Introspection (T013a)
+
+`introspection` exposes the data-owned `explain_object` query for the future
+CLI-only `crpgc explain`: one object plus its inbound and outbound typed
+references as canonical JSON bytes with one final LF. The report carries `id`,
+`kind`, `file`, `pointer`, the current serialized `object` subtree, and
+lexically ordered `inbound`/`outbound` occurrence arrays; each occurrence
+carries `file`, `pointer`, nullable `source`, `target`, and nullable
+`target_location`. Kind spellings are the report words (`dialogue_node`,
+`quest_state`), distinct from validation's message words. Top-level objects
+retain their schema envelope; nested objects retain their actual nested shape.
+
+The structural-versus-semantic boundary matches the writer: layout, duplicate
+identities, local lock validity, package coverage, and assets-lock digest are
+checked via the loader's shared structural check with writer precedence, and
+structural failure wins over unknown id. Semantic findings never block
+introspection. Locations are rebuilt from documents via the private shared
+`inventory`, never trusting the caller-mutable index. The inventory is the
+single authority for identity locations, typed traversal, and pointer
+construction (campaign entry, world areas, neighbours, faction/inventory,
+relations, prefab, dialogue/quest/graph sites, edge endpoints, recursive
+`ObjectRef` in defaults/args/overrides/imports including branch cases and
+locals, and aggregate owners); validation consumes it for generic checks and
+specialized ownership while retaining its messages, precedence, reachability,
+and sort policy. Sources name the nearest enclosing object (null outside any
+identified object); outbound uses component-boundary subtree matching so
+`/nodes/1` never absorbs `/nodes/10`. Ordering is `(file, pointer, target)`
+lexically with ULID order. The CLI owns process/I/O treatment; data owns
+object and reference semantics.
+
 ## Agent log
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established approved module and authority boundaries before source implementation. This opening record does not claim completed implementation or passing gates.
@@ -134,3 +164,4 @@ Only tests include this support module; production loading remains pure and
 the public API, Item-only version bump and lock authorities are unchanged.
 
 - 2026-09-17 (UTC) · opencode/gpt-6-astra + T012a review fixes · Documented the shared hard gate and direct registered-edge oracle checks, superseding the initial claim that all prescribed negative checks were already proven. Wider manifest numbers now fail strict u32 decoding instead of truncating into valid edges.
+- 2026-09-18 (UTC) · opencode/muse-spark + T013a implementation · Documented the data-owned introspection report, the writer-shared structural boundary, the single inventory authority with ownership/subtree/ordering rules, and the data/CLI consumer split for the future explain command.
