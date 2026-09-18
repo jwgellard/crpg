@@ -12,7 +12,10 @@ in this crate. The validate subcommand is live (T011b, 2026-09-13):
 `crpgc validate <campaign-root> [--json]` deterministically collects campaign
 document bytes, calls T011a's data-owned `validate_files`, and renders
 human or canonical machine diagnostics with the same `0/1/2` exit buckets.
-Every other subcommand is planned (T013 owns the first real
+The migrate subcommand is live (T012b, 2026-09-18): `crpgc migrate
+<campaign-root>` is the explicit save action for S §4.5 over T012a's
+migration-aware loader and canonical writer, silent on success with the same
+`0/1/2` buckets. Every other subcommand is planned (T013 owns the first real
 argument parsing decision).
 
 Decisions: the platform and determinism policy it inherits is
@@ -81,11 +84,12 @@ omitting it is a path decision, never a "use any golden" trap.
 
 ## Today versus planned
 
-| Exists (T009b) | Planned (owner) |
+| Exists (T009b/T011b/T012b) | Planned (owner) |
 |---|---|
 | `crpgc replay` thin wrapper: args, exit codes, provisional intents | T013: first real argument-parsing decision (clap vs hand-rolled again) for the five-plus subcommand surface: `new`, `schema`, `explain`, `fmt`, `lock`, `run` |
-| `crpgc validate` thin wrapper (T011b): read-only traversal, data-owned validation, plain/canonical diagnostics, gate-8 fixture enumeration | Spec §24 remaining subcommands (`migrate`, `pack`, `diff`) as their specs land |
-| Crate-opening docs (arch doc + AGENTS.md) | Spec §24 subcommands (`validate`, `migrate`, `pack`, `diff`) as their specs land |
+| `crpgc validate` thin wrapper (T011b): read-only traversal, data-owned validation, plain/canonical diagnostics, gate-8 fixture enumeration | Spec §24 remaining subcommands (`pack`, `diff`) as their specs land |
+| `crpgc migrate` thin wrapper (T012b): explicit save, preflight plus bounded rewrite, data-golden tests | Spec §24 subcommands (`pack`, `diff`) as their specs land |
+| Crate-opening docs (arch doc + AGENTS.md) | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | Verify-only replay gate on ADR-0012 targets | `crpgc` in product/driver roles once server capabilities exist (E020) |
 
 ## CLI contract (T011b `validate`)
@@ -137,6 +141,79 @@ exit `1` with stdout byte-equal to the checked-in snapshot). A future
 fixture-owning task extends the manifest in `crpg-data`; this test picks it
 up generically with no CLI edit.
 
+## CLI contract (T012b `migrate`)
+
+```
+crpgc migrate <campaign-root>
+
+  <campaign-root>  directory containing campaign.json
+
+exit 0  all required canonical source replacements completed, or no change needed
+exit 1  collection, structural/migration, serialization or write failure
+exit 2  usage error
+```
+
+Exactly one root; a missing argument, an extra positional, or any flag
+(including `--json`, `--check`, `--dry-run`, `--to` and `--golden`) is usage
+exit 2 with one `crpgc: ...` line on stderr. A supplied-but-missing,
+unreadable, or non-Unicode root is a domain exit-1 `io` diagnostic, not usage.
+Success is silent with both streams empty, including a second no-op
+invocation; stdout is always empty. Domain failures print one
+data-owned `Diagnostic::Display` line or one CLI-owned `io` line to stderr.
+The compile-time engine version parses exactly as T011b does with no semver
+edge; an unparsable version prints `crpgc migrate: internal engine version
+failure` and a writer key-set mismatch prints `crpgc migrate: internal
+document set failure`, both exit 1 before any write.
+
+## Migrate flow and boundaries (T012b)
+
+The explicit save flow is parse (`args_os`) → the existing T011b read-only
+collector (sorted depth-first pre-order, root/entry symlink rejection, `/`
+logical paths, `campaign_document_path` classification, ignored-file policy)
+→ `load_campaign(files, package engine version)` once → `serialize_campaign`
+once → compare returned bytes with collected originals → replace differing
+recognized files in lexical `SourcePath` order. All collection, load, and
+serialization work succeeds for the entire map before any write starts, so
+preflight failures (incompatible engine, unknown future schema, broken chain,
+malformed payload, invalid layout, duplicate id, invalid lock, digest
+mismatch) perform zero writes. The command never calls `validate_files`,
+individual migration steps, or any semantic check; a structurally valid
+campaign with T011a findings migrates successfully and keeps its exact
+subsequent validate snapshot. Version chains stay in data; the CLI never
+parses a version, changes a schema tag, decodes campaign JSON, recomputes a
+digest, or implements a semantic check.
+
+The save serializes all collected documents through the data writer,
+including locks, and writes only byte-different files at their existing
+logical paths, so noncanonical whitespace/ULID spelling may normalize on
+explicit save even when its schema was already current. Canonical-current
+files are never opened. No renames, deletions, new documents, source assets,
+copied schemas, Lua, build output, or replay changes; ignored content stays
+byte-identical. For each differing file the CLI rechecks root/ancestor/target
+metadata without intentionally following symlinks, re-reads the target and
+requires equality with the collected original (`source_changed` on drift,
+`not_a_file` for a directory/other target), then opens the existing file
+with truncation, `write_all`, and `sync_all` without create-on-missing
+semantics, stopping at the first failure. Rewrite diagnostics reuse the
+existing six-field `Error`/`Io` shape with `cannot <op> <logical>: <kind>`
+text (`check`, `open`, `write`, `sync`; T011b kinds plus `source_changed` and
+`not_a_file`); ancestor failures name the target logical path.
+
+Bounded partial-write and live-tree limitations: this deliberately does not
+promise atomic replacement, rollback, crash recovery, or a whole-directory
+transaction. An I/O failure can leave earlier files replaced and the failing
+file partially written. As with collection, std metadata/recheck is not
+handle-based no-follow protection; concurrent changes after a check remain
+unspecified. No locking or secure live-tree snapshot is introduced. A future
+atomic save design is separate scope. Stream-write failures exit 1 without
+panic and without recursively reporting the broken stream.
+
+Golden tests copy T012a's `migration_v1/campaign` to private temp dirs,
+invoke the shipped binary, and compare the full resulting file-to-byte map
+with the sibling `expected.json` path-to-text golden; the checked-in source
+tree is never migrated and expected bytes are never generated from actual
+output in tests.
+
 ## What consumers inherit
 
 - **A scriptable replay gate.** `crpgc replay` in a CI step is the public
@@ -164,3 +241,8 @@ up generically with no CLI edit.
   the thin `crpgc validate` wrapper: data/OS boundary with traversal
   ownership, plain/canonical output with the 0/1/2 exit contract, gate-8
   manifest enumeration, and the unchanged T013 parser decision.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012b implementation · Documented
+  the thin `crpgc migrate` explicit save: data-owned version boundary,
+  preflight/no-op rules, bounded partial-write and live-tree limitations,
+  errors/exit codes, and data-golden tests; moved migrate from planned to
+  implemented while preserving T013 ownership of the remaining commands.
