@@ -3,17 +3,18 @@
 Updated: 2026-09-18
 
 ## Phase
-Phase 2 — campaign data format (T010/T011/T012a landed; T012b next).
+Phase 2 — campaign data format (T010/T011/T012a/T012b/T013a landed; T013 next).
 
 ## Branch state
-All merged work is on `master` through `f704111`. T010's campaign
+All merged work is on `master` through `e84b13e`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
 T011b's thin `crpgc validate` wrapper, T012a's data-half migration
-framework (plus the T012/T012b Stage-2 specs), and S001's public-repo
-hardening (guard/trusted-lint jobs, `build.rs` ban, `gitleaks` scan, runner
-rule, `yanked = "deny"`, branch-protection ruleset) are merged; the
-working tree is clean. The Done history below is merged work only. T012b's
-thin `crpgc migrate` wrapper is next.
+framework (plus the T012/T012b Stage-2 specs), T012b's thin `crpgc migrate`
+wrapper (PR #5), S001's public-repo hardening (guard/trusted-lint jobs,
+`build.rs` ban, `gitleaks` scan, runner rule, `yanked = "deny"`,
+branch-protection ruleset, PRs #2/#4/#6), and T013a's data-owned
+introspection prerequisite (PR #7) are merged. The Done history below is
+merged work only. T013 CLI is next.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -254,6 +255,13 @@ thin `crpgc migrate` wrapper is next.
   Windows/MSVC gates green (data 69, full workspace 279, 65 lint
    self-tests, deny clean); Linux results live in `tasks/T012.md`.
    `crpgc migrate` itself is still absent — that is T012b in `crpg-cli`.
+- T012b thin `crpgc migrate` wrapper in `crpg-cli` (merged `382cd4c`, PR #5,
+  2026-09-18): explicit-save command over the T012a loader/writer with
+  preflight-then-lexical-rewrite, bounded partial-write contract, and 0/1/2
+  exits; 23 portable black-box tests (27 on Linux) plus 26 new unit seams;
+  dual-native green (Windows 68 bin + 23 migrate + 20 validate + 13 replay;
+  Linux 68 + 27 + 25 + 13) with gates 7/8/9 and migration coverage live.
+  Supersedes T012a's "`crpgc migrate` still absent" note above.
 - S001 public-repo hardening (merged `f704111`, PR #2, 2026-09-17): fork-PR
   guard over `tools/lint/` and `.github/workflows/` plus the trusted-lint
   gate in CI, the `build.rs`/external `[build-dependencies]` ban in
@@ -261,8 +269,14 @@ thin `crpgc migrate` wrapper is next.
   enforced self-hosted-runner rule, and `yanked = "deny"`. All 9 PR checks
   green; the `master-protection.` ruleset is active with all nine checks
   required, PR-only merging, and no bypass (human-done, API-verified). The
-  follow-up revert PR #3 was closed unmerged. Deferred input caps live with
-  their owners: T010 loader caps, T018 postcard caps, persist zstd bomb cap.
+   follow-up revert PR #3 was closed unmerged. Deferred input caps live with
+   their owners: T010 loader caps, T018 postcard caps, persist zstd bomb cap.
+- T013a data-owned `explain_object` introspection prerequisite in `crpg-data`
+  (merged `e84b13e`, PR #7, 2026-09-18): canonical report bytes, single
+  shared reference inventory for loader/validation/introspection,
+  subtree/ordering rules; 11 introspection tests plus a review-added
+  stale-index pin; dual-native green with all 9 PR checks passing.
+  Unblocks the CLI-only T013.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -293,9 +307,8 @@ thin `crpgc migrate` wrapper is next.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T012b thin `crpgc migrate` wrapper in `crpg-cli` is next — the data-half
-  migration framework, golden campaign, and coverage gate are all committed,
-  so it is unblocked.
+- T013 thin CLI wrappers in `crpg-cli` (own spec, consumes the landed
+  T013a API; no lower-crate edits).
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -332,9 +345,10 @@ thin `crpgc migrate` wrapper is next.
   diff was empty. See the
    [completion record](../tasks/T009c.md) for the pre-merge audit results;
    T009a and T009c are both merged on `master` as of 2026-09-07; T009b's
-   `crpgc replay` wrapper is merged too (2026-09-07). T010/T011a/T011b are
-   merged, T012a's data-half migration framework is committed (`3a62487`),
-   and T012b's `crpgc migrate` wrapper is next.
+    `crpgc replay` wrapper is merged too (2026-09-07). T010/T011a/T011b,
+    T012a's data-half migration framework, T012b's `crpgc migrate` wrapper
+    (PR #5), S001 hardening (PRs #2/#4/#6), and T013a data-owned
+    introspection (PR #7) are merged on `master` through `e84b13e`.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -465,3 +479,5 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Recorded the committed data-half migration framework (registry, Item dummy edge, `migration_v1` golden, coverage gate) with T012b next; branch state moved past the stale `d45f1b1` pin and Known problems now lists all five live per-crate `AGENTS.md` files.
 - 2026-09-17 (UTC) · opencode/muse-spark + S001 known-problems · Noted S001's open attack-surface closure and the remaining human branch-protection step, so the guard jobs are not mistaken for the boundary itself.
 - 2026-09-18 (UTC) · opencode/muse-spark + S001 merged · Recorded the PR #2 merge (`f704111`, all 9 checks green), the API-verified active ruleset, and the revert PR #3 closed unmerged; Done history, branch state, and Known problems moved to the merged state with T012b next.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012b merged/T013a on-branch catch-up · Recorded the T012b `crpgc migrate` merge (`382cd4c`, PR #5) and the Task/s001 merge (`289e7db`, PR #6) in branch state, Done history, Phase and Next; T013a noted as implemented and dual-native verified on `docs/S001-merged-bookkeeping`, awaiting landing.
+- 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Recorded the T013a data-owned introspection merge (`e84b13e`, PR #7, all 9 checks green) in branch state, Done history, Phase, Next, and verification history; T013 CLI is next.

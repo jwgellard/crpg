@@ -27,11 +27,13 @@ campaign format, netcode, AI, and server are untouched.
 > with the schema-drift gate and the fixture-validation gate live. T012a's
 > migration framework data half (version chains, loader integration,
 > `migration_v1` golden, coverage gate) is merged; T012b's thin
-> `crpgc migrate` wrapper is next. See
+> `crpgc migrate` wrapper is merged (PR #5); T013a data-owned introspection
+> is merged (PR #7) with both native gates green; T013 CLI is next. See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
 > [T011a](tasks/T011a.md), [T011b](tasks/T011b.md),
-> [T012](tasks/T012.md), [T012b](tasks/T012b.md) and
+> [T012](tasks/T012.md), [T012b](tasks/T012b.md),
+> [T013a](tasks/T013a.md) and
 > [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ---
@@ -204,3 +206,5 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the status block to the merged `crpgc replay` wrapper; T010 campaign data is next.
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Updated the status block to the merged campaign format, positioned validation, and `crpgc validate` wrapper with both gates live; T012 migration framework is next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a/doc-status catch-up · Fixed the stale Phase 1 header and the T009c review/merge residue and recorded the merged T012a data-half migration framework with T012b next.
+- 2026-09-18 (UTC) · opencode/muse-spark + T012b/T013a doc-status catch-up · Updated the stale T012-next status block to the merged T012a data-half and `crpgc migrate` wrapper with T013a on branch verified and T013 next.
+- 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Updated the status block to the merged T013a data-owned introspection prerequisite (PR #7) with T013 CLI next.
