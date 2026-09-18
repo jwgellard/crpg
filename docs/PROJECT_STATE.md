@@ -6,10 +6,12 @@ Updated: 2026-09-18
 Phase 2 — campaign data format (T010/T011/T012a landed; T012b next).
 
 ## Branch state
-All merged work is on `master` through `3a62487`. T010's campaign
+All merged work is on `master` through `f704111`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
-T011b's thin `crpgc validate` wrapper, and T012a's data-half migration
-framework (plus the T012/T012b Stage-2 specs) are committed; the
+T011b's thin `crpgc validate` wrapper, T012a's data-half migration
+framework (plus the T012/T012b Stage-2 specs), and S001's public-repo
+hardening (guard/trusted-lint jobs, `build.rs` ban, `gitleaks` scan, runner
+rule, `yanked = "deny"`, branch-protection ruleset) are merged; the
 working tree is clean. The Done history below is merged work only. T012b's
 thin `crpgc migrate` wrapper is next.
 
@@ -250,8 +252,17 @@ thin `crpgc migrate` wrapper is next.
   gate. 17 schemas unchanged in count (one-line item tag bump); `Cargo.lock`,
   workflows, deny policy and every other crate untouched. Native
   Windows/MSVC gates green (data 69, full workspace 279, 65 lint
-  self-tests, deny clean); Linux results live in `tasks/T012.md`.
-  `crpgc migrate` itself is still absent — that is T012b in `crpg-cli`.
+   self-tests, deny clean); Linux results live in `tasks/T012.md`.
+   `crpgc migrate` itself is still absent — that is T012b in `crpg-cli`.
+- S001 public-repo hardening (merged `f704111`, PR #2, 2026-09-17): fork-PR
+  guard over `tools/lint/` and `.github/workflows/` plus the trusted-lint
+  gate in CI, the `build.rs`/external `[build-dependencies]` ban in
+  `deps.py` (70 lint self-tests), the pinned `gitleaks` secret scan, the
+  enforced self-hosted-runner rule, and `yanked = "deny"`. All 9 PR checks
+  green; the `master-protection.` ruleset is active with all nine checks
+  required, PR-only merging, and no bypass (human-done, API-verified). The
+  follow-up revert PR #3 was closed unmerged. Deferred input caps live with
+  their owners: T010 loader caps, T018 postcard caps, persist zstd bomb cap.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -418,17 +429,17 @@ now requires real target-scoped comparisons in both existing Windows and
   has a gate depending on it: contracts matter once `crpg-contracts` holds
   traits, guides once there is a campaign format to author against.
    (`docs/architecture/` was the one with a gate — §15.6 — and now exists.)
-- S001 public-repo attack surface (open, on branch `task/S001`, commit
-  `8f349be`): the security review's four gaps — defangable lints, no
-  `build.rs` ban, no secret scan, and unenforced self-hosted-runner
-  restriction — plus `yanked = "warn"` are closed by S001's guard/trusted-lint
-  jobs, `build.rs`/external `[build-dependencies]` ban, `gitleaks` scan,
-  enforced runner rule, and `yanked = "deny"`. Human-done 2026-09-18: the
-  `master-protection.` ruleset is active on `master` with all nine CI checks
-  (guard, secrets, check x2, deny, both lints, selftest x2) required, PR-only
-  merging, and no bypass actors (verified via API). Path-scoped review stays
-  procedural for a solo maintainer; enforcing it by path needs CODEOWNERS,
-  which S001 keeps out of scope.
+- S001 public-repo attack surface (merged `f704111`, PR #2, 2026-09-17): the
+  security review's four gaps — defangable lints, no `build.rs` ban, no
+  secret scan, and unenforced self-hosted-runner restriction — plus
+  `yanked = "warn"` are closed by S001's guard/trusted-lint jobs,
+  `build.rs`/external `[build-dependencies]` ban, `gitleaks` scan, enforced
+  runner rule, and `yanked = "deny"`. Human-done: the `master-protection.`
+  ruleset is active on `master` with all nine CI checks required, PR-only
+  merging, and no bypass actors (API-verified); the follow-up revert PR #3
+  was closed unmerged. Path-scoped review stays procedural for a solo
+  maintainer; enforcing it by path needs CODEOWNERS, which S001 keeps out
+  of scope.
 
 ---
 
@@ -453,4 +464,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-17 (UTC) · opencode/muse-spark + T010/T011a/T011b merged · Recorded the pushed campaign format, positioned validation with its slug/graph test hardening, and thin `crpgc validate` wrapper with live gate 8; next is T012 migration framework.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Recorded the committed data-half migration framework (registry, Item dummy edge, `migration_v1` golden, coverage gate) with T012b next; branch state moved past the stale `d45f1b1` pin and Known problems now lists all five live per-crate `AGENTS.md` files.
 - 2026-09-17 (UTC) · opencode/muse-spark + S001 known-problems · Noted S001's open attack-surface closure and the remaining human branch-protection step, so the guard jobs are not mistaken for the boundary itself.
-- 2026-09-18 (UTC) · opencode/muse-spark + S001 human-done · Recorded the maintainer's active `master-protection.` ruleset (nine required checks incl. guard/secrets, PR-only, no bypass, API-verified) and the CODEOWNERS follow-up for path-scoped review.
+- 2026-09-18 (UTC) · opencode/muse-spark + S001 merged · Recorded the PR #2 merge (`f704111`, all 9 checks green), the API-verified active ruleset, and the revert PR #3 closed unmerged; Done history, branch state, and Known problems moved to the merged state with T012b next.

@@ -328,7 +328,9 @@ fn no_arguments_is_usage_exit_2() {
 
 #[test]
 fn unknown_subcommand_is_usage_exit_2() {
-    let out = run(&["migrate"]);
+    // `migrate` is a known subcommand since T012b, so use a truly unknown
+    // name to pin the unknown-subcommand path.
+    let out = run(&["frobnicate"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         out.status.code(),
