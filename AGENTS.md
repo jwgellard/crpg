@@ -97,12 +97,15 @@ python -m unittest discover -s tools/lint -p "test_*.py"
   (PR #5) with both native gates green; S001 hardening is merged with branch
   protection human-done (PRs #2/#4/#6). T013a data-owned introspection
   prerequisite (`crpg-data`) is merged on `master` (PR #7, `e84b13e`) with
-  both native gates green, reviewed with a stale-index test fix; T013 CLI
-  is next.
+  both native gates green, reviewed with a stale-index test fix; T013
+  scaffolding/introspection CLI (`crpg-cli`: `new`/`schema`/`explain`/`fmt`/
+  `lock`/`run`) is merged on `master` (PR #9, `9a6304f`) with both native
+  gates green, plus a line-ending follow-up pinning the trial inputs to LF;
+  T014 rules kernel is next.
   See the [completion record](tasks/T009c.md),
   [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
-  [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md) and
-  [T013a](tasks/T013a.md).
+  [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
+  [T013a](tasks/T013a.md) and [T013](tasks/T013.md).
 
 ## Agent log
 
@@ -117,3 +120,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a/doc-status catch-up · Updated the note past the stale T010-next pointer to the merged T010/T011a/T011b/T012a state with T012b next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012b/T013a doc-status catch-up · Updated the note past the stale T012b-next pointer to the merged T012b/S001 state with T013a on branch verified and T013 next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Updated the note to the merged T013a data-owned introspection prerequisite (PR #7, `e84b13e`) with T013 CLI next.
+- 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Updated the note to the merged T013 scaffolding/introspection CLI (PR #9, `9a6304f`) with T014 rules kernel next.
