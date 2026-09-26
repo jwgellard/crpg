@@ -12,7 +12,9 @@ use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 use crpg_core::{EntityId, Fx16_16, StatId, TagId, Ulid};
 
-use crate::derived::{eval_expr, find_cycle, over_depth_stat, preorder, ExprKind};
+use crate::derived::{
+    eval_expr, find_cycle, int_add, int_scale, over_depth_stat, preorder, ExprKind,
+};
 use crate::error::{RulesError, RulesErrorCode};
 use crate::stats::{
     check_standalone_value, max_tags_literal, measure_expr, sorted_expr_refs, Expr, StatBlock,
@@ -43,12 +45,28 @@ pub struct SourceRef {
     pub id: Ulid,
 }
 
-/// The stat a modifier applies to.
+/// The stat a modifier applies to, or the roll/DC tag it adjusts.
+///
+/// `Stat` modifiers require a declared target; `Roll`/`Dc` modifiers adjust
+/// an integer the caller supplies (a raw roll total or a defence value) and
+/// need no stat declaration. Roll/DC tags wrap caller-issued tag handles;
+/// the issuing interner is the caller's responsibility, as with conditions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModifierTarget {
     /// A stat on the queried entity.
     Stat(StatId),
+    /// A roll total for the tagged roll.
+    Roll(RollTag),
+    /// A difficulty or defence value for the tagged roll.
+    Dc(RollTag),
 }
+
+/// The runtime tag identifying one roll for modifier targeting.
+///
+/// Wraps a caller-issued [`TagId`]; it carries no serde implementation and
+/// no declaration. New runtime roll identifiers wrap existing tag handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RollTag(pub TagId);
 
 /// One modifier operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +208,26 @@ pub struct ModifierBreakdown {
     pub stat: StatId,
     /// One trace per transitively evaluated stat; unqueried stats excluded.
     pub traces: BTreeMap<StatId, StatTrace>,
+}
+
+/// The complete computation record for one evaluated integer target.
+///
+/// Returned by [`ModifierPipeline::query_numeric`]: the supplied base, the
+/// folded value, and every target-matching modifier in canonical
+/// phase/`(priority, id)` order, including excluded contributions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumericModifierBreakdown {
+    /// The queried entity.
+    pub entity: EntityId,
+    /// The roll/DC target that was folded.
+    pub target: ModifierTarget,
+    /// The caller-supplied base the fold started from.
+    pub base: i32,
+    /// The fully modified value.
+    pub value: i32,
+    /// Every supplied modifier targeting this target, ordered by phase then
+    /// ascending `(priority, id)`, including excluded contributions.
+    pub contributions: Vec<Contribution>,
 }
 
 /// The immutable validated definitions and stacking policies for queries.
@@ -520,6 +558,83 @@ impl ModifierPipeline {
                 format!("/stats/{}", stat.index()),
             ));
         }
+        self.check_context(context)?;
+        let mut evaluation = Evaluation {
+            pipeline: self,
+            context,
+            traces: BTreeMap::new(),
+        };
+        let value = evaluation.eval_stat(stat)?;
+        Ok((
+            value,
+            ModifierBreakdown {
+                entity,
+                stat,
+                traces: evaluation.traces,
+            },
+        ))
+    }
+
+    /// Folds roll/DC modifiers onto a caller-supplied integer base.
+    ///
+    /// Accepts only [`ModifierTarget::Roll`]/[`ModifierTarget::Dc`],
+    /// rejecting [`ModifierTarget::Stat`] with
+    /// [`RulesErrorCode::InvalidTarget`] at `/target`. Checks entity, then
+    /// target kind, then the entire supplied context with the same phases
+    /// [`ModifierPipeline::query`] uses. Applies modifiers to the supplied
+    /// base, never to a fabricated stat, reusing the shared
+    /// selection/folding helpers so stacking has one implementation.
+    /// `Set`/`Add`/`Clamp` require `Int` operands; `Multiply` uses the
+    /// full-range fixed scaling. Contributions retain all target-matching
+    /// modifiers, including excluded ones, in phase/`(priority, id)` order.
+    pub fn query_numeric(
+        &self,
+        entity: EntityId,
+        target: ModifierTarget,
+        base: i32,
+        context: &QueryContext<'_>,
+    ) -> Result<(i32, NumericModifierBreakdown), RulesError> {
+        if context.entity != entity {
+            return Err(RulesError::at(
+                RulesErrorCode::EntityMismatch,
+                String::from("/context/entity"),
+            ));
+        }
+        if matches!(target, ModifierTarget::Stat(_)) {
+            return Err(RulesError::at(
+                RulesErrorCode::InvalidTarget,
+                String::from("/target"),
+            ));
+        }
+        self.check_context(context)?;
+        let mut targeting: Vec<&Modifier> = context
+            .modifiers
+            .iter()
+            .filter(|modifier| modifier.target == target)
+            .collect();
+        targeting.sort_by_key(|modifier| (phase_of(&modifier.op), modifier.priority, modifier.id));
+        let (value, contributions) =
+            fold_numeric(targeting.as_slice(), base, context.tags, &self.policies);
+        Ok((
+            value,
+            NumericModifierBreakdown {
+                entity,
+                target,
+                base,
+                value,
+                contributions,
+            },
+        ))
+    }
+
+    /// Validates one borrowed context in the contract's fixed phase order:
+    /// top-level context limits, all stored base entries by ascending id,
+    /// modifier id uniqueness, then every modifier by ascending id.
+    /// Entity equality and target/stat existence stay with the callers so
+    /// each entry point keeps its specified check order. Resolution reuses
+    /// this to validate each unique participant once, prefixing failures
+    /// with the participant path.
+    pub(crate) fn check_context(&self, context: &QueryContext<'_>) -> Result<(), RulesError> {
         if context.stats.len() > MAX_STATS {
             return Err(RulesError::at(
                 RulesErrorCode::LimitExceeded,
@@ -570,30 +685,29 @@ impl ModifierPipeline {
         for modifier in &ordered {
             self.check_modifier(modifier)?;
         }
-        let mut evaluation = Evaluation {
-            pipeline: self,
-            context,
-            traces: BTreeMap::new(),
-        };
-        let value = evaluation.eval_stat(stat)?;
-        Ok((
-            value,
-            ModifierBreakdown {
-                entity,
-                stat,
-                traces: evaluation.traces,
-            },
-        ))
+        Ok(())
     }
 
     /// Validates one modifier against its target declaration and policy.
+    ///
+    /// Stat targets require a declaration; roll/DC targets need none and
+    /// validate as integer targets. Operation support is checked before
+    /// operand kinds: `Add` on `Bool` is `InvalidOperation`, while
+    /// `Add(Fixed)` on `Int` is `TypeMismatch`. Dice targets accept `Set`
+    /// only through this same ordering.
     fn check_modifier(&self, modifier: &Modifier) -> Result<(), RulesError> {
         let root = format!("/modifiers/{}", modifier.id);
-        let ModifierTarget::Stat(target) = modifier.target;
-        let definition = self
-            .definitions
-            .get(&target)
-            .ok_or_else(|| RulesError::at(RulesErrorCode::UnknownStat, format!("{root}/target")))?;
+        let target_kind: StatKind = match modifier.target {
+            ModifierTarget::Stat(target) => self
+                .definitions
+                .get(&target)
+                .ok_or_else(|| {
+                    RulesError::at(RulesErrorCode::UnknownStat, format!("{root}/target"))
+                })?
+                .kind
+                .clone(),
+            ModifierTarget::Roll(_) | ModifierTarget::Dc(_) => StatKind::Int,
+        };
         if modifier.mod_type.0.is_empty() {
             return Err(RulesError::at(
                 RulesErrorCode::InvalidName,
@@ -647,7 +761,7 @@ impl ModifierPipeline {
             }
         }
         // Operation support precedes operand-kind checks.
-        let numeric = matches!(definition.kind, StatKind::Int | StatKind::Fixed);
+        let numeric = matches!(target_kind, StatKind::Int | StatKind::Fixed);
         let supported = match &modifier.op {
             ModOp::Set(_) => true,
             ModOp::Add(_) | ModOp::Multiply(_) | ModOp::Clamp { .. } => numeric,
@@ -659,12 +773,10 @@ impl ModifierPipeline {
             ));
         }
         match &modifier.op {
-            ModOp::Set(value) => {
-                check_modifier_value(value, &definition.kind, &format!("{root}/op"))?
-            }
+            ModOp::Set(value) => check_modifier_value(value, &target_kind, &format!("{root}/op"))?,
             ModOp::Add(value) => {
                 let same = matches!(
-                    (&definition.kind, value),
+                    (&target_kind, value),
                     (StatKind::Int, StatValue::Int(_)) | (StatKind::Fixed, StatValue::Fixed(_))
                 );
                 if !same {
@@ -676,8 +788,8 @@ impl ModifierPipeline {
             }
             ModOp::Multiply(_) => {}
             ModOp::Clamp { min, max } => {
-                check_modifier_value(min, &definition.kind, &format!("{root}/op"))?;
-                check_modifier_value(max, &definition.kind, &format!("{root}/op"))?;
+                check_modifier_value(min, &target_kind, &format!("{root}/op"))?;
+                check_modifier_value(max, &target_kind, &format!("{root}/op"))?;
                 let ordered = match (min, max) {
                     (StatValue::Int(a), StatValue::Int(b)) => a <= b,
                     (StatValue::Fixed(a), StatValue::Fixed(b)) => a <= b,
@@ -729,6 +841,7 @@ fn expr_kind(
             StatValue::Fixed(_) => Ok(ExprKind::Fixed),
             StatValue::Bool(_) => Ok(ExprKind::Bool),
             StatValue::Tags(_) => Ok(ExprKind::Tags),
+            StatValue::Dice(_) => Ok(ExprKind::Dice),
             StatValue::Enum(entry) => domains
                 .get(&entry.enum_id)
                 .map(|variants| ExprKind::Enum(entry.enum_id.clone(), variants.clone()))
@@ -741,6 +854,7 @@ fn expr_kind(
                 StatKind::Fixed => Ok(ExprKind::Fixed),
                 StatKind::Bool => Ok(ExprKind::Bool),
                 StatKind::Tags => Ok(ExprKind::Tags),
+                StatKind::Dice => Ok(ExprKind::Dice),
                 StatKind::Enum { enum_id, variants } => {
                     Ok(ExprKind::Enum(enum_id.clone(), variants.clone()))
                 }
@@ -1100,6 +1214,109 @@ fn select_side(
             }
         }
     }
+}
+
+/// Applies one retained operation to an integer running value.
+///
+/// Validation guarantees `Int` operands on integer targets, so any other
+/// shape keeps the running value instead of panicking.
+fn apply_numeric_modifier(running: i32, op: &ModOp) -> i32 {
+    match op {
+        ModOp::Set(StatValue::Int(value)) => *value,
+        ModOp::Add(StatValue::Int(amount)) => int_add(running, *amount),
+        ModOp::Multiply(factor) => int_scale(running, *factor),
+        ModOp::Clamp {
+            min: StatValue::Int(lo),
+            max: StatValue::Int(hi),
+        } => running.clamp(*lo, *hi),
+        _ => running,
+    }
+}
+
+/// Folds validated integer-target modifiers onto a base.
+///
+/// `targeting` is already ordered by phase then ascending `(priority, id)`.
+/// False conditions filter first and take precedence over stacking; the
+/// remaining candidates group by `(mod_type, phase)` and run the shared
+/// [`select_group`] stacking selection, then retained operations apply in
+/// canonical global order. Returns the folded value plus every targeting
+/// modifier's contribution in that same order, including excluded ones.
+fn fold_numeric(
+    targeting: &[&Modifier],
+    base: i32,
+    tags: &TagSet,
+    policies: &BTreeMap<ModTypeId, StackingPolicy>,
+) -> (i32, Vec<Contribution>) {
+    let mut live: Vec<&Modifier> = Vec::new();
+    let mut status: BTreeMap<Ulid, ContributionStatus> = BTreeMap::new();
+    for modifier in targeting {
+        let active = match &modifier.condition {
+            None => true,
+            Some(condition) => eval_condition(condition, tags),
+        };
+        if active {
+            live.push(*modifier);
+        } else {
+            status.insert(modifier.id, ContributionStatus::ConditionFalse);
+        }
+    }
+    let mut groups: BTreeMap<(String, Phase), Vec<&Modifier>> = BTreeMap::new();
+    for modifier in live {
+        groups
+            .entry((modifier.mod_type.0.clone(), phase_of(&modifier.op)))
+            .or_default()
+            .push(modifier);
+    }
+    let mut retained: BTreeSet<(Phase, i16, Ulid)> = BTreeSet::new();
+    for ((type_name, _), members) in &groups {
+        let policy = policies
+            .get(&ModTypeId(type_name.clone()))
+            .copied()
+            .unwrap_or(StackingPolicy::StackAll);
+        select_group(policy, members, &mut retained, &mut status);
+    }
+    let mut running = base;
+    let mut applied: BTreeMap<Ulid, (i32, i32)> = BTreeMap::new();
+    let mut order: Vec<&Modifier> = targeting
+        .iter()
+        .filter(|modifier| {
+            retained.contains(&(phase_of(&modifier.op), modifier.priority, modifier.id))
+        })
+        .copied()
+        .collect();
+    order.sort_by_key(|modifier| (phase_of(&modifier.op), modifier.priority, modifier.id));
+    for modifier in order {
+        let before = running;
+        running = apply_numeric_modifier(running, &modifier.op);
+        applied.insert(modifier.id, (before, running));
+    }
+    let mut contributions = Vec::with_capacity(targeting.len());
+    for modifier in targeting {
+        if let Some(excluded) = status.get(&modifier.id) {
+            contributions.push(Contribution {
+                modifier: (*modifier).clone(),
+                status: excluded.clone(),
+            });
+            continue;
+        }
+        match applied.get(&modifier.id) {
+            Some((before, after)) => contributions.push(Contribution {
+                modifier: (*modifier).clone(),
+                status: ContributionStatus::Applied {
+                    before: StatValue::Int(*before),
+                    after: StatValue::Int(*after),
+                },
+            }),
+            None => {
+                debug_assert!(false, "retained modifier without applied record");
+                contributions.push(Contribution {
+                    modifier: (*modifier).clone(),
+                    status: ContributionStatus::ConditionFalse,
+                });
+            }
+        }
+    }
+    (running, contributions)
 }
 
 /// Applies one retained operation to the running value.

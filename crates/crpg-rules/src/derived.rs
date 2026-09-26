@@ -67,6 +67,7 @@ pub(crate) enum ExprKind {
     Bool,
     Enum(String, BTreeSet<String>),
     Tags,
+    Dice,
 }
 
 impl ExprKind {
@@ -77,6 +78,7 @@ impl ExprKind {
             Self::Bool => ValueKind::Bool,
             Self::Enum(_, _) => ValueKind::Enum,
             Self::Tags => ValueKind::Tags,
+            Self::Dice => ValueKind::Dice,
         }
     }
 
@@ -85,7 +87,8 @@ impl ExprKind {
             (Self::Int, StatKind::Int)
             | (Self::Fixed, StatKind::Fixed)
             | (Self::Bool, StatKind::Bool)
-            | (Self::Tags, StatKind::Tags) => true,
+            | (Self::Tags, StatKind::Tags)
+            | (Self::Dice, StatKind::Dice) => true,
             (
                 Self::Enum(id, variants),
                 StatKind::Enum {

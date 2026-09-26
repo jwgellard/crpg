@@ -174,3 +174,91 @@ fn handler_results_do_not_touch_a_supplied_block() {
     assert_eq!(stored, before);
     assert_eq!(stored.get(fx.stats[0]), Some(&StatValue::Int(5)));
 }
+
+#[test]
+fn resolution_hook_variants_round_trip_with_core_closed_fields() {
+    let (_arena, entity) = arena_entity();
+    let (_target_arena, target) = arena_entity();
+    let entity_wire = format!(
+        "{{\"index\":{},\"generation\":{}}}",
+        entity.index(),
+        entity.generation()
+    );
+    let target_wire = format!(
+        "{{\"index\":{},\"generation\":{}}}",
+        target.index(),
+        target.generation()
+    );
+    let resolution = uid(21);
+    let cases: Vec<(KernelHook, String)> = vec![
+        (
+            KernelHook::BeforeRoll {
+                actor: entity,
+                target: Some(target),
+                resolution,
+            },
+            format!(
+                "{{\"type\":\"before_roll\",\"actor\":{entity_wire},\"target\":{target_wire},\"resolution\":\"{resolution}\"}}"
+            ),
+        ),
+        (
+            KernelHook::AfterRoll {
+                actor: entity,
+                target: None,
+                resolution,
+                total: -4,
+            },
+            format!(
+                "{{\"type\":\"after_roll\",\"actor\":{entity_wire},\"target\":null,\"resolution\":\"{resolution}\",\"total\":-4}}"
+            ),
+        ),
+        (
+            KernelHook::BeforeDamage {
+                source: entity,
+                target,
+                resolution,
+                amount: 9,
+            },
+            format!(
+                "{{\"type\":\"before_damage\",\"source\":{entity_wire},\"target\":{target_wire},\"resolution\":\"{resolution}\",\"amount\":9}}"
+            ),
+        ),
+        (
+            KernelHook::AfterDamage {
+                source: entity,
+                target,
+                resolution,
+                amount: 0,
+            },
+            format!(
+                "{{\"type\":\"after_damage\",\"source\":{entity_wire},\"target\":{target_wire},\"resolution\":\"{resolution}\",\"amount\":0}}"
+            ),
+        ),
+    ];
+    for (hook, wire) in &cases {
+        assert_eq!(serde_json::to_string(hook).unwrap(), *wire);
+        let loaded: KernelHook = serde_json::from_str(wire).unwrap();
+        assert_eq!(&loaded, hook);
+    }
+    // Payloads stay core-closed: unknown fields and unknown types fail, and
+    // a missing correlation identity fails with it.
+    let (first_hook, _) = &cases[0];
+    let (second_hook, _) = &cases[1];
+    let (third_hook, _) = &cases[2];
+    let mut value = serde_json::to_value(first_hook).unwrap();
+    value["extra"] = serde_json::Value::from(0);
+    assert!(serde_json::from_value::<KernelHook>(value).is_err());
+    assert!(serde_json::from_str::<KernelHook>("{\"type\":\"before_damage\"}").is_err());
+    assert!(serde_json::from_str::<KernelHook>("{\"type\":\"after_damage\"}").is_err());
+    // Resolution hooks ride the generic queue like the lifecycle hooks.
+    let mut queue = EventQueue::new();
+    queue.push(Tick::new(1), *third_hook);
+    queue.push(Tick::new(1), *second_hook);
+    let json = serde_json::to_string(&queue).unwrap();
+    let mut loaded: EventQueue<KernelHook> = serde_json::from_str(&json).unwrap();
+    assert_eq!(loaded, queue);
+    let drained = loaded.drain();
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].payload, *third_hook);
+    assert_eq!(drained[1].payload, *second_hook);
+}

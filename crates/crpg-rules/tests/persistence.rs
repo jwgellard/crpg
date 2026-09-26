@@ -7,7 +7,7 @@ mod common;
 
 use crpg_core::{GenerationalArena, Interners};
 use crpg_rules::{
-    EnumValue, ModifierPipeline, QueryContext, RulesErrorCode, SerializableStatBlock,
+    DiceExpr, EnumValue, ModifierPipeline, QueryContext, RulesErrorCode, SerializableStatBlock,
     SerializableStatEntry, SerializableStatValue, StackingPolicy, StatBlock, StatDefinition,
     StatValue, TagSet,
 };
@@ -437,4 +437,78 @@ proptest! {
         let rewired = serde_json::to_string(&restored.to_serializable(&second).unwrap()).unwrap();
         prop_assert_eq!(rewired, wire);
     }
+}
+
+#[test]
+fn dice_values_round_trip_as_canonical_strings() {
+    let fx = fixture();
+    let stored = block(&[
+        (fx.stats[0], StatValue::Dice("2d6+3".parse().unwrap())),
+        (fx.stats[1], StatValue::Int(1)),
+    ]);
+    let dto = stored.to_serializable(&fx.interners).unwrap();
+    assert_eq!(
+        serde_json::to_string(&dto).unwrap(),
+        "{\"entries\":[\
+         {\"stat\":\"alpha\",\"value\":{\"type\":\"dice\",\"value\":\"2d6+3\"}},\
+         {\"stat\":\"beta\",\"value\":{\"type\":\"int\",\"value\":1}}\
+         ]}"
+    );
+    // Restoration into a differently ordered interner keeps the meaning
+    // while the numeric handles actually differ.
+    let mut second = Interners::new();
+    second.intern_stat("beta");
+    second.intern_stat("zeta");
+    second.intern_stat("alpha");
+    assert_ne!(second.stat("alpha"), fx.interners.stat("alpha"));
+    let restored = StatBlock::from_serializable(dto, &mut second).unwrap();
+    assert_eq!(
+        restored.get(second.stat("alpha").unwrap()),
+        Some(&StatValue::Dice("2d6+3".parse::<DiceExpr>().unwrap()))
+    );
+    assert_eq!(
+        restored.get(second.stat("beta").unwrap()),
+        Some(&StatValue::Int(1))
+    );
+    let rewired = restored.to_serializable(&second).unwrap();
+    let fresh = fixture();
+    let expected = stored.to_serializable(&fresh.interners).unwrap();
+    assert_eq!(rewired, expected);
+}
+
+#[test]
+fn failed_dice_decoding_interns_nothing() {
+    // An otherwise-valid preceding entry is not interned when a later dice
+    // value fails; parser paths carry the persisted entry prefix.
+    let dto = SerializableStatBlock {
+        entries: vec![
+            SerializableStatEntry {
+                stat: String::from("alpha"),
+                value: SerializableStatValue::Dice(String::from("2d6+3")),
+            },
+            SerializableStatEntry {
+                stat: String::from("beta"),
+                value: SerializableStatValue::Dice(String::from("2d")),
+            },
+        ],
+    };
+    let mut interners = Interners::new();
+    let before = interners.clone();
+    let error = StatBlock::from_serializable(dto, &mut interners).unwrap_err();
+    assert_eq!(error.code, RulesErrorCode::InvalidDice);
+    assert_eq!(error.location, "/persisted/entries/1/dice/input/2");
+    assert_eq!(interners, before);
+    assert!(interners.stat("alpha").is_none());
+    // An over-limit dice string fails preflight the same way.
+    let dto = SerializableStatBlock {
+        entries: vec![SerializableStatEntry {
+            stat: String::from("alpha"),
+            value: SerializableStatValue::Dice(format!("1d{}", "7".repeat(127))),
+        }],
+    };
+    let mut interners = Interners::new();
+    let error = StatBlock::from_serializable(dto, &mut interners).unwrap_err();
+    assert_eq!(error.code, RulesErrorCode::LimitExceeded);
+    assert_eq!(error.location, "/persisted/entries/0/dice/input");
+    assert!(interners.stat("alpha").is_none());
 }
