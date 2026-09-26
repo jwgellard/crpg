@@ -1,20 +1,21 @@
 # Project state
 
-Updated: 2026-09-18
+Updated: 2026-09-26
 
 ## Phase
-Phase 2 — campaign data format (T010/T011/T012a/T012b/T013a landed; T013 next).
+Phase 2 — campaign data format (T010/T011/T012a/T012b/T013a/T013 landed; T014 next).
 
 ## Branch state
-All merged work is on `master` through `e84b13e`. T010's campaign
+All merged work is on `master` through `9a6304f`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
 T011b's thin `crpgc validate` wrapper, T012a's data-half migration
 framework (plus the T012/T012b Stage-2 specs), T012b's thin `crpgc migrate`
 wrapper (PR #5), S001's public-repo hardening (guard/trusted-lint jobs,
 `build.rs` ban, `gitleaks` scan, runner rule, `yanked = "deny"`,
-branch-protection ruleset, PRs #2/#4/#6), and T013a's data-owned
-introspection prerequisite (PR #7) are merged. The Done history below is
-merged work only. T013 CLI is next.
+branch-protection ruleset, PRs #2/#4/#6), T013a's data-owned
+introspection prerequisite (PR #7), and T013's scaffolding/introspection
+CLI (PR #9) are merged. The Done history below is
+merged work only. T014 rules kernel is next.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -277,6 +278,15 @@ merged work only. T013 CLI is next.
   subtree/ordering rules; 11 introspection tests plus a review-added
   stale-index pin; dual-native green with all 9 PR checks passing.
   Unblocks the CLI-only T013.
+- T013 scaffolding/introspection CLI in `crpg-cli` (merged `9a6304f`,
+  PR #9, 2026-09-26): six thin commands (`new`/`schema`/`explain`/`fmt`/
+  `lock`/`run`) over the landed data/harness APIs with hand-rolled
+  per-command parsers and 0/1/2 exits; five binary suites plus literal
+  schema-only LLM acceptance (four types, R1 + R2 rounds with provenance
+  record); dual-native green (Windows 231 / Linux 243 `crpg-cli` tests)
+  with all 9 PR checks passing, plus a line-ending follow-up pinning the
+  trial inputs to LF via a local `.gitattributes` after PR Windows CI
+  caught an autocrlf conversion. Unblocks the rules-kernel T014.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -307,8 +317,9 @@ merged work only. T013 CLI is next.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T013 thin CLI wrappers in `crpg-cli` (own spec, consumes the landed
-  T013a API; no lower-crate edits).
+- T014 rules kernel in `crpg-rules`: stats and the modifier pipeline, plus
+  kernel hook event types per ADR-0008. First real code in that crate, so
+  its architecture doc and `AGENTS.md` are due with it.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -347,8 +358,9 @@ merged work only. T013 CLI is next.
    T009a and T009c are both merged on `master` as of 2026-09-07; T009b's
     `crpgc replay` wrapper is merged too (2026-09-07). T010/T011a/T011b,
     T012a's data-half migration framework, T012b's `crpgc migrate` wrapper
-    (PR #5), S001 hardening (PRs #2/#4/#6), and T013a data-owned
-    introspection (PR #7) are merged on `master` through `e84b13e`.
+    (PR #5), S001 hardening (PRs #2/#4/#6), T013a data-owned
+    introspection (PR #7), and T013 scaffolding/introspection CLI (PR #9)
+    are merged on `master` through `9a6304f`.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -481,3 +493,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-18 (UTC) · opencode/muse-spark + S001 merged · Recorded the PR #2 merge (`f704111`, all 9 checks green), the API-verified active ruleset, and the revert PR #3 closed unmerged; Done history, branch state, and Known problems moved to the merged state with T012b next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012b merged/T013a on-branch catch-up · Recorded the T012b `crpgc migrate` merge (`382cd4c`, PR #5) and the Task/s001 merge (`289e7db`, PR #6) in branch state, Done history, Phase and Next; T013a noted as implemented and dual-native verified on `docs/S001-merged-bookkeeping`, awaiting landing.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Recorded the T013a data-owned introspection merge (`e84b13e`, PR #7, all 9 checks green) in branch state, Done history, Phase, Next, and verification history; T013 CLI is next.
+- 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Recorded the T013 scaffolding/introspection CLI merge (`9a6304f`, PR #9, all 9 checks green after a trial-input line-ending fix) in branch state, Done history, Phase, Next, and verification history; T014 rules kernel is next.

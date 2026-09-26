@@ -80,7 +80,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | **T012a** | **done** | 2026-09-18 | `crpg-data`: per-type migration chains, in-memory old-campaign loading, Item `v1 → v2` dummy edge, `migration_v1` golden + non-vacuous coverage gate (E004 split half) |
 | **T012b** | **done** | 2026-09-18 | Thin `crpgc migrate` wrapper (`crpg-cli`): explicit source-save over the data loader/writer (E004 split half; PR #5) |
 | **T013a** | **done** | 2026-09-18 | `crpg-data`: data-owned `explain_object` introspection prerequisite — canonical report, shared reference enumeration, subtree/ordering rules (prerequisite to CLI-only T013; merged PR #7, `e84b13e`) |
-| T013 | open | — | Scaffolding/introspection CLI, including thin `crpgc lock` and run wrappers (consumes the landed T013a API; no lower-crate edits) |
+| **T013** | **done** | 2026-09-26 | Scaffolding/introspection CLI in `crpg-cli`: `new`/`schema`/`explain`/`fmt`/`lock`/`run` thin wrappers over landed data/harness APIs, five binary suites plus literal LLM acceptance (merged PR #9, `9a6304f`) |
 
 ## Phase 3 — Rules kernel
 
@@ -218,6 +218,7 @@ Record it here, one line per week.
 | 2026-09-07 | 19 | T009a (typed replay), T009c (Windows-primary/Linux-supported native goldens, ADR-0012) and T009b (thin `crpgc replay` wrapper) merged. Three review follow-ups merged alongside T006a and are not counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. T010 campaign data is next. |
 | 2026-09-17 | 22 | T010 (campaign data format and schema gate), T011a (positioned validation in `crpg-data`) and T011b (thin `crpgc validate` wrapper) merged and pushed to `origin`. The T011a slug/graph coverage follow-up merged alongside T011a and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T012 migration framework is next. |
 | 2026-09-18 | 25 | T012a (data-half migration framework, with the T012/T012b Stage-2 specs), T012b (thin `crpgc migrate` wrapper, PR #5), and T013a (data-owned introspection prerequisite, PR #7) merged. The T012a review-fix follow-up merged alongside T012a and the T013a review fix alongside T013a, neither counted, being fixes rather than numbered tasks. Cost per merged task not tracked yet. T013 is next. |
+| 2026-09-26 | 26 | T013 (scaffolding/introspection CLI: six thin wrappers, five binary suites, literal LLM acceptance, PR #9) merged. The trial-input line-ending follow-up merged alongside T013 and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T014 rules kernel is next. |
 
 ---
 
@@ -248,3 +249,4 @@ Record it here, one line per week.
 - 2026-09-18 (UTC) · opencode/muse-spark + S001 merged · Marked S001 done (PR #2 merged 2026-09-17, all 9 checks green, branch protection human-done, revert PR #3 closed unmerged); S-series, so throughput unchanged per the fix-not-counted precedent.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012b merged/T013a on-branch catch-up · Marked T012b done (merged PR #5), added the T013a on-branch row for the implemented and dual-native verified data prerequisite (`8d2ea32`), clarified T013 consumes the landed API, and moved throughput to 24 with T013a landing next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Marked T013a done (merged PR #7, `e84b13e`), moved throughput to 25 with T013 next; the review-added stale-index test is a fix, not a counted task.
+- 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Marked T013 done (merged PR #9, `9a6304f`), moved throughput to 26 with T014 next; the trial-input line-ending fix is a fix, not a counted task.

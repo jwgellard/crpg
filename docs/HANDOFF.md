@@ -93,16 +93,20 @@ Rarely, and deliberately: reviewing a whole phase before starting the next one, 
 
 ## 7. Right now
 
-**Current handoff (2026-09-18):** T010, T011a (plus its slug/graph coverage
+**Current handoff (2026-09-26):** T010, T011a (plus its slug/graph coverage
 follow-up), T011b, T012a (plus its review-fix follow-up), T012b (PR #5),
-S001 (PRs #2/#4/#6, branch protection human-done), and T013a data-owned
-introspection (PR #7, reviewed with a stale-index test fix) are merged on
-`master` through `e84b13e`; the Windows/MSVC gates passed on every commit
-and the Linux/GNU results are recorded in the task files. T013 CLI is next.
+S001 (PRs #2/#4/#6, branch protection human-done), T013a data-owned
+introspection (PR #7, reviewed with a stale-index test fix), and T013
+scaffolding/introspection CLI (PR #9, with a line-ending follow-up pinning
+the trial inputs to LF) are merged on `master` through `9a6304f`; the
+Windows/MSVC gates passed on every commit
+and the Linux/GNU results are recorded in the task files. T014 rules kernel
+is next.
 Follow `PROJECT_STATE.md` and the task records
 [T010](../tasks/T010.md), [T011a](../tasks/T011a.md),
 [T011b](../tasks/T011b.md), [T012](../tasks/T012.md),
-[T012b](../tasks/T012b.md) and [T013a](../tasks/T013a.md).
+[T012b](../tasks/T012b.md), [T013a](../tasks/T013a.md) and
+[T013](../tasks/T013.md).
 the bootstrap checklist below is historical, not a
 direction to commit the current working tree or repeat completed setup.
 
@@ -128,3 +132,4 @@ Step 5 is the actual project. Everything above is bookkeeping that makes step 5 
 - 2026-09-18 (UTC) · opencode/muse-spark + T012a merged/doc-status catch-up · Updated the current handoff to the committed data-half migration framework with T012b next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T012b merged/T013a on-branch catch-up · Updated the current handoff to the merged T012b/S001 state on `master` through `289e7db`, with T013a implemented and verified on its branch as the next landing before T013.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Updated the current handoff to the merged T013a data-owned introspection prerequisite (`e84b13e`, PR #7) on `master`, with T013 CLI next.
+- 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Updated the current handoff to the merged T013 scaffolding/introspection CLI (`9a6304f`, PR #9) on `master`, with T014 rules kernel next.
