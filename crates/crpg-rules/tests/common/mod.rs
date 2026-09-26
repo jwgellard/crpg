@@ -166,6 +166,35 @@ pub fn modifier(
     }
 }
 
+/// Builds one roll/DC-targeted modifier with explicit parts.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn numeric_modifier(
+    id: u128,
+    source_kind: &str,
+    source_id: u128,
+    target: ModifierTarget,
+    op: ModOp,
+    mod_type: &str,
+    name: Option<&str>,
+    condition: Option<ConditionExpr>,
+    priority: i16,
+) -> Modifier {
+    Modifier {
+        id: uid(id),
+        source: SourceRef {
+            kind: source_kind.to_owned(),
+            id: uid(source_id),
+        },
+        target,
+        op,
+        mod_type: ModTypeId(mod_type.to_owned()),
+        name: name.map(str::to_owned),
+        condition,
+        priority,
+    }
+}
+
 /// Builds a query context borrowing one entity's view.
 pub fn context<'a>(
     entity: EntityId,

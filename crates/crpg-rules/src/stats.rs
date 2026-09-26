@@ -1,12 +1,13 @@
 //! Typed stats, definitions, expressions, blocks, and symbolic persistence.
 //!
-//! The staged value model covers `Int`, `Fixed`, `Bool`, `Enum`, and `Tags`;
-//! dice-valued stats land with T015. [`StatBlock`] is the only mutable state:
+//! The staged value model covers `Int`, `Fixed`, `Bool`, `Enum`, `Tags`, and
+//! `Dice` expression values. [`StatBlock`] is the only mutable state:
 //! insertion validates standalone value shape and limits before changing
 //! anything. Definitions and queries validate kinds, domains, and expressions
 //! at the pipeline boundary, which owns the [`Interners`] conversion pair
 //! [`StatBlock::to_serializable`]/[`StatBlock::from_serializable`] that keeps
-//! persisted bytes in string form per ADR-0006 Decision 4.
+//! persisted bytes in string form per ADR-0006 Decision 4. Dice values
+//! persist as canonical notation strings parsed during preflight.
 
 use std::collections::BTreeSet;
 
@@ -14,6 +15,7 @@ use crpg_core::{Fx16_16, Interners, StatId, TagId};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::dice::DiceExpr;
 use crate::error::{RulesError, RulesErrorCode};
 use crate::{MAX_STATS, MAX_TAGS};
 
@@ -57,6 +59,9 @@ pub enum StatValue {
     Enum(EnumValue),
     /// A set of tag handles.
     Tags(TagSet),
+    /// A dice expression value. Querying it returns the expression itself;
+    /// only explicit evaluation or resolution draws dice.
+    Dice(DiceExpr),
 }
 
 /// The declared kind of one stat.
@@ -77,6 +82,8 @@ pub enum StatKind {
     },
     /// Tag sets.
     Tags,
+    /// Dice expression values.
+    Dice,
 }
 
 /// A typed derived-stat expression.
@@ -124,6 +131,7 @@ pub(crate) enum ValueKind {
     Bool,
     Enum,
     Tags,
+    Dice,
 }
 
 impl StatValue {
@@ -135,6 +143,7 @@ impl StatValue {
             Self::Bool(_) => ValueKind::Bool,
             Self::Enum(_) => ValueKind::Enum,
             Self::Tags(_) => ValueKind::Tags,
+            Self::Dice(_) => ValueKind::Dice,
         }
     }
 }
@@ -148,6 +157,7 @@ impl StatKind {
             Self::Bool => ValueKind::Bool,
             Self::Enum { .. } => ValueKind::Enum,
             Self::Tags => ValueKind::Tags,
+            Self::Dice => ValueKind::Dice,
         }
     }
 }
@@ -160,6 +170,7 @@ impl StatKind {
 pub(crate) fn check_standalone_value(value: &StatValue) -> Result<(), RulesErrorCode> {
     match value {
         StatValue::Int(_) | StatValue::Fixed(_) | StatValue::Bool(_) => Ok(()),
+        StatValue::Dice(_) => Ok(()),
         StatValue::Enum(entry) => {
             if entry.enum_id.is_empty() || entry.variant.is_empty() {
                 return Err(RulesErrorCode::InvalidName);
@@ -292,6 +303,7 @@ impl StatBlock {
                 StatValue::Fixed(v) => SerializableStatValue::Fixed(*v),
                 StatValue::Bool(v) => SerializableStatValue::Bool(*v),
                 StatValue::Enum(entry) => SerializableStatValue::Enum(entry.clone()),
+                StatValue::Dice(expr) => SerializableStatValue::Dice(expr.to_string()),
                 StatValue::Tags(tags) => {
                     let mut names = Vec::with_capacity(tags.len());
                     for tag in tags {
@@ -328,8 +340,11 @@ impl StatBlock {
     /// with [`RulesErrorCode::DuplicateTag`], both at the second occurrence
     /// in authored array order. Validates every name, value, and limit before
     /// any interner mutation, so a returned error leaves `interners`
-    /// unchanged. Enum domain membership is checked later against pipeline
-    /// definitions; this conversion requires only nonempty enum strings.
+    /// unchanged. Dice notation strings are parsed during this preflight, so
+    /// a malformed dice value fails before any symbol is interned; parser
+    /// paths are prefixed with the entry's persisted path. Enum domain
+    /// membership is checked later against pipeline definitions; this
+    /// conversion requires only nonempty enum strings.
     pub fn from_serializable(
         value: SerializableStatBlock,
         interners: &mut Interners,
@@ -341,6 +356,7 @@ impl StatBlock {
             ));
         }
         let mut seen_stats = BTreeSet::new();
+        let mut parsed_dice: Vec<Option<DiceExpr>> = Vec::with_capacity(value.entries.len());
         for (index, entry) in value.entries.iter().enumerate() {
             let location = format!("/persisted/entries/{index}");
             if entry.stat.is_empty() {
@@ -349,12 +365,13 @@ impl StatBlock {
             if !seen_stats.insert(entry.stat.as_str()) {
                 return Err(RulesError::at(RulesErrorCode::DuplicateStat, location));
             }
-            check_persisted_value(&entry.value, &location)?;
+            parsed_dice.push(check_persisted_value(&entry.value, &location)?);
         }
-        let mut ordered: Vec<&SerializableStatEntry> = value.entries.iter().collect();
-        ordered.sort_by(|a, b| a.stat.cmp(&b.stat));
+        let mut order: Vec<usize> = (0..value.entries.len()).collect();
+        order.sort_by(|left, right| value.entries[*left].stat.cmp(&value.entries[*right].stat));
         let mut block = Self::new();
-        for entry in ordered {
+        for position in order {
+            let entry = &value.entries[position];
             let mut tags_sorted: Vec<&str> = Vec::new();
             if let SerializableStatValue::Tags(tags) = &entry.value {
                 tags_sorted = tags.iter().map(String::as_str).collect();
@@ -366,6 +383,11 @@ impl StatBlock {
                 SerializableStatValue::Fixed(v) => StatValue::Fixed(*v),
                 SerializableStatValue::Bool(v) => StatValue::Bool(*v),
                 SerializableStatValue::Enum(entry) => StatValue::Enum(entry.clone()),
+                SerializableStatValue::Dice(_) => StatValue::Dice(
+                    parsed_dice[position]
+                        .clone()
+                        .expect("dice preflight parses every dice entry"),
+                ),
                 SerializableStatValue::Tags(_) => {
                     let mut set = TagSet::new();
                     for name in tags_sorted {
@@ -382,17 +404,34 @@ impl StatBlock {
 }
 
 /// Validates one persisted value against standalone shape and limits.
-fn check_persisted_value(value: &SerializableStatValue, location: &str) -> Result<(), RulesError> {
+///
+/// Returns the parsed dice expression for dice values so the caller can
+/// reuse the preflight parse instead of decoding twice. Dice parser paths
+/// are prefixed with the entry's persisted path.
+fn check_persisted_value(
+    value: &SerializableStatValue,
+    location: &str,
+) -> Result<Option<DiceExpr>, RulesError> {
     let value_location = format!("{location}/value");
     match value {
         SerializableStatValue::Int(_)
         | SerializableStatValue::Fixed(_)
-        | SerializableStatValue::Bool(_) => Ok(()),
+        | SerializableStatValue::Bool(_) => Ok(None),
+        SerializableStatValue::Dice(notation) => {
+            notation
+                .parse::<DiceExpr>()
+                .map(Some)
+                .map_err(|error| RulesError {
+                    code: error.code,
+                    location: format!("{location}{}", error.location),
+                    cycle: error.cycle,
+                })
+        }
         SerializableStatValue::Enum(entry) => {
             if entry.enum_id.is_empty() || entry.variant.is_empty() {
                 return Err(RulesError::at(RulesErrorCode::InvalidName, value_location));
             }
-            Ok(())
+            Ok(None)
         }
         SerializableStatValue::Tags(tags) => {
             if tags.len() > MAX_TAGS {
@@ -416,7 +455,7 @@ fn check_persisted_value(value: &SerializableStatValue, location: &str) -> Resul
                     ));
                 }
             }
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -446,7 +485,8 @@ pub struct SerializableStatEntry {
 ///
 /// Adjacently tagged with lowercase `type`/`value` names; unknown fields are
 /// rejected. Fixed values store core's raw integer; enum names and members
-/// remain strings; tags are an array of symbolic names.
+/// remain strings; tags are an array of symbolic names; dice values are
+/// canonical notation strings parsed during preflight.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -465,6 +505,8 @@ pub enum SerializableStatValue {
     Enum(EnumValue),
     /// Symbolic tag names.
     Tags(Vec<String>),
+    /// A dice expression in canonical notation.
+    Dice(String),
 }
 
 /// Sorts and deduplicates direct expression references in ascending order.

@@ -49,6 +49,62 @@ pub enum KernelHook {
         /// The encounter that started.
         encounter: Ulid,
     },
+    /// A resolution started rolling for an actor.
+    ///
+    /// The host supplies the correlation ULID and owns the emission point;
+    /// `resolve` itself emits nothing.
+    BeforeRoll {
+        /// The entity rolling.
+        actor: EntityId,
+        /// Contextual identity only.
+        target: Option<EntityId>,
+        /// The host-supplied correlation identity for this resolution.
+        resolution: Ulid,
+    },
+    /// A resolution finished rolling for an actor.
+    ///
+    /// Carries the final rolled total. The host supplies the correlation
+    /// ULID and owns the emission point; `resolve` itself emits nothing.
+    AfterRoll {
+        /// The entity that rolled.
+        actor: EntityId,
+        /// Contextual identity only.
+        target: Option<EntityId>,
+        /// The host-supplied correlation identity for this resolution.
+        resolution: Ulid,
+        /// The final rolled total.
+        total: i32,
+    },
+    /// Caller-computed damage is about to apply from a source to a target.
+    ///
+    /// The amount is caller-computed, caller-applied, and nonnegative; rules
+    /// performs no damage calculation, application, or authority check here.
+    /// The host supplies the correlation ULID and owns the emission point.
+    BeforeDamage {
+        /// The entity the damage is attributed to.
+        source: EntityId,
+        /// The entity receiving the damage.
+        target: EntityId,
+        /// The host-supplied correlation identity for this resolution.
+        resolution: Ulid,
+        /// The caller-computed nonnegative damage amount.
+        amount: i32,
+    },
+    /// Caller-computed damage was applied from a source to a target.
+    ///
+    /// The amount is caller-computed, caller-applied, and nonnegative; rules
+    /// performs no damage calculation, application, or authority check here.
+    /// The host supplies the correlation ULID and owns the emission point.
+    AfterDamage {
+        /// The entity the damage is attributed to.
+        source: EntityId,
+        /// The entity that received the damage.
+        target: EntityId,
+        /// The host-supplied correlation identity for this resolution.
+        resolution: Ulid,
+        /// The caller-computed nonnegative damage amount.
+        amount: i32,
+    },
 }
 
 /// One runtime-only mutation proposal from a hook handler.

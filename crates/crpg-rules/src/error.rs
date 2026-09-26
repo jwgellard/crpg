@@ -52,6 +52,23 @@ pub enum RulesErrorCode {
     Cycle,
     /// An expression divides by zero.
     DivisionByZero,
+    /// A dice expression or its count/sides/selection fails validation.
+    InvalidDice,
+    /// A named RNG stream name is empty (over-long names report
+    /// [`RulesErrorCode::LimitExceeded`] at the same location).
+    InvalidStream,
+    /// An outcome table's bands or natural rules fail validation.
+    InvalidOutcomeTable,
+    /// A resolution request or its roll shape fails validation.
+    InvalidResolution,
+    /// A query targets a modifier-target kind it does not accept.
+    InvalidTarget,
+    /// A resolution participant has no entity view.
+    MissingEntity,
+    /// A resource pool's construction state fails validation.
+    InvalidResource,
+    /// A resource spend exceeds the available balance.
+    InsufficientResource,
 }
 
 /// An owned, structured rules-kernel failure.

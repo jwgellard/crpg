@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 
 use crpg_core::StatId;
 use crpg_rules::{
-    ContributionStatus, Expr, ModOp, ModifierPipeline, RulesErrorCode, StackingPolicy, StatBlock,
-    StatDefinition, StatKind, StatValue, TagSet,
+    ContributionStatus, DiceExpr, Expr, ModOp, ModifierPipeline, RulesErrorCode, StackingPolicy,
+    StatBlock, StatDefinition, StatKind, StatValue, TagSet,
 };
 
 use common::{
@@ -895,4 +895,194 @@ fn tag_literal_count_boundaries() {
         error.location,
         format!("/definitions/{}/derived", fx.stats[0].index())
     );
+}
+
+fn dice_expr() -> DiceExpr {
+    "2d6+3".parse().unwrap()
+}
+
+#[test]
+fn dice_literal_and_reference_queries_return_expressions_with_traces() {
+    let fx = fixture();
+    let expr = dice_expr();
+    let pipeline = stack_pipeline(vec![
+        def(
+            fx.stats[0],
+            StatKind::Dice,
+            Some(Expr::Literal(StatValue::Dice(expr.clone()))),
+        ),
+        def(fx.stats[1], StatKind::Dice, Some(Expr::Stat(fx.stats[0]))),
+    ]);
+    let stored = StatBlock::new();
+    let (value, breakdown) = query_stat(&pipeline, &fx, &stored, fx.stats[0]).unwrap();
+    assert_eq!(value, StatValue::Dice(expr.clone()));
+    let trace = &breakdown.traces[&fx.stats[0]];
+    assert_eq!(trace.base, StatValue::Dice(expr.clone()));
+    assert_eq!(trace.value, StatValue::Dice(expr.clone()));
+    assert!(trace.dependencies.is_empty());
+    assert!(trace.contributions.is_empty());
+    // A reference reads the same expression with a sorted dependency.
+    let (value, breakdown) = query_stat(&pipeline, &fx, &stored, fx.stats[1]).unwrap();
+    assert_eq!(value, StatValue::Dice(expr.clone()));
+    assert_eq!(
+        breakdown.traces[&fx.stats[1]].dependencies,
+        vec![fx.stats[0]]
+    );
+    assert!(breakdown.traces.contains_key(&fx.stats[0]));
+}
+
+#[test]
+fn dice_stored_bases_accept_set_only() {
+    let fx = fixture();
+    let base: DiceExpr = "2d6+3".parse().unwrap();
+    let replacement: DiceExpr = "4d6kh3".parse().unwrap();
+    let pipeline = stack_pipeline(vec![def(fx.stats[0], StatKind::Dice, None)]);
+    let stored = block(&[(fx.stats[0], StatValue::Dice(base.clone()))]);
+    // Set replaces the expression and records an Applied contribution.
+    let applied = modifier(
+        1,
+        "sk",
+        1,
+        fx.stats[0],
+        ModOp::Set(StatValue::Dice(replacement.clone())),
+        common::TYPE_A,
+        None,
+        None,
+        0,
+    );
+    let tags = TagSet::new();
+    let mods = vec![applied];
+    let ctx = context(fx.entity, &stored, &tags, &mods);
+    let (value, breakdown) = pipeline.query(fx.entity, fx.stats[0], &ctx).unwrap();
+    assert_eq!(value, StatValue::Dice(replacement.clone()));
+    let trace = &breakdown.traces[&fx.stats[0]];
+    assert_eq!(trace.base, StatValue::Dice(base));
+    assert_eq!(trace.contributions.len(), 1);
+    let ContributionStatus::Applied { before, after } = &trace.contributions[0].status else {
+        panic!("expected an Applied contribution");
+    };
+    assert_eq!(before, &StatValue::Dice("2d6+3".parse().unwrap()));
+    assert_eq!(after, &StatValue::Dice(replacement));
+    // Add, Multiply, and Clamp are InvalidOperation on Dice targets even
+    // with matching operand kinds.
+    for (id, op) in [
+        (2, ModOp::Add(StatValue::Dice("1d6".parse().unwrap()))),
+        (3, ModOp::Multiply(raw_fx(65536))),
+        (
+            4,
+            ModOp::Clamp {
+                min: StatValue::Dice("1d6".parse().unwrap()),
+                max: StatValue::Dice("1d6".parse().unwrap()),
+            },
+        ),
+    ] {
+        let rejected = modifier(id, "sk", 1, fx.stats[0], op, common::TYPE_A, None, None, 0);
+        let mods = vec![rejected.clone()];
+        let ctx = context(fx.entity, &stored, &tags, &mods);
+        let error = pipeline.query(fx.entity, fx.stats[0], &ctx).unwrap_err();
+        assert_eq!(error.code, RulesErrorCode::InvalidOperation, "op {id}");
+        assert_eq!(
+            error.location,
+            format!("/modifiers/{}/op", rejected.id),
+            "op {id}"
+        );
+    }
+}
+
+#[test]
+fn dice_mismatched_kinds_are_type_mismatches() {
+    let fx = fixture();
+    // Set with a non-Dice operand on a Dice target.
+    let pipeline = stack_pipeline(vec![def(fx.stats[0], StatKind::Dice, None)]);
+    let stored = block(&[(fx.stats[0], StatValue::Dice(dice_expr()))]);
+    let tags = TagSet::new();
+    let rejected = modifier(
+        1,
+        "sk",
+        1,
+        fx.stats[0],
+        ModOp::Set(StatValue::Int(3)),
+        common::TYPE_A,
+        None,
+        None,
+        0,
+    );
+    let mods = vec![rejected.clone()];
+    let ctx = context(fx.entity, &stored, &tags, &mods);
+    let error = pipeline.query(fx.entity, fx.stats[0], &ctx).unwrap_err();
+    assert_eq!(error.code, RulesErrorCode::TypeMismatch);
+    assert_eq!(error.location, format!("/modifiers/{}/op", rejected.id));
+    // A stored Int under a Dice declaration.
+    let stored = block(&[(fx.stats[0], StatValue::Int(3))]);
+    let empty: Vec<crpg_rules::Modifier> = vec![];
+    let ctx = context(fx.entity, &stored, &tags, &empty);
+    let error = pipeline.query(fx.entity, fx.stats[0], &ctx).unwrap_err();
+    assert_eq!(error.code, RulesErrorCode::TypeMismatch);
+    // An Add-only policy cannot accept a Dice Set.
+    let pipeline = ModifierPipeline::new(
+        vec![def(fx.stats[0], StatKind::Dice, None)],
+        policies(&[(common::TYPE_B, StackingPolicy::HighestBonusWorstPenalty)]),
+    )
+    .unwrap();
+    let stored = block(&[(fx.stats[0], StatValue::Dice(dice_expr()))]);
+    let rejected = modifier(
+        2,
+        "sk",
+        1,
+        fx.stats[0],
+        ModOp::Set(StatValue::Dice(dice_expr())),
+        common::TYPE_B,
+        None,
+        None,
+        0,
+    );
+    let mods = vec![rejected.clone()];
+    let ctx = context(fx.entity, &stored, &tags, &mods);
+    let error = pipeline.query(fx.entity, fx.stats[0], &ctx).unwrap_err();
+    assert_eq!(error.code, RulesErrorCode::InvalidOperation);
+    assert_eq!(error.location, format!("/modifiers/{}/op", rejected.id));
+}
+
+#[test]
+fn dice_operands_are_rejected_from_numeric_operators() {
+    let fx = fixture();
+    let dice = || Expr::Literal(StatValue::Dice(dice_expr()));
+    // Every binary operator still requires matching Int or Fixed operands.
+    for (name, make) in [
+        ("add", Expr::Add as fn(Box<Expr>, Box<Expr>) -> Expr),
+        (
+            "subtract",
+            Expr::Subtract as fn(Box<Expr>, Box<Expr>) -> Expr,
+        ),
+        (
+            "multiply",
+            Expr::Multiply as fn(Box<Expr>, Box<Expr>) -> Expr,
+        ),
+        ("divide", Expr::Divide as fn(Box<Expr>, Box<Expr>) -> Expr),
+        ("min", Expr::Min as fn(Box<Expr>, Box<Expr>) -> Expr),
+        ("max", Expr::Max as fn(Box<Expr>, Box<Expr>) -> Expr),
+    ] {
+        let error = ModifierPipeline::new(
+            vec![def(
+                fx.stats[0],
+                StatKind::Dice,
+                Some(make(Box::new(dice()), Box::new(dice()))),
+            )],
+            policies(&[(common::TYPE_A, StackingPolicy::StackAll)]),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, RulesErrorCode::TypeMismatch, "operator {name}");
+        assert_eq!(
+            error.location,
+            format!("/definitions/{}/derived", fx.stats[0].index()),
+            "operator {name}"
+        );
+    }
+    // A Dice expression under an Int declaration mismatches the final kind.
+    let error = ModifierPipeline::new(
+        vec![def(fx.stats[0], StatKind::Int, Some(dice()))],
+        policies(&[(common::TYPE_A, StackingPolicy::StackAll)]),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RulesErrorCode::TypeMismatch);
 }

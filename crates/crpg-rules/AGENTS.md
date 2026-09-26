@@ -1,19 +1,24 @@
 # crpg-rules — agent contract
 
-Read the root rules and [T014](../../tasks/T014.md), the binding kernel API
-and acceptance contract. Architecture: [crpg-rules](../../docs/architecture/crpg-rules.md).
-This document describes the T014 stat/modifier kernel; results live in T014.
+Read the root rules and [T014](../../tasks/T014.md) plus [T015](../../tasks/T015.md),
+the binding kernel API and acceptance contracts. Architecture:
+[crpg-rules](../../docs/architecture/crpg-rules.md). This document describes
+the T014 stat/modifier kernel and the T015 dice/outcome/resolution surface;
+results live in T014 and T015 respectively.
 
 ## Public surface
 
-Public modules `stats`, `modifier`, `derived`, `hooks`, and `error`
-re-export their public items at the root. T014 lists every required type,
-field, variant, function signature, and limit constant. Operations are
-`StatBlock::{new, insert, get, remove, iter, len, is_empty, to_serializable,
-from_serializable}`, `ModifierPipeline::{new, query}`, and the pure
-`HookHandler` call convention. Do not extend the surface: no new trait, no
-mutable query cache, no subtract-to-undo method, no handler registry or
-dispatcher, no production JSON writer, no second public abstraction.
+Public modules `stats`, `modifier`, `derived`, `hooks`, `error`, plus the
+T015 modules `dice`, `resolution`, and `resource`, re-export their public
+items at the root. T014 lists the stat/modifier kernel shapes; T015 lists
+every additional required type, field, variant, function signature, and
+limit constant. Operations added by T015 are `DiceExpr::{new, evaluate}`,
+`ModifierPipeline::query_numeric`, `OutcomeTable::{new, evaluate}`,
+`resolve`, and `ResourcePool::{new, spend, refresh, can_afford}`, plus the
+`StatValue::Dice`/`StatKind::Dice` typing and the four resolution hook
+variants. No new trait except implementations of standard/existing traits;
+no handler registry or dispatcher, no production JSON writer, no second
+public abstraction.
 
 ## Mutation and query rules
 
@@ -43,7 +48,16 @@ dispatcher, no production JSON writer, no second public abstraction.
 - Persistence converts through the caller's issuing `Interners` only.
   `from_serializable` validates everything before interning anything, interns
   in canonical lexical order, and leaves the interner unchanged on error.
-  Never serialize numeric handles; never add serde to core handle types.
+  Dice values persist as canonical notation strings and are parsed during
+  preflight, before any interning. Never serialize numeric handles; never
+  add serde to core handle types.
+- Querying a dice-valued stat returns the expression, never a random result.
+  Randomness is consumed only by `DiceExpr::evaluate` and `resolve`, which
+  draw from caller-selected named streams on the caller's `DeterministicRng`.
+  Failed calls leave the complete RNG unchanged, including created streams:
+  `resolve` draws on a staged clone and commits only after complete success.
+  Successful no-roll resolution mutates no RNG state. Resource pools own no
+  timeline and subscribe to no hooks; the host delivers each refresh event.
 
 ## Determinism traps
 
@@ -67,17 +81,30 @@ dispatcher, no production JSON writer, no second public abstraction.
   literal (`entries[0].0` trips `no-float`): destructure instead
   (`let (first, _) = entries[0];`).
 - Test stat/type names stay neutral: no attribute, armour, health, class,
-  level, or die assumptions in production or tests. Dice and roll/DC hooks
-  are T015; do not anticipate them here.
+  level, or die assumptions in production or tests. Configure face values
+  and outcome labels in data; production holds no game-system branches.
+- Dice selection ranks equal values by earlier original index first, for
+  both keep and drop modes; trace order always stays draw order.
+- The literal-exclusion gate forbids one specific die-size notation string
+  anywhere under `crates/crpg-rules`, including comments and fixtures: never
+  write the banned two-letter die prefix directly followed by that size, and
+  never build it by adjacency (a size with that prefix, a prefixed wildcard,
+  or a split literal that reassembles it). Construct that size numerically
+  (`DiceExpr::new` with an integer) and build its notation at runtime with
+  `format!` when a string is needed. Size coverage must still include it.
+- Distribution tests stay integer-only: fixed seeds, fixed streams, exact
+  face-count bounds. No floating statistics and no runtime entropy.
 
 ## Limits
 
 `MAX_STATS` 1024, `MAX_TAGS` 1024, `MAX_ENUM_VARIANTS` 1024, `MAX_POLICIES`
 1024, `MAX_MODIFIERS` 4096, `MAX_EXPR_NODES` 4096, `MAX_TOTAL_EXPR_NODES`
 65536, `MAX_EXPR_DEPTH` 32, `MAX_DERIVED_DEPTH` 128, `MAX_CONDITION_NODES`
-256, `MAX_CONDITION_DEPTH` 32. These are bounded-kernel contracts, not
-gameplay constants. Every limit needs its largest-valid and first-over-limit
-test somewhere in the suites; binary-expression parity puts the node cap
+256, `MAX_CONDITION_DEPTH` 32, plus the T015 bounds `MAX_DICE_INPUT_BYTES`
+128, `MAX_DICE_COUNT` 1024, `MAX_DIE_SIDES` 1_000_000 (`u32`), `MAX_OUTCOME_BANDS`
+256, `MAX_NATURAL_RULES` 256, `MAX_RNG_STREAM_BYTES` 256. These are
+bounded-kernel contracts, not gameplay constants. Every limit needs its
+largest-valid and first-over-limit test somewhere in the suites; binary-expression parity puts the node cap
 boundaries at 4095/4097.
 
 ## Scope and dependencies
@@ -95,9 +122,19 @@ second crate.
 ## Definition of done for any change
 
 Focused suites plus doctests and the full gate list from T014, on native
-Windows/MSVC and genuine Linux/GNU with the pinned toolchain:
+Windows/MSVC and genuine Linux/GNU with the pinned toolchain. T015 adds the
+`dice`, `dice_properties`, `resolution`, and `resources` suites and the
+task's literal-exclusion ripgrep gate over `crates/crpg-rules` (exact
+invocation in T015; exit 1 means the banned notation string is absent and
+exit 2 is an error). Do not quote that notation string in any file under
+`crates/crpg-rules`, including this one; run the invocation from the task
+file verbatim in the shell instead:
 
 ```
+cargo test -p crpg-rules --test dice --locked
+cargo test -p crpg-rules --test dice_properties --locked
+cargo test -p crpg-rules --test resolution --locked
+cargo test -p crpg-rules --test resources --locked
 cargo test -p crpg-rules --test stats --locked
 cargo test -p crpg-rules --test modifier_table --locked
 cargo test -p crpg-rules --test modifier_properties --locked
@@ -117,6 +154,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo deny check
 git diff --check
+(run the literal-exclusion invocation from T015 verbatim in the shell)
 ```
 
 Any `proptest-regressions/` file a failure produces is committed, not
@@ -127,3 +165,4 @@ without maintainer instruction.
 
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 crate opening · Created this contract before source implementation so the first agent edit lands under the §15.6 rule, pinning the T014 surface, ordering, determinism, and gate obligations.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 implementation alignment · Recorded the tuple-index lint trap found while gating the table suite; no surface or ordering change.
+- 2026-09-26 (UTC) · opencode/muse-spark + T015 crate opening · Extended the surface, randomness/pool rules, determinism traps (selection tie order, literal exclusion, integer-only distribution coverage), new limits, and new gates before source implementation; T014 ordering and ownership semantics preserved.
