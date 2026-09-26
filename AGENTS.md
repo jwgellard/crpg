@@ -100,12 +100,16 @@ python -m unittest discover -s tools/lint -p "test_*.py"
   both native gates green, reviewed with a stale-index test fix; T013
   scaffolding/introspection CLI (`crpg-cli`: `new`/`schema`/`explain`/`fmt`/
   `lock`/`run`) is merged on `master` (PR #9, `9a6304f`) with both native
-  gates green, plus a line-ending follow-up pinning the trial inputs to LF;
-  T014 rules kernel is next.
-  See the [completion record](tasks/T009c.md),
-  [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
-  [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
-  [T013a](tasks/T013a.md) and [T013](tasks/T013.md).
+   gates green, plus a line-ending follow-up pinning the trial inputs to LF;
+   T014 stat/modifier kernel (`crpg-rules`: typed stats, stacking pipeline,
+   derived validation, symbolic persistence, kernel hooks) is merged on
+   `master` (PR #11, `18145d4`) with both native gates green, plus a
+   test-only review follow-up closing boundary/reversal gaps; T015
+   dice/resolution is next.
+   See the [completion record](tasks/T009c.md),
+   [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
+   [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
+   [T013a](tasks/T013a.md), [T013](tasks/T013.md) and [T014](tasks/T014.md).
 
 ## Agent log
 
@@ -121,3 +125,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-18 (UTC) · opencode/muse-spark + T012b/T013a doc-status catch-up · Updated the note past the stale T012b-next pointer to the merged T012b/S001 state with T013a on branch verified and T013 next.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Updated the note to the merged T013a data-owned introspection prerequisite (PR #7, `e84b13e`) with T013 CLI next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Updated the note to the merged T013 scaffolding/introspection CLI (PR #9, `9a6304f`) with T014 rules kernel next.
+- 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Updated the note to the merged T014 stat/modifier kernel (PR #11, `18145d4`) with T015 dice/resolution next.

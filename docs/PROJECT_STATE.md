@@ -3,19 +3,20 @@
 Updated: 2026-09-26
 
 ## Phase
-Phase 2 — campaign data format (T010/T011/T012a/T012b/T013a/T013 landed; T014 next).
+Phase 3 — rules kernel (T014 landed; T015 next).
 
 ## Branch state
-All merged work is on `master` through `9a6304f`. T010's campaign
+All merged work is on `master` through `18145d4`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
 T011b's thin `crpgc validate` wrapper, T012a's data-half migration
 framework (plus the T012/T012b Stage-2 specs), T012b's thin `crpgc migrate`
 wrapper (PR #5), S001's public-repo hardening (guard/trusted-lint jobs,
 `build.rs` ban, `gitleaks` scan, runner rule, `yanked = "deny"`,
 branch-protection ruleset, PRs #2/#4/#6), T013a's data-owned
-introspection prerequisite (PR #7), and T013's scaffolding/introspection
-CLI (PR #9) are merged. The Done history below is
-merged work only. T014 rules kernel is next.
+introspection prerequisite (PR #7), T013's scaffolding/introspection
+CLI (PR #9), and T014's stat/modifier kernel (PR #11) are merged. The Done
+history below is
+merged work only. T015 dice/resolution is next.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -287,6 +288,16 @@ merged work only. T014 rules kernel is next.
   with all 9 PR checks passing, plus a line-ending follow-up pinning the
   trial inputs to LF via a local `.gitattributes` after PR Windows CI
   caught an autocrlf conversion. Unblocks the rules-kernel T014.
+- T014 stat/modifier kernel in `crpg-rules` (merged `18145d4`,
+  PR #11, 2026-09-26): typed stats (Int/Fixed/Bool/Enum/Tags),
+  data-selected stacking policies, always-present breakdowns, derived-stat
+  validation with canonical cycle paths, saturating/floor arithmetic,
+  symbolic string persistence, and five kernel lifecycle hooks; a 122-row
+  modifier table, three 1024-case properties plus a deterministic reversal
+  companion, boundary tests for every limit, and cross-namespace round
+  trips; dual-native green with all 9 PR checks passing, plus a review
+  follow-up closing the enum/tag-literal/capacity boundary and
+  reversal-occurrence gaps test-only. Unblocks T015 dice and resolution.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -317,9 +328,10 @@ merged work only. T014 rules kernel is next.
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T014 rules kernel in `crpg-rules`: stats and the modifier pipeline, plus
-  kernel hook event types per ADR-0008. First real code in that crate, so
-  its architecture doc and `AGENTS.md` are due with it.
+- T015 dice, outcome tables, and resolution in `crpg-rules` (staged out of
+  T014 per its contract): dice-valued stats and `DiceExpr`, roll/DC
+  modifier targets, and `BeforeRoll`/`AfterRoll`/`BeforeDamage`/
+  `AfterDamage` hooks.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -360,7 +372,8 @@ merged work only. T014 rules kernel is next.
     T012a's data-half migration framework, T012b's `crpgc migrate` wrapper
     (PR #5), S001 hardening (PRs #2/#4/#6), T013a data-owned
     introspection (PR #7), and T013 scaffolding/introspection CLI (PR #9)
-    are merged on `master` through `9a6304f`.
+    are merged on `master` through `9a6304f`; T014's stat/modifier kernel
+    (PR #11) is merged on `master` through `18145d4`.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -494,3 +507,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-18 (UTC) · opencode/muse-spark + T012b merged/T013a on-branch catch-up · Recorded the T012b `crpgc migrate` merge (`382cd4c`, PR #5) and the Task/s001 merge (`289e7db`, PR #6) in branch state, Done history, Phase and Next; T013a noted as implemented and dual-native verified on `docs/S001-merged-bookkeeping`, awaiting landing.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Recorded the T013a data-owned introspection merge (`e84b13e`, PR #7, all 9 checks green) in branch state, Done history, Phase, Next, and verification history; T013 CLI is next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Recorded the T013 scaffolding/introspection CLI merge (`9a6304f`, PR #9, all 9 checks green after a trial-input line-ending fix) in branch state, Done history, Phase, Next, and verification history; T014 rules kernel is next.
+- 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Recorded the T014 stat/modifier kernel merge (`18145d4`, PR #11, all 9 checks green after a test-only review follow-up) in branch state, Done history, Phase, Next, and verification history; T015 dice/resolution is next.
