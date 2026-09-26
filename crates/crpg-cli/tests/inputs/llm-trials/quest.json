@@ -1,0 +1,1 @@
+{"entry":"00000000000000000000000026","id":"00000000000000000000000025","name":"llm.quest.name","schema":"crpg.quest/1","slug":"llm-quest","states":[{"id":"00000000000000000000000026","name":"llm.quest.state.done","on_enter":[],"terminal":true,"transitions":[]}]}

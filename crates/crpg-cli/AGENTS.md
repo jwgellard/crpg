@@ -5,8 +5,10 @@ subcommand, the provisional reference-intents apply, and the exit-code
 contract — plus the T011b `validate` thin wrapper, its read-only traversal
 ownership, and its gate-8 fixture gate — plus the T012b `migrate`
 explicit-save wrapper, its preflight/rewrite boundary, and its data-golden
-gate. Later subcommands (`pack`, `run`, `diff` and the T013
-argument-parsing decision) extend this file with their tasks.
+gate — plus the six T013 thin wrappers (`new`, `schema`, `explain`, `fmt`,
+`lock`, `run`), their retained hand-rolled per-command parser decision, and
+their black-box plus literal-LLM-trial acceptance. Later subcommands
+(`pack`, `diff`) extend this file with their tasks.
 
 ## Purpose
 
@@ -43,8 +45,9 @@ CLI may call them in new combinations, never reimplement their semantics.
    testkit (ADR-0012). This line exists so `crpgc replay --write` cannot
    become an accidental bless-by-command.
 3. **Exit codes never mean different things.** `0` verified, `1` replay
-   domain failure, `2` usage. They follow clap's convention so the T013
-   parser swap stays script-compatible; a new subcommand inherits the same
+   domain failure, `2` usage. They follow the established 0/1/2 convention
+   (originally clap-compatible); T013 retained the hand-rolled per-command
+   parsers with no library swap, so a new subcommand inherits the same
    three buckets.
 4. **The reference apply is provisional and caller-owned.** Testkit owns no
    payload vocabulary (invariant 8), so the payloads mean what this crate
@@ -71,10 +74,13 @@ CLI may call them in new combinations, never reimplement their semantics.
 
 `crpg-testkit` (path), `crpg-sim` (path), `crpg-core` (path), `serde_json`
 (workspace), plus `crpg-data` (path, T011b thin edge for `validate_files`,
-the path classifier, error conversion, and the canonical writer). The ALLOWED
+the path classifier, error conversion, and the canonical writer), and
+`same-file` (T013 review hardening for cross-platform mutating-command file
+identity). The ALLOWED
 table grants this crate everything except `crpg-godot`, so additions beyond
 these are legal but still need the usual task-file justification — especially
-any parser crate, which is exactly what T013 must decide. Do not add a
+any parser crate, which T013 decided against by retaining hand-rolled
+per-command parsers with no new dependency. Do not add a
 dependency to work around a lower-crate API gap.
 
 ## Validate contract (T011b)
@@ -135,7 +141,8 @@ dependency to work around a lower-crate API gap.
    `crpg-data` path edge (thin data direction), `serde_json`, and the path
    crates only. The engine version type is inferred from `validate_files`,
    so no semver edge exists. No parser, walker, error, snapshot, or
-   tempfile crate — T013 still owns the parser-framework decision.
+   tempfile crate — T013 retained hand-rolled parsing crate-wide with no
+   library.
 
 ## Migrate contract (T012b)
 
@@ -180,14 +187,137 @@ dependency to work around a lower-crate API gap.
    transaction. `check`/`open`/`write`/`sync` with stable `cannot <op>
    <logical>: <kind>` text are the only CLI-owned diagnostics; ancestor
    failures name the target logical path.
-4. **No new dependencies for migrate.** `std` plus the existing `crpg-data`
-   edge only. The engine version type is inferred from `load_campaign`, so no
-   semver edge exists. No clap, walker, tempfile, error, platform, or
-   atomic-write crate — T013 still owns the parser-framework decision.
+4. **No migrate-semantic dependencies.** The engine version type is inferred
+   from `load_campaign`, so no semver edge exists. The only post-T012b
+   exception is T013 review's maintainer-authorized `same-file` check for the
+   shared writer's cross-platform hard-link safety. No clap, walker, tempfile,
+   error, broader platform, or atomic-write crate; parsing stays hand-rolled
+   crate-wide.
 5. **No lower-crate edits.** Consume committed T012a data APIs, schemas, and
    fixtures without editing them. If the public API or fixture contract is
    insufficient, stop and report the data gap; do not patch data from this
    crate.
+
+## T013 contracts (new / schema / explain / fmt / lock / run)
+
+```
+crpgc new <type> --slug <s> --id <id> [--entry-id <id>]
+crpgc schema <type>
+crpgc explain <id> [--root <campaign-root>]
+crpgc fmt [<campaign-root>] [--check]
+crpgc lock [<campaign-root>] --catalog <catalog-path>
+crpgc run --ticks N --hash-every M [--seed S]
+```
+
+- `explain`, `fmt` and `lock` default their root to `.`. No ancestor
+  search, environment override, implicit stdin, or repository-root lookup.
+  Relative paths, including the catalog, are relative to the process
+  working directory. Existing `replay`/`validate`/`migrate` contracts stay
+  exactly as documented above.
+- The hand-rolled `args_os` parser is retained, organized into private
+  per-command parsers (`parse_new`, `parse_schema`, `parse_explain`,
+  `parse_fmt`, `parse_lock`, `parse_run`). Each named option occurs at most
+  once before or after positionals; values are separate tokens, never
+  `--key=value`. Unknown flags, duplicates, missing values, extra
+  positionals, `--`, short flags, and unlisted `--help`/`--version` forms
+  are exit 2 with exactly `crpgc: usage: <syntax>\n` for the recognized
+  command — one line for every usage error of that command, never echoing
+  input. Text arguments (type/slug/id/numbers) must be Unicode; path
+  arguments stay `OsString` until I/O validation, so a non-Unicode path
+  parses and fails later as exit-1 `io`. Parsing completes before any
+  filesystem access or output.
+- `new`: type is `creature`/`item`/`dialogue`/`quest`; `--slug`/`--id`
+  required, `--entry-id` required only for dialogue/quest and forbidden
+  otherwise, with distinct object/entry ids. Slug grammar
+  `[a-z0-9]+(?:-[a-z0-9]+)*` is checked without a regex crate; ids parse via
+  `Ulid::from_str` with no trimming (core aliases apply, all-zero is
+  valid). Exit `0` writes one canonical typed `write_document` through
+  stdout; exit `1` is a serialization failure as one data-owned line;
+  exit `2` is bad grammar, unsupported type, malformed id, equal ids, or
+  invalid slug. No clock, RNG, registry, or filesystem lookup; notes
+  absent; repeated operands repeat bytes.
+- `schema`: exactly one of the seventeen stems (`campaign`, `world`,
+  `area`, `creature`, `item`, `dialogue`, `quest`, `faction`, `graph`,
+  `placements`, `triggers`, `locale`, `variables`, `campaign-lock`,
+  `assets-lock`, `placement`, `action-signature`) mapping to
+  `<stem>.schema.json` in `generated_schemas()`. Exit `0` writes the
+  returned bytes unchanged; exit `1` is a generation failure as one
+  data-owned line; exit `2` is bad grammar or unknown stem.
+- `explain`: exactly one id plus optional `--root`. Flow is parse id ->
+  collect -> `load_campaign(files, package engine version)` once ->
+  `explain_object(&campaign, id)` once -> emit bytes, consuming the exact
+  landed T013a signature with no CLI walker, kind table, or semantic
+  prerequisite. Exit `0` writes `Some(bytes)` untouched; exit `1` is a
+  collection/load/query error as one data-owned line, or `None` as exactly
+  `crpgc explain: object not found: <canonical-uppercase-id>\n`;
+  exit `2` is bad grammar or malformed id text (malformed beats a missing
+  root; structural failure wins over absence).
+- `fmt`: zero or one root plus optional `--check`. Reuses migrate's
+  collect -> load -> serialize -> key-set check -> byte-diff plan; default
+  mode saves all differing recognized files with the T012b writer and its
+  exact preflight/no-op/recheck/error/partial-write contract (key-set
+  mismatch is `crpgc fmt: internal document set failure`). `--check` is
+  the same preflight without opening files for writing: differences are
+  exit `1` with `crpgc fmt: noncanonical: <logical>\n` per file in lexical
+  `SourcePath` order. Silent exit `0` otherwise. Semantic findings never
+  block formatting.
+- `lock`: zero or one root plus exactly one `--catalog` path (omitted
+  catalog is usage). Reads `campaign.json`, `assets/assets.lock`, and the
+  catalog in that order without following observed symlinks, requiring
+  regular files and Unicode components with the CLI I/O checks
+  (`<catalog>` is the stable logical label for the catalog). Campaign
+  decodes via `read_document` requiring `Document::Campaign` (otherwise
+  exactly `crpgc lock: expected campaign document\n`); assets via
+  `read_assets_lock`; the catalog decodes directly with
+  `serde_json::from_slice::<Vec<PackageCandidate>>`, never through
+  `Value` (syntax or typed failures are exactly
+  `crpgc lock: invalid catalog\n`). Then `make_campaign_lock` (no separate
+  resolve/digest reproduction) and `write_campaign_lock` (note is the data
+  constructor's `None`). All input/resolve/serialize work completes before
+  the output is touched. Existing regular output reuses the T012b
+  discipline with raw-byte no-op equality; missing output rechecks
+  ancestors and uses `create_new` (a concurrently appearing output is
+  `source_changed`); directories are never created, symlinks never
+  followed, non-regular outputs never replaced. Save failures use
+  `check`/`open`/`write`/`sync` on `campaign.lock` with no rollback claim.
+  `load_campaign` is never called.
+- `run`: required `--ticks N` and `--hash-every M` plus optional
+  `--seed S` defaulting to 0. Numbers are ASCII decimal digits only
+  (`0 <= N <= 1000000`, `1 <= M <= 1000000`, `S` any `u64`; leading zeroes
+  accepted; signs, whitespace, hex, separators, and overflow are usage).
+  Calls `crpg_testkit::run_hash_sequence(seed, ticks, Box::new(|_| {}))`
+  once — the empty world's no-op script — and prints samples after
+  completed ticks `M, 2M, ... <= N` as `<k> <64-lowercase-hex>\n` from
+  index `k-1`. No header, initial-state, or forced final partial sample.
+  Exit `1` is a stream failure only.
+
+## T013 invariants
+
+1. **Data owns behaviour; the CLI owns process and I/O.** No second
+   canonicalizer, version decision, reference walker, resolver, digest
+   recomputation, tick/hash loop, or semantic check may exist in
+   `crpg-cli`. Shared ownership errors convert through
+   `diagnostic_for_data_error` with unchanged `Display` lines; CLI-owned
+   I/O keeps the portable `cannot <op> <logical>: <kind>` shape with no
+   raw OS text, absolute paths, native separators, or debug dumps.
+2. **One reviewed filesystem exception.** Existing CLI edges to
+   core/data/sim/testkit and serde_json, plus std and the maintainer-authorized
+   `same-file` identity edge; semver types inferred. No clap, RNG, ULID
+   generator, walker, tempfile, schema validator, error, or hashing
+   dependency. Manifests, Cargo.lock, deny policy, and ALLOWED stay
+   unchanged.
+3. **One implementation crate.** No lower-crate source/test/doc edits,
+   testkit changes, contracts, toolchain, root manifest, workflow, lint,
+   or status-file changes. If a public API cannot support the contract,
+   stop and report the owning-crate gap; never duplicate its semantics or
+   ship a successful placeholder.
+4. **Tests are black-box first, seams second.** The five new suites drive
+   `env!("CARGO_BIN_EXE_crpgc")` over private temp copies with paths from
+   `CARGO_MANIFEST_DIR`; `main.rs` unit tests cover only parser matrices
+   and injected I/O/stream/internal failures. Existing data fixtures,
+   schemas, snapshots, and target goldens are read-only. Never bless
+   outputs, regenerate baselines, weaken tests, or runtime-skip
+   permissions, symlinks, fixtures, or goldens into success.
 
 ## Definition of done for any change
 
@@ -253,6 +383,43 @@ either is a defect, not a best-effort gap.
 - **No `--golden` defaulting into the fixture set.** The default golden is a
   sibling of the replay path, never a search through testkit's goldens. A
   CLI run must verify what it is told to verify.
+- **T013 usage is one line per command, never an echo.** New-command usage
+  failures print exactly `crpgc: usage: <syntax>\n` with the interface-block
+  line; tests assert the bytes, not a substring, so a helpful echo would
+  break the contract it claims to document.
+- **New-command text is Unicode; paths are `OsString` to the last moment.**
+  Slug/id/type/number parsing rejects non-Unicode as usage (exit 2), while
+  roots and catalogs parse and fail later as exit-1 `io`. Conflating the
+  two moves a domain failure into usage or panics on lossy conversion.
+- **Lock never calls `load_campaign`.** Absent or stale `campaign.lock` is
+  the operation's reason to exist; a whole-campaign load would turn that
+  into a prerequisite failure. Catalog decoding goes straight to
+  `Vec<PackageCandidate>` — a `Value` detour would discard the duplicate
+  keys strict decoding must reject.
+- **A supplied root may not traverse a symlinked ancestor.** The collector
+  checks lexical ancestors before touching the terminal root, matching the
+  lock path discipline. This applies to validate, migrate, explain and fmt;
+  accepting `alias/campaign` where `alias` is a symlink would make later
+  read or rewrite guarantees meaningless.
+- **Lock input and output paths must stay distinct.** After all lock preflight
+  work and before any output write, existing paths are compared by filesystem
+  identity through `same-file`;
+  `campaign.lock` aliasing `campaign.json`, `assets/assets.lock`, or the
+  catalog, including through a hard link, is `source_changed` with no
+  mutation. Do not replace this with textual or canonical-path equality.
+- **Campaign rewrites must not alias another campaign-tree file.** Collection
+  keeps every observed regular path, including ignored files, and migrate/fmt
+  save compares each differing target by filesystem identity before the first
+  write. A hard link to ignored content or another document is
+  `source_changed`; fmt check remains read-only and does not need this
+  write-safety preflight.
+- **The trial responses are fixtures, not oracles.** Both
+  `tests/inputs/llm-trials/` and `tests/inputs/llm-trials-r2/` hold preserved
+  accepted LLM bytes. The rerun test first compares each file to an
+  independently transcribed byte constant, then installs it in a private
+  fixture copy with the locale-key adapter and requires `validate --json` to
+  return `[]\n`. Editing a response to "fix" validation is blessing, not
+  acceptance.
 
 ## Agent log
 
@@ -271,3 +438,14 @@ either is a defect, not a best-effort gap.
   `RewriteFs` writer/error seams with bounded partial-write limits, the
   black-box golden plus seam test rules, and the no-lower-crate-edit rule
   while retaining every replay/validate invariant.
+- 2026-09-19 (UTC) · opencode/muse-spark + T013 implementation · Extended
+  the contract with the six T013 command grammars, the retained hand-rolled
+  per-command parser and exit rules, the exact data/harness API usage with
+  ownership traps, the `create_new` lock seam, the five-suite plus
+  literal-trial acceptance rules, and the dependency stop rule while
+  retaining every replay/validate/migrate invariant.
+- 2026-09-19 (UTC) · opencode/muse-spark + T013 review remediation (R7) · Aligned stale parser-swap/decision wording with the landed T013 choice: retained hand-rolled `args_os` per-command parsers, the established 0/1/2 convention with no future swap, and no parser-crate dependency.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 independent review hardening · Recorded root-ancestor rejection, normalized lock input/output alias protection, the stable-std hard-link limitation, and byte-pinned dual-set LLM reruns after adversarial review exposed those missing assumptions.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 hard-link authorization · Added the maintainer-authorized `same-file` exception so lock rejects hard-link aliases of every input cross-platform instead of accepting the stable-std limitation identified by review.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 fmt alias hardening · Extended the authorized filesystem-identity check to fmt's complete collected regular-file set, preventing a recognized rewrite target from mutating ignored hard-linked content.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 shared-writer alias hardening · Applied the same complete regular-file identity preflight to migrate, preserving its existing ignored-file guarantee through hard-link aliases as well as ordinary paths.

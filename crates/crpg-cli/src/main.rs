@@ -1,12 +1,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 //! `crpgc` — the campaign toolchain CLI: validate, migrate, replay, and the
-//! later pack, run and diff subcommands. No Godot, no rendering. T009b
-//! shipped the `replay` subcommand; T011b adds the thin `validate` wrapper
-//! over `crpg-data` validation; T012b adds the thin `migrate` explicit-save
-//! wrapper over T012a migration-aware loading and the canonical writer.
-//! T013 still owns the parser-framework decision, so all subcommands extend
-//! the same hand-rolled `args_os` parser.
+//! T013 scaffolding/introspection commands (`new`, `schema`, `explain`,
+//! `fmt`, `lock`, `run`). No Godot, no rendering. T009b shipped the `replay`
+//! subcommand; T011b adds the thin `validate` wrapper over `crpg-data`
+//! validation; T012b adds the thin `migrate` explicit-save wrapper over T012a
+//! migration-aware loading and the canonical writer. T013 retains and
+//! organizes the hand-rolled `args_os` parser into private per-command
+//! parsers; no parser library is authorized.
 
 mod apply;
 
@@ -18,6 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crpg_core::Ulid;
 use crpg_data::{Diagnostic, DiagnosticCode, Severity, SourcePath};
 use crpg_testkit::ReplayError;
 
@@ -33,9 +35,41 @@ const VALIDATE_USAGE: &str = "crpgc validate <campaign-root> [--json]";
 /// contract in `tasks/T012b.md`. Exactly one root, no flags.
 const MIGRATE_USAGE: &str = "crpgc migrate <campaign-root>";
 
+/// Usage lines for the six T013 commands, kept in sync with the interface
+/// block in `tasks/T013.md`. Every usage error for a recognized new command
+/// prints exactly `crpgc: usage: <syntax>\n` with its line below, never
+/// echoing arbitrary input.
+const NEW_USAGE: &str = "crpgc new <type> --slug <s> --id <id> [--entry-id <id>]";
+const SCHEMA_USAGE: &str = "crpgc schema <type>";
+const EXPLAIN_USAGE: &str = "crpgc explain <id> [--root <campaign-root>]";
+const FMT_USAGE: &str = "crpgc fmt [<campaign-root>] [--check]";
+const LOCK_USAGE: &str = "crpgc lock [<campaign-root>] --catalog <catalog-path>";
+const RUN_USAGE: &str = "crpgc run --ticks N --hash-every M [--seed S]";
+
 /// Exact stderr bytes when the compile-time engine version does not parse as
 /// semver for `migrate`. A release-process bug, never user input.
 const MIGRATE_ENGINE_FAILURE: &str = "crpgc migrate: internal engine version failure\n";
+
+/// Exact stderr bytes when the compile-time engine version does not parse as
+/// semver for `explain`. A release-process bug, never user input.
+const EXPLAIN_ENGINE_FAILURE: &str = "crpgc explain: internal engine version failure\n";
+
+/// Exact stderr bytes when the compile-time engine version does not parse as
+/// semver for `fmt`. A release-process bug, never user input.
+const FMT_ENGINE_FAILURE: &str = "crpgc fmt: internal engine version failure\n";
+
+/// Exact stderr bytes when the data writer returns a different document set
+/// than was collected for `fmt`. An implementation defect, never user input;
+/// reported before any write starts.
+const FMT_DOCUMENT_SET_FAILURE: &str = "crpgc fmt: internal document set failure\n";
+
+/// Exact stderr bytes when the campaign document is not a campaign for
+/// `lock`. A domain failure, exit 1.
+const LOCK_EXPECTED_CAMPAIGN: &str = "crpgc lock: expected campaign document\n";
+
+/// Exact stderr bytes when the catalog is not a JSON array of wire
+/// `PackageCandidate` objects for `lock`. No serde or OS prose is leaked.
+const LOCK_INVALID_CATALOG: &str = "crpgc lock: invalid catalog\n";
 
 /// Exact stderr bytes when the data writer returns a different document set
 /// than was collected. An implementation defect, never user input; reported
@@ -51,7 +85,8 @@ const ENGINE_VERSION_FAILURE: &str = "crpgc validate: internal engine version fa
 const SERIALIZATION_FAILURE: &str = "crpgc validate: internal serialization failure\n";
 
 /// Parsed command line. One variant per subcommand; T009b owns `Replay`,
-/// T011b owns `Validate`, T012b owns `Migrate`.
+/// T011b owns `Validate`, T012b owns `Migrate`, T013 owns the six new
+/// variants below.
 #[derive(Debug)]
 enum Command {
     Replay {
@@ -65,6 +100,57 @@ enum Command {
     Migrate {
         root: PathBuf,
     },
+    New {
+        kind: NewKind,
+        slug: String,
+        id: Ulid,
+        entry_id: Option<Ulid>,
+    },
+    Schema {
+        stem: String,
+    },
+    Explain {
+        id: Ulid,
+        root: PathBuf,
+    },
+    Fmt {
+        root: PathBuf,
+        check: bool,
+    },
+    Lock {
+        root: PathBuf,
+        catalog: PathBuf,
+    },
+    Run {
+        ticks: usize,
+        hash_every: usize,
+        seed: u64,
+    },
+}
+
+/// Scaffold document type for `crpgc new`. Only the four Stage-2 authoring
+/// templates exist; placement and action-signature are embedded schema roots,
+/// never scaffold types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewKind {
+    Creature,
+    Item,
+    Dialogue,
+    Quest,
+}
+
+impl NewKind {
+    /// Parses the single positional type token. Anything else is a usage
+    /// error with the shared `new` usage line.
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "creature" => Some(Self::Creature),
+            "item" => Some(Self::Item),
+            "dialogue" => Some(Self::Dialogue),
+            "quest" => Some(Self::Quest),
+            _ => None,
+        }
+    }
 }
 
 /// A failure with a process exit code. Usage errors are `2` (clap's
@@ -143,6 +229,12 @@ fn parse_args(args: &[OsString]) -> Result<Command, CliError> {
         Some("replay") => parse_replay(&args[1..]),
         Some("validate") => parse_validate(&args[1..]),
         Some("migrate") => parse_migrate(&args[1..]),
+        Some("new") => parse_new(&args[1..]),
+        Some("schema") => parse_schema(&args[1..]),
+        Some("explain") => parse_explain(&args[1..]),
+        Some("fmt") => parse_fmt(&args[1..]),
+        Some("lock") => parse_lock(&args[1..]),
+        Some("run") => parse_run(&args[1..]),
         Some(other) => Err(CliError::Usage(format!("unknown subcommand '{other}'"))),
         None => Err(CliError::Usage(format!(
             "unknown subcommand '{}'",
@@ -273,6 +365,370 @@ fn parse_migrate(args: &[OsString]) -> Result<Command, CliError> {
     })
 }
 
+/// Builds the single shared usage error for a recognized T013 command. Every
+/// usage failure for that command — bad grammar, duplicate or unknown flags,
+/// missing values, extra positionals, `--`, short flags, unlisted
+/// `--help`/`--version`, bad ids/slugs/numbers, unknown types/stems, equal
+/// object/entry ids — reports exactly `crpgc: usage: <syntax>\n` with exit 2
+/// and never echoes arbitrary input.
+fn new_usage(usage: &str) -> CliError {
+    CliError::Usage(format!("usage: {usage}"))
+}
+
+/// Takes the value token following a named option. A missing token is a usage
+/// error. A Unicode value starting with `-` is also a usage error, so
+/// flag-shaped tokens (`--help`, `--version`, `--`, short flags, duplicate
+/// options) never reach I/O as option values; paths starting with `-` must
+/// be spelled with a relative prefix such as `./` (which starts with `.`,
+/// not `-`). Non-Unicode values are preserved for subsequent exit-1 I/O
+/// validation. Replay/validate/migrate grammars do not use this helper.
+fn take_option_value<'a>(
+    iter: &mut std::slice::Iter<'a, OsString>,
+    usage: &str,
+) -> Result<&'a OsString, CliError> {
+    let next = iter.as_slice().first().ok_or_else(|| new_usage(usage))?;
+    if let Some(text) = next.to_str() {
+        if text.starts_with('-') {
+            return Err(new_usage(usage));
+        }
+    }
+    iter.next().ok_or_else(|| new_usage(usage))
+}
+
+/// Reads a Unicode text value for a named option. Non-Unicode text is a usage
+/// error: text arguments (command/type/slug/id/numbers) must be Unicode,
+/// while path arguments stay `OsString` until I/O validation.
+fn option_text(value: &OsString, usage: &str) -> Result<String, CliError> {
+    value
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| new_usage(usage))
+}
+
+/// Checks the caller-supplied slug grammar `[a-z0-9]+(?:-[a-z0-9]+)*`
+/// without a regex dependency: lowercase ASCII alphanumerics in hyphen
+/// separated non-empty parts, with no leading, trailing, or doubled hyphen.
+fn is_valid_slug(text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    for part in text.split('-') {
+        if part.is_empty() {
+            return false;
+        }
+        if !part
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Parses the `new` subcommand: exactly one positional scaffold type plus
+/// required `--slug`/`--id` and the dialogue/quest-only `--entry-id`. Each
+/// named option occurs at most once and may appear before or after the
+/// positional; values are separate tokens. Malformed ids, invalid slugs,
+/// unsupported types, and equal object/entry ids are all usage exit 2 with
+/// the shared usage line. No clock, RNG, registry, or filesystem lookup.
+fn parse_new(args: &[OsString]) -> Result<Command, CliError> {
+    let mut type_text: Option<String> = None;
+    let mut slug: Option<String> = None;
+    let mut id_text: Option<String> = None;
+    let mut entry_text: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match flag_text(arg) {
+            Some("--slug") => {
+                if slug.is_some() {
+                    return Err(new_usage(NEW_USAGE));
+                }
+                let value = take_option_value(&mut iter, NEW_USAGE)?;
+                slug = Some(option_text(value, NEW_USAGE)?);
+            }
+            Some("--id") => {
+                if id_text.is_some() {
+                    return Err(new_usage(NEW_USAGE));
+                }
+                let value = take_option_value(&mut iter, NEW_USAGE)?;
+                id_text = Some(option_text(value, NEW_USAGE)?);
+            }
+            Some("--entry-id") => {
+                if entry_text.is_some() {
+                    return Err(new_usage(NEW_USAGE));
+                }
+                let value = take_option_value(&mut iter, NEW_USAGE)?;
+                entry_text = Some(option_text(value, NEW_USAGE)?);
+            }
+            Some(_) => {
+                return Err(new_usage(NEW_USAGE));
+            }
+            None => {
+                let text = arg.to_str().ok_or_else(|| new_usage(NEW_USAGE))?;
+                if type_text.is_some() {
+                    return Err(new_usage(NEW_USAGE));
+                }
+                type_text = Some(text.to_owned());
+            }
+        }
+    }
+    let type_text = type_text.ok_or_else(|| new_usage(NEW_USAGE))?;
+    let slug = slug.ok_or_else(|| new_usage(NEW_USAGE))?;
+    let id_text = id_text.ok_or_else(|| new_usage(NEW_USAGE))?;
+    let kind = NewKind::parse(&type_text).ok_or_else(|| new_usage(NEW_USAGE))?;
+    if !is_valid_slug(&slug) {
+        return Err(new_usage(NEW_USAGE));
+    }
+    let id: Ulid = id_text.parse().map_err(|_| new_usage(NEW_USAGE))?;
+    let entry_id: Option<Ulid> = match entry_text {
+        Some(text) => Some(text.parse().map_err(|_| new_usage(NEW_USAGE))?),
+        None => None,
+    };
+    match (kind, entry_id) {
+        (NewKind::Dialogue | NewKind::Quest, None) => return Err(new_usage(NEW_USAGE)),
+        (NewKind::Creature | NewKind::Item, Some(_)) => return Err(new_usage(NEW_USAGE)),
+        _ => {}
+    }
+    if let Some(entry) = entry_id {
+        if entry == id {
+            return Err(new_usage(NEW_USAGE));
+        }
+    }
+    Ok(Command::New {
+        kind,
+        slug,
+        id,
+        entry_id,
+    })
+}
+
+/// The seventeen current schema stems for `crpgc schema`. They map to
+/// `<stem>.schema.json` in `generated_schemas()`; the last two are embedded
+/// schema roots, not scaffold types.
+fn is_schema_stem(text: &str) -> bool {
+    matches!(
+        text,
+        "campaign"
+            | "world"
+            | "area"
+            | "creature"
+            | "item"
+            | "dialogue"
+            | "quest"
+            | "faction"
+            | "graph"
+            | "placements"
+            | "triggers"
+            | "locale"
+            | "variables"
+            | "campaign-lock"
+            | "assets-lock"
+            | "placement"
+            | "action-signature"
+    )
+}
+
+/// Parses the `schema` subcommand: exactly one current schema stem and no
+/// flags. Bad grammar and unknown stems are usage exit 2.
+fn parse_schema(args: &[OsString]) -> Result<Command, CliError> {
+    let mut stem: Option<String> = None;
+    for arg in args {
+        match flag_text(arg) {
+            Some(_) => {
+                return Err(new_usage(SCHEMA_USAGE));
+            }
+            None => {
+                let text = arg.to_str().ok_or_else(|| new_usage(SCHEMA_USAGE))?;
+                if stem.is_some() {
+                    return Err(new_usage(SCHEMA_USAGE));
+                }
+                stem = Some(text.to_owned());
+            }
+        }
+    }
+    let stem = stem.ok_or_else(|| new_usage(SCHEMA_USAGE))?;
+    if !is_schema_stem(&stem) {
+        return Err(new_usage(SCHEMA_USAGE));
+    }
+    Ok(Command::Schema { stem })
+}
+
+/// Parses the `explain` subcommand: exactly one id plus an optional `--root`
+/// path defaulting to `.`. The id is text and must be Unicode; the root stays
+/// `OsString` until I/O validation, so a non-Unicode root parses here and
+/// fails later as exit-1 `io`. Malformed id text is usage exit 2 and wins
+/// before any filesystem access.
+fn parse_explain(args: &[OsString]) -> Result<Command, CliError> {
+    let mut id_text: Option<String> = None;
+    let mut root: Option<&OsString> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match flag_text(arg) {
+            Some("--root") => {
+                if root.is_some() {
+                    return Err(new_usage(EXPLAIN_USAGE));
+                }
+                let value = take_option_value(&mut iter, EXPLAIN_USAGE)?;
+                root = Some(value);
+            }
+            Some(_) => {
+                return Err(new_usage(EXPLAIN_USAGE));
+            }
+            None => {
+                let text = arg.to_str().ok_or_else(|| new_usage(EXPLAIN_USAGE))?;
+                if id_text.is_some() {
+                    return Err(new_usage(EXPLAIN_USAGE));
+                }
+                id_text = Some(text.to_owned());
+            }
+        }
+    }
+    let id_text = id_text.ok_or_else(|| new_usage(EXPLAIN_USAGE))?;
+    let id: Ulid = id_text.parse().map_err(|_| new_usage(EXPLAIN_USAGE))?;
+    Ok(Command::Explain {
+        id,
+        root: root.map_or_else(|| PathBuf::from("."), PathBuf::from),
+    })
+}
+
+/// Parses the `fmt` subcommand: zero or one root defaulting to `.` plus an
+/// optional `--check` that may appear before or after the root. Duplicates,
+/// unknown flags, and extra positionals are usage exit 2. A non-Unicode root
+/// parses here and fails later as exit-1 `io`.
+fn parse_fmt(args: &[OsString]) -> Result<Command, CliError> {
+    let mut root: Option<&OsString> = None;
+    let mut check = false;
+    for arg in args {
+        match flag_text(arg) {
+            Some("--check") => {
+                if check {
+                    return Err(new_usage(FMT_USAGE));
+                }
+                check = true;
+            }
+            Some(_) => {
+                return Err(new_usage(FMT_USAGE));
+            }
+            None => {
+                if root.is_some() {
+                    return Err(new_usage(FMT_USAGE));
+                }
+                root = Some(arg);
+            }
+        }
+    }
+    Ok(Command::Fmt {
+        root: root.map_or_else(|| PathBuf::from("."), PathBuf::from),
+        check,
+    })
+}
+
+/// Parses the `lock` subcommand: zero or one root defaulting to `.` plus
+/// exactly one `--catalog` path. The catalog is required; omitting it is
+/// usage exit 2. Both paths stay `OsString` until I/O validation, so
+/// non-Unicode paths parse here and fail later as exit-1 `io`.
+fn parse_lock(args: &[OsString]) -> Result<Command, CliError> {
+    let mut root: Option<&OsString> = None;
+    let mut catalog: Option<&OsString> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match flag_text(arg) {
+            Some("--catalog") => {
+                if catalog.is_some() {
+                    return Err(new_usage(LOCK_USAGE));
+                }
+                let value = take_option_value(&mut iter, LOCK_USAGE)?;
+                catalog = Some(value);
+            }
+            Some(_) => {
+                return Err(new_usage(LOCK_USAGE));
+            }
+            None => {
+                if root.is_some() {
+                    return Err(new_usage(LOCK_USAGE));
+                }
+                root = Some(arg);
+            }
+        }
+    }
+    let catalog = catalog.ok_or_else(|| new_usage(LOCK_USAGE))?;
+    Ok(Command::Lock {
+        root: root.map_or_else(|| PathBuf::from("."), PathBuf::from),
+        catalog: PathBuf::from(catalog),
+    })
+}
+
+/// CLI resource limits for `run`, not changes to the harness: `0 <= N <=
+/// 1_000_000` ticks and `1 <= M <= 1_000_000` for the sampling interval.
+const RUN_MAX_TICKS: u64 = 1_000_000;
+
+/// Parses an ASCII-decimal `run` number: non-empty ASCII digits only, with
+/// leading zeroes accepted. Signs, whitespace, hex, separators, and overflow
+/// are usage errors. The digit check runs before integer parsing so `+1`,
+/// ` 1`, `0x1`, and `1_0` never reach the integer parser.
+fn parse_run_number(text: &str) -> Result<u64, ()> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(());
+    }
+    text.parse::<u64>().map_err(|_| ())
+}
+
+/// Parses the `run` subcommand: required `--ticks N` and `--hash-every M`
+/// plus optional `--seed S` defaulting to 0, each at most once and with
+/// separate-token values. No positionals. Invalid grammar or numeric range
+/// is usage exit 2 before the harness runs.
+fn parse_run(args: &[OsString]) -> Result<Command, CliError> {
+    let mut ticks: Option<u64> = None;
+    let mut hash_every: Option<u64> = None;
+    let mut seed: Option<u64> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match flag_text(arg) {
+            Some("--ticks") => {
+                if ticks.is_some() {
+                    return Err(new_usage(RUN_USAGE));
+                }
+                let value = take_option_value(&mut iter, RUN_USAGE)?;
+                let text = option_text(value, RUN_USAGE)?;
+                ticks = Some(parse_run_number(&text).map_err(|_| new_usage(RUN_USAGE))?);
+            }
+            Some("--hash-every") => {
+                if hash_every.is_some() {
+                    return Err(new_usage(RUN_USAGE));
+                }
+                let value = take_option_value(&mut iter, RUN_USAGE)?;
+                let text = option_text(value, RUN_USAGE)?;
+                hash_every = Some(parse_run_number(&text).map_err(|_| new_usage(RUN_USAGE))?);
+            }
+            Some("--seed") => {
+                if seed.is_some() {
+                    return Err(new_usage(RUN_USAGE));
+                }
+                let value = take_option_value(&mut iter, RUN_USAGE)?;
+                let text = option_text(value, RUN_USAGE)?;
+                seed = Some(parse_run_number(&text).map_err(|_| new_usage(RUN_USAGE))?);
+            }
+            Some(_) => {
+                return Err(new_usage(RUN_USAGE));
+            }
+            None => {
+                return Err(new_usage(RUN_USAGE));
+            }
+        }
+    }
+    let ticks = ticks.ok_or_else(|| new_usage(RUN_USAGE))?;
+    let hash_every = hash_every.ok_or_else(|| new_usage(RUN_USAGE))?;
+    if ticks > RUN_MAX_TICKS || hash_every == 0 || hash_every > RUN_MAX_TICKS {
+        return Err(new_usage(RUN_USAGE));
+    }
+    Ok(Command::Run {
+        ticks: ticks as usize,
+        hash_every: hash_every as usize,
+        seed: seed.unwrap_or(0),
+    })
+}
+
 /// Stable snake_case kind for `cannot <op> <logical>: <kind>` messages.
 /// Only the distinguished filesystem conditions keep their identity;
 /// everything else collapses to `io_error` so diagnostics never embed raw
@@ -374,9 +830,51 @@ trait WalkFs {
     fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>>;
 }
 
+/// Rejects a supplied campaign root whose lexical path traverses a symlink
+/// or non-directory ancestor before any operation reaches the terminal root.
+fn check_walk_root_ancestors(fs: &impl WalkFs, root: &Path) -> Result<(), Diagnostic> {
+    let mut ancestors: Vec<&Path> = root.ancestors().skip(1).collect();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        match fs.metadata(ancestor) {
+            Err(error) => {
+                return Err(io_diagnostic(
+                    "open root",
+                    None,
+                    "<campaign-root>",
+                    io_kind(&error),
+                ));
+            }
+            Ok(EntryKind::Directory) => {}
+            Ok(EntryKind::Symlink) => {
+                return Err(io_diagnostic(
+                    "open root",
+                    None,
+                    "<campaign-root>",
+                    IoKind::SymlinkAtDocumentPath,
+                ));
+            }
+            Ok(EntryKind::File) | Ok(EntryKind::Other) => {
+                return Err(io_diagnostic(
+                    "open root",
+                    None,
+                    "<campaign-root>",
+                    IoKind::NotADirectory,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Production filesystem access: `symlink_metadata` (never follows links),
 /// unordered directory names (the walker sorts), and plain file reads.
 struct RealFs;
+
+type CollectedCampaign = (BTreeMap<SourcePath, Vec<u8>>, Vec<PathBuf>);
 
 impl WalkFs for RealFs {
     fn metadata(&self, path: &Path) -> std::io::Result<EntryKind> {
@@ -413,6 +911,17 @@ fn collect_campaign_files_with(
     fs: &impl WalkFs,
     root: &Path,
 ) -> Result<BTreeMap<SourcePath, Vec<u8>>, Diagnostic> {
+    collect_campaign_files_and_paths_with(fs, root).map(|(files, _)| files)
+}
+
+/// Collector variant used by mutating commands that must also prove a
+/// rewrite target is not hard-linked to ignored content. The second result
+/// contains every observed regular file path, including ignored files;
+/// document classification and reads remain unchanged.
+fn collect_campaign_files_and_paths_with(
+    fs: &impl WalkFs,
+    root: &Path,
+) -> Result<CollectedCampaign, Diagnostic> {
     if root.to_str().is_none() {
         return Err(io_diagnostic(
             "open root",
@@ -421,6 +930,7 @@ fn collect_campaign_files_with(
             IoKind::NonUnicodeComponent,
         ));
     }
+    check_walk_root_ancestors(fs, root)?;
     match fs.metadata(root) {
         Err(error) => {
             return Err(io_diagnostic(
@@ -449,8 +959,9 @@ fn collect_campaign_files_with(
         }
     }
     let mut files = BTreeMap::new();
-    collect_into(fs, root, "", &mut files)?;
-    Ok(files)
+    let mut regular_paths = Vec::new();
+    collect_into(fs, root, "", &mut files, &mut regular_paths)?;
+    Ok((files, regular_paths))
 }
 
 /// Lists one directory, sorts its entry names by byte representation, then
@@ -463,6 +974,7 @@ fn collect_into(
     disk_dir: &Path,
     logical_dir: &str,
     files: &mut BTreeMap<SourcePath, Vec<u8>>,
+    regular_paths: &mut Vec<PathBuf>,
 ) -> Result<(), Diagnostic> {
     let mut names = fs.read_dir_names(disk_dir).map_err(|error| {
         let logical = if logical_dir.is_empty() {
@@ -495,9 +1007,9 @@ fn collect_into(
             // Directories are never classified: "ignored" never prunes a
             // directory, so an unreadable one still fails its own listing
             // even when it would have held only ignored files.
-            collect_into(fs, &disk_child, &logical, files)?;
+            collect_into(fs, &disk_child, &logical, files, regular_paths)?;
         } else {
-            collect_file_entry(fs, &disk_child, &logical, kind, files)?;
+            collect_file_entry(fs, &disk_child, &logical, kind, files, regular_paths)?;
         }
     }
     Ok(())
@@ -517,7 +1029,11 @@ fn collect_file_entry(
     logical: &str,
     kind: EntryKind,
     files: &mut BTreeMap<SourcePath, Vec<u8>>,
+    regular_paths: &mut Vec<PathBuf>,
 ) -> Result<(), Diagnostic> {
+    if kind == EntryKind::File {
+        regular_paths.push(disk_path.to_path_buf());
+    }
     let path = match crpg_data::campaign_document_path(logical) {
         Err(error) => return Err(crpg_data::diagnostic_for_data_error(&error)),
         Ok(None) => return Ok(()),
@@ -596,6 +1112,14 @@ trait RewriteFs {
     fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>>;
     /// Opens an existing file for truncation; never creates a missing file.
     fn open_truncate(&self, path: &Path) -> std::io::Result<Box<dyn RewriteHandle>>;
+    /// Creates a missing file; fails when the output already exists so a
+    /// concurrently appearing output surfaces as `source_changed`. Never
+    /// creates parent directories.
+    fn create_new(&self, path: &Path) -> std::io::Result<Box<dyn RewriteHandle>>;
+    /// Reports whether two existing path spellings normalize to the same
+    /// filesystem path. A missing path compares unequal; other failures
+    /// remain errors.
+    fn same_file(&self, left: &Path, right: &Path) -> std::io::Result<bool>;
 }
 
 impl RewriteFs for RealFs {
@@ -614,6 +1138,22 @@ impl RewriteFs for RealFs {
             .truncate(true)
             .open(path)
             .map(|file| Box::new(RealHandle(file)) as Box<dyn RewriteHandle>)
+    }
+
+    fn create_new(&self, path: &Path) -> std::io::Result<Box<dyn RewriteHandle>> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(|file| Box::new(RealHandle(file)) as Box<dyn RewriteHandle>)
+    }
+
+    fn same_file(&self, left: &Path, right: &Path) -> std::io::Result<bool> {
+        match same_file::is_same_file(left, right) {
+            Ok(equal) => Ok(equal),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -906,8 +1446,8 @@ fn run_migrate_with<W: WalkFs, R: RewriteFs>(
     root: &Path,
     engine_text: &str,
 ) -> Outcome {
-    let files = match collect_campaign_files_with(walk_fs, root) {
-        Ok(files) => files,
+    let (files, regular_paths) = match collect_campaign_files_and_paths_with(walk_fs, root) {
+        Ok(collected) => collected,
         Err(diagnostic) => {
             return Outcome {
                 code: 1,
@@ -941,6 +1481,9 @@ fn run_migrate_with<W: WalkFs, R: RewriteFs>(
             };
         }
     };
+    if let Err(diagnostic) = reject_rewrite_aliases(rewrite_fs, root, &regular_paths, &updates) {
+        return io_outcome(&diagnostic);
+    }
     match execute_rewrites(rewrite_fs, root, &files, &updates) {
         Ok(()) => Outcome::success(),
         Err(diagnostic) => Outcome {
@@ -982,6 +1525,797 @@ fn run_migrate(root: &Path) -> Outcome {
     run_migrate_with(&fs, &fs, root, env!("CARGO_PKG_VERSION"))
 }
 
+/// Maps a data error through the unchanged data-owned diagnostic rendering:
+/// one `Display` line plus LF on stderr, empty stdout, exit 1.
+fn data_outcome(error: &crpg_data::DataError) -> Outcome {
+    let diagnostic = crpg_data::diagnostic_for_data_error(error);
+    Outcome {
+        code: 1,
+        stdout: Vec::new(),
+        stderr: diagnostic_line(&diagnostic),
+    }
+}
+
+/// Maps a CLI-owned or collected `io` diagnostic to its process outcome:
+/// one `Display` line plus LF on stderr, empty stdout, exit 1.
+fn io_outcome(diagnostic: &Diagnostic) -> Outcome {
+    Outcome {
+        code: 1,
+        stdout: Vec::new(),
+        stderr: diagnostic_line(diagnostic),
+    }
+}
+
+/// Runs the parsed `new` command: builds the bounded Stage-2 authoring
+/// template for the requested type with caller-supplied identities and
+/// writes it through the existing typed `write_document`, never by
+/// handwriting envelopes, schema tags, or canonical JSON.
+///
+/// Templates use explicit identities only: `--id` always, plus a distinct
+/// `--entry-id` for dialogue/quest (enforced by the parser). No clock, RNG,
+/// registry, or filesystem lookup. All notes are absent. Repeated calls with
+/// identical operands produce identical bytes. The output is a valid minimal
+/// current typed document, not a whole campaign: the author supplies locale
+/// entries and file placement.
+fn run_new(kind: NewKind, slug: &str, id: Ulid, entry_id: Option<Ulid>) -> Outcome {
+    let document = match kind {
+        NewKind::Creature => crpg_data::Document::Creature(crpg_data::Creature {
+            id,
+            slug: slug.to_owned(),
+            name: format!("creature.{slug}.name"),
+            note: None,
+            stats: BTreeMap::new(),
+            tags: Vec::new(),
+            faction: None,
+            inventory: Vec::new(),
+        }),
+        NewKind::Item => crpg_data::Document::Item(crpg_data::Item {
+            id,
+            slug: slug.to_owned(),
+            name: format!("item.{slug}.name"),
+            note: None,
+            stats: BTreeMap::new(),
+            tags: Vec::new(),
+        }),
+        NewKind::Dialogue => {
+            // The parser requires an entry id for dialogue; this documents
+            // the invariant at the single construction site.
+            let entry = entry_id.expect("parser requires --entry-id for dialogue");
+            crpg_data::Document::Dialogue(crpg_data::Dialogue {
+                id,
+                slug: slug.to_owned(),
+                name: format!("dialogue.{slug}.name"),
+                note: None,
+                entry,
+                nodes: vec![crpg_data::DialogueNode {
+                    id: entry,
+                    body: crpg_data::DialogueBody::End,
+                }],
+            })
+        }
+        NewKind::Quest => {
+            let entry = entry_id.expect("parser requires --entry-id for quest");
+            crpg_data::Document::Quest(crpg_data::Quest {
+                id,
+                slug: slug.to_owned(),
+                name: format!("quest.{slug}.name"),
+                note: None,
+                entry,
+                states: vec![crpg_data::QuestState {
+                    id: entry,
+                    name: format!("quest.{slug}.state.done"),
+                    terminal: true,
+                    on_enter: Vec::new(),
+                    transitions: Vec::new(),
+                }],
+            })
+        }
+    };
+    match crpg_data::write_document(&document) {
+        Ok(bytes) => Outcome {
+            code: 0,
+            stdout: bytes,
+            stderr: Vec::new(),
+        },
+        Err(error) => data_outcome(&error),
+    }
+}
+
+/// Runs the parsed `schema` command: calls `generated_schemas`, selects the
+/// requested `<stem>.schema.json`, and writes the returned bytes unchanged.
+/// Works outside the repository with no runtime `schemas/` directory. The
+/// `None` arm below is unreachable — the parser admits only the seventeen
+/// stems the data call always generates — and reports a data-owned line
+/// rather than panicking if the two ever disagree.
+fn run_schema(stem: &str) -> Outcome {
+    let filename = format!("{stem}.schema.json");
+    let schemas = match crpg_data::generated_schemas() {
+        Ok(schemas) => schemas,
+        Err(error) => return data_outcome(&error),
+    };
+    match schemas.get(&filename) {
+        Some(bytes) => Outcome {
+            code: 0,
+            stdout: bytes.clone(),
+            stderr: Vec::new(),
+        },
+        None => data_outcome(&crpg_data::DataError::Layout {
+            path: None,
+            message: format!("missing generated schema: {filename}"),
+        }),
+    }
+}
+
+/// Loads the collected files with the supplied engine text, mapping an
+/// unparsable version to the caller-selected fixed failure line. The version
+/// type is inferred from `load_campaign`, exactly as T011b does, so no
+/// semver edge is added. Split from the command runners so tests can pin
+/// each command's internal-version bytes with a synthetic bad version.
+fn load_for_command(
+    files: &BTreeMap<SourcePath, Vec<u8>>,
+    engine_text: &str,
+    failure_line: &str,
+) -> Result<crpg_data::LoadedCampaign, Outcome> {
+    let engine = engine_text.parse().map_err(|_| Outcome {
+        code: 1,
+        stdout: Vec::new(),
+        stderr: failure_line.as_bytes().to_vec(),
+    })?;
+    crpg_data::load_campaign(files, &engine).map_err(|error| data_outcome(&error))
+}
+
+/// Runs the parsed `explain` command: parse (done) -> collect ->
+/// `load_campaign` once with the compile-time package engine version ->
+/// `explain_object` once -> emit bytes.
+///
+/// `Some(bytes)` goes directly to stdout, including its one final LF, with
+/// no parse, reserialize, sort, or decoration. `None` is exit 1 with exactly
+/// `crpgc explain: object not found: <canonical-uppercase-id>\n` and empty
+/// stdout. No semantic validation prerequisite: structurally acceptable
+/// campaigns with dangling or wrong-kind references remain introspectable.
+/// Read-only, including migration-aware loading of historical documents.
+fn run_explain_with<W: WalkFs>(walk_fs: &W, root: &Path, id: Ulid, engine_text: &str) -> Outcome {
+    let files = match collect_campaign_files_with(walk_fs, root) {
+        Ok(files) => files,
+        Err(diagnostic) => return io_outcome(&diagnostic),
+    };
+    let loaded = match load_for_command(&files, engine_text, EXPLAIN_ENGINE_FAILURE) {
+        Ok(loaded) => loaded,
+        Err(outcome) => return outcome,
+    };
+    match crpg_data::explain_object(&loaded, id) {
+        Err(error) => data_outcome(&error),
+        Ok(None) => Outcome {
+            code: 1,
+            stdout: Vec::new(),
+            stderr: format!("crpgc explain: object not found: {id}\n").into_bytes(),
+        },
+        Ok(Some(bytes)) => Outcome {
+            code: 0,
+            stdout: bytes,
+            stderr: Vec::new(),
+        },
+    }
+}
+
+/// Production `explain` entry: the real filesystem with the compile-time
+/// package engine version.
+fn run_explain(root: &Path, id: Ulid) -> Outcome {
+    run_explain_with(&RealFs, root, id, env!("CARGO_PKG_VERSION"))
+}
+
+/// Runs the parsed `fmt` command: migrate's collect -> load -> serialize ->
+/// key-set check -> byte-diff plan. Default mode explicitly saves all
+/// differing recognized files with the T012b writer and its exact
+/// preflight/no-op/recheck/error/partial-write contract, and may persist
+/// in-memory migrations exactly as `migrate` does. `--check` performs the
+/// same preflight without opening files for writing: differences are exit 1
+/// with `crpgc fmt: noncanonical: <logical>\n` per file in lexical
+/// `SourcePath` order, otherwise silent exit 0. Failure before a complete
+/// plan emits only that error, never a partial dirty list. Semantic findings
+/// never block formatting; no repairs or lock regeneration.
+///
+/// Bounded partial-write limitation, shared with `migrate`: writes stop at
+/// the first failure without atomic replacement, rollback, crash recovery,
+/// or a whole-directory transaction.
+fn run_fmt_with<W: WalkFs, R: RewriteFs>(
+    walk_fs: &W,
+    rewrite_fs: &R,
+    root: &Path,
+    engine_text: &str,
+    check: bool,
+) -> Outcome {
+    let (files, regular_paths) = match collect_campaign_files_and_paths_with(walk_fs, root) {
+        Ok(collected) => collected,
+        Err(diagnostic) => return io_outcome(&diagnostic),
+    };
+    let loaded = match load_for_command(&files, engine_text, FMT_ENGINE_FAILURE) {
+        Ok(loaded) => loaded,
+        Err(outcome) => return outcome,
+    };
+    let serialized = match crpg_data::serialize_campaign(&loaded) {
+        Ok(serialized) => serialized,
+        Err(error) => return data_outcome(&error),
+    };
+    let updates = match plan_updates(&files, &serialized) {
+        Ok(updates) => updates,
+        Err(()) => {
+            return Outcome {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: FMT_DOCUMENT_SET_FAILURE.as_bytes().to_vec(),
+            };
+        }
+    };
+    if check {
+        if updates.is_empty() {
+            return Outcome::success();
+        }
+        let mut stderr = Vec::new();
+        for (path, _) in &updates {
+            stderr.extend_from_slice(
+                format!("crpgc fmt: noncanonical: {}\n", path.as_str()).as_bytes(),
+            );
+        }
+        return Outcome {
+            code: 1,
+            stdout: Vec::new(),
+            stderr,
+        };
+    }
+    if let Err(diagnostic) = reject_rewrite_aliases(rewrite_fs, root, &regular_paths, &updates) {
+        return io_outcome(&diagnostic);
+    }
+    match execute_rewrites(rewrite_fs, root, &files, &updates) {
+        Ok(()) => Outcome::success(),
+        Err(diagnostic) => io_outcome(&diagnostic),
+    }
+}
+
+/// Refuses a write target that is the same filesystem file as any other
+/// regular path observed during collection. This catches hard links from a
+/// recognized document to ignored content or another document before the
+/// first truncating open. Exact target spellings are skipped.
+fn reject_rewrite_aliases(
+    fs: &impl RewriteFs,
+    root: &Path,
+    regular_paths: &[PathBuf],
+    updates: &[(SourcePath, Vec<u8>)],
+) -> Result<(), Diagnostic> {
+    for (path, _) in updates {
+        let logical = path.as_str();
+        let target = disk_path(root, logical);
+        for candidate in regular_paths {
+            if candidate == &target {
+                continue;
+            }
+            let aliases = fs.same_file(&target, candidate).map_err(|error| {
+                io_diagnostic("check", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            if aliases {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    IoKind::SourceChanged,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Production `fmt` entry: the real filesystem for both collection and the
+/// rewrite phase, with the compile-time package engine version.
+fn run_fmt(root: &Path, check: bool) -> Outcome {
+    let fs = RealFs;
+    run_fmt_with(&fs, &fs, root, env!("CARGO_PKG_VERSION"), check)
+}
+
+/// Checks every ancestor of `disk` (excluding the target itself) without
+/// following observed symlinks and without canonicalizing. Each ancestor
+/// must be a directory; a missing, symlinked, or non-directory ancestor
+/// fails with the caller's `op`/logical/file shape, naming the affected
+/// target logical path (never a native or absolute path). Absolute and
+/// relative forms are both handled via `Path::ancestors`; empty prefixes
+/// are skipped. The bounded post-check race contract from T012b is
+/// retained: concurrent changes after these checks remain unspecified, with
+/// no atomicity, locking, handle-based no-follow, or snapshot guarantee.
+fn check_disk_ancestors(
+    fs: &impl RewriteFs,
+    disk: &Path,
+    logical: &str,
+    file: Option<SourcePath>,
+    op: &str,
+) -> Result<(), Diagnostic> {
+    if disk.to_str().is_none() {
+        return Err(io_diagnostic(
+            op,
+            file,
+            logical,
+            IoKind::NonUnicodeComponent,
+        ));
+    }
+    let mut ancestors: Vec<&Path> = disk.ancestors().skip(1).collect();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        if ancestor.to_str().is_none() {
+            return Err(io_diagnostic(
+                op,
+                file.clone(),
+                logical,
+                IoKind::NonUnicodeComponent,
+            ));
+        }
+        match fs.metadata(ancestor) {
+            Err(error) => {
+                return Err(io_diagnostic(op, file.clone(), logical, io_kind(&error)));
+            }
+            Ok(EntryKind::Directory) => {}
+            Ok(EntryKind::Symlink) => {
+                return Err(io_diagnostic(
+                    op,
+                    file.clone(),
+                    logical,
+                    IoKind::SymlinkAtDocumentPath,
+                ));
+            }
+            Ok(EntryKind::File) | Ok(EntryKind::Other) => {
+                return Err(io_diagnostic(
+                    op,
+                    file.clone(),
+                    logical,
+                    IoKind::NotADirectory,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verifies the lock root without following a terminal symlink: a directory
+/// is required, exactly as the T011b collector requires for every command
+/// root. Ancestors of the supplied root are checked first, so a symlinked
+/// parent is rejected with the portable `<campaign-root>` diagnostic instead
+/// of being traversed.
+fn check_lock_root(fs: &impl RewriteFs, root: &Path) -> Result<(), Diagnostic> {
+    if root.to_str().is_none() {
+        return Err(io_diagnostic(
+            "open root",
+            None,
+            "<campaign-root>",
+            IoKind::NonUnicodeComponent,
+        ));
+    }
+    check_disk_ancestors(fs, root, "<campaign-root>", None, "open root")?;
+    match fs.metadata(root) {
+        Err(error) => Err(io_diagnostic(
+            "open root",
+            None,
+            "<campaign-root>",
+            io_kind(&error),
+        )),
+        Ok(EntryKind::Directory) => Ok(()),
+        Ok(EntryKind::Symlink) => Err(io_diagnostic(
+            "open root",
+            None,
+            "<campaign-root>",
+            IoKind::SymlinkAtDocumentPath,
+        )),
+        Ok(EntryKind::File) | Ok(EntryKind::Other) => Err(io_diagnostic(
+            "open root",
+            None,
+            "<campaign-root>",
+            IoKind::NotADirectory,
+        )),
+    }
+}
+
+/// Reads one required regular input file without following an observed
+/// symlink. Ancestors are checked first, so a symlinked parent is rejected
+/// with the portable target diagnostic instead of being traversed.
+/// Anything but a regular file — missing, symlink, directory, or
+/// other — is a portable `cannot read <logical>: <kind>` diagnostic, with
+/// the campaign file's logical path or the stable `<catalog>` label. Never
+/// lossy-converts a non-Unicode path.
+fn read_regular_input(
+    fs: &impl RewriteFs,
+    disk: &Path,
+    logical: &str,
+    file: Option<SourcePath>,
+) -> Result<Vec<u8>, Diagnostic> {
+    if disk.to_str().is_none() {
+        return Err(io_diagnostic(
+            "read",
+            file,
+            logical,
+            IoKind::NonUnicodeComponent,
+        ));
+    }
+    check_disk_ancestors(fs, disk, logical, file.clone(), "read")?;
+    match fs.metadata(disk) {
+        Err(error) => Err(io_diagnostic("read", file, logical, io_kind(&error))),
+        Ok(EntryKind::File) => fs
+            .read_file(disk)
+            .map_err(|error| io_diagnostic("read", file, logical, io_kind(&error))),
+        Ok(EntryKind::Symlink) => Err(io_diagnostic(
+            "read",
+            file,
+            logical,
+            IoKind::SymlinkAtDocumentPath,
+        )),
+        Ok(EntryKind::Directory) | Ok(EntryKind::Other) => {
+            Err(io_diagnostic("read", file, logical, IoKind::NotAFile))
+        }
+    }
+}
+
+/// Requires the `assets` ancestor directory for the assets-lock input.
+/// Ancestor failures name the affected target logical path, as in T012b.
+/// Parents of the ancestor itself are checked first, so a symlinked
+/// grandparent is rejected with the target logical label.
+fn check_lock_ancestor(
+    fs: &impl RewriteFs,
+    disk_ancestor: &Path,
+    logical: &str,
+    file: SourcePath,
+) -> Result<(), Diagnostic> {
+    if disk_ancestor.to_str().is_none() {
+        return Err(io_diagnostic(
+            "read",
+            Some(file),
+            logical,
+            IoKind::NonUnicodeComponent,
+        ));
+    }
+    check_disk_ancestors(fs, disk_ancestor, logical, Some(file.clone()), "read")?;
+    match fs.metadata(disk_ancestor) {
+        Err(error) => Err(io_diagnostic("read", Some(file), logical, io_kind(&error))),
+        Ok(EntryKind::Directory) => Ok(()),
+        Ok(EntryKind::Symlink) => Err(io_diagnostic(
+            "read",
+            Some(file),
+            logical,
+            IoKind::SymlinkAtDocumentPath,
+        )),
+        Ok(EntryKind::File) | Ok(EntryKind::Other) => Err(io_diagnostic(
+            "read",
+            Some(file),
+            logical,
+            IoKind::NotADirectory,
+        )),
+    }
+}
+
+/// Saves the new `campaign.lock` bytes. An existing regular output is
+/// replaced with T012b's original-byte/recheck/truncate/write_all/sync_all
+/// discipline and is a zero-write no-op when already byte-identical — even
+/// when malformed, existing bytes compare raw, never through a document
+/// parse. The existing path captures the raw bytes once, no-ops when
+/// identical to the desired bytes, and otherwise rechecks root/ancestors/
+/// target, rereads, requires equality with the captured original
+/// (`source_changed` on drift), then truncates, writes, and syncs. A
+/// missing output rechecks the root and is created with `create_new`, so a
+/// concurrently appearing output surfaces as `source_changed`. Directories
+/// are never created, symlinks never followed, and non-regular outputs never
+/// replaced. Save failures use `check`/`open`/`write`/`sync` on
+/// `campaign.lock`; a failure may leave a partial replaced or new lock with
+/// no rollback, exactly as in T012b.
+fn write_lock_output(fs: &impl RewriteFs, root: &Path, new_bytes: &[u8]) -> Result<(), Diagnostic> {
+    let logical = "campaign.lock";
+    let path: SourcePath = logical
+        .parse()
+        .expect("campaign.lock is a valid logical path");
+    if root.to_str().is_none() {
+        return Err(io_diagnostic(
+            "check",
+            Some(path),
+            logical,
+            IoKind::NonUnicodeComponent,
+        ));
+    }
+    check_disk_ancestors(fs, root, logical, Some(path.clone()), "check")?;
+    match fs.metadata(root) {
+        Err(error) => {
+            return Err(io_diagnostic("check", Some(path), logical, io_kind(&error)));
+        }
+        Ok(EntryKind::Directory) => {}
+        Ok(EntryKind::Symlink) => {
+            return Err(io_diagnostic(
+                "check",
+                Some(path),
+                logical,
+                IoKind::SymlinkAtDocumentPath,
+            ));
+        }
+        Ok(EntryKind::File) | Ok(EntryKind::Other) => {
+            return Err(io_diagnostic(
+                "check",
+                Some(path),
+                logical,
+                IoKind::NotADirectory,
+            ));
+        }
+    }
+    let disk_target = disk_path(root, logical);
+    check_disk_ancestors(fs, &disk_target, logical, Some(path.clone()), "check")?;
+    match fs.metadata(&disk_target) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut handle = fs.create_new(&disk_target).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    io_diagnostic("check", Some(path.clone()), logical, IoKind::SourceChanged)
+                } else {
+                    io_diagnostic("open", Some(path.clone()), logical, io_kind(&error))
+                }
+            })?;
+            handle.write_all(new_bytes).map_err(|error| {
+                io_diagnostic("write", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            handle.sync_all().map_err(|error| {
+                io_diagnostic("sync", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            Ok(())
+        }
+        Err(error) => Err(io_diagnostic("check", Some(path), logical, io_kind(&error))),
+        Ok(EntryKind::Symlink) => Err(io_diagnostic(
+            "check",
+            Some(path),
+            logical,
+            IoKind::SymlinkAtDocumentPath,
+        )),
+        Ok(EntryKind::Directory) | Ok(EntryKind::Other) => Err(io_diagnostic(
+            "check",
+            Some(path),
+            logical,
+            IoKind::NotAFile,
+        )),
+        Ok(EntryKind::File) => {
+            let initial = fs.read_file(&disk_target).map_err(|error| {
+                io_diagnostic("check", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            if initial == new_bytes {
+                return Ok(());
+            }
+            // Shared original-byte discipline: recheck ancestors/target,
+            // reread, and require equality with the captured original before
+            // opening for truncation. Drift surfaces as `source_changed`
+            // with zero opens/writes.
+            check_disk_ancestors(fs, &disk_target, logical, Some(path.clone()), "check")?;
+            match fs.metadata(&disk_target) {
+                Err(error) => {
+                    return Err(io_diagnostic(
+                        "check",
+                        Some(path.clone()),
+                        logical,
+                        io_kind(&error),
+                    ));
+                }
+                Ok(EntryKind::File) => {}
+                Ok(EntryKind::Symlink) => {
+                    return Err(io_diagnostic(
+                        "check",
+                        Some(path.clone()),
+                        logical,
+                        IoKind::SymlinkAtDocumentPath,
+                    ));
+                }
+                Ok(EntryKind::Directory) | Ok(EntryKind::Other) => {
+                    return Err(io_diagnostic(
+                        "check",
+                        Some(path.clone()),
+                        logical,
+                        IoKind::NotAFile,
+                    ));
+                }
+            }
+            let current = fs.read_file(&disk_target).map_err(|error| {
+                io_diagnostic("check", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            if current != initial {
+                return Err(io_diagnostic(
+                    "check",
+                    Some(path.clone()),
+                    logical,
+                    IoKind::SourceChanged,
+                ));
+            }
+            let mut handle = fs.open_truncate(&disk_target).map_err(|error| {
+                io_diagnostic("open", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            handle.write_all(new_bytes).map_err(|error| {
+                io_diagnostic("write", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            handle.sync_all().map_err(|error| {
+                io_diagnostic("sync", Some(path.clone()), logical, io_kind(&error))
+            })?;
+            Ok(())
+        }
+    }
+}
+
+/// Runs the parsed `lock` command: reads `campaign.json`, `assets.lock`,
+/// and the supplied flat catalog in that order, resolves with
+/// `make_campaign_lock`, serializes with `write_campaign_lock`, then
+/// creates, replaces, or no-ops `campaign.lock`.
+///
+/// The catalog is a JSON array of existing `PackageCandidate` wire objects
+/// decoded directly through `serde_json` — never through an intermediate
+/// `Value` — preserving strict field and value decoding; syntax or typed
+/// failures are exactly `crpgc lock: invalid catalog`. All
+/// input/resolve/serialize work completes before the output is touched, so
+/// those failures perform zero output writes. `load_campaign` is never
+/// called: an absent or stale `campaign.lock` is exactly what this explicit
+/// operation supports. This bounded operation is not whole-campaign
+/// validation or an engine-compatibility gate. Source assets are never read,
+/// `assets.lock` never rewritten, and `campaign.json` never migrated.
+fn run_lock_with(fs: &impl RewriteFs, root: &Path, catalog_path: &Path) -> Outcome {
+    if let Err(diagnostic) = check_lock_root(fs, root) {
+        return io_outcome(&diagnostic);
+    }
+    let campaign_logical = "campaign.json";
+    let campaign_file: SourcePath = campaign_logical
+        .parse()
+        .expect("campaign.json is a valid logical path");
+    let campaign_bytes = match read_regular_input(
+        fs,
+        &disk_path(root, campaign_logical),
+        campaign_logical,
+        Some(campaign_file),
+    ) {
+        Ok(bytes) => bytes,
+        Err(diagnostic) => return io_outcome(&diagnostic),
+    };
+    let campaign = match crpg_data::read_document(&campaign_bytes) {
+        Ok(crpg_data::Document::Campaign(campaign)) => campaign,
+        Ok(_) => {
+            return Outcome {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: LOCK_EXPECTED_CAMPAIGN.as_bytes().to_vec(),
+            };
+        }
+        Err(error) => return data_outcome(&error),
+    };
+    let assets_logical = "assets/assets.lock";
+    let assets_file: SourcePath = assets_logical
+        .parse()
+        .expect("assets/assets.lock is a valid logical path");
+    if let Err(diagnostic) = check_lock_ancestor(
+        fs,
+        &disk_path(root, "assets"),
+        assets_logical,
+        assets_file.clone(),
+    ) {
+        return io_outcome(&diagnostic);
+    }
+    let assets_bytes = match read_regular_input(
+        fs,
+        &disk_path(root, assets_logical),
+        assets_logical,
+        Some(assets_file),
+    ) {
+        Ok(bytes) => bytes,
+        Err(diagnostic) => return io_outcome(&diagnostic),
+    };
+    let assets = match crpg_data::read_assets_lock(&assets_bytes) {
+        Ok(assets) => assets,
+        Err(error) => return data_outcome(&error),
+    };
+    if catalog_path.to_str().is_none() {
+        return io_outcome(&io_diagnostic(
+            "read",
+            None,
+            "<catalog>",
+            IoKind::NonUnicodeComponent,
+        ));
+    }
+    let catalog_bytes = match read_regular_input(fs, catalog_path, "<catalog>", None) {
+        Ok(bytes) => bytes,
+        Err(diagnostic) => return io_outcome(&diagnostic),
+    };
+    let candidates: Vec<crpg_data::PackageCandidate> = match serde_json::from_slice(&catalog_bytes)
+    {
+        Ok(candidates) => candidates,
+        Err(_) => {
+            return Outcome {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: LOCK_INVALID_CATALOG.as_bytes().to_vec(),
+            };
+        }
+    };
+    let lock = match crpg_data::make_campaign_lock(&campaign.requires, &candidates, &assets) {
+        Ok(lock) => lock,
+        Err(error) => return data_outcome(&error),
+    };
+    let new_bytes = match crpg_data::write_campaign_lock(&lock) {
+        Ok(bytes) => bytes,
+        Err(error) => return data_outcome(&error),
+    };
+    let output_path = disk_path(root, "campaign.lock");
+    for input_path in [
+        disk_path(root, campaign_logical),
+        disk_path(root, assets_logical),
+        catalog_path.to_path_buf(),
+    ] {
+        match fs.same_file(&input_path, &output_path) {
+            Ok(false) => {}
+            Ok(true) => {
+                let path = "campaign.lock"
+                    .parse()
+                    .expect("campaign.lock is a valid logical path");
+                return io_outcome(&io_diagnostic(
+                    "check",
+                    Some(path),
+                    "campaign.lock",
+                    IoKind::SourceChanged,
+                ));
+            }
+            Err(error) => {
+                let path = "campaign.lock"
+                    .parse()
+                    .expect("campaign.lock is a valid logical path");
+                return io_outcome(&io_diagnostic(
+                    "check",
+                    Some(path),
+                    "campaign.lock",
+                    io_kind(&error),
+                ));
+            }
+        }
+    }
+    match write_lock_output(fs, root, &new_bytes) {
+        Ok(()) => Outcome::success(),
+        Err(diagnostic) => io_outcome(&diagnostic),
+    }
+}
+
+/// Production `lock` entry: the real filesystem for inputs and the output.
+/// The catalog path stays relative to the process working directory.
+fn run_lock(root: &Path, catalog: &Path) -> Outcome {
+    run_lock_with(&RealFs, root, catalog)
+}
+
+/// Lowercase hex encoding for `run` sample lines. Hand-rolled so no hashing
+/// or hex dependency is added; the harness keeps its own private copy.
+fn hex32(bytes: &[u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        out.push(DIGITS[(byte >> 4) as usize] as char);
+        out.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Runs the parsed `run` command: calls
+/// `crpg_testkit::run_hash_sequence(seed, ticks, Box::new(|_| {}))` once —
+/// the empty world's no-op script, with no campaign root or gameplay intent
+/// vocabulary implied — then emits samples after completed ticks M, 2M, ...
+/// <= N as `<k> <64-lowercase-hex-hash>\n` using returned index k-1.
+/// `--hash-every` filters output only, never harness execution. N=0 and M>N
+/// produce empty stdout with exit 0. No golden reads/writes, reblessing,
+/// replay recording, wall-clock timing, or cross-platform hash-equality
+/// promise. This bounded harness is not campaign execution.
+fn run_run(ticks: usize, hash_every: usize, seed: u64) -> Outcome {
+    let hashes = crpg_testkit::run_hash_sequence(seed, ticks, Box::new(|_| {}));
+    let mut stdout = Vec::new();
+    let mut tick = hash_every;
+    while tick <= ticks {
+        let hash = &hashes[tick - 1];
+        stdout.extend_from_slice(format!("{tick} {}\n", hex32(hash)).as_bytes());
+        tick += hash_every;
+    }
+    Outcome {
+        code: 0,
+        stdout,
+        stderr: Vec::new(),
+    }
+}
+
 /// Writes an [`Outcome`] to the supplied streams without panicking and
 /// without recursively reporting a broken stream. Returns the process exit
 /// code: the outcome code when both writes succeed, otherwise `1`.
@@ -992,6 +2326,8 @@ fn emit_code(
 ) -> u8 {
     let stdout_ok = stdout.write_all(&outcome.stdout).is_ok();
     let stderr_ok = stderr.write_all(&outcome.stderr).is_ok();
+    let stdout_ok = stdout_ok && stdout.flush().is_ok();
+    let stderr_ok = stderr_ok && stderr.flush().is_ok();
     if stdout_ok && stderr_ok {
         outcome.code
     } else {
@@ -1002,7 +2338,10 @@ fn emit_code(
 /// Runs a parsed command. Replay stays the thin testkit consumer it was at
 /// T009b; validate joins data-owned validation to OS-owned traversal;
 /// migrate joins the same collector to T012a's migration-aware loader and
-/// canonical writer plus its explicit save phase.
+/// canonical writer plus its explicit save phase; the six T013 commands join
+/// the same collector, data-owned writers, the landed introspection report,
+/// the flat package-lock constructor, and the hash-sequence harness to the
+/// process boundary, each owning only its argument, stream, and exit policy.
 fn run(command: Command) -> Outcome {
     match command {
         Command::Replay {
@@ -1018,6 +2357,21 @@ fn run(command: Command) -> Outcome {
         },
         Command::Validate { root, json } => run_validate(&root, json),
         Command::Migrate { root } => run_migrate(&root),
+        Command::New {
+            kind,
+            slug,
+            id,
+            entry_id,
+        } => run_new(kind, &slug, id, entry_id),
+        Command::Schema { stem } => run_schema(&stem),
+        Command::Explain { id, root } => run_explain(&root, id),
+        Command::Fmt { root, check } => run_fmt(&root, check),
+        Command::Lock { root, catalog } => run_lock(&root, &catalog),
+        Command::Run {
+            ticks,
+            hash_every,
+            seed,
+        } => run_run(ticks, hash_every, seed),
     }
 }
 
@@ -1075,7 +2429,14 @@ mod tests {
                 assert_eq!(replay_path, PathBuf::from("run/replay_basic.replay"));
                 assert_eq!(golden_path, PathBuf::from("run/replay_basic.golden"));
             }
-            Command::Validate { .. } | Command::Migrate { .. } => panic!("expected replay"),
+            Command::Validate { .. }
+            | Command::Migrate { .. }
+            | Command::New { .. }
+            | Command::Schema { .. }
+            | Command::Explain { .. }
+            | Command::Fmt { .. }
+            | Command::Lock { .. }
+            | Command::Run { .. } => panic!("expected replay"),
         }
     }
 
@@ -1092,7 +2453,14 @@ mod tests {
             Command::Replay { golden_path, .. } => {
                 assert_eq!(golden_path, PathBuf::from("g.golden"));
             }
-            Command::Validate { .. } | Command::Migrate { .. } => panic!("expected replay"),
+            Command::Validate { .. }
+            | Command::Migrate { .. }
+            | Command::New { .. }
+            | Command::Schema { .. }
+            | Command::Explain { .. }
+            | Command::Fmt { .. }
+            | Command::Lock { .. }
+            | Command::Run { .. } => panic!("expected replay"),
         }
     }
 
@@ -1398,7 +2766,18 @@ mod tests {
             }
         }
 
+        fn ensure_parents(&mut self, path: &Path) {
+            let mut ancestors: Vec<PathBuf> = path.ancestors().skip(1).map(PathBuf::from).collect();
+            ancestors.reverse();
+            for ancestor in ancestors {
+                if !ancestor.as_os_str().is_empty() {
+                    self.kinds.entry(ancestor).or_insert(EntryKind::Directory);
+                }
+            }
+        }
+
         fn dir(&mut self, path: &Path, children: &[&str]) {
+            self.ensure_parents(path);
             self.kinds.insert(path.to_path_buf(), EntryKind::Directory);
             self.lists.insert(
                 path.to_path_buf(),
@@ -1407,13 +2786,9 @@ mod tests {
         }
 
         fn file(&mut self, path: &Path, bytes: &[u8]) {
+            self.ensure_parents(path);
             self.kinds.insert(path.to_path_buf(), EntryKind::File);
             self.contents.insert(path.to_path_buf(), bytes.to_vec());
-            if let Some(parent) = path.parent() {
-                self.kinds
-                    .entry(parent.to_path_buf())
-                    .or_insert(EntryKind::Directory);
-            }
         }
     }
 
@@ -1658,8 +3033,29 @@ mod tests {
     fn collector_symlinked_root_is_refused_without_following() {
         let root = PathBuf::from("/fake/root");
         let mut fs = FakeFs::new();
+        fs.ensure_parents(&root);
         fs.kinds.insert(root.clone(), EntryKind::Symlink);
         let error = collect_campaign_files_with(&fs, &root).expect_err("root symlink refused");
+        assert_eq!(
+            error.message,
+            "cannot open root <campaign-root>: symlink_at_document_path"
+        );
+        assert!(fs
+            .log
+            .borrow()
+            .iter()
+            .all(|entry| !entry.starts_with("list")));
+    }
+
+    #[test]
+    fn collector_symlinked_root_ancestor_is_refused_without_listing() {
+        let root = PathBuf::from("/fake/link/root");
+        let mut fs = FakeFs::new();
+        fs.dir(&root, &["campaign.json"]);
+        fs.file(&root.join("campaign.json"), b"{}");
+        fs.kinds
+            .insert(PathBuf::from("/fake/link"), EntryKind::Symlink);
+        let error = collect_campaign_files_with(&fs, &root).expect_err("ancestor refused");
         assert_eq!(
             error.message,
             "cannot open root <campaign-root>: symlink_at_document_path"
@@ -1911,8 +3307,14 @@ mod tests {
         contents: BTreeMap<PathBuf, Vec<u8>>,
         read_err: BTreeMap<PathBuf, std::io::ErrorKind>,
         open_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        create_err: BTreeMap<PathBuf, std::io::ErrorKind>,
         write_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        write_prefix: BTreeMap<PathBuf, usize>,
         sync_err: BTreeMap<PathBuf, std::io::ErrorKind>,
+        second_reads: BTreeMap<PathBuf, Vec<u8>>,
+        read_counts: std::rc::Rc<RefCell<BTreeMap<PathBuf, usize>>>,
+        appear_on_metadata: std::rc::Rc<RefCell<BTreeSet<PathBuf>>>,
+        aliases: BTreeSet<(PathBuf, PathBuf)>,
         log: std::rc::Rc<RefCell<Vec<String>>>,
         written: std::rc::Rc<RefCell<BTreeMap<PathBuf, Vec<u8>>>>,
     }
@@ -1922,6 +3324,7 @@ mod tests {
     struct FakeHandle {
         path: PathBuf,
         write_err: Option<std::io::ErrorKind>,
+        write_prefix: Option<usize>,
         sync_err: Option<std::io::ErrorKind>,
         log: std::rc::Rc<RefCell<Vec<String>>>,
         written: std::rc::Rc<RefCell<BTreeMap<PathBuf, Vec<u8>>>>,
@@ -1934,6 +3337,15 @@ mod tests {
                 .push(format!("write {}", portable(&self.path)));
             if let Some(kind) = self.write_err {
                 return Err(std::io::Error::new(kind, "fake: cannot write"));
+            }
+            if let Some(length) = self.write_prefix {
+                self.written
+                    .borrow_mut()
+                    .insert(self.path.clone(), bytes[..length.min(bytes.len())].to_vec());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "fake: partial write",
+                ));
             }
             self.written
                 .borrow_mut()
@@ -1960,28 +3372,68 @@ mod tests {
                 contents: BTreeMap::new(),
                 read_err: BTreeMap::new(),
                 open_err: BTreeMap::new(),
+                create_err: BTreeMap::new(),
                 write_err: BTreeMap::new(),
+                write_prefix: BTreeMap::new(),
                 sync_err: BTreeMap::new(),
+                second_reads: BTreeMap::new(),
+                read_counts: std::rc::Rc::new(RefCell::new(BTreeMap::new())),
+                appear_on_metadata: std::rc::Rc::new(RefCell::new(BTreeSet::new())),
+                aliases: BTreeSet::new(),
                 log: std::rc::Rc::new(RefCell::new(Vec::new())),
                 written: std::rc::Rc::new(RefCell::new(BTreeMap::new())),
             }
         }
 
+        fn ensure_parents(&mut self, path: &Path) {
+            let mut ancestors: Vec<PathBuf> = path.ancestors().skip(1).map(PathBuf::from).collect();
+            ancestors.reverse();
+            for ancestor in ancestors {
+                if ancestor.as_os_str().is_empty() {
+                    continue;
+                }
+                if self.kinds.contains_key(&ancestor) || self.metadata_err.contains_key(&ancestor) {
+                    continue;
+                }
+                self.kinds.insert(ancestor, EntryKind::Directory);
+            }
+        }
+
         fn dir(&mut self, path: &Path) {
+            self.ensure_parents(path);
             self.kinds.insert(path.to_path_buf(), EntryKind::Directory);
         }
 
         fn file(&mut self, path: &Path, bytes: &[u8]) {
+            self.ensure_parents(path);
             self.kinds.insert(path.to_path_buf(), EntryKind::File);
             self.contents.insert(path.to_path_buf(), bytes.to_vec());
         }
 
         fn symlink(&mut self, path: &Path) {
+            self.ensure_parents(path);
             self.kinds.insert(path.to_path_buf(), EntryKind::Symlink);
         }
 
         fn other(&mut self, path: &Path) {
+            self.ensure_parents(path);
             self.kinds.insert(path.to_path_buf(), EntryKind::Other);
+        }
+
+        /// Scripts a prewrite drift: the first `read_file` returns the
+        /// `contents` bytes, every later read returns `second`.
+        fn drift_second_read(&mut self, path: &Path, second: &[u8]) {
+            self.second_reads
+                .insert(path.to_path_buf(), second.to_vec());
+        }
+
+        /// Scripts a genuine create race: the next `metadata` for `path`
+        /// reports `NotFound` while making the file appear for the later
+        /// `create_new`, which then fails with `AlreadyExists`.
+        fn appear_on_next_metadata(&mut self, path: &Path) {
+            self.appear_on_metadata
+                .borrow_mut()
+                .insert(path.to_path_buf());
         }
     }
 
@@ -1990,6 +3442,12 @@ mod tests {
             self.log
                 .borrow_mut()
                 .push(format!("metadata {}", portable(path)));
+            if self.appear_on_metadata.borrow().contains(path) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "fake: no such entry yet",
+                ));
+            }
             if let Some(kind) = self.metadata_err.get(path) {
                 return Err(std::io::Error::new(*kind, "fake: cannot stat"));
             }
@@ -2004,6 +3462,14 @@ mod tests {
                 .push(format!("read {}", portable(path)));
             if let Some(kind) = self.read_err.get(path) {
                 return Err(std::io::Error::new(*kind, "fake: cannot read"));
+            }
+            let mut counts = self.read_counts.borrow_mut();
+            let count = counts.entry(path.to_path_buf()).or_insert(0);
+            *count += 1;
+            if *count >= 2 {
+                if let Some(second) = self.second_reads.get(path) {
+                    return Ok(second.clone());
+                }
             }
             self.contents.get(path).cloned().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "fake: no such file")
@@ -2020,10 +3486,64 @@ mod tests {
             Ok(Box::new(FakeHandle {
                 path: path.to_path_buf(),
                 write_err: self.write_err.get(path).copied(),
+                write_prefix: self.write_prefix.get(path).copied(),
                 sync_err: self.sync_err.get(path).copied(),
                 log: std::rc::Rc::clone(&self.log),
                 written: std::rc::Rc::clone(&self.written),
             }))
+        }
+
+        fn create_new(&self, path: &Path) -> std::io::Result<Box<dyn RewriteHandle>> {
+            self.log
+                .borrow_mut()
+                .push(format!("create {}", portable(path)));
+            // Production `create_new` fails when the output already exists;
+            // the fake mirrors that so create-race tests observe
+            // `source_changed` without a real concurrent writer. A scripted
+            // appearance between the metadata check and creation reports the
+            // same `AlreadyExists` without needing a real concurrent writer.
+            if self.appear_on_metadata.borrow().contains(path) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "fake: output appeared concurrently",
+                ));
+            }
+            if self.kinds.contains_key(path) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "fake: output appeared concurrently",
+                ));
+            }
+            if let Some(kind) = self.create_err.get(path) {
+                return Err(std::io::Error::new(*kind, "fake: cannot create"));
+            }
+            Ok(Box::new(FakeHandle {
+                path: path.to_path_buf(),
+                write_err: self.write_err.get(path).copied(),
+                write_prefix: self.write_prefix.get(path).copied(),
+                sync_err: self.sync_err.get(path).copied(),
+                log: std::rc::Rc::clone(&self.log),
+                written: std::rc::Rc::clone(&self.written),
+            }))
+        }
+
+        fn same_file(&self, left: &Path, right: &Path) -> std::io::Result<bool> {
+            self.log
+                .borrow_mut()
+                .push(format!("same {} {}", portable(left), portable(right)));
+            if !self.kinds.contains_key(left) {
+                return Ok(false);
+            }
+            if !self.kinds.contains_key(right) {
+                return Ok(false);
+            }
+            Ok(left == right
+                || self
+                    .aliases
+                    .contains(&(left.to_path_buf(), right.to_path_buf()))
+                || self
+                    .aliases
+                    .contains(&(right.to_path_buf(), left.to_path_buf())))
         }
     }
 
@@ -2479,6 +3999,46 @@ mod tests {
         }
     }
 
+    struct FlushFailWriter(Vec<u8>);
+
+    impl std::io::Write for FlushFailWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fake: flush is broken",
+            ))
+        }
+    }
+
+    struct PrefixFailWriter {
+        bytes: Vec<u8>,
+        remaining: usize,
+    }
+
+    impl std::io::Write for PrefixFailWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "fake: stream failed after prefix",
+                ));
+            }
+            let count = self.remaining.min(bytes.len());
+            self.bytes.extend_from_slice(&bytes[..count]);
+            self.remaining -= count;
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn emit_code_returns_outcome_code_on_success_and_1_on_stream_failure() {
         let outcome = Outcome {
@@ -2514,5 +4074,1556 @@ mod tests {
             1,
             "stderr failure must exit 1 without panic"
         );
+
+        let mut flush_failing_stdout = FlushFailWriter(Vec::new());
+        let mut ok_stderr = Vec::new();
+        let mut ok_stderr_writer = VecWriter(&mut ok_stderr);
+        assert_eq!(
+            emit_code(&mut flush_failing_stdout, &mut ok_stderr_writer, &outcome),
+            1,
+            "a final flush failure must be observed"
+        );
+        assert_eq!(flush_failing_stdout.0, b"out");
+
+        let mut prefix_stdout = PrefixFailWriter {
+            bytes: Vec::new(),
+            remaining: 2,
+        };
+        let mut ok_stderr = Vec::new();
+        let mut ok_stderr_writer = VecWriter(&mut ok_stderr);
+        assert_eq!(
+            emit_code(&mut prefix_stdout, &mut ok_stderr_writer, &outcome),
+            1,
+            "partial stream failure must exit 1"
+        );
+        assert_eq!(prefix_stdout.bytes, b"ou", "written prefix is retained");
+    }
+
+    const NEW_ID: &str = "00000000000000000000000011";
+    const NEW_ENTRY_ID: &str = "00000000000000000000000012";
+
+    /// Asserts a T013 argv fails parsing with exit 2 and the command's
+    /// single shared usage line, never echoing arbitrary input.
+    fn assert_new_usage(argv: &[&str], usage: &str) {
+        let parsed = parse_args(&args(argv));
+        let message = match parsed {
+            Err(CliError::Usage(message)) => message,
+            other => panic!("expected usage for {argv:?}: {other:?}"),
+        };
+        let outcome = Outcome::cli_error(&CliError::Usage(message));
+        assert_eq!(outcome.code, 2);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(
+            outcome.stderr,
+            format!("crpgc: usage: {usage}\n").into_bytes(),
+            "one usage line for {argv:?}"
+        );
+    }
+
+    #[test]
+    fn new_parser_accepts_all_types_in_either_order() {
+        for type_text in ["creature", "item", "dialogue", "quest"] {
+            let needs_entry = type_text == "dialogue" || type_text == "quest";
+            let with_entry = if needs_entry {
+                vec!["--entry-id", NEW_ENTRY_ID]
+            } else {
+                Vec::new()
+            };
+            let mut before: Vec<&str> = vec!["new", type_text, "--slug", "goblin", "--id", NEW_ID];
+            before.extend_from_slice(&with_entry);
+            let mut after: Vec<&str> = vec!["new", "--slug", "goblin", "--id", NEW_ID];
+            after.extend_from_slice(&with_entry);
+            after.push(type_text);
+            for argv in [before, after] {
+                match parse_args(&args(&argv)) {
+                    Ok(Command::New {
+                        kind,
+                        slug,
+                        id,
+                        entry_id,
+                    }) => {
+                        assert_eq!(slug, "goblin");
+                        assert_eq!(id.to_string(), NEW_ID);
+                        assert_eq!(
+                            entry_id.map(|entry| entry.to_string()),
+                            needs_entry.then(|| NEW_ENTRY_ID.to_owned())
+                        );
+                        let _ = kind;
+                    }
+                    other => panic!("expected new for {argv:?}: {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn new_parser_rejects_bad_grammar_as_single_usage_line() {
+        let cases: Vec<Vec<&str>> = vec![
+            vec!["new"],
+            vec!["new", "creature"],
+            vec!["new", "creature", "--slug", "goblin"],
+            vec!["new", "creature", "--id", NEW_ID],
+            vec![
+                "new", "creature", "--slug", "goblin", "--id", NEW_ID, "--slug", "orc",
+            ],
+            vec![
+                "new", "creature", "--slug", "goblin", "--id", NEW_ID, "--id", NEW_ID,
+            ],
+            vec![
+                "new",
+                "dialogue",
+                "--slug",
+                "talk",
+                "--id",
+                NEW_ID,
+                "--entry-id",
+                NEW_ENTRY_ID,
+                "--entry-id",
+                NEW_ENTRY_ID,
+            ],
+            vec!["new", "creature", "--slug", "goblin"],
+            vec!["new", "creature", "--slug"],
+            vec!["new", "creature", "--slug", "goblin", "--id"],
+            vec![
+                "new", "creature", "extra", "--slug", "goblin", "--id", NEW_ID,
+            ],
+            vec!["new", "creature", "a", "b", "--slug", "g", "--id", NEW_ID],
+            vec!["new", "golem", "--slug", "goblin", "--id", NEW_ID],
+            vec![
+                "new", "creature", "--slug", "goblin", "--id", NEW_ID, "--bogus",
+            ],
+            vec!["new", "--bogus", "creature", "--slug", "g", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "goblin", "--id", NEW_ID, "--"],
+            vec!["new", "--", "creature", "--slug", "g", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "goblin", "--id", NEW_ID, "-s"],
+            vec!["new", "creature", "--slug=goblin", "--id", NEW_ID],
+            vec![
+                "new", "creature", "--slug", "goblin", "--id", NEW_ID, "--help",
+            ],
+            vec![
+                "new",
+                "creature",
+                "--slug",
+                "goblin",
+                "--id",
+                NEW_ID,
+                "--version",
+            ],
+            vec!["new", "dialogue", "--slug", "talk", "--id", NEW_ID],
+            vec!["new", "quest", "--slug", "fetch", "--id", NEW_ID],
+            vec![
+                "new",
+                "creature",
+                "--slug",
+                "goblin",
+                "--id",
+                NEW_ID,
+                "--entry-id",
+                NEW_ENTRY_ID,
+            ],
+            vec![
+                "new",
+                "item",
+                "--slug",
+                "sword",
+                "--id",
+                NEW_ID,
+                "--entry-id",
+                NEW_ENTRY_ID,
+            ],
+            vec![
+                "new",
+                "dialogue",
+                "--slug",
+                "talk",
+                "--id",
+                NEW_ID,
+                "--entry-id",
+                NEW_ID,
+            ],
+            vec!["new", "creature", "--slug", "Bad", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "-goblin", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "goblin-", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "gob--lin", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "gob_lin", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "", "--id", NEW_ID],
+            vec!["new", "creature", "--slug", "goblin", "--id", "short"],
+            vec![
+                "new",
+                "creature",
+                "--slug",
+                "goblin",
+                "--id",
+                "0000000000000000000000001!",
+            ],
+            vec![
+                "new",
+                "creature",
+                "--slug",
+                "goblin",
+                "--id",
+                "80000000000000000000000000",
+            ],
+            vec![
+                "new",
+                "dialogue",
+                "--slug",
+                "talk",
+                "--id",
+                NEW_ID,
+                "--entry-id",
+                "bogus",
+            ],
+        ];
+        for argv in &cases {
+            assert_new_usage(argv, NEW_USAGE);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_non_unicode_text_is_usage() {
+        use std::os::unix::ffi::OsStringExt;
+        let bad = OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]);
+        for argv in [
+            vec![
+                OsString::from("new"),
+                bad.clone(),
+                OsString::from("--slug"),
+                OsString::from("g"),
+                OsString::from("--id"),
+                OsString::from(NEW_ID),
+            ],
+            vec![
+                OsString::from("new"),
+                OsString::from("creature"),
+                OsString::from("--slug"),
+                bad.clone(),
+                OsString::from("--id"),
+                OsString::from(NEW_ID),
+            ],
+        ] {
+            match parse_args(&argv) {
+                Err(CliError::Usage(message)) => {
+                    assert_eq!(
+                        Outcome::cli_error(&CliError::Usage(message)).stderr,
+                        format!("crpgc: usage: {NEW_USAGE}\n").into_bytes()
+                    );
+                }
+                other => panic!("non-Unicode new text must be usage: {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn new_non_unicode_text_is_usage() {
+        use std::os::windows::ffi::OsStringExt;
+        let bad = OsString::from_wide(&[0x0066, 0xD800]);
+        let argv = vec![
+            OsString::from("new"),
+            OsString::from("creature"),
+            OsString::from("--slug"),
+            bad,
+            OsString::from("--id"),
+            OsString::from(NEW_ID),
+        ];
+        match parse_args(&argv) {
+            Err(CliError::Usage(message)) => {
+                assert_eq!(
+                    Outcome::cli_error(&CliError::Usage(message)).stderr,
+                    format!("crpgc: usage: {NEW_USAGE}\n").into_bytes()
+                );
+            }
+            other => panic!("non-Unicode new text must be usage: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slug_grammar_matches_pinned_cases_without_regex() {
+        for valid in ["a", "0", "goblin", "goblin-2", "a-b-c-0"] {
+            assert!(is_valid_slug(valid), "{valid} must be valid");
+        }
+        for invalid in [
+            "", "-", "-a", "a-", "a--b", "A", "Goblin", "gob_lin", "gob lin", "gob.lin", "göblin",
+            "a-", "--",
+        ] {
+            assert!(!is_valid_slug(invalid), "{invalid:?} must be invalid");
+        }
+    }
+
+    #[test]
+    fn new_templates_carry_exact_identities_and_tags() {
+        let id: Ulid = NEW_ID.parse().expect("fixture id");
+        let entry: Ulid = NEW_ENTRY_ID.parse().expect("fixture entry");
+        let creature = run_new(NewKind::Creature, "goblin", id, None);
+        assert_eq!(creature.code, 0);
+        assert!(creature.stderr.is_empty());
+        match crpg_data::read_document(&creature.stdout).expect("writes canonical") {
+            crpg_data::Document::Creature(creature) => {
+                assert_eq!(creature.id, id);
+                assert_eq!(creature.slug, "goblin");
+                assert_eq!(creature.name, "creature.goblin.name");
+                assert!(creature.note.is_none());
+                assert!(creature.stats.is_empty());
+                assert!(creature.tags.is_empty());
+                assert!(creature.faction.is_none());
+                assert!(creature.inventory.is_empty());
+            }
+            other => panic!("expected creature: {other:?}"),
+        }
+        let item = run_new(NewKind::Item, "sword", id, None);
+        match crpg_data::read_document(&item.stdout).expect("writes canonical") {
+            crpg_data::Document::Item(item) => {
+                assert_eq!(item.id, id);
+                assert_eq!(item.name, "item.sword.name");
+                assert!(item.stats.is_empty() && item.tags.is_empty() && item.note.is_none());
+            }
+            other => panic!("expected item: {other:?}"),
+        }
+        let dialogue = run_new(NewKind::Dialogue, "talk", id, Some(entry));
+        match crpg_data::read_document(&dialogue.stdout).expect("writes canonical") {
+            crpg_data::Document::Dialogue(dialogue) => {
+                assert_eq!(dialogue.entry, entry);
+                assert_eq!(dialogue.name, "dialogue.talk.name");
+                assert_eq!(dialogue.nodes.len(), 1);
+                assert_eq!(dialogue.nodes[0].id, entry);
+                assert_eq!(dialogue.nodes[0].body, crpg_data::DialogueBody::End);
+            }
+            other => panic!("expected dialogue: {other:?}"),
+        }
+        let quest = run_new(NewKind::Quest, "fetch", id, Some(entry));
+        match crpg_data::read_document(&quest.stdout).expect("writes canonical") {
+            crpg_data::Document::Quest(quest) => {
+                assert_eq!(quest.entry, entry);
+                assert_eq!(quest.states.len(), 1);
+                assert_eq!(quest.states[0].id, entry);
+                assert_eq!(quest.states[0].name, "quest.fetch.state.done");
+                assert!(quest.states[0].terminal);
+                assert!(quest.states[0].on_enter.is_empty());
+                assert!(quest.states[0].transitions.is_empty());
+            }
+            other => panic!("expected quest: {other:?}"),
+        }
+        // Repeated calls with identical operands produce identical bytes.
+        assert_eq!(
+            run_new(NewKind::Creature, "goblin", id, None).stdout,
+            creature.stdout
+        );
+    }
+
+    #[test]
+    fn schema_parser_accepts_all_stems_and_rejects_the_rest() {
+        for stem in [
+            "campaign",
+            "world",
+            "area",
+            "creature",
+            "item",
+            "dialogue",
+            "quest",
+            "faction",
+            "graph",
+            "placements",
+            "triggers",
+            "locale",
+            "variables",
+            "campaign-lock",
+            "assets-lock",
+            "placement",
+            "action-signature",
+        ] {
+            match parse_args(&args(&["schema", stem])) {
+                Ok(Command::Schema { stem: parsed }) => assert_eq!(parsed, stem),
+                other => panic!("expected schema {stem}: {other:?}"),
+            }
+        }
+        for argv in [
+            args(&["schema"]),
+            args(&["schema", "campaign", "world"]),
+            args(&["schema", "placement-kind"]),
+            args(&["schema", "Campaign"]),
+            args(&["schema", "--check", "campaign"]),
+            args(&["schema", "campaign", "--check"]),
+            args(&["schema", "--"]),
+        ] {
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                SCHEMA_USAGE,
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn schema_non_unicode_stem_is_usage() {
+        use std::os::unix::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("schema"),
+            OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]),
+        ];
+        assert!(matches!(parse_args(&argv), Err(CliError::Usage(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn schema_non_unicode_stem_is_usage() {
+        use std::os::windows::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("schema"),
+            OsString::from_wide(&[0x0066, 0xD800]),
+        ];
+        assert!(matches!(parse_args(&argv), Err(CliError::Usage(_))));
+    }
+
+    #[test]
+    fn schema_output_is_data_bytes_unchanged() {
+        let expected = crpg_data::generated_schemas().expect("generates");
+        for stem in [
+            "campaign",
+            "creature",
+            "campaign-lock",
+            "placement",
+            "action-signature",
+        ] {
+            let outcome = run_schema(stem);
+            assert_eq!(outcome.code, 0);
+            assert!(outcome.stderr.is_empty());
+            assert_eq!(
+                outcome.stdout,
+                expected[&format!("{stem}.schema.json")],
+                "CLI must pass data bytes through unchanged"
+            );
+            assert_eq!(outcome.stdout.last(), Some(&b'\n'));
+        }
+        // Repeated output is identical.
+        assert_eq!(run_schema("quest").stdout, run_schema("quest").stdout);
+    }
+
+    #[test]
+    fn explain_parser_matrix_and_usage_bytes() {
+        match parse_args(&args(&["explain", NEW_ID])) {
+            Ok(Command::Explain { id, root }) => {
+                assert_eq!(id.to_string(), NEW_ID);
+                assert_eq!(root, PathBuf::from("."));
+            }
+            other => panic!("expected explain: {other:?}"),
+        }
+        for argv in [
+            args(&["explain", "--root", "root/dir", NEW_ID]),
+            args(&["explain", NEW_ID, "--root", "root/dir"]),
+        ] {
+            match parse_args(&argv) {
+                Ok(Command::Explain { root, .. }) => {
+                    assert_eq!(root, PathBuf::from("root/dir"));
+                }
+                other => panic!("expected explain with root: {other:?}"),
+            }
+        }
+        // Core aliases normalize at parse: lowercase `i` decodes as `1`.
+        let aliased = NEW_ID.replace('1', "i");
+        match parse_args(&args(&["explain", &aliased])) {
+            Ok(Command::Explain { id, .. }) => assert_eq!(id.to_string(), NEW_ID),
+            other => panic!("expected alias parse: {other:?}"),
+        }
+        for argv in [
+            args(&["explain"]),
+            args(&["explain", NEW_ID, NEW_ID]),
+            args(&["explain", "--root"]),
+            args(&["explain", NEW_ID, "--root"]),
+            args(&["explain", "--root", "a", "--root", "b", NEW_ID]),
+            args(&["explain", "--bogus", NEW_ID]),
+            args(&["explain", NEW_ID, "--bogus"]),
+            args(&["explain", "--", NEW_ID]),
+            args(&["explain", NEW_ID, "--help"]),
+            args(&["explain", "short"]),
+            args(&["explain", "0000000000000000000000001!"]),
+            args(&["explain", "80000000000000000000000000"]),
+            args(&["explain", " 00000000000000000000000011"]),
+            args(&["explain", "00000000000000000000000011 "]),
+        ] {
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                EXPLAIN_USAGE,
+            );
+        }
+        // The all-zero id is syntactically valid: no invented NIL prohibition.
+        assert!(parse_args(&args(&["explain", "00000000000000000000000000"])).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explain_non_unicode_id_is_usage_but_root_parses_for_io() {
+        use std::os::unix::ffi::OsStringExt;
+        let bad = OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]);
+        assert!(matches!(
+            parse_args(&[OsString::from("explain"), bad]),
+            Err(CliError::Usage(_))
+        ));
+        let argv = vec![
+            OsString::from("explain"),
+            OsString::from(NEW_ID),
+            OsString::from("--root"),
+            OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]),
+        ];
+        assert!(matches!(parse_args(&argv), Ok(Command::Explain { .. })));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explain_non_unicode_id_is_usage_but_root_parses_for_io() {
+        use std::os::windows::ffi::OsStringExt;
+        let bad = OsString::from_wide(&[0x0066, 0xD800]);
+        assert!(matches!(
+            parse_args(&[OsString::from("explain"), bad.clone()]),
+            Err(CliError::Usage(_))
+        ));
+        let argv = vec![
+            OsString::from("explain"),
+            OsString::from(NEW_ID),
+            OsString::from("--root"),
+            bad,
+        ];
+        assert!(matches!(parse_args(&argv), Ok(Command::Explain { .. })));
+    }
+
+    #[test]
+    fn explain_flag_shaped_root_values_are_usage_before_io() {
+        // Every Unicode dash-prefixed token used as `--root`'s value is a
+        // usage error, never an I/O path: help/version/terminator/
+        // short-flag/duplicate-option forms plus unknown flags.
+        for value in [
+            "--help",
+            "--version",
+            "--",
+            "-x",
+            "--root",
+            "--catalog",
+            "--check",
+            "--bogus",
+        ] {
+            let argv = args(&["explain", NEW_ID, "--root", value]);
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                EXPLAIN_USAGE,
+            );
+            // Leading `--root` form is equally usage.
+            let argv = args(&["explain", "--root", value, NEW_ID]);
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                EXPLAIN_USAGE,
+            );
+        }
+        // The reviewed cases: `--help`, `--`, and a short flag as values
+        // with a valid id must be usage exit 2, not exit-1 I/O.
+        for argv in [
+            args(&["explain", "00000000000000000000000004", "--root", "--help"]),
+            args(&["explain", "00000000000000000000000004", "--root", "--"]),
+            args(&["explain", "00000000000000000000000004", "--root", "-x"]),
+        ] {
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                EXPLAIN_USAGE,
+            );
+        }
+        // An explicit relative prefix escapes a dash-leading path: it parses
+        // for later I/O validation instead of failing as usage.
+        match parse_args(&args(&["explain", NEW_ID, "--root", "./-dash-root"])) {
+            Ok(Command::Explain { root, .. }) => {
+                assert_eq!(root, PathBuf::from("./-dash-root"));
+            }
+            other => panic!("./-prefixed root must parse: {other:?}"),
+        }
+        // Non-Unicode values are preserved for exit-1 I/O validation (pinned
+        // by the cfg-gated tests above); Unicode dash values never reach I/O.
+    }
+
+    #[test]
+    fn explain_engine_failure_and_collector_failure_have_exact_bytes() {
+        let id: Ulid = NEW_ID.parse().expect("valid");
+        let root = PathBuf::from("/fake/root");
+        let mut walk = FakeFs::new();
+        walk.dir(&root, &["campaign.json"]);
+        walk.file(&root.join("campaign.json"), b"{}");
+        let outcome = run_explain_with(&walk, &root, id, "not-a-version");
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.stderr, EXPLAIN_ENGINE_FAILURE.as_bytes());
+        let missing = PathBuf::from("/fake/missing");
+        let outcome = run_explain_with(&FakeFs::new(), &missing, id, "0.1.0");
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert!(!outcome.stderr.is_empty());
+    }
+
+    #[test]
+    fn fmt_parser_matrix_and_usage_bytes() {
+        match parse_args(&args(&["fmt"])) {
+            Ok(Command::Fmt { root, check }) => {
+                assert_eq!(root, PathBuf::from("."));
+                assert!(!check);
+            }
+            other => panic!("expected fmt default: {other:?}"),
+        }
+        match parse_args(&args(&["fmt", "--check", "some/root"])) {
+            Ok(Command::Fmt { root, check }) => {
+                assert_eq!(root, PathBuf::from("some/root"));
+                assert!(check);
+            }
+            other => panic!("expected fmt check-first: {other:?}"),
+        }
+        match parse_args(&args(&["fmt", "some/root", "--check"])) {
+            Ok(Command::Fmt { check, .. }) => assert!(check),
+            other => panic!("expected fmt check-last: {other:?}"),
+        }
+        for argv in [
+            args(&["fmt", "a", "b"]),
+            args(&["fmt", "--check", "--check"]),
+            args(&["fmt", "--check", "a", "--check"]),
+            args(&["fmt", "--bogus"]),
+            args(&["fmt", "a", "--bogus"]),
+            args(&["fmt", "--"]),
+            args(&["fmt", "--help"]),
+        ] {
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                FMT_USAGE,
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fmt_non_unicode_root_parses_for_io() {
+        use std::os::unix::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("fmt"),
+            OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]),
+        ];
+        assert!(matches!(parse_args(&argv), Ok(Command::Fmt { .. })));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fmt_non_unicode_root_parses_for_io() {
+        use std::os::windows::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("fmt"),
+            OsString::from_wide(&[0x0066, 0xD800]),
+        ];
+        assert!(matches!(parse_args(&argv), Ok(Command::Fmt { .. })));
+    }
+
+    #[test]
+    fn fmt_engine_failure_and_preflight_zero_writes() {
+        let root = PathBuf::from("/fake/root");
+        let mut walk = FakeFs::new();
+        walk.dir(&root, &["campaign.json"]);
+        walk.file(&root.join("campaign.json"), b"{}");
+        let rewrite = FakeRewriteFs::new();
+        let outcome = run_fmt_with(&walk, &rewrite, &root, "not-a-version", false);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.stderr, FMT_ENGINE_FAILURE.as_bytes());
+        let outcome = run_fmt_with(&walk, &rewrite, &root, "0.1.0", true);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert!(!outcome.stderr.is_empty());
+        assert!(
+            rewrite.log.borrow().is_empty(),
+            "preflight failure must perform zero writes: {:?}",
+            rewrite.log.borrow()
+        );
+    }
+
+    #[test]
+    fn fmt_check_dirty_lines_and_document_set_bytes_are_exact() {
+        assert_eq!(
+            FMT_DOCUMENT_SET_FAILURE,
+            "crpgc fmt: internal document set failure\n"
+        );
+        assert_eq!(
+            FMT_ENGINE_FAILURE,
+            "crpgc fmt: internal engine version failure\n"
+        );
+        assert_eq!(
+            EXPLAIN_ENGINE_FAILURE,
+            "crpgc explain: internal engine version failure\n"
+        );
+    }
+
+    #[test]
+    fn lock_parser_matrix_and_usage_bytes() {
+        match parse_args(&args(&["lock", "--catalog", "catalog.json"])) {
+            Ok(Command::Lock { root, catalog }) => {
+                assert_eq!(root, PathBuf::from("."));
+                assert_eq!(catalog, PathBuf::from("catalog.json"));
+            }
+            other => panic!("expected lock: {other:?}"),
+        }
+        for argv in [
+            args(&["lock", "some/root", "--catalog", "catalog.json"]),
+            args(&["lock", "--catalog", "catalog.json", "some/root"]),
+        ] {
+            match parse_args(&argv) {
+                Ok(Command::Lock { root, catalog }) => {
+                    assert_eq!(root, PathBuf::from("some/root"));
+                    assert_eq!(catalog, PathBuf::from("catalog.json"));
+                }
+                other => panic!("expected lock with root: {other:?}"),
+            }
+        }
+        for argv in [
+            args(&["lock"]),
+            args(&["lock", "some/root"]),
+            args(&["lock", "--catalog"]),
+            args(&["lock", "--catalog", "a", "--catalog", "b"]),
+            args(&["lock", "a", "b", "--catalog", "c"]),
+            args(&["lock", "--bogus", "--catalog", "c"]),
+            args(&["lock", "--catalog", "c", "--bogus"]),
+            args(&["lock", "--", "--catalog", "c"]),
+            args(&["lock", "--catalog", "c", "--help"]),
+        ] {
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                LOCK_USAGE,
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_non_unicode_paths_parse_for_io() {
+        use std::os::unix::ffi::OsStringExt;
+        let bad = OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]);
+        let argv = vec![
+            OsString::from("lock"),
+            bad.clone(),
+            OsString::from("--catalog"),
+            bad,
+        ];
+        assert!(matches!(parse_args(&argv), Ok(Command::Lock { .. })));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lock_non_unicode_paths_parse_for_io() {
+        use std::os::windows::ffi::OsStringExt;
+        let bad = OsString::from_wide(&[0x0066, 0xD800]);
+        let argv = vec![
+            OsString::from("lock"),
+            bad.clone(),
+            OsString::from("--catalog"),
+            bad,
+        ];
+        assert!(matches!(parse_args(&argv), Ok(Command::Lock { .. })));
+    }
+
+    #[test]
+    fn lock_flag_shaped_catalog_values_are_usage_before_io() {
+        // Every Unicode dash-prefixed token used as `--catalog`'s value is
+        // usage, never I/O: the reviewed `lock --catalog --help` case plus
+        // version/terminator/short-flag/duplicate forms.
+        for value in [
+            "--help",
+            "--version",
+            "--",
+            "-x",
+            "--catalog",
+            "--root",
+            "--check",
+            "--bogus",
+        ] {
+            let argv = args(&["lock", "--catalog", value]);
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                LOCK_USAGE,
+            );
+        }
+        for argv in [
+            args(&["lock", "--catalog", "--help"]),
+            args(&["lock", "--catalog", "--"]),
+            args(&["lock", "--catalog", "-x"]),
+            args(&["lock", "--catalog", "--catalog"]),
+        ] {
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                LOCK_USAGE,
+            );
+        }
+        // An explicit relative prefix escapes a dash-leading catalog path.
+        match parse_args(&args(&["lock", "--catalog", "./-catalog.json"])) {
+            Ok(Command::Lock { catalog, .. }) => {
+                assert_eq!(catalog, PathBuf::from("./-catalog.json"));
+            }
+            other => panic!("./-prefixed catalog must parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_and_run_flag_shaped_option_values_are_usage() {
+        // Text option values that look like flags are usage, never silently
+        // accepted as slugs/ids/numbers.
+        for argv in [
+            args(&["new", "creature", "--slug", "--help", "--id", NEW_ID]),
+            args(&["new", "creature", "--slug", "goblin", "--id", "--"]),
+            args(&[
+                "new",
+                "creature",
+                "--slug",
+                "goblin",
+                "--id",
+                NEW_ID,
+                "--entry-id",
+                "--help",
+            ]),
+            args(&["run", "--ticks", "--help", "--hash-every", "1"]),
+            args(&["run", "--ticks", "10", "--hash-every", "--"]),
+            args(&["run", "--ticks", "10", "--hash-every", "1", "--seed", "-x"]),
+        ] {
+            let usage = if argv[0].to_str() == Some("new") {
+                NEW_USAGE
+            } else {
+                RUN_USAGE
+            };
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                usage,
+            );
+        }
+    }
+
+    /// Minimal lock-test campaign inputs on a fake rewrite fs: a campaign
+    /// with no requirements plus an empty assets lock, so an empty catalog
+    /// resolves. Bytes are authored JSON envelopes, read through the same
+    /// production `read_document`/`read_assets_lock` paths as the binary.
+    fn lock_empty_inputs(fs: &mut FakeRewriteFs, root: &Path, catalog_bytes: &[u8]) -> PathBuf {
+        fs.dir(root);
+        fs.dir(&root.join("assets"));
+        fs.file(
+            &root.join("campaign.json"),
+            br#"{"engine":">=0.1.0","entry":{"area":"00000000000000000000000003","spawn":"00000000000000000000000005","world":"00000000000000000000000002"},"id":"00000000000000000000000001","name":"fixture.campaign","package":"fixture.one-area","requires":[],"schema":"crpg.campaign/1","slug":"campaign","version":"0.1.0"}"#,
+        );
+        fs.file(
+            &root.join("assets").join("assets.lock"),
+            br#"{"assets":{},"schema":"crpg.assets-lock/1"}"#,
+        );
+        let catalog = root.join("catalog.json");
+        fs.file(&catalog, catalog_bytes);
+        catalog
+    }
+
+    #[test]
+    fn lock_creates_missing_output_writes_expected_bytes() {
+        let mut fs = FakeRewriteFs::new();
+        let root = PathBuf::from("/fake/root");
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(
+            outcome.code,
+            0,
+            "stderr: {}",
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        assert!(outcome.stdout.is_empty() && outcome.stderr.is_empty());
+        let disk_lock = disk_path(&root, "campaign.lock");
+        let written = fs
+            .written
+            .borrow()
+            .get(&disk_lock)
+            .cloned()
+            .expect("creates lock");
+        // The new lock's note is the data constructor's None, and the bytes
+        // equal the direct data calls: forwarding, not a CLI oracle.
+        let assets = crpg_data::read_assets_lock(br#"{"assets":{},"schema":"crpg.assets-lock/1"}"#)
+            .expect("test assets parse");
+        let expected = crpg_data::write_campaign_lock(
+            &crpg_data::make_campaign_lock(&[], &[], &assets).expect("empty resolves"),
+        )
+        .expect("test lock writes");
+        assert_eq!(written, expected);
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .any(|entry| entry == &format!("create {}", portable(&disk_lock))),
+            "missing output uses create_new: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn lock_no_ops_on_byte_equality_and_replaces_stale_output() {
+        let mut fs = FakeRewriteFs::new();
+        let root = PathBuf::from("/fake/root");
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        let assets = crpg_data::read_assets_lock(br#"{"assets":{},"schema":"crpg.assets-lock/1"}"#)
+            .expect("test assets parse");
+        let expected = crpg_data::write_campaign_lock(
+            &crpg_data::make_campaign_lock(&[], &[], &assets).expect("empty resolves"),
+        )
+        .expect("test lock writes");
+        // Stale output is replaced through the existing-file discipline.
+        let disk_lock = disk_path(&root, "campaign.lock");
+        fs.file(&disk_lock, b"{\"stale\":true}");
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(
+            outcome.code,
+            0,
+            "stderr: {}",
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        assert_eq!(fs.written.borrow().get(&disk_lock), Some(&expected));
+        // Byte-identical output performs zero writes.
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.file(&disk_lock, &expected);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 0);
+        assert!(fs.written.borrow().is_empty(), "no-op must not write");
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .all(|entry| !entry.starts_with("open") && !entry.starts_with("create")),
+            "no-op must not open or create: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn lock_replacement_detects_byte_drift_with_zero_opens() {
+        // Drift between the initial capture and the prewrite reread surfaces
+        // as `source_changed` with exact bytes and zero opens/writes.
+        let mut fs = FakeRewriteFs::new();
+        let root = PathBuf::from("/fake/root");
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        let disk_lock = disk_path(&root, "campaign.lock");
+        fs.file(&disk_lock, b"{\"stale\":true}");
+        fs.drift_second_read(&disk_lock, b"{\"drifted\":true}");
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "campaign.lock: error[io]: cannot check campaign.lock: source_changed\n"
+        );
+        assert!(fs.written.borrow().is_empty(), "drift must not write");
+        assert!(
+            fs.log
+                .borrow()
+                .iter()
+                .all(|entry| !entry.starts_with("open")
+                    && !entry.starts_with("create")
+                    && !entry.starts_with("write")),
+            "drift must not open/create/write: {:?}",
+            fs.log.borrow()
+        );
+    }
+
+    #[test]
+    fn lock_rejects_symlinked_ancestors_without_traversal() {
+        let root = PathBuf::from("/fake/root");
+        // Catalog with a symlinked ancestor is rejected with the portable
+        // `<catalog>` diagnostic, never `invalid catalog`.
+        let mut fs = FakeRewriteFs::new();
+        fs.dir(&root);
+        fs.dir(&root.join("assets"));
+        fs.file(
+            &root.join("campaign.json"),
+            br#"{"engine":">=0.1.0","entry":{"area":"00000000000000000000000003","spawn":"00000000000000000000000005","world":"00000000000000000000000002"},"id":"00000000000000000000000001","name":"fixture.campaign","package":"fixture.one-area","requires":[],"schema":"crpg.campaign/1","slug":"campaign","version":"0.1.0"}"#,
+        );
+        fs.file(
+            &root.join("assets").join("assets.lock"),
+            br#"{"assets":{},"schema":"crpg.assets-lock/1"}"#,
+        );
+        let link_parent = PathBuf::from("/fake/link");
+        fs.symlink(&link_parent);
+        let catalog = link_parent.join("catalog.json");
+        fs.file(&catalog, b"[]");
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "<campaign>: error[io]: cannot read <catalog>: symlink_at_document_path\n"
+        );
+        assert!(fs.written.borrow().is_empty());
+        // A symlinked parent of the supplied root is rejected with the
+        // portable `<campaign-root>` diagnostic.
+        let mut fs = FakeRewriteFs::new();
+        fs.symlink(&PathBuf::from("/fake"));
+        fs.dir(&root);
+        let catalog = lock_empty_inputs(&mut fs, &PathBuf::from("/fake/other"), b"[]");
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "<campaign>: error[io]: cannot open root <campaign-root>: symlink_at_document_path\n"
+        );
+        // A symlinked `assets` ancestor names the affected target logical.
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.kinds.insert(root.join("assets"), EntryKind::Symlink);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "assets/assets.lock: error[io]: cannot read assets/assets.lock: symlink_at_document_path\n"
+        );
+    }
+
+    #[test]
+    fn lock_rejects_bad_inputs_with_exact_bytes_and_zero_output_writes() {
+        let root = PathBuf::from("/fake/root");
+        // Wrong campaign document kind.
+        let mut fs = FakeRewriteFs::new();
+        fs.dir(&root);
+        fs.dir(&root.join("assets"));
+        fs.file(
+            &root.join("campaign.json"),
+            br#"{"areas":[],"id":"00000000000000000000000002","name":"k","schema":"crpg.world/1","slug":"world","variables":[]}"#,
+        );
+        fs.file(
+            &root.join("assets").join("assets.lock"),
+            br#"{"assets":{},"schema":"crpg.assets-lock/1"}"#,
+        );
+        let catalog = root.join("catalog.json");
+        fs.file(&catalog, b"[]");
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.stderr, LOCK_EXPECTED_CAMPAIGN.as_bytes());
+        assert!(fs.written.borrow().is_empty());
+        // Malformed catalog and non-array catalog share one exact line.
+        for catalog_bytes in [
+            b"{".as_slice(),
+            b"{}".as_slice(),
+            b"null".as_slice(),
+            b"[}".as_slice(),
+        ] {
+            let mut fs = FakeRewriteFs::new();
+            let catalog = lock_empty_inputs(&mut fs, &root, catalog_bytes);
+            let outcome = run_lock_with(&fs, &root, &catalog);
+            assert_eq!(outcome.code, 1, "catalog {catalog_bytes:?}");
+            assert!(outcome.stdout.is_empty());
+            assert_eq!(outcome.stderr, LOCK_INVALID_CATALOG.as_bytes());
+            assert!(fs.written.borrow().is_empty(), "bad catalog writes nothing");
+        }
+        // Unknown candidate fields are strict typed errors, not leniency.
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(
+            &mut fs,
+            &root,
+            b"[{\"kind\":\"module\",\"package\":\"a.b\",\"version\":\"1.0.0\",\"checksum\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"extra\":1}]",
+        );
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(outcome.stderr, LOCK_INVALID_CATALOG.as_bytes());
+        // Missing campaign input is a portable read diagnostic.
+        let mut fs = FakeRewriteFs::new();
+        fs.dir(&root);
+        fs.dir(&root.join("assets"));
+        fs.file(
+            &root.join("assets").join("assets.lock"),
+            br#"{"assets":{},"schema":"crpg.assets-lock/1"}"#,
+        );
+        let catalog = root.join("catalog.json");
+        fs.file(&catalog, b"[]");
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "campaign.json: error[io]: cannot read campaign.json: not_found\n"
+        );
+        // A concurrently appearing output is source_changed, never a silent
+        // overwrite or a directory creation: covered by
+        // lock_create_race_is_source_changed below.
+    }
+
+    #[test]
+    fn lock_create_race_is_source_changed() {
+        // A missing output that appears between the metadata check and
+        // creation reports source_changed: production create_new fails with
+        // AlreadyExists, which the writer maps to a check diagnostic, never
+        // a silent overwrite.
+        let mut fs = FakeRewriteFs::new();
+        let root = PathBuf::from("/fake/root");
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        let disk_lock = disk_path(&root, "campaign.lock");
+        fs.kinds.remove(&disk_lock);
+        fs.create_err
+            .insert(disk_lock.clone(), std::io::ErrorKind::AlreadyExists);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "campaign.lock: error[io]: cannot check campaign.lock: source_changed\n"
+        );
+        assert!(fs.written.borrow().is_empty());
+        // A genuine scripted appearance between the metadata check and
+        // creation takes the same path: metadata reports missing while the
+        // later create observes the new file as `AlreadyExists`.
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        let disk_lock = disk_path(&root, "campaign.lock");
+        fs.kinds.remove(&disk_lock);
+        fs.contents.remove(&disk_lock);
+        fs.appear_on_next_metadata(&disk_lock);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "campaign.lock: error[io]: cannot check campaign.lock: source_changed\n"
+        );
+        assert!(fs.written.borrow().is_empty());
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.read_err.insert(
+            root.join("assets").join("assets.lock"),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "assets/assets.lock: error[io]: cannot read assets/assets.lock: permission_denied\n"
+        );
+        assert!(fs.written.borrow().is_empty());
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.read_err
+            .insert(catalog.clone(), std::io::ErrorKind::PermissionDenied);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "<campaign>: error[io]: cannot read <catalog>: permission_denied\n"
+        );
+        assert!(fs.written.borrow().is_empty());
+
+        // The bounded writer may retain a prefix of the failing output and
+        // must report exit 1 without attempting sync or rollback.
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.kinds.remove(&disk_lock);
+        fs.contents.remove(&disk_lock);
+        fs.write_prefix.insert(disk_lock.clone(), 7);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(String::from_utf8(outcome.stderr)
+            .expect("utf-8")
+            .contains("cannot write campaign.lock: "));
+        assert_eq!(
+            fs.written
+                .borrow()
+                .get(&disk_lock)
+                .expect("partial prefix retained")
+                .len(),
+            7
+        );
+        assert!(fs
+            .log
+            .borrow()
+            .iter()
+            .all(|entry| entry != &format!("sync {}", portable(&disk_lock))));
+    }
+
+    #[test]
+    fn lock_output_symlink_and_nonregular_are_check_failures() {
+        let root = PathBuf::from("/fake/root");
+        for kind in [EntryKind::Symlink, EntryKind::Directory, EntryKind::Other] {
+            let mut fs = FakeRewriteFs::new();
+            let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+            let disk_lock = disk_path(&root, "campaign.lock");
+            fs.kinds.insert(disk_lock.clone(), kind);
+            let outcome = run_lock_with(&fs, &root, &catalog);
+            assert_eq!(outcome.code, 1);
+            assert!(outcome.stdout.is_empty());
+            let stderr = String::from_utf8(outcome.stderr).expect("utf-8");
+            assert!(
+                stderr.starts_with("campaign.lock: error[io]: cannot check campaign.lock: "),
+                "{stderr}"
+            );
+            assert!(fs.written.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn lock_create_and_replace_cover_open_write_sync_failures() {
+        let root = PathBuf::from("/fake/root");
+        let disk_lock = disk_path(&root, "campaign.lock");
+        // Creation path (missing output via `create_new`): open/create,
+        // write, and sync failures each report their op with exact bytes and
+        // zero successful writes.
+        for (kind, op) in [
+            (std::io::ErrorKind::PermissionDenied, "open"),
+            (std::io::ErrorKind::Other, "open"),
+        ] {
+            let mut fs = FakeRewriteFs::new();
+            let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+            fs.kinds.remove(&disk_lock);
+            fs.contents.remove(&disk_lock);
+            fs.create_err.insert(disk_lock.clone(), kind);
+            // PermissionDenied keeps its kind; Other collapses to io_error.
+            let outcome = run_lock_with(&fs, &root, &catalog);
+            assert_eq!(outcome.code, 1, "create open {kind:?}");
+            assert!(outcome.stdout.is_empty());
+            let stderr = String::from_utf8(outcome.stderr).expect("utf-8");
+            assert!(
+                stderr.starts_with(&format!(
+                    "campaign.lock: error[io]: cannot {op} campaign.lock: "
+                )),
+                "{stderr}"
+            );
+            assert!(fs.written.borrow().is_empty());
+        }
+        for (setup, op, needle) in [
+            ("write", "write", "cannot write campaign.lock: "),
+            ("sync", "sync", "cannot sync campaign.lock: "),
+        ] {
+            let mut fs = FakeRewriteFs::new();
+            let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+            fs.kinds.remove(&disk_lock);
+            fs.contents.remove(&disk_lock);
+            if setup == "write" {
+                fs.write_err
+                    .insert(disk_lock.clone(), std::io::ErrorKind::Other);
+            } else {
+                fs.sync_err
+                    .insert(disk_lock.clone(), std::io::ErrorKind::Other);
+            }
+            let outcome = run_lock_with(&fs, &root, &catalog);
+            assert_eq!(outcome.code, 1, "create {setup}");
+            let stderr = String::from_utf8(outcome.stderr).expect("utf-8");
+            assert!(stderr.contains(needle), "{stderr}");
+            assert_eq!(op, if setup == "write" { "write" } else { "sync" });
+        }
+        // Replacement path (existing output via `open_truncate`): open,
+        // write, and sync failures with exact first-failure diagnostics and
+        // bounded partial-write effects (no rollback claim).
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.file(&disk_lock, b"{\"stale\":true}");
+        fs.open_err
+            .insert(disk_lock.clone(), std::io::ErrorKind::PermissionDenied);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "campaign.lock: error[io]: cannot open campaign.lock: permission_denied\n"
+        );
+        assert!(fs.written.borrow().is_empty());
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.file(&disk_lock, b"{\"stale\":true}");
+        fs.write_err
+            .insert(disk_lock.clone(), std::io::ErrorKind::Other);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(String::from_utf8(outcome.stderr)
+            .expect("utf-8")
+            .contains("cannot write campaign.lock: "));
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.file(&disk_lock, b"{\"stale\":true}");
+        fs.sync_err
+            .insert(disk_lock.clone(), std::io::ErrorKind::Other);
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert!(String::from_utf8(outcome.stderr)
+            .expect("utf-8")
+            .contains("cannot sync campaign.lock: "));
+        // Input-read failures (campaign/assets/catalog) yield zero output
+        // writes with exact first-failure order: campaign first.
+        let mut fs = FakeRewriteFs::new();
+        let catalog = lock_empty_inputs(&mut fs, &root, b"[]");
+        fs.read_err.insert(
+            root.join("campaign.json"),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        let outcome = run_lock_with(&fs, &root, &catalog);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "campaign.json: error[io]: cannot read campaign.json: permission_denied\n"
+        );
+        assert!(fs.written.borrow().is_empty());
+    }
+
+    #[test]
+    fn run_schema_defensive_missing_stem_returns_data_outcome() {
+        // The parser admits only the seventeen stems; calling the runner
+        // directly with an unlisted stem exercises the defensive `None` arm
+        // (data-owned line, exit 1, empty stdout) rather than panicking.
+        let outcome = run_schema("bogus-stem");
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert!(!outcome.stderr.is_empty());
+        assert!(
+            String::from_utf8(outcome.stderr)
+                .expect("utf-8")
+                .contains("missing generated schema"),
+            "defensive generation failure must name the stem"
+        );
+    }
+
+    #[test]
+    fn fmt_document_set_mismatch_maps_to_exact_outcome() {
+        // `plan_updates` key mismatch is an internal failure before writes;
+        // the runner maps it to the exact fixed line with exit 1.
+        let mut files = BTreeMap::new();
+        files.insert(migrate_path("campaign.json"), b"{}".to_vec());
+        let mut serialized = BTreeMap::new();
+        serialized.insert(migrate_path("campaign.json"), b"{}".to_vec());
+        serialized.insert(migrate_path("worlds/world.json"), b"{}".to_vec());
+        assert!(plan_updates(&files, &serialized).is_err());
+        let outcome = Outcome {
+            code: 1,
+            stdout: Vec::new(),
+            stderr: FMT_DOCUMENT_SET_FAILURE.as_bytes().to_vec(),
+        };
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(
+            outcome.stderr,
+            b"crpgc fmt: internal document set failure\n"
+        );
+    }
+
+    #[test]
+    fn run_parser_matrix_and_usage_bytes() {
+        match parse_args(&args(&["run", "--ticks", "10", "--hash-every", "2"])) {
+            Ok(Command::Run {
+                ticks,
+                hash_every,
+                seed,
+            }) => {
+                assert_eq!((ticks, hash_every, seed), (10, 2, 0));
+            }
+            other => panic!("expected run: {other:?}"),
+        }
+        match parse_args(&args(&[
+            "run",
+            "--seed",
+            "7",
+            "--hash-every",
+            "003",
+            "--ticks",
+            "010",
+        ])) {
+            Ok(Command::Run {
+                ticks,
+                hash_every,
+                seed,
+            }) => {
+                assert_eq!((ticks, hash_every, seed), (10, 3, 7));
+            }
+            other => panic!("expected run permuted with leading zeroes: {other:?}"),
+        }
+        for argv in [
+            args(&["run"]),
+            args(&["run", "--ticks", "10"]),
+            args(&["run", "--hash-every", "2"]),
+            args(&["run", "--ticks", "10", "--hash-every", "2", "--seed"]),
+            args(&["run", "--ticks", "--hash-every", "2"]),
+            args(&["run", "--ticks", "10", "--ticks", "11", "--hash-every", "2"]),
+            args(&[
+                "run",
+                "--ticks",
+                "10",
+                "--hash-every",
+                "2",
+                "--hash-every",
+                "3",
+            ]),
+            args(&[
+                "run",
+                "--ticks",
+                "10",
+                "--hash-every",
+                "2",
+                "--seed",
+                "1",
+                "--seed",
+                "2",
+            ]),
+            args(&["run", "--ticks", "10", "--bogus", "2"]),
+            args(&["run", "--ticks", "10", "--hash-every", "2", "extra"]),
+            args(&["run", "--ticks=10", "--hash-every", "2"]),
+            args(&["run", "--ticks", "+10", "--hash-every", "2"]),
+            args(&["run", "--ticks", "-1", "--hash-every", "2"]),
+            args(&["run", "--ticks", "1 0", "--hash-every", "2"]),
+            args(&["run", "--ticks", "0x10", "--hash-every", "2"]),
+            args(&["run", "--ticks", "1_0", "--hash-every", "2"]),
+            args(&["run", "--ticks", "", "--hash-every", "2"]),
+            args(&["run", "--ticks", "1000001", "--hash-every", "1"]),
+            args(&["run", "--ticks", "10", "--hash-every", "0"]),
+            args(&["run", "--ticks", "10", "--hash-every", "1000001"]),
+            args(&[
+                "run",
+                "--ticks",
+                "18446744073709551616",
+                "--hash-every",
+                "1",
+            ]),
+            args(&["run", "--ticks", "10", "--hash-every", "2", "--seed", "-1"]),
+            args(&["run", "--help", "--ticks", "1", "--hash-every", "1"]),
+            args(&["run", "--ticks", "1", "--hash-every", "1", "--"]),
+        ] {
+            assert_new_usage(
+                &argv
+                    .iter()
+                    .map(|arg| arg.to_str().expect("unicode"))
+                    .collect::<Vec<_>>(),
+                RUN_USAGE,
+            );
+        }
+        // Boundaries: N=0 and M=N=1_000_000 parse; defaults hold.
+        match parse_args(&args(&["run", "--ticks", "0", "--hash-every", "1000000"])) {
+            Ok(Command::Run { ticks, .. }) => assert_eq!(ticks, 0),
+            other => panic!("expected N=0: {other:?}"),
+        }
+        // Accepted numeric boundaries parse without performing million-tick
+        // simulation work in parser tests: N=1_000_000 and u64::MAX seed are
+        // accepted by the parser; execution is covered by small-N binary
+        // tests only.
+        match parse_args(&args(&[
+            "run",
+            "--ticks",
+            "1000000",
+            "--hash-every",
+            "1000000",
+        ])) {
+            Ok(Command::Run {
+                ticks, hash_every, ..
+            }) => {
+                assert_eq!((ticks, hash_every), (1_000_000, 1_000_000));
+            }
+            other => panic!("expected N=1_000_000: {other:?}"),
+        }
+        match parse_args(&args(&[
+            "run",
+            "--ticks",
+            "10",
+            "--hash-every",
+            "2",
+            "--seed",
+            "18446744073709551615",
+        ])) {
+            Ok(Command::Run { seed, .. }) => assert_eq!(seed, u64::MAX),
+            other => panic!("expected u64::MAX seed: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_non_unicode_number_is_usage() {
+        use std::os::unix::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("run"),
+            OsString::from("--ticks"),
+            OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]),
+            OsString::from("--hash-every"),
+            OsString::from("1"),
+        ];
+        assert!(matches!(parse_args(&argv), Err(CliError::Usage(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_non_unicode_number_is_usage() {
+        use std::os::windows::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("run"),
+            OsString::from("--ticks"),
+            OsString::from_wide(&[0x0066, 0xD800]),
+            OsString::from("--hash-every"),
+            OsString::from("1"),
+        ];
+        assert!(matches!(parse_args(&argv), Err(CliError::Usage(_))));
+    }
+
+    #[test]
+    fn run_number_parser_pins_digits_and_overflow() {
+        assert_eq!(parse_run_number("0"), Ok(0));
+        assert_eq!(parse_run_number("007"), Ok(7));
+        assert_eq!(parse_run_number("1000000"), Ok(1_000_000));
+        for bad in [
+            "",
+            "+1",
+            "-1",
+            " 1",
+            "1 ",
+            "0x1",
+            "1_0",
+            "1.0",
+            "①",
+            "18446744073709551616",
+        ] {
+            assert_eq!(parse_run_number(bad), Err(()), "{bad:?} must fail");
+        }
+    }
+
+    #[test]
+    fn hex32_is_64_lowercase_hex() {
+        let rendered = hex32(&[0xABu8; 32]);
+        assert_eq!(rendered.len(), 64);
+        assert_eq!(rendered, "ab".repeat(32));
+        assert_eq!(hex32(&[0u8; 32]), "00".repeat(32));
+        assert_ne!(hex32(&[0u8; 32]), hex32(&[1u8; 32]));
+    }
+
+    #[test]
+    fn run_samples_match_the_native_harness_at_index_k_minus_1() {
+        let outcome = run_run(5, 2, 0);
+        assert_eq!(outcome.code, 0);
+        assert!(outcome.stderr.is_empty());
+        let expected = crpg_testkit::run_hash_sequence(0, 5, Box::new(|_| {}));
+        let mut lines = Vec::new();
+        for (index, hash) in expected.iter().enumerate() {
+            let tick = index + 1;
+            if tick % 2 == 0 {
+                lines.push(format!("{tick} {}\n", hex32(hash)));
+            }
+        }
+        assert_eq!(outcome.stdout, lines.concat().into_bytes());
+        // Zero ticks and M>N produce empty stdout with exit 0.
+        assert!(run_run(0, 1, 0).stdout.is_empty());
+        assert!(run_run(3, 9, 0).stdout.is_empty());
+        // Repeatability with an explicit seed.
+        assert_eq!(run_run(4, 1, 42).stdout, run_run(4, 1, 42).stdout);
     }
 }

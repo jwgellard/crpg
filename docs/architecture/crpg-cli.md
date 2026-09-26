@@ -15,8 +15,12 @@ human or canonical machine diagnostics with the same `0/1/2` exit buckets.
 The migrate subcommand is live (T012b, 2026-09-18): `crpgc migrate
 <campaign-root>` is the explicit save action for S §4.5 over T012a's
 migration-aware loader and canonical writer, silent on success with the same
-`0/1/2` buckets. Every other subcommand is planned (T013 owns the first real
-argument parsing decision).
+`0/1/2` buckets. The six T013 commands are live (2026-09-19): `crpgc new`,
+`crpgc schema`, `crpgc explain`, `crpgc fmt`, `crpgc lock`, and `crpgc run`
+cover scaffolding, introspection, canonical formatting, package locking, and
+the bounded hash harness, each with the same `0/1/2` buckets. Every other
+subcommand is planned (the T013 parser decision — hand-rolled `args_os` with
+private per-command parsers, no parser library — now applies crate-wide).
 
 Decisions: the platform and determinism policy it inherits is
 [ADR-0012](../adr/0012-windows-primary-platform.md) (exact-build target
@@ -45,11 +49,11 @@ file it there, do not reach around.
 ## Modules
 
 - **`main` — dispatch, arguments, exit codes.** One variant per subcommand.
-  Argument parsing: hand-rolled `std::env::args` for T009b (one subcommand, one
-  optional flag); the clap question is reopened at T013 when the five-plus
-  subcommand surface arrives. Exit codes follow clap's convention so the
-  eventual swap stays script-compatible: `0` success, `1` replay-domain
-  failure, `2` usage error.
+  Argument parsing: hand-rolled `std::env::args_os` organized into private
+  per-command parsers crate-wide (T013 retained this decision for all six new
+  commands; no parser library is authorized). Exit codes follow the
+  established `0` success, `1` domain failure, `2` usage convention:
+  `0` success, `1` replay-domain failure, `2` usage error.
 - **`apply` — provisional reference intents.** The caller-owns-payload rule
   (testkit invariant 8) means a replay's `serde_json::Value` payloads mean
   whatever the *caller* says. Until a real game-intent task (T014/T016)
@@ -84,11 +88,12 @@ omitting it is a path decision, never a "use any golden" trap.
 
 ## Today versus planned
 
-| Exists (T009b/T011b/T012b) | Planned (owner) |
+| Exists (T009b/T011b/T012b/T013) | Planned (owner) |
 |---|---|
-| `crpgc replay` thin wrapper: args, exit codes, provisional intents | T013: first real argument-parsing decision (clap vs hand-rolled again) for the five-plus subcommand surface: `new`, `schema`, `explain`, `fmt`, `lock`, `run` |
+| `crpgc replay` thin wrapper: args, exit codes, provisional intents | Spec §24 remaining subcommands (`pack`, `diff`) as their specs land |
 | `crpgc validate` thin wrapper (T011b): read-only traversal, data-owned validation, plain/canonical diagnostics, gate-8 fixture enumeration | Spec §24 remaining subcommands (`pack`, `diff`) as their specs land |
 | `crpgc migrate` thin wrapper (T012b): explicit save, preflight plus bounded rewrite, data-golden tests | Spec §24 subcommands (`pack`, `diff`) as their specs land |
+| `crpgc new`/`schema`/`explain`/`fmt`/`lock`/`run` thin wrappers (T013): explicit-identity scaffolds, data-generated schemas, data-owned introspection reports, canonical check/save, flat-catalog lock adapter, bounded no-op harness sampling | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | Crate-opening docs (arch doc + AGENTS.md) | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | Verify-only replay gate on ADR-0012 targets | `crpgc` in product/driver roles once server capabilities exist (E020) |
 
@@ -168,7 +173,7 @@ document set failure`, both exit 1 before any write.
 ## Migrate flow and boundaries (T012b)
 
 The explicit save flow is parse (`args_os`) → the existing T011b read-only
-collector (sorted depth-first pre-order, root/entry symlink rejection, `/`
+collector (sorted depth-first pre-order, root-ancestor/root/entry symlink rejection, `/`
 logical paths, `campaign_document_path` classification, ignored-file policy)
 → `load_campaign(files, package engine version)` once → `serialize_campaign`
 once → compare returned bytes with collected originals → replace differing
@@ -214,6 +219,105 @@ with the sibling `expected.json` path-to-text golden; the checked-in source
 tree is never migrated and expected bytes are never generated from actual
 output in tests.
 
+## CLI contracts (T013 `new` / `schema` / `explain` / `fmt` / `lock` / `run`)
+
+```
+crpgc new <type> --slug <s> --id <id> [--entry-id <id>]
+crpgc schema <type>
+crpgc explain <id> [--root <campaign-root>]
+crpgc fmt [<campaign-root>] [--check]
+crpgc lock [<campaign-root>] --catalog <catalog-path>
+crpgc run --ticks N --hash-every M [--seed S]
+```
+
+`explain`, `fmt` and `lock` default their root to `.` with no ancestor
+search, environment override, implicit stdin, or repository-root lookup.
+Relative paths, including the catalog, are relative to the process working
+directory. Parsing completes before any filesystem access or output: each
+named option occurs at most once before or after positionals, values are
+separate tokens (never `--key=value`), and unknown flags, duplicates,
+missing values, extra positionals, `--`, short flags, and unlisted
+`--help`/`--version` forms are usage exit 2 with exactly
+`crpgc: usage: <syntax>\n` for the recognized command — one message for all
+its usage errors, never echoing input. Text arguments must be Unicode; path
+arguments stay `OsString` until I/O validation, so a non-Unicode path is
+exit 1, never exit 2. Success output is UTF-8 with LF. All success output is
+silent except `new` (one canonical document on stdout), `schema` (exact
+data-generated schema bytes on stdout), `explain` (`Some(bytes)` on stdout),
+and `run` (sampled hash lines on stdout).
+
+## Parser decision (T013)
+
+The hand-rolled `std::env::args_os` parser is retained and organized into
+private per-command parsers. A parser library would be useful at this
+command count, but no clap or other new dependency is authorized, and
+adopting one would risk changing established error bytes and non-Unicode
+handling. The bounded grammar plus exhaustive parser/process tests justify
+the decision; the task file records that the draft is not dependency
+approval.
+
+## Scaffolding and introspection boundaries (T013)
+
+`new` takes explicit caller-supplied identities (`--id` always, plus a
+distinct `--entry-id` for dialogue/quest; forbidden otherwise) with the
+slug grammar `[a-z0-9]+(?:-[a-z0-9]+)*` checked without a regex crate, then
+builds the existing public typed `Document` variants and calls
+`write_document` — never handwriting envelopes, schema tags, or canonical
+JSON. No clock, RNG, registry, or filesystem lookup; the author supplies
+locale entries and file placement, and repeated calls with identical
+operands produce identical bytes.
+
+`schema` writes `generated_schemas()` bytes for the requested stem
+unchanged; `explain` parses the id with `Ulid::from_str`, collects, calls
+`load_campaign` once and the landed `explain_object` once, and emits
+`Some(bytes)` untouched — with `None` as exit 1
+`crpgc explain: object not found: <canonical-uppercase-id>\n` and no CLI
+reference walker, kind table, or semantic-validation prerequisite. `fmt`
+reuses migrate's collect/load/serialize/key-set/diff plan with the T012b
+writer discipline (`--check` is the same preflight with
+`crpgc fmt: noncanonical: <logical>\n` per differing file and no writes).
+`lock` reads `campaign.json`, `assets/assets.lock`, and the flat JSON-array
+catalog in that order, resolves with `make_campaign_lock`, serializes with
+`write_campaign_lock`, and creates (via `create_new` with `source_changed`
+on races), replaces, or no-ops `campaign.lock` — never reading source
+assets, rewriting `assets.lock`, or calling `load_campaign`. Before output,
+existing paths are compared by filesystem identity through the
+maintainer-authorized `same-file` dependency so `campaign.lock` cannot also be
+the catalog, campaign manifest, or assets lock, including through a hard
+link; such an alias is `source_changed` with no mutation. `run` calls
+`run_hash_sequence(seed, ticks, Box::new(|_| {}))` once and prints only the
+`M, 2M, ... <= N` samples as `<k> <64-lowercase-hex>\n`; it is a bounded
+harness, not campaign execution.
+
+Migrate and fmt save retain every regular path observed during collection,
+including ignored files, and compare each differing target against that set
+through `same-file` before the first write. This rejects a document hard-linked
+to ignored content or another document as `source_changed`; fmt check remains
+a strictly read-only preflight and skips the write-only identity check.
+
+Bounded writes everywhere: saves stop at the first failure with no atomic
+replacement, rollback, crash recovery, or directory transaction, and may
+leave a partial prefix. Stream-write failures exit 1 without panic or
+recursion.
+
+## Test and acceptance arrangement (T013)
+
+Binary integration suites `tests/scaffolding.rs`, `tests/explain.rs`,
+`tests/fmt.rs`, `tests/lock.rs`, and `tests/run.rs` drive
+`env!("CARGO_BIN_EXE_crpgc")` with std-only temp conventions; `main.rs`
+unit seams pin every parser matrix plus injected I/O/stream/internal
+failures. Scaffolds carry independently specified expected bytes and must
+validate clean inside private fixture copies; all seventeen stems compare
+against the read-only checked-in `schemas/`; `fmt` save must equal the
+migration golden; lock creation/replacement/no-op and sampled harness
+output are pinned through real data/harness calls, never a CLI oracle. Four
+literal schema-only accepted LLM trials (creature/item/dialogue/quest,
+recorded in `tasks/T013.md`) are preserved in `tests/inputs/llm-trials/` and
+`tests/inputs/llm-trials-r2/`. The native rerun test pins every file against
+an independently transcribed byte constant before installing it into a
+private campaign and requiring `validate --json` success; it is not a
+network-dependent CI step.
+
 ## What consumers inherit
 
 - **A scriptable replay gate.** `crpgc replay` in a CI step is the public
@@ -246,3 +350,13 @@ output in tests.
   preflight/no-op rules, bounded partial-write and live-tree limitations,
   errors/exit codes, and data-golden tests; moved migrate from planned to
   implemented while preserving T013 ownership of the remaining commands.
+- 2026-09-19 (UTC) · opencode/muse-spark + T013 implementation · Documented
+  the six live T013 commands: the retained hand-rolled per-command parser
+  decision, explicit-identity scaffold and data-owned byte/report/lock
+  boundaries, the fmt check/save flow with bounded writes, the harness-only
+  run, and the binary-test plus literal-LLM-trial acceptance arrangement.
+- 2026-09-19 (UTC) · opencode/muse-spark + T013 review remediation (R7) · Aligned the stale Modules parser paragraph with the landed T013 decision: hand-rolled `args_os` per-command parsers crate-wide with no parser library and no future swap, keeping the established 0/1/2 exit convention.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 independent review hardening · Documented lexical root-ancestor checks, normalized lock input/output alias rejection, the stable-std hard-link boundary, and byte-pinned validation of both preserved LLM trial sets after adversarial contract review.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 hard-link authorization · Replaced the documented stable-std limitation with the maintainer-authorized `same-file` identity check, covering direct, normalized, case, and hard-link aliases between lock output and all inputs.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 fmt alias hardening · Documented fmt's complete regular-file identity preflight, which rejects rewrite targets hard-linked to ignored content or another document before mutation.
+- 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 shared-writer alias hardening · Extended the documented identity preflight to migrate so the shared writer preserves ignored hard-linked campaign content for both save commands.

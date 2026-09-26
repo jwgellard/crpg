@@ -1,0 +1,15 @@
+{
+"schema": "crpg.dialogue/1",
+"id": "01JAV8Q3K7ZB4N6X2M9PQRST00",
+"slug": "greeting",
+"name": "dialogue.greeting.name",
+"entry": "01JAV8Q3K7ZB4N6X2M9PQRST01",
+"nodes": [
+{
+"id": "01JAV8Q3K7ZB4N6X2M9PQRST01",
+"body": {
+"kind": "end"
+}
+}
+]
+}
