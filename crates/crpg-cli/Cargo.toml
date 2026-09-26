@@ -18,6 +18,10 @@ crpg-data = { path = "../crpg-data" }
 crpg-sim = { path = "../crpg-sim" }
 crpg-testkit = { path = "../crpg-testkit" }
 serde_json = { workspace = true }
+# T013 independent-review hardening: compare mutating command paths by
+# filesystem identity on Windows and Linux so hard-link aliases cannot turn a
+# successful rewrite into source or input corruption.
+same-file = "1"
 
 [[bin]]
 name = "crpgc"

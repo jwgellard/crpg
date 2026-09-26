@@ -764,6 +764,29 @@ fn ignored_files_are_never_read_or_written() {
     cleanup(&root);
 }
 
+#[test]
+fn migrate_refuses_a_document_hard_linked_to_ignored_content() {
+    let root = copy_v1_fixture("hard-link-alias");
+    let document = root.join("items").join("item.json");
+    let ignored_alias = root.join("author-backup.txt");
+    std::fs::hard_link(&document, &ignored_alias).expect("hard link must create");
+    let before = snapshot_all(&root);
+    let arg = root.to_str().expect("utf-8 temp path").to_owned();
+    let out = run(&["migrate", &arg]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        out.stderr,
+        b"items/item.json: error[io]: cannot check items/item.json: source_changed\n"
+    );
+    assert_eq!(
+        snapshot_all(&root),
+        before,
+        "alias rejection must not write"
+    );
+    cleanup(&root);
+}
+
 /// Real black-box symlink case, compile-time gated to platforms where
 /// symlink creation is guaranteed. Windows without privileges cannot create
 /// one, so the same shape is pinned there through the rewrite seam in
