@@ -33,15 +33,18 @@ campaign format, netcode, AI, and server are untouched.
 > (PR #9) with both native gates green; T014 stat/modifier kernel
 > (`crpg-rules`) is merged (PR #11) with both native gates green; T015
 > dice, outcome tables, and resolution is merged (PR #13); T016 headless
-> combat is in progress — T016a–d plus the T016e invariant repair are
-> implemented and natively verified in the working tree, unmerged, with the
-> encounter-lifecycle decision and milestone merge outstanding. See
+> combat (`rulesets/minimal-d6`, lifecycle/release, replay goldens, CLI
+> proof) and T017 second-ruleset abstraction proof (`rulesets/srd-lite`,
+> multi-pool/effect/defense/turn generalization, replay goldens, CLI proof)
+> are merged (PR #14) with both native gates green; T018 `crpg-net`
+> protocol is next. See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
 > [T011a](tasks/T011a.md), [T011b](tasks/T011b.md),
 > [T012](tasks/T012.md), [T012b](tasks/T012b.md),
 > [T013a](tasks/T013a.md), [T013](tasks/T013.md),
-> [T014](tasks/T014.md) and
+> [T014](tasks/T014.md), [T015](tasks/T015.md),
+> [T016](tasks/T016.md), [T017](tasks/T017.md) and
 > [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ---
@@ -219,3 +222,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Updated the status block to the merged T013 scaffolding/introspection CLI (PR #9) with T014 rules kernel next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Updated the status block to the merged T014 stat/modifier kernel (PR #11) with T015 dice/resolution next.
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Updated the status block past the stale Phase 2 pointer: T015 merged (PR #13), T016 in progress with T016a–e implemented and verified in the working tree, unmerged, and the lifecycle decision plus merge outstanding.
+- 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Updated the status block to the merged T016 headless combat and T017 second-ruleset abstraction proof (PR #14, `4686a73`) with T018 `crpg-net` protocol next.

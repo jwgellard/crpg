@@ -105,11 +105,19 @@ python -m unittest discover -s tools/lint -p "test_*.py"
    derived validation, symbolic persistence, kernel hooks) is merged on
    `master` (PR #11, `18145d4`) with both native gates green, plus a
    test-only review follow-up closing boundary/reversal gaps; T015
-   dice/resolution is next.
+   dice, outcome tables, and resolution (`crpg-rules`) is merged on
+   `master` (PR #13, `76a48da`) with both native gates green; T016
+   headless combat (`rulesets/minimal-d6`, sim adapter/controller,
+   lifecycle/release, replay goldens, CLI proof) and T017 second-ruleset
+   abstraction proof (`rulesets/srd-lite`, multi-pool/effect/defense/turn
+   generalization, replay goldens, CLI proof) are merged on `master`
+   (PR #14, `4686a73`) with both native gates green; T018 `crpg-net`
+   protocol is next.
    See the [completion record](tasks/T009c.md),
    [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
    [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
-   [T013a](tasks/T013a.md), [T013](tasks/T013.md) and [T014](tasks/T014.md).
+   [T013a](tasks/T013a.md), [T013](tasks/T013.md), [T014](tasks/T014.md),
+   [T015](tasks/T015.md), [T016](tasks/T016.md) and [T017](tasks/T017.md).
 
 ## Agent log
 
@@ -126,3 +134,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Updated the note to the merged T013a data-owned introspection prerequisite (PR #7, `e84b13e`) with T013 CLI next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Updated the note to the merged T013 scaffolding/introspection CLI (PR #9, `9a6304f`) with T014 rules kernel next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Updated the note to the merged T014 stat/modifier kernel (PR #11, `18145d4`) with T015 dice/resolution next.
+- 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Updated the note to the merged T016 headless combat and T017 second-ruleset abstraction proof (PR #14, `4686a73`) with T018 `crpg-net` protocol next.
