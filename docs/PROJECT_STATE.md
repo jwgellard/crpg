@@ -3,10 +3,10 @@
 Updated: 2026-09-27
 
 ## Phase
-Phase 3 — rules kernel (T015 landed; T016 in progress).
+Phase 4 — server and networking (T016/T017 landed; T018 next).
 
 ## Branch state
-All merged work is on `master` through `76a48da`. T010's campaign
+All merged work is on `master` through `4686a73`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
 T011b's thin `crpgc validate` wrapper, T012a's data-half migration
 framework (plus the T012/T012b Stage-2 specs), T012b's thin `crpgc migrate`
@@ -15,14 +15,13 @@ wrapper (PR #5), S001's public-repo hardening (guard/trusted-lint jobs,
 branch-protection ruleset, PRs #2/#4/#6), T013a's data-owned
 introspection prerequisite (PR #7), T013's scaffolding/introspection
  CLI (PR #9), and T014's stat/modifier kernel (PR #11) are merged. T015's
- dice, outcome tables, and resolution (PR #13, `76a48da`, 2026-09-26) is
- merged. The Done history below is
- merged work only. Uncommitted in the working tree on top of `76a48da`:
- T016a combat content, T016b sim combat + ADR-0013, T016c replay + native
- combat goldens, T016d combat CLI, and the T016e (remediation A1) combat
- invariant repair — each implemented and natively verified per its task
- record, none merged. T016's A2 encounter-lifecycle decision and milestone
- merge are outstanding.
+  dice, outcome tables, and resolution (PR #13, `76a48da`, 2026-09-26) is
+  merged; T016's headless combat with `rulesets/minimal-d6` (content, sim
+  adapter/controller, lifecycle/release, replay goldens, CLI proof) and
+  T017's second-ruleset abstraction proof with `rulesets/srd-lite`
+  (multi-pool/effect/defense/turn generalization, replay goldens, CLI
+  proof) are merged (PR #14, `4686a73`, 2026-09-27). The Done history below is
+  merged work only.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -308,6 +307,21 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   `76a48da`, PR #13, 2026-09-26): dice-valued stats and `DiceExpr`,
   roll/DC modifier targets, and `BeforeRoll`/`AfterRoll`/`BeforeDamage`/
   `AfterDamage` hooks. Unblocks T016 headless combat.
+- T016 headless combat with `rulesets/minimal-d6` (merged `4686a73`,
+  PR #14, 2026-09-27): authored combat vocabulary, data-to-runtime
+  adapter with authoritative action/turn/damage operations, combat
+  invariant repair and save/load coherence, encounter release with
+  retained summary, cross-layer replay with independent native goldens,
+  and the thin `crpgc replay --campaign` wrapper; ADRs 0013/0014.
+  Dual-native green with all 9 PR checks passing. Unblocks T017.
+- T017 second-ruleset abstraction proof with `rulesets/srd-lite`
+  (merged `4686a73`, PR #14, 2026-09-27): versioned multi-pool/cost/
+  defense/turn/effect vocabulary with migration edges, generalized
+  sim controller (per-ability definitions, plural pools, target-stat
+  defense, natural selection, lifetime-bearing effects, explicit
+  `EndTurn`), cross-layer `combat_srd` replay with independent native
+  goldens, and the CLI `end`-op proof; ADRs 0015/0016. Dual-native
+  green with all 9 PR checks passing. Unblocks T018 `crpg-net`.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -338,11 +352,7 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T016 headless combat in progress (T016a–d implemented and natively
-  verified in the working tree, unmerged; T016e invariant repair
-  implemented and dual-native verified 2026-09-27, unmerged): the A2
-  encounter completion/reentry decision and milestone merge are outstanding.
-  T017 `rulesets/srd-lite` follows the T016 milestone.
+- T018 `crpg-net` protocol v1 + simulated-network transport (Phase 4).
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -386,7 +396,8 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
     are merged on `master` through `9a6304f`; T014's stat/modifier kernel
     (PR #11) is merged on `master` through `18145d4`; T015's dice,
     outcome tables, and resolution (PR #13) is merged on `master` through
-    `76a48da`.
+    `76a48da`; T016's headless combat and T017's second-ruleset abstraction
+    proof (PR #14) are merged on `master` through `4686a73`.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -522,3 +533,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Recorded the T013 scaffolding/introspection CLI merge (`9a6304f`, PR #9, all 9 checks green after a trial-input line-ending fix) in branch state, Done history, Phase, Next, and verification history; T014 rules kernel is next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Recorded the T014 stat/modifier kernel merge (`18145d4`, PR #11, all 9 checks green after a test-only review follow-up) in branch state, Done history, Phase, Next, and verification history; T015 dice/resolution is next.
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Recorded the T015 dice/resolution merge (`76a48da`, PR #13, 2026-09-26) in branch state, Done history, Phase, Next, and verification history; T016a–e noted as implemented and natively verified in the working tree, unmerged, with the A2 lifecycle decision and milestone merge outstanding.
+- 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Recorded the T016 headless combat and T017 second-ruleset abstraction proof merge (`4686a73`, PR #14, all 9 checks green) in branch state, Done history, Phase, Next, and verification history; T018 `crpg-net` protocol is next.

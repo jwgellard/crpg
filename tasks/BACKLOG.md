@@ -88,8 +88,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | T014 | **done** | 2026-09-26 | `crpg-rules`: stat/modifier kernel — typed stats, data-selected stacking, breakdowns, derived validation, symbolic persistence, kernel hooks; 122-row table, 1024-case properties, boundary coverage (merged PR #11, `18145d4`) |
 | T015 | **done** | 2026-09-26 | `crpg-rules`: dice, outcome tables, and resolution — dice-valued stats, `DiceExpr`, roll/DC modifier targets, `BeforeRoll`/`AfterRoll`/`BeforeDamage`/`AfterDamage` hooks (merged PR #13, `76a48da`) |
-| T016 | in progress | — | `rulesets/minimal-d6` + headless combat — T016a–d implemented+verified uncommitted (content, sim + ADR-0013, replay + native goldens, CLI); T016e invariant repair (`tasks/T016e.md`) implemented+verified dual-native uncommitted; A2 lifecycle decision + milestone merge outstanding |
-| T017 | open | — | `rulesets/srd-lite` — the abstraction gate (milestone contract approved 2026-09-27, `tasks/T017.md`; B1 data contract specified in `tasks/T017a.md`, implementation pending; B2 vacuous per the kernel mapping) |
+| T016 | **done** | 2026-09-27 | `rulesets/minimal-d6` + headless combat — authored combat vocabulary, sim adapter/controller with lifecycle/release (ADRs 0013/0014), invariant repair, cross-layer replay with independent native goldens, thin `crpgc replay --campaign` wrapper (merged PR #14, `4686a73`) |
+| T017 | **done** | 2026-09-27 | `rulesets/srd-lite` — the abstraction gate: versioned multi-pool/cost/defense/turn/effect vocabulary with migration edges, generalized sim controller (ADR-0016), cross-layer `combat_srd` replay with independent native goldens, CLI `end`-op proof (merged PR #14, `4686a73`) |
 
 ## Phase 4 — Server and networking
 
@@ -221,6 +221,7 @@ Record it here, one line per week.
 | 2026-09-26 | 26 | T013 (scaffolding/introspection CLI: six thin wrappers, five binary suites, literal LLM acceptance, PR #9) merged. The trial-input line-ending follow-up merged alongside T013 and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T014 rules kernel is next. |
 | 2026-09-26 | 27 | T014 (stat/modifier kernel in `crpg-rules`: 122-row table, 1024-case properties, boundary coverage, PR #11) merged. The review follow-up closing the enum/tag-literal/capacity boundary and reversal-occurrence gaps merged alongside T014 and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T015 dice/resolution is next. |
 | 2026-09-26 | 28 | T015 (dice, outcome tables, and resolution in `crpg-rules`, PR #13, `76a48da`) merged. Cost per merged task not tracked yet. T016 headless combat is next; its T016a–d children plus the T016e invariant repair are implemented and verified in the working tree, unmerged, so none is counted here. |
+| 2026-09-27 | 30 | T016 (headless combat with `rulesets/minimal-d6`: content, sim adapter/controller, lifecycle/release, replay goldens, CLI proof) and T017 (second-ruleset abstraction proof with `rulesets/srd-lite`: multi-pool/effect/defense/turn generalization, replay goldens, CLI proof) merged (PR #14, `4686a73`). Cost per merged task not tracked yet. T018 `crpg-net` protocol is next. |
 
 ---
 
@@ -255,3 +256,4 @@ Record it here, one line per week.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Marked T014 done (merged PR #11, `18145d4`), moved throughput to 27 with T015 next; the review-added boundary/reversal tests are a fix, not a counted task.
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Marked T015 done (merged PR #13, `76a48da`, 2026-09-26), moved T016 to in progress with its T016a–e working-tree states and A2/merge outstanding, and moved throughput to 28; unmerged work is never counted.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017/B1 specification · Recorded the approved T017 milestone contract and the specified B1 data contract on the open T017 row; neither implementation nor merge is claimed.
+- 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Marked T016 and T017 done (merged PR #14, `4686a73`), moved throughput to 30 with T018 `crpg-net` protocol next.
