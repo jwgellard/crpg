@@ -138,6 +138,59 @@ identified object); outbound uses component-boundary subtree matching so
 lexically with ULID order. The CLI owns process/I/O treatment; data owns
 object and reference semantics.
 
+## Combat vocabulary (T016a)
+
+`combat` holds four generic authored families added for the T016
+headless-combat proof: `Ruleset` (stat declarations, health designation,
+attribute list, one action-pool template, ability references, package
+self-identity), `Ability` (dice string, checked attribute name,
+outcome-table reference, per-outcome flat damage, action cost, targeting
+flags), `OutcomeTable` (margin bands plus natural-face rules), and
+`Encounter` (ruleset reference plus placement/initiative participants).
+Schemas, layout families, migration registry entries (version 1, no edges),
+index kinds, inventory occurrences, slug/locale participation, and
+introspection spellings all extend the existing authorities; nothing is
+duplicated. Document-local invariants fail at read time; cross-document
+stat membership, pool affordability, and participant creature coverage fail
+as collected `unknown_stat`/`invalid_cost`/`missing_stat`/
+`invalid_stat_value` diagnostics. `Creature.stats` keeps its fixed-point
+wire meaning: only an encounter participant's declared stats convert, and
+only when whole, so existing campaigns are unaffected and the adapter can
+never truncate silently. The canonical `rulesets/minimal-d6/` source and
+its byte-identical `combat_basic` campaign copies keep one truth with a
+test-enforced parity check; the campaign stays out of the gate-8 fixture
+inventory by explicit decision.
+
+## Second-ruleset vocabulary (T017a)
+
+`combat` gains the effect family and the plural-pool/cost/defense/turn
+vocabulary that lets a second ruleset vary behavior through content alone:
+`Effect` (self/target aim, one shared `mod_type` with one effect-scoped
+`PolicyWire`, ordered `EffectModifierWire` entries with `i32` values and
+`i16` priorities, `duration_rounds >= 1`), `Ruleset.pools` (ordered
+templates replacing the single `action_pool`), and `Ability` with retained
+primary-pool `cost` plus `extra_costs`, `ends_turn`, optional `effect`,
+`DefenseWire`, and optional `natural_die` index. `crpg.effect/1` is the
+22nd schema; `crpg.ruleset/2` and `crpg.ability/2` carry the new shapes
+with clone-then-publish `/1 → /2` edges supplying all-local defaults.
+Schemas stay count-agnostic; the srd-lite content pins two pools, two
+abilities, two bands-plus-natural versus two bands, one effect, and
+duration 2. The canonical `rulesets/srd-lite/` source and its
+byte-identical `combat_srd` campaign copies keep one truth with a
+test-enforced parity check; the campaign stays out of the gate-8 fixture
+inventory by explicit decision. Pool balances are values inside the
+ruleset, never indexed objects, so the extra-pool walk resolves against
+the owning ruleset's templates.
+
+As-built: `MAX_EFFECT_MODIFIERS` is 4096 (mirroring T014); pools stay
+unbounded beyond nonempty/unique. Empty spend fails at both layers
+(`Malformed` on file load preserving the T016a zero-cost test,
+`invalid_cost` on in-memory validation pinning the code). Migration oracles
+for the two new edges share the existing `migration_v1/campaign` root with
+three new files/keys; existing keys are byte-identical. The breaking
+`pools` replacement breaks downstream `crpg-sim` compilation until B3; the
+blocker with options is recorded in `tasks/T017a.md`.
+
 ## Agent log
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established approved module and authority boundaries before source implementation. This opening record does not claim completed implementation or passing gates.
@@ -165,3 +218,6 @@ the public API, Item-only version bump and lock authorities are unchanged.
 
 - 2026-09-17 (UTC) · opencode/gpt-6-astra + T012a review fixes · Documented the shared hard gate and direct registered-edge oracle checks, superseding the initial claim that all prescribed negative checks were already proven. Wider manifest numbers now fail strict u32 decoding instead of truncating into valid edges.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a implementation · Documented the data-owned introspection report, the writer-shared structural boundary, the single inventory authority with ownership/subtree/ordering rules, and the data/CLI consumer split for the future explain command.
+- 2026-09-26 (UTC) · opencode/muse-spark + T016a crate opening · Documented the four generic combat families, the read-time versus semantic validation split, the checked whole-number conversion preserving existing fixed-point meaning, and the canonical-source versus campaign-copy content ownership before source implementation.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017a crate opening · Documented the effect family with effect-scoped policy, the plural-pool primary-cost convention with all-local migration defaults, and the canonical-source parity for the second ruleset before source implementation.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017a implementation · Aligned the document with the as-built modifier bound, dual-layer empty-spend rule, shared-root migration oracles, and the downstream sim blocker recorded in tasks/T017a.md.

@@ -1,0 +1,32 @@
+{
+  "abilities": [
+    "0000000000000000000000001X"
+  ],
+  "action_pool": {
+    "id": "0000000000000000000000001Z",
+    "max": 1,
+    "refresh": {
+      "type": "on_turn_start"
+    }
+  },
+  "attributes": [
+    "pow"
+  ],
+  "health_stat": "hp",
+  "id": "0000000000000000000000001W",
+  "name": "fixture.creature",
+  "package": "test.ruleset",
+  "schema": "crpg.ruleset/1",
+  "slug": "migrated-ruleset",
+  "stats": [
+    {
+      "kind": "int",
+      "name": "hp"
+    },
+    {
+      "kind": "int",
+      "name": "pow"
+    }
+  ],
+  "version": "0.1.0"
+}

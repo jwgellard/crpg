@@ -115,6 +115,58 @@ Platform-specific hosting stays above core/rules/sim. Future real product
 builds and smoke tests activate with their capabilities under E020, not as
 placeholder jobs.
 
+## Combat replay (T016c, tests-only)
+
+The first behavioural replay consumer after T009b's CLI is T016c's
+headless combat suite. `tests/support/combat.rs` (included directly from
+`tests/combat_replay.rs`, never from `src/`) owns the production content
+loader — repo-root `campaigns/fixtures/combat_basic/` through
+`load_campaign` with engine `0.1.0`, asserting the 14-file map, the 11-id
+index, empty `validate`, and canonical-source parity with
+`rulesets/minimal-d6/` — and the caller-owned combat adapter that decodes
+the versioned `{"combat": 1, "op": "init" | "attack"}` grammar onto
+`start_encounter` / `perform_action` with strict unknown-field rejection.
+`EncounterSpec` reference maps are assembled transiently per initialization
+from the owned `LoadedCampaign`, never as self-referential state; authored
+placement ULIDs bind to runtime entities by walking `world.combatants()` in
+insertion order against `encounter.participants` in authored order.
+Observation is behavior-free: shared `&World` reads plus read-only
+`serde_json::to_vec(&world)` snapshots after every accepted attack and
+detached `World` clones for terminal, trailing-tick suffix, and death-event
+assertions (the `EventQueue` exposes no read iterator). The portable input
+is `fixtures/combat_basic.replay`; the independent native baselines are
+`goldens/combat_basic_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden`
+and `goldens/combat_basic_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden`,
+each generated on its genuine native target through the production
+`read_replay` → `play_replay` → `write_golden` path. The generic harness
+and replay stay payload-agnostic; T016d writes its own CLI-owned adapter
+against the same grammar.
+
+## Second-ruleset replay (T017e, specified before source)
+
+The second behavioural replay consumer is T017e's srd suite.
+`tests/support/srd.rs` (included directly from `tests/srd_replay.rs`,
+never from `src/`) owns the `combat_srd` production content loader —
+repo-root `campaigns/fixtures/combat_srd/` through `load_campaign` with
+engine `0.1.0`, asserting the 17-file map, the 14-id index, empty
+`validate`, and canonical-source parity with `rulesets/srd-lite/` — and the
+caller-owned srd adapter that decodes the versioned `{"combat": 1}` grammar
+extended with the `end` op onto `start_encounter` / `perform_action` with
+strict unknown-field rejection. Per-attack trace entries carry faces,
+modified totals, margins, outcomes, damage, both pool balances, attach
+state, and the turn holder; `end` inputs advance with no trace entry.
+Observation stays behavior-free (shared reads, read-only snapshots,
+detached clones). The portable input is `fixtures/combat_srd.replay` (a
+pinned ascending-probe seed with `K <= 12` actions plus `T = 4` trailing
+ticks); the independent native baselines are the two
+`goldens/srd_lite_rust-1.98.0_*_test-default.golden` files, each generated
+on its genuine native target. B5 writes its own CLI-owned proof against the
+same grammar.
+
+As-built: seed 285 with `K = 9` and `TOTAL_TICKS = 14`; the 13-test
+`srd_replay` suite pins the artifact, oracles, continuation, terminal, and
+per-target goldens; `combat_basic` artifacts stay byte-identical.
+
 ## What consumers inherit
 
 - **Comparable sequences.** Same interleaving everywhere means a hash at
@@ -142,3 +194,6 @@ placeholder jobs.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c verification alignment · Replaced active pending-verification wording with the reported native gate passes and linked the completion record. Kept T009c the next review/merge priority and T009b blocked on landing, without claiming either replay task committed or merged.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the state and table rows to the merged replay and two-target golden gates; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the policy paragraph and the Exists/Planned table to the merged `crpgc replay` wrapper; the next replay consumer is T016.
+- 2026-09-26 (UTC) · opencode/muse-spark + T016c crate opening · Recorded the tests-only combat adapter, artifact, observation, and independent native golden ownership actually built; generic harness and replay stay payload-agnostic.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017e crate opening · Recorded the tests-only srd adapter, extended grammar with the end op, per-attack trace shape, and independent native golden ownership before source implementation.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the module with the as-built srd replay (seed 285, K = 9, per-target goldens, combat_basic untouched).

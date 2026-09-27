@@ -1,0 +1,228 @@
+{
+  "$defs": {
+    "NaturalEffectWire": {
+      "description": "What a matching natural-face rule does to the selected band.",
+      "oneOf": [
+        {
+          "description": "Shifts the selected band index toward higher margins for positive\nvalues or toward lower margins for negative values.",
+          "properties": {
+            "type": {
+              "const": "shift",
+              "type": "string"
+            },
+            "value": {
+              "format": "int16",
+              "maximum": 32767,
+              "minimum": -32768,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Replaces the selected band's outcome.",
+          "properties": {
+            "type": {
+              "const": "override",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/OutcomeWire"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NaturalRuleWire": {
+      "additionalProperties": false,
+      "description": "One natural-face rule applied to an explicitly selected raw die.",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/NaturalEffectWire",
+          "description": "What matching does to the selected band."
+        },
+        "face": {
+          "description": "The raw face value this rule matches.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "face",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "OutcomeBandWire": {
+      "additionalProperties": false,
+      "description": "One margin band: the inclusive lower bound selecting an outcome.",
+      "properties": {
+        "min_margin": {
+          "description": "The inclusive lower margin bound of this band.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/OutcomeWire",
+          "description": "The outcome selected while this band applies."
+        }
+      },
+      "required": [
+        "min_margin",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "OutcomeWire": {
+      "description": "One data-selected outcome label.",
+      "oneOf": [
+        {
+          "description": "The best authored band.",
+          "properties": {
+            "type": {
+              "const": "critical_success",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A successful band.",
+          "properties": {
+            "type": {
+              "const": "success",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A failed band.",
+          "properties": {
+            "type": {
+              "const": "failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The worst authored band.",
+          "properties": {
+            "type": {
+              "const": "critical_failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An author-defined label.",
+          "properties": {
+            "type": {
+              "const": "custom",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authored outcome table: margin bands plus natural-face rules.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bands": {
+          "description": "Bands in authored order; never silently sorted.",
+          "items": {
+            "$ref": "#/$defs/OutcomeBandWire"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "natural_rules": {
+          "description": "Natural-face rules in authored order.",
+          "items": {
+            "$ref": "#/$defs/NaturalRuleWire"
+          },
+          "type": "array"
+        },
+        "schema": {
+          "const": "crpg.outcome-table/1",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "bands",
+        "natural_rules"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "OutcomeTable"
+}

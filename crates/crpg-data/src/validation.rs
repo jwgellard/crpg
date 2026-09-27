@@ -88,6 +88,16 @@ pub enum DiagnosticCode {
     MissingLocaleKey,
     /// A variable default does not match its declared type.
     ValueTypeMismatch,
+    /// An ability names a stat outside its owning ruleset's attributes.
+    UnknownStat,
+    /// An encounter creature lacks a ruleset stat.
+    MissingStat,
+    /// A combat stat value is fractional or an initial health is not positive.
+    InvalidStatValue,
+    /// An ability cost exceeds its ruleset pool maximum.
+    InvalidCost,
+    /// An ability extra cost names a pool template outside its owning ruleset.
+    UnknownPool,
 }
 
 impl DiagnosticCode {
@@ -120,6 +130,11 @@ impl DiagnosticCode {
             Self::MissingAsset => "missing_asset",
             Self::MissingLocaleKey => "missing_locale_key",
             Self::ValueTypeMismatch => "value_type_mismatch",
+            Self::UnknownStat => "unknown_stat",
+            Self::MissingStat => "missing_stat",
+            Self::InvalidStatValue => "invalid_stat_value",
+            Self::InvalidCost => "invalid_cost",
+            Self::UnknownPool => "unknown_pool",
         }
     }
 }
@@ -253,6 +268,11 @@ pub fn campaign_document_path(value: &str) -> Result<Option<SourcePath>, DataErr
         || family(value, "quests/")
         || family(value, "factions/")
         || family(value, "scripts/graphs/")
+        || family(value, "rulesets/")
+        || family(value, "abilities/")
+        || family(value, "outcome_tables/")
+        || family(value, "encounters/")
+        || family(value, "effects/")
         || area_file(value, "area.json")
         || area_file(value, "placements.json")
         || area_file(value, "triggers.json")
@@ -496,6 +516,228 @@ fn walk_var(out: &mut Vec<Diagnostic>, file: &SourcePath, base: String, decl: &V
             ),
             Some("change the default value or the declared type"),
         );
+    }
+}
+
+/// Validates combat data: ability attributes/costs/defense against owning
+/// rulesets and encounter participant coverage against prefab creatures.
+///
+/// Generic reference failures already reported above suppress dependent
+/// checks: abilities listed by no resolving ruleset keep only their
+/// outcome-table and effect references, and encounters/participants with
+/// unresolved endpoints are not judged further. Pool-template identities are
+/// values inside their owning ruleset, never indexed objects: each extra
+/// cost entry resolves against its owning ruleset's templates (naming
+/// ability and pool), diagnosing `unknown_pool`. Fixed-point combat values
+/// must be whole (`raw % 65536 == 0`); the integer part always fits `i32`,
+/// so whole values convert without truncation and fractional ones fail here.
+fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut Vec<Diagnostic>) {
+    let mut rulesets: BTreeMap<Ulid, &crate::Ruleset> = BTreeMap::new();
+    let mut abilities: BTreeMap<Ulid, (&SourcePath, &crate::Ability)> = BTreeMap::new();
+    let mut creatures: BTreeMap<Ulid, &crate::Creature> = BTreeMap::new();
+    let mut prefabs: BTreeMap<Ulid, Ulid> = BTreeMap::new();
+    for (path, document) in docs {
+        match document {
+            Document::Ruleset(v) => {
+                rulesets.entry(v.id).or_insert(v);
+            }
+            Document::Ability(v) => {
+                abilities.entry(v.id).or_insert((path, v));
+            }
+            Document::Creature(v) => {
+                creatures.entry(v.id).or_insert(v);
+            }
+            Document::Placements(v) => {
+                for placement in &v.placements {
+                    prefabs.entry(placement.id).or_insert(placement.prefab);
+                }
+            }
+            _ => {}
+        }
+    }
+    for ruleset in rulesets.values() {
+        let Some(primary_max) = ruleset.pools.first().map(|pool| pool.max) else {
+            continue;
+        };
+        let mut pool_max: BTreeMap<Ulid, u32> = BTreeMap::new();
+        for pool in &ruleset.pools {
+            pool_max.entry(pool.id).or_insert(pool.max);
+        }
+        for ability_id in &ruleset.abilities {
+            let resolved = tables.first.get(ability_id);
+            if resolved.is_none_or(|entry| entry.kind != ObjectKind::Ability) {
+                continue;
+            }
+            let Some((file, ability)) = abilities.get(ability_id) else {
+                continue;
+            };
+            if !ruleset
+                .attributes
+                .iter()
+                .any(|name| name == &ability.attribute)
+            {
+                push(
+                    out,
+                    file,
+                    "/attribute".into(),
+                    DiagnosticCode::UnknownStat,
+                    format!(
+                        "unknown stat {:?} for ability: not an attribute of ruleset {}",
+                        ability.attribute, ruleset.id
+                    ),
+                    Some("use one of the ruleset's declared attributes"),
+                );
+            }
+            if let crate::DefenseWire::TargetStat { stat } = &ability.defense {
+                let declared = ruleset.stats.iter().any(|decl| &decl.name == stat);
+                if !declared || *stat == ruleset.health_stat {
+                    push(
+                        out,
+                        file,
+                        "/defense".into(),
+                        DiagnosticCode::UnknownStat,
+                        format!(
+                            "unknown defense stat {:?} for ability: not a non-health declared stat of ruleset {}",
+                            stat, ruleset.id
+                        ),
+                        Some("use a declared non-health stat of the ruleset"),
+                    );
+                }
+            }
+            if ability.cost == 0 && ability.extra_costs.is_empty() {
+                push(
+                    out,
+                    file,
+                    "/cost".into(),
+                    DiagnosticCode::InvalidCost,
+                    format!(
+                        "ability {ability_id} spends nothing: cost is zero with no extra costs"
+                    ),
+                    Some("spend at least one pool point"),
+                );
+            } else if ability.cost > primary_max {
+                push(
+                    out,
+                    file,
+                    "/cost".into(),
+                    DiagnosticCode::InvalidCost,
+                    format!(
+                        "ability cost {} exceeds ruleset primary pool maximum {}",
+                        ability.cost, primary_max
+                    ),
+                    Some("lower the cost or raise the pool maximum"),
+                );
+            }
+            for (i, cost) in ability.extra_costs.iter().enumerate() {
+                let Some(max) = pool_max.get(&cost.pool) else {
+                    push(
+                        out,
+                        file,
+                        format!("/extra_costs/{i}/pool"),
+                        DiagnosticCode::UnknownPool,
+                        format!(
+                            "unknown pool {} for ability {ability_id}: not a template of ruleset {}",
+                            cost.pool, ruleset.id
+                        ),
+                        Some("use a pool template declared by the owning ruleset"),
+                    );
+                    continue;
+                };
+                if cost.amount > *max {
+                    push(
+                        out,
+                        file,
+                        format!("/extra_costs/{i}/amount"),
+                        DiagnosticCode::InvalidCost,
+                        format!(
+                            "ability extra cost {} exceeds pool maximum {}",
+                            cost.amount, max
+                        ),
+                        Some("lower the amount or raise the pool maximum"),
+                    );
+                }
+            }
+        }
+    }
+    for (path, document) in docs {
+        let Document::Encounter(encounter) = document else {
+            continue;
+        };
+        let resolved = tables.first.get(&encounter.ruleset);
+        if resolved.is_none_or(|entry| entry.kind != ObjectKind::Ruleset) {
+            continue;
+        }
+        let Some(ruleset) = rulesets.get(&encounter.ruleset) else {
+            continue;
+        };
+        for (i, participant) in encounter.participants.iter().enumerate() {
+            let at_placement = format!("/participants/{i}/placement");
+            let resolved = tables.first.get(&participant.placement);
+            if resolved.is_none_or(|entry| entry.kind != ObjectKind::Placement) {
+                continue;
+            }
+            let Some(prefab) = prefabs.get(&participant.placement) else {
+                continue;
+            };
+            let prefab_entry = tables.first.get(prefab);
+            if prefab_entry.is_none() {
+                continue;
+            }
+            if prefab_entry.is_none_or(|entry| entry.kind != ObjectKind::Creature) {
+                check_ref(
+                    tables,
+                    out,
+                    path,
+                    at_placement,
+                    *prefab,
+                    &[ObjectKind::Creature],
+                    None,
+                    "encounter prefab",
+                );
+                continue;
+            }
+            let Some(creature) = creatures.get(prefab) else {
+                continue;
+            };
+            for stat in &ruleset.stats {
+                let Some(value) = creature.stats.get(&stat.name) else {
+                    push(
+                        out,
+                        path,
+                        at_placement.clone(),
+                        DiagnosticCode::MissingStat,
+                        format!("creature {prefab} is missing ruleset stat {:?}", stat.name),
+                        Some("add the stat to the creature"),
+                    );
+                    continue;
+                };
+                let raw = value.to_raw();
+                if raw % 65536 != 0 {
+                    push(
+                        out,
+                        path,
+                        at_placement.clone(),
+                        DiagnosticCode::InvalidStatValue,
+                        format!(
+                            "combat stat {:?} on creature {prefab} is not a whole number",
+                            stat.name
+                        ),
+                        Some("author a whole fixed-point value"),
+                    );
+                    continue;
+                }
+                if stat.name == ruleset.health_stat && raw / 65536 <= 0 {
+                    push(
+                        out,
+                        path,
+                        at_placement.clone(),
+                        DiagnosticCode::InvalidStatValue,
+                        format!("initial health on creature {prefab} must be positive"),
+                        Some("author a positive whole health value"),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -744,6 +986,51 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
             }
+            Document::Ruleset(v) => {
+                slugs.push((
+                    ObjectKind::Ruleset,
+                    v.slug.clone(),
+                    path.clone(),
+                    "/slug".into(),
+                ));
+                locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
+            }
+            Document::Ability(v) => {
+                slugs.push((
+                    ObjectKind::Ability,
+                    v.slug.clone(),
+                    path.clone(),
+                    "/slug".into(),
+                ));
+                locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
+            }
+            Document::OutcomeTable(v) => {
+                slugs.push((
+                    ObjectKind::OutcomeTable,
+                    v.slug.clone(),
+                    path.clone(),
+                    "/slug".into(),
+                ));
+                locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
+            }
+            Document::Encounter(v) => {
+                slugs.push((
+                    ObjectKind::Encounter,
+                    v.slug.clone(),
+                    path.clone(),
+                    "/slug".into(),
+                ));
+                locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
+            }
+            Document::Effect(v) => {
+                slugs.push((
+                    ObjectKind::Effect,
+                    v.slug.clone(),
+                    path.clone(),
+                    "/slug".into(),
+                ));
+                locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
+            }
             Document::Placements(v) => {
                 for (i, placement) in v.placements.iter().enumerate() {
                     let pbase = format!("/placements/{i}");
@@ -796,7 +1083,10 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
 
     // Shared typed reference inventory: generic checks plus specialized
     // aggregate ownership. Edge endpoints are inventoried for introspection
-    // but skipped here; ports and reachability already ran above.
+    // but skipped here; ports and reachability already ran above. Pool
+    // templates are values, never indexed objects: their occurrences are
+    // inventoried for introspection but resolved in `walk_combat` against
+    // the owning ruleset's templates, never here.
     for occurrence in shared::reference_occurrences(docs) {
         match occurrence.policy {
             shared::RefPolicy::Generic {
@@ -820,6 +1110,9 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                     what,
                 );
             }
+            shared::RefPolicy::PoolTemplate { what } => {
+                let _ = what;
+            }
             shared::RefPolicy::AggregateOwner { what } => {
                 let expected = match what {
                     "placements" => sibling_area(&occurrence.file, "placements.json"),
@@ -839,6 +1132,8 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
             shared::RefPolicy::EdgeEndpoint => {}
         }
     }
+
+    walk_combat(&tables, docs, &mut out);
 
     // Slugs are unique within kind: earliest (path, pointer) wins.
     slugs.sort_by(|a, b| (&a.2, &a.3).cmp(&(&b.2, &b.3)));

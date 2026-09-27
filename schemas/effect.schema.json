@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "EffectAimWire": {
+      "description": "Who an effect's modifiers apply to.",
+      "oneOf": [
+        {
+          "description": "Modifiers apply to the actor that received the effect.",
+          "properties": {
+            "type": {
+              "const": "slf",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Modifiers apply to the effect target.",
+          "properties": {
+            "type": {
+              "const": "target",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EffectModifierWire": {
+      "additionalProperties": false,
+      "description": "One modifier entry inside an authored effect.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable modifier identity doubling as kernel ordering tiebreak input."
+        },
+        "name": {
+          "description": "Optional name used by per-name stacking policies; explicit null when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "op": {
+          "$ref": "#/$defs/EffectOpWire",
+          "description": "How this modifier combines with its base."
+        },
+        "priority": {
+          "description": "Ordering priority; higher runs later.",
+          "format": "int16",
+          "maximum": 32767,
+          "minimum": -32768,
+          "type": "integer"
+        },
+        "target": {
+          "$ref": "#/$defs/EffectTargetWire",
+          "description": "Which numeric fold this modifier contributes to."
+        },
+        "value": {
+          "description": "Signed contribution value.",
+          "format": "int32",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "op",
+        "value",
+        "priority",
+        "name"
+      ],
+      "type": "object"
+    },
+    "EffectOpWire": {
+      "description": "How an effect modifier combines with its base.",
+      "oneOf": [
+        {
+          "description": "Adds its value to the running total.",
+          "properties": {
+            "type": {
+              "const": "add",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Replaces the running total with its value.",
+          "properties": {
+            "type": {
+              "const": "set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EffectTargetWire": {
+      "description": "Which numeric fold an effect modifier contributes to.",
+      "oneOf": [
+        {
+          "description": "Contributes to the Roll fold.",
+          "properties": {
+            "type": {
+              "const": "roll",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Contributes to the Dc fold.",
+          "properties": {
+            "type": {
+              "const": "dc",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PolicyWire": {
+      "description": "Effect-scoped stacking policy governing all modifiers in one effect.",
+      "oneOf": [
+        {
+          "description": "Keeps every candidate modifier.",
+          "properties": {
+            "type": {
+              "const": "stack_all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Keeps the largest strictly positive and smallest strictly negative Adds.",
+          "properties": {
+            "type": {
+              "const": "highest_bonus_worst_penalty",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Keeps the greatest `(priority, id)` per exact name.",
+          "properties": {
+            "type": {
+              "const": "highest_priority_per_name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authored effect: lifetime-bearing modifiers with one shared policy.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "aim": {
+          "$ref": "#/$defs/EffectAimWire",
+          "description": "Who the modifiers apply to."
+        },
+        "duration_rounds": {
+          "description": "Lifetime in rounds, always at least one.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "mod_type": {
+          "description": "Shared modifier-type name governing all modifiers in this effect.",
+          "type": "string"
+        },
+        "modifiers": {
+          "description": "Modifiers in authored order; every entry shares `mod_type`.",
+          "items": {
+            "$ref": "#/$defs/EffectModifierWire"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/PolicyWire",
+          "description": "Stacking policy applied to every modifier in this effect."
+        },
+        "schema": {
+          "const": "crpg.effect/1",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "aim",
+        "mod_type",
+        "policy",
+        "modifiers",
+        "duration_rounds"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Effect"
+}

@@ -1,0 +1,40 @@
+{
+  "aim": {
+    "type": "slf"
+  },
+  "duration_rounds": 2,
+  "id": "0000000000000000000000001B",
+  "mod_type": "focus",
+  "modifiers": [
+    {
+      "id": "0000000000000000000000001G",
+      "name": null,
+      "op": {
+        "type": "add"
+      },
+      "priority": 0,
+      "target": {
+        "type": "roll"
+      },
+      "value": 2
+    },
+    {
+      "id": "0000000000000000000000001H",
+      "name": null,
+      "op": {
+        "type": "add"
+      },
+      "priority": 1,
+      "target": {
+        "type": "roll"
+      },
+      "value": 1
+    }
+  ],
+  "name": "fixture.focusing",
+  "policy": {
+    "type": "stack_all"
+  },
+  "schema": "crpg.effect/1",
+  "slug": "focusing"
+}

@@ -1,0 +1,294 @@
+{
+  "$defs": {
+    "AbilityCost": {
+      "additionalProperties": false,
+      "description": "One non-primary pool cost entry on an ability.",
+      "properties": {
+        "amount": {
+          "description": "Amount spent from that pool, always at least one.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pool": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Pool-template identity drawn from the owning ruleset."
+        }
+      },
+      "required": [
+        "pool",
+        "amount"
+      ],
+      "type": "object"
+    },
+    "DamageEntry": {
+      "additionalProperties": false,
+      "description": "Flat damage for one outcome label.",
+      "properties": {
+        "amount": {
+          "description": "Nonnegative flat damage amount.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/OutcomeWire",
+          "description": "Outcome label this amount applies to."
+        }
+      },
+      "required": [
+        "outcome",
+        "amount"
+      ],
+      "type": "object"
+    },
+    "DefenseWire": {
+      "description": "How an ability selects its defense value.",
+      "oneOf": [
+        {
+          "description": "Uses the actor's checked attribute value.",
+          "properties": {
+            "type": {
+              "const": "actor_attribute",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Uses the target's named stat value, never the health stat.",
+          "properties": {
+            "type": {
+              "const": "target_stat",
+              "type": "string"
+            },
+            "value": {
+              "properties": {
+                "stat": {
+                  "description": "Declared non-health stat name read from the target.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "stat"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OutcomeWire": {
+      "description": "One data-selected outcome label.",
+      "oneOf": [
+        {
+          "description": "The best authored band.",
+          "properties": {
+            "type": {
+              "const": "critical_success",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A successful band.",
+          "properties": {
+            "type": {
+              "const": "success",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A failed band.",
+          "properties": {
+            "type": {
+              "const": "failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The worst authored band.",
+          "properties": {
+            "type": {
+              "const": "critical_failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An author-defined label.",
+          "properties": {
+            "type": {
+              "const": "custom",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authored attack ability.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allow_self_target": {
+          "description": "Whether self-targeting is allowed.",
+          "type": "boolean"
+        },
+        "attribute": {
+          "description": "Attribute name checked by this ability (a ruleset attribute).",
+          "type": "string"
+        },
+        "cost": {
+          "description": "Primary-pool cost of one use, spent from the ruleset's first pool.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "damage": {
+          "description": "Per-outcome flat damage in authored order.",
+          "items": {
+            "$ref": "#/$defs/DamageEntry"
+          },
+          "type": "array"
+        },
+        "defense": {
+          "$ref": "#/$defs/DefenseWire",
+          "description": "How the defense value is selected."
+        },
+        "dice": {
+          "description": "Dice notation evaluated by the sim through the rules kernel.",
+          "type": "string"
+        },
+        "effect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UlidText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional effect applied on success; explicit absence omits the field."
+        },
+        "ends_turn": {
+          "description": "Whether a successful use ends the actor's turn.",
+          "type": "boolean"
+        },
+        "extra_costs": {
+          "description": "Non-primary pool costs in authored order.",
+          "items": {
+            "$ref": "#/$defs/AbilityCost"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "natural_die": {
+          "description": "Optional zero-based raw-die index for natural-face rules; omitted when absent.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outcome_table": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Outcome-table identity."
+        },
+        "requires_target": {
+          "description": "Whether a target is required.",
+          "type": "boolean"
+        },
+        "schema": {
+          "const": "crpg.ability/2",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "dice",
+        "attribute",
+        "outcome_table",
+        "damage",
+        "cost",
+        "extra_costs",
+        "ends_turn",
+        "defense",
+        "requires_target",
+        "allow_self_target"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Ability"
+}

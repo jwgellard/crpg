@@ -1,0 +1,18 @@
+{
+  "faction": null,
+  "id": "00000000000000000000000015",
+  "inventory": [],
+  "name": "fixture.goblin",
+  "schema": "crpg.creature/1",
+  "slug": "goblin",
+  "stats": {
+    "guile": 458752,
+    "health": 393216,
+    "might": 393216,
+    "resolve": 327680,
+    "ward": 327680
+  },
+  "tags": [
+    "fixture"
+  ]
+}

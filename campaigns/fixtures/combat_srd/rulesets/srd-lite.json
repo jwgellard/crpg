@@ -1,0 +1,56 @@
+{
+  "abilities": [
+    "00000000000000000000000017",
+    "00000000000000000000000018"
+  ],
+  "attributes": [
+    "might",
+    "guile",
+    "resolve"
+  ],
+  "health_stat": "health",
+  "id": "00000000000000000000000016",
+  "name": "fixture.srd-lite",
+  "package": "srd-lite",
+  "pools": [
+    {
+      "id": "0000000000000000000000001E",
+      "max": 1,
+      "refresh": {
+        "type": "on_turn_start"
+      }
+    },
+    {
+      "id": "0000000000000000000000001F",
+      "max": 2,
+      "refresh": {
+        "type": "on_round_start"
+      }
+    }
+  ],
+  "schema": "crpg.ruleset/2",
+  "slug": "srd-lite",
+  "stats": [
+    {
+      "kind": "int",
+      "name": "might"
+    },
+    {
+      "kind": "int",
+      "name": "guile"
+    },
+    {
+      "kind": "int",
+      "name": "resolve"
+    },
+    {
+      "kind": "int",
+      "name": "ward"
+    },
+    {
+      "kind": "int",
+      "name": "health"
+    }
+  ],
+  "version": "0.1.0"
+}

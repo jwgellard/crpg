@@ -6,6 +6,7 @@
 //! migration, runtime conversion and graph execution belong to later tasks.
 
 pub mod canonical;
+pub mod combat;
 pub mod document;
 pub mod error;
 pub mod introspection;
@@ -20,6 +21,7 @@ pub mod validation;
 mod inventory;
 
 pub use canonical::*;
+pub use combat::*;
 pub use document::*;
 pub use error::*;
 pub use introspection::*;

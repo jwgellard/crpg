@@ -168,6 +168,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crpg-core",
+ "crpg-data",
+ "crpg-rules",
  "indexmap",
  "proptest",
  "serde",
@@ -179,6 +181,8 @@ name = "crpg-testkit"
 version = "0.1.0"
 dependencies = [
  "crpg-core",
+ "crpg-data",
+ "crpg-rules",
  "crpg-sim",
  "serde",
  "serde_json",

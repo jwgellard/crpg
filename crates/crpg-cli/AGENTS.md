@@ -7,8 +7,9 @@ ownership, and its gate-8 fixture gate — plus the T012b `migrate`
 explicit-save wrapper, its preflight/rewrite boundary, and its data-golden
 gate — plus the six T013 thin wrappers (`new`, `schema`, `explain`, `fmt`,
 `lock`, `run`), their retained hand-rolled per-command parser decision, and
-their black-box plus literal-LLM-trial acceptance. Later subcommands
-(`pack`, `diff`) extend this file with their tasks.
+their black-box plus literal-LLM-trial acceptance — plus the T016d combat
+replay mode (`--campaign`, private combat adapter, black-box acceptance).
+Later subcommands (`pack`, `diff`) extend this file with their tasks.
 
 ## Purpose
 
@@ -319,6 +320,131 @@ crpgc run --ticks N --hash-every M [--seed S]
    outputs, regenerate baselines, weaken tests, or runtime-skip
    permissions, symlinks, fixtures, or goldens into success.
 
+## Combat replay (T016d)
+
+`crpgc replay <replay-path> [--golden <golden-path>] [--campaign <campaign-root>]`:
+
+- The replay path stays the first argument after `replay`; flags before that
+  path remain usage errors. After the path, `--golden` and `--campaign` may
+  appear in either order, at most once each, with separate-token values.
+  `Command::Replay` gains `campaign_root: Option<PathBuf>`; the hand-written
+  `args_os` parser and process rendering conventions are retained.
+- `--campaign` explicitly selects combat payload semantics and supplies the
+  campaign tree; its absence selects the existing reference adapter unchanged.
+  No content sniffing, replay-name special case, implicit campaign search,
+  auto-fallback, or mixed vocabulary. A combat replay without the flag reaches
+  the reference adapter's ordinary unknown-intent error; a reference replay
+  with the flag fails combat payload version decoding. Golden default remains
+  `replay_path.with_extension("golden")`; no target detection, fixture search,
+  or rebless operation.
+- All paths remain `OsString`/`PathBuf`; relative paths resolve against the
+  process working directory independently (campaign is not relative to the
+  replay). The campaign may live outside the repository under a renamed
+  directory. Existing `--golden` value parsing is unchanged, including its
+  treatment of flag-looking value tokens. A missing `--campaign` value or a
+  next token recognized by `flag_text` as a flag is exactly
+  `crpgc: --campaign needs a value\n` (exit 2), detected before the duplicate
+  check; a second `--campaign` is exactly
+  `crpgc: --campaign given more than once\n` (exit 2). Unknown flags, extra
+  positionals, `--campaign=...`, `--`, recording flags, and other unlisted
+  syntax remain usage errors. The whole command parses before any I/O; a
+  non-Unicode campaign root parses and reaches the collector's exit-1
+  diagnostic rather than being lossy-converted or rejected as usage. The
+  documented usage text now includes `--campaign`.
+- Legacy mode retains its single `play_and_verify` call with
+  `apply::reference_intents()` and the existing Outcome mapping. Combat mode,
+  in order: collect via `collect_campaign_files_with`/`RealFs` (sorted
+  traversal, classifier, ignored-file, ancestor/symlink, non-Unicode, portable
+  I/O diagnostics reused verbatim); `load_for_command` with
+  `env!("CARGO_PKG_VERSION")` calling `load_campaign` once (defensive version
+  failure is exactly `crpgc replay: internal engine version failure\n`, exit
+  1; structural/load errors use `data_outcome`; collector errors use
+  `io_outcome`); `crpg_data::validate(&loaded)` once requiring an empty
+  finding list (each finding prints with the existing diagnostic-line
+  formatter in returned order, stdout empty, exit 1 — strict, so future
+  warnings also fail here without changing `validate`'s warnings-only policy;
+  never sorted, reconstructed, or duplicated); move the loaded campaign into
+  the private combat adapter and call `play_and_verify` once (success is exit
+  0 with both streams empty; replay/apply/divergence errors use
+  `Outcome::cli_error(CliError::Replay(...))`). Error precedence is usage →
+  campaign collection → engine/load → campaign semantic findings → replay
+  read/validation → application → golden read/comparison. Replay metadata stays
+  descriptive (no `campaign_id`-to-path equation, slug comparison,
+  engine/version enforcement, or silent campaign selection); the supplied
+  campaign already contains its ruleset, ability, and table documents.
+- The private combat adapter lives in `mod combat_apply` with
+  `pub(crate) fn combat_intents(loaded: crpg_data::LoadedCampaign) ->
+  crpg_testkit::ApplyInput`: an owned `move` closure over the loaded
+  documents, an initially empty `BTreeMap<Ulid, EntityId>`, and an initialized
+  flag, with a private adapter method for focused unit testing and no
+  observation handles, World snapshots, trace logs, or printing. It consumes
+  T016c's version-1 `{"combat":1,"op":"init"|"attack"}` grammar exactly with
+  its eight-step first-failure-wins precedence (non-object; version;
+  op; lexically smallest unknown field; required ULIDs in order with
+  `must be a ULID string` vs `invalid` split and core alias acceptance;
+  duplicate-init/not-initialized; unknown encounter then actor-before-target
+  identities with canonical Display; sim `init failed:`/`attack failed:`
+  Displays verbatim), binds via the transient borrowed `EncounterSpec` over
+  `start_encounter` plus the T016c placement/ability binding assertions
+  (publishing only on success, preserving `missing ...` and binding-mismatch
+  reasons), and attacks via `perform_action` with `CombatAction::UseAbility`
+  discarding the outcome with `.map(|_| ())`. No World mutation occurs beyond
+  those two public sim calls; no winner or final-health check lives here.
+  Testkit's `tests/support/combat.rs` is a worked example, never an importable
+  runtime API (no `include!`, no new export, no fixture-count/package-name/
+  attribute/seed/winner checks in CLI production code).
+
+## Combat replay invariants (T016d)
+
+1. **Two modes, one flag.** The mode decision is the explicit presence of
+   `--campaign`, never content sniffing or a path special case. Legacy
+   semantics and the payload-agnostic testkit boundary (`play_and_verify`
+   owns read/validation/interleaving/comparison) remain in force.
+2. **Verify-only, no rebless.** No `--write`, recording, resolver, damage,
+   turn loop, runtime OS golden selection, or rebless mode. Target-scoped
+   goldens are selected explicitly (or as siblings) and compared exactly.
+3. **Data owns loading/validation; sim owns combat; the CLI owns process.**
+   No kind tables, reference walks, diagnostic sorts, second diagnostic shape,
+   combat resolution, dice, damage, turn, or replay semantics live here.
+4. **No new dependencies.** Existing edges to core/data/sim/testkit plus
+   `serde_json` suffice; the engine version type is inferred and the action
+   result is discarded without naming rules-owned types. No manifest,
+   lockfile, public library facade, lower-crate, `src/apply.rs`, or
+   `tests/replay.rs` change; existing `main.rs` parser tests gain only the new
+   field and the extended usage string with assertions retained, never
+   weakened.
+5. **Tests are black-box first, seams second.** `tests/combat_replay.rs`
+   drives `env!("CARGO_BIN_EXE_crpgc")` over private temp copies with std-only
+   temp conventions; checked-in inputs stay read-only and no test generates a
+   golden. `main.rs`/`combat_apply.rs` unit tests cover the parser matrix,
+   injected engine/collector errors, semantic rendering (including a synthetic
+   warning), and adapter rollback by comparing full World bytes and binding
+   state. Native success/divergence tests use T009c's compile-time cfg guards;
+   portable usage/collection/payload/error tests never read a scoped baseline,
+   never runtime-select, tolerate, skip, or assert cross-platform equality.
+
+## Second-ruleset CLI proof (T017f, specified before source)
+
+Same thin-adapter shape for `combat_srd`: `src/combat_apply.rs` gains only
+the `end`-op decode (`{"combat": 1, "op": "end", "actor": <ULID>}` onto
+`CombatAction::EndTurn`) with error-string parity to T017e's worked
+example, guarded by one private pure result-shape helper
+(`require_end_outcome`: `None` accepted, `Some` reported, never silent).
+No parser, collector, loader, flag, exit-code, or stream-convention change.
+`tests/srd_replay.rs` (reserved by T017) proves both campaigns verify
+through the identical `replay --campaign --golden` command shape outside
+the repository working directory, over B4's read-only replay and scoped
+goldens; `tests/combat_replay.rs` stays untouched. Tested inputs stay
+read-only; no test generates a golden or mutates the source tree.
+
+As-built: 10-test `srd_replay` suite green on both natives (native golden
+match, sibling default, both option orders, spaced/renamed campaign plus
+unrelated cwd, both-campaigns-same-command, tick-9 divergence, dead/out-of-
+turn application failures, end-error matrix, verify-only trees); 5 new
+`combat_apply.rs` unit tests (result-shape guard, decode precedence,
+guards/rollback, accepted end without RNG draw, srd dispatch); B4
+artifacts reused read-only.
+
 ## Definition of done for any change
 
 ```
@@ -423,6 +549,8 @@ either is a defect, not a best-effort gap.
 
 ## Agent log
 
+- 2026-09-26 (UTC) · opencode/muse-spark + T016d documentation · Extended the scope note and added the explicit two-mode combat replay contract (parser, loading, adapter ownership, precedence, and black-box-first test rules) before source changes, superseding the reference-only statements while retaining legacy semantics and the testkit boundary.
+
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b · Wrote the crate contract
   for the opening task: the exit-code contract, the thin-consumer invariant,
   the verify-only line, the frozen reference apply and its drift trap, and
@@ -449,3 +577,5 @@ either is a defect, not a best-effort gap.
 - 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 hard-link authorization · Added the maintainer-authorized `same-file` exception so lock rejects hard-link aliases of every input cross-platform instead of accepting the stable-std limitation identified by review.
 - 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 fmt alias hardening · Extended the authorized filesystem-identity check to fmt's complete collected regular-file set, preventing a recognized rewrite target from mutating ignored hard-linked content.
 - 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 shared-writer alias hardening · Applied the same complete regular-file identity preflight to migrate, preserving its existing ignored-file guarantee through hard-link aliases as well as ordinary paths.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017f crate opening · Extended the contract with the CLI-only second-ruleset proof shape (single end-op decode with error-string parity, unchanged-command black-box suite over both campaigns) under tasks/T017f.md before source implementation.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017f implementation · Aligned the contract with the as-built proof (end decode with result-shape guard, 10-test srd_replay suite, B4 artifacts read-only); no commit/push/PR.

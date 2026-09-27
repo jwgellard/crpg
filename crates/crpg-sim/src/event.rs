@@ -5,8 +5,9 @@
 //! ([`EventQueue`](crpg_core::EventQueue)) lives in `crpg-core`. This module
 //! grows as systems arrive — component-set notices, timeline notices, delta
 //! notices — but each addition is a vocabulary decision with consumers, not
-//! speculative completeness. Today the world only structurally changes by
-//! spawn and despawn, so those are the only two variants.
+//! speculative completeness. Spawn and despawn cover structural change;
+//! combat adds `Died`, produced exactly once per death with the terminal
+//! assertions and future AI/effect systems as its consumers.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +29,18 @@ pub enum SimEvent {
     /// [`World`](crate::World) despawned this entity.
     Despawned {
         /// The removed entity.
+        entity: EntityId,
+    },
+    /// Combat killed this entity (T016b, ADR-0013).
+    ///
+    /// Produced exactly once by [`perform_action`](crate::perform_action) on
+    /// the positive-health-to-zero transition. Death is distinct from arena
+    /// despawn: the entity stays live with its zero-health terminal state
+    /// and is only removed from combat scheduling. Consumers are the
+    /// terminal-state assertions (tests, then T016c) and future AI/effect
+    /// systems.
+    Died {
+        /// The combatant whose health reached zero.
         entity: EntityId,
     },
 }

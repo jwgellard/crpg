@@ -8,7 +8,12 @@ diff — headless, no Godot, no rendering.
 golden, plays through `crpg-testkit::play_and_verify`, and exits `0` on
 equality, `1` on any typed replay failure with the single-pathed diagnostic on
 stderr, `2` on a usage error. It is a thin consumer: no replay semantics live
-in this crate. The validate subcommand is live (T011b, 2026-09-13):
+in this crate. The combat replay mode is live (T016d): `crpgc replay
+<replay-path> [--golden <golden-path>] [--campaign <campaign-root>]` keeps the
+legacy reference adapter when `--campaign` is absent and selects the private
+combat adapter — production campaign collection, `load_campaign`, empty
+`validate`, then `play_and_verify` — when it is present, with the same
+`0/1/2` buckets. The validate subcommand is live (T011b, 2026-09-13):
 `crpgc validate <campaign-root> [--json]` deterministically collects campaign
 document bytes, calls T011a's data-owned `validate_files`, and renders
 human or canonical machine diagnostics with the same `0/1/2` exit buckets.
@@ -63,6 +68,15 @@ file it there, do not reach around.
   It exists so `crpgc replay` can verify that fixture against its native
   golden; it is superseded, not blessed, when real intents land, and nothing
   outside this crate may import it.
+- **`combat_apply` — private combat intents (T016d).** The caller-owned
+  counterpart for the versioned `{"combat":1,"op":"init"|"attack"}` grammar:
+  `pub(crate) fn combat_intents(LoadedCampaign) -> ApplyInput` returns an
+  owned `move` closure over the loaded documents, a placement-to-entity map,
+  and an initialized flag. It decodes/binds through a private adapter method
+  onto exactly `start_encounter`/`perform_action` with T016c's error
+  precedence and binding assertions, discarding the action outcome. No
+  observation handles, snapshots, traces, or printing; no combat, replay, or
+  validation semantics are duplicated here.
 
 ## CLI contract (T009b)
 
@@ -86,11 +100,73 @@ exit 2  usage error: missing/unknown subcommand, missing replay path,
 `--golden` is default-through-extension, not default-through-`play`-and-`read`:
 omitting it is a path decision, never a "use any golden" trap.
 
+## CLI contract (T016d combat `replay --campaign`)
+
+```
+crpgc replay <replay-path> [--golden <golden-path>] [--campaign <campaign-root>]
+
+  <replay-path>    .replay file to read and validate.
+  --golden <path>  golden to compare against. Default: replay-path with its
+                   extension replaced by `.golden`.
+  --campaign <dir> campaign tree supplying combat content; selects combat
+                   payload semantics. Absent: the legacy reference adapter.
+
+exit 0  sequence matches the golden. Nothing is printed; this is a
+        verification tool, not a recorder.
+exit 1  any campaign collection/load/semantic failure or any
+        crpg-testkit::ReplayError, printed by its single-pathed Display
+        to stderr with the `crpgc replay: ` prefix for replay errors.
+exit 2  usage error: missing replay path, flag before the replay path,
+        unknown flag, missing or duplicate `--golden`/`--campaign` value,
+        extra positional, `--campaign=...`, `--`, or recording syntax.
+```
+
+The replay path stays first; `--golden` and `--campaign` may follow in either
+order, at most once each, with separate-token values. `--campaign` is the
+only mode selector: no sniffing, name special case, search, fallback, or mixed
+vocabulary. Combat without the flag reaches the reference unknown-intent
+error; reference payloads with the flag fail combat version decoding.
+
+## Combat replay flow and boundaries (T016d)
+
+Combat mode runs parse (whole command before any I/O; non-Unicode campaign
+roots parse for later exit-1 `io`) → collect the supplied tree through the
+existing `collect_campaign_files_with`/`RealFs` discipline → `load_for_command`
+with the package engine version calling `load_campaign` once (defensive
+version failure `crpgc replay: internal engine version failure`, exit 1) →
+`crpg_data::validate(&loaded)` once requiring the empty list (strict: warnings
+also fail here; findings print in returned order via the existing
+diagnostic-line formatter) → move the campaign into `combat_apply::
+combat_intents` and call `play_and_verify` once. Precedence is usage →
+collection → engine/load → semantic findings → replay read/validation →
+application → golden comparison, so a bad campaign beats a missing replay and
+an invalid action beats a missing golden. Only `start_encounter` and
+`perform_action` mutate `World`; metadata stays descriptive and the golden
+covers the resolved content. No resolver, damage, turn loop, runtime OS
+selection, rebless, fixture-count/package-name checks, or second playback
+loop lives here.
+
+## Combat replay second ruleset (T017f, specified before source)
+
+The combat adapter gains only the `end`-op decode onto
+`CombatAction::EndTurn` with error-string parity to the testkit worked
+example, guarded by one private pure result-shape helper; the command,
+flags, parser, and golden handling stay unchanged. `tests/srd_replay.rs`
+proves both campaigns verify through the identical command shape outside
+the repository working directory, over read-only B4 replay and goldens.
+No winner, health, pool, attachment, or turn observation lives in
+production adapter code.
+
+As-built: the `end` decode with `require_end_outcome`, the 10-test
+black-box suite pinning golden matches, divergence, application failures,
+and verify-only trees, and unchanged `combat_basic` coverage.
+
 ## Today versus planned
 
 | Exists (T009b/T011b/T012b/T013) | Planned (owner) |
 |---|---|
 | `crpgc replay` thin wrapper: args, exit codes, provisional intents | Spec §24 remaining subcommands (`pack`, `diff`) as their specs land |
+| `crpgc replay --campaign` combat mode (T016d): explicit mode flag, production campaign load plus empty validate, private combat adapter over `start_encounter`/`perform_action`, black-box acceptance | Spec §24 remaining subcommands (`pack`, `diff`) as their specs land |
 | `crpgc validate` thin wrapper (T011b): read-only traversal, data-owned validation, plain/canonical diagnostics, gate-8 fixture enumeration | Spec §24 remaining subcommands (`pack`, `diff`) as their specs land |
 | `crpgc migrate` thin wrapper (T012b): explicit save, preflight plus bounded rewrite, data-golden tests | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | `crpgc new`/`schema`/`explain`/`fmt`/`lock`/`run` thin wrappers (T013): explicit-identity scaffolds, data-generated schemas, data-owned introspection reports, canonical check/save, flat-catalog lock adapter, bounded no-op harness sampling | Spec §24 subcommands (`pack`, `diff`) as their specs land |
@@ -335,6 +411,10 @@ network-dependent CI step.
   events in testkit.
 
 ## Agent log
+
+- 2026-09-26 (UTC) · opencode/muse-spark + T016d documentation · Documented the explicit two-mode combat replay contract (parser, production loading plus empty-validate preflight, private combat adapter, precedence, and verify-only boundaries) before source changes, superseding the reference-only statements while retaining legacy semantics.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017f crate opening · Recorded the second-ruleset CLI proof shape (single end-op decode with error-string parity, unchanged command, black-box suite over both campaigns) before source implementation.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017f implementation · Aligned the module with the as-built proof (end decode with result-shape guard, 10-test suite, B4 artifacts read-only).
 
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b · Opened the crate with its
   first real code: the thin `crpgc replay` wrapper, the provisional

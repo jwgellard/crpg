@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 blake3 = { workspace = true }
 crpg-core = { path = "../crpg-core" }
+crpg-data = { path = "../crpg-data" }
+crpg-rules = { path = "../crpg-rules" }
 indexmap = { workspace = true }
 serde = { workspace = true }
 # Promoted from dev by T008a: state_hash serializes the world through it.

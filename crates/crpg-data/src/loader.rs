@@ -34,6 +34,16 @@ pub enum ObjectKind {
     DialogueNode,
     /// Quest state.
     QuestState,
+    /// Authored ruleset.
+    Ruleset,
+    /// Authored attack ability.
+    Ability,
+    /// Authored outcome table.
+    OutcomeTable,
+    /// Authored encounter.
+    Encounter,
+    /// Authored lifetime-bearing effect.
+    Effect,
 }
 
 /// Derived location of an identified containing object.
@@ -117,6 +127,11 @@ fn check_layout(documents: &BTreeMap<SourcePath, Document>) -> Result<(), DataEr
             Document::Placements(_) => area_file(p, "placements.json"),
             Document::Triggers(_) => area_file(p, "triggers.json"),
             Document::Variables(_) => p == "variables/campaign_state.json",
+            Document::Ruleset(_) => family(p, "rulesets/"),
+            Document::Ability(_) => family(p, "abilities/"),
+            Document::OutcomeTable(_) => family(p, "outcome_tables/"),
+            Document::Encounter(_) => family(p, "encounters/"),
+            Document::Effect(_) => family(p, "effects/"),
             Document::Locale(locale) => {
                 locale_shape(p)
                     && p.strip_prefix("locale/")

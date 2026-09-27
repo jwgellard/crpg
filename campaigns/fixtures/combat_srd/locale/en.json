@@ -1,0 +1,21 @@
+{
+  "campaign": "0000000000000000000000000Z",
+  "locale": "en",
+  "schema": "crpg.locale/1",
+  "strings": {
+    "fixture.combat-srd": "Combat Srd",
+    "fixture.first-blood-srd": "First Blood Srd",
+    "fixture.focus": "Focus",
+    "fixture.focus-table": "Focus Table",
+    "fixture.focusing": "Focusing",
+    "fixture.goblin": "Goblin",
+    "fixture.goblin-spawn": "Goblin Spawn",
+    "fixture.heavy": "Heavy",
+    "fixture.heavy-table": "Heavy Table",
+    "fixture.hero": "Hero",
+    "fixture.hero-spawn": "Hero Spawn",
+    "fixture.srd-lite": "Srd Lite",
+    "fixture.start": "Start",
+    "fixture.world": "World"
+  }
+}

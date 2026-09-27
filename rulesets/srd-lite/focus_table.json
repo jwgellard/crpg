@@ -1,0 +1,21 @@
+{
+  "bands": [
+    {
+      "min_margin": -9223372036854775808,
+      "outcome": {
+        "type": "success"
+      }
+    },
+    {
+      "min_margin": 1,
+      "outcome": {
+        "type": "failure"
+      }
+    }
+  ],
+  "id": "0000000000000000000000001A",
+  "name": "fixture.focus-table",
+  "natural_rules": [],
+  "schema": "crpg.outcome-table/1",
+  "slug": "focus-table"
+}

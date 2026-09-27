@@ -29,6 +29,9 @@ fn migration_files() -> Files {
         "areas/start/triggers.json",
         "creatures/creature.json",
         "items/item.json",
+        "rulesets/migrated.json",
+        "abilities/migrated.json",
+        "outcome_tables/migrated.json",
         "variables/campaign_state.json",
         "assets/assets.lock",
         "locale/en.json",
@@ -58,9 +61,9 @@ fn golden_map() -> Files {
 }
 
 #[test]
-fn v1_campaign_matches_golden_with_eight_ids_and_clean() {
+fn v1_campaign_matches_golden_with_eleven_ids_and_clean() {
     let files = migration_files();
-    assert_eq!(files.len(), 11);
+    assert_eq!(files.len(), 14);
     let before = files.clone();
     let campaign = load_campaign(&files, &engine()).unwrap();
     // Caller bytes are borrowed and unchanged.
@@ -89,8 +92,16 @@ fn v1_campaign_matches_golden_with_eight_ids_and_clean() {
             "/graphs/0/nodes/0",
         ),
         (8, ObjectKind::Item, "items/item.json", ""),
+        (60, ObjectKind::Ruleset, "rulesets/migrated.json", ""),
+        (61, ObjectKind::Ability, "abilities/migrated.json", ""),
+        (
+            62,
+            ObjectKind::OutcomeTable,
+            "outcome_tables/migrated.json",
+            "",
+        ),
     ];
-    assert_eq!(campaign.index.len(), 8);
+    assert_eq!(campaign.index.len(), 11);
     for (id, kind, file, pointer) in expected_entries {
         assert_eq!(
             campaign.index[&Ulid::from_u128(id)],
@@ -105,7 +116,8 @@ fn v1_campaign_matches_golden_with_eight_ids_and_clean() {
     assert_eq!(validate(&campaign), Vec::new());
     assert_eq!(validate_files(&files, &engine()), Vec::new());
     assert_eq!(serialize_campaign(&campaign).unwrap(), golden_map());
-    // Ten unaffected files equal their source bytes; the item differs only by tag.
+    // Eleven unaffected files equal their source bytes; the three migrated
+    // families differ exactly by their /1 → /2 edges with preserved meaning.
     let golden = golden_map();
     for (name, bytes) in &files {
         let output = &golden[name];
@@ -117,6 +129,22 @@ fn v1_campaign_matches_golden_with_eight_ids_and_clean() {
             let mut source_tagged = source.clone();
             source_tagged["schema"] = json!("crpg.item/2");
             assert_eq!(source_tagged, migrated);
+        } else if name.as_str() == "rulesets/migrated.json" {
+            let source: Value = serde_json::from_slice(bytes).unwrap();
+            let migrated: Value = serde_json::from_slice(output).unwrap();
+            assert_eq!(source["schema"], json!("crpg.ruleset/1"));
+            assert_eq!(migrated["schema"], json!("crpg.ruleset/2"));
+            assert_eq!(migrated["pools"], json!([source["action_pool"]]));
+            assert!(migrated.get("action_pool").is_none());
+        } else if name.as_str() == "abilities/migrated.json" {
+            let source: Value = serde_json::from_slice(bytes).unwrap();
+            let migrated: Value = serde_json::from_slice(output).unwrap();
+            assert_eq!(source["schema"], json!("crpg.ability/1"));
+            assert_eq!(migrated["schema"], json!("crpg.ability/2"));
+            assert_eq!(migrated["cost"], source["cost"]);
+            assert_eq!(migrated["extra_costs"], json!([]));
+            assert_eq!(migrated["ends_turn"], json!(true));
+            assert_eq!(migrated["defense"], json!({"type": "actor_attribute"}));
         } else {
             assert_eq!(bytes, output, "{}", name.as_str());
         }
@@ -127,7 +155,7 @@ fn v1_campaign_matches_golden_with_eight_ids_and_clean() {
 fn current_reload_and_write_are_byte_stable() {
     let golden = golden_map();
     let campaign = load_campaign(&golden, &engine()).unwrap();
-    assert_eq!(campaign.index.len(), 8);
+    assert_eq!(campaign.index.len(), 11);
     assert_eq!(serialize_campaign(&campaign).unwrap(), golden);
     let again = load_campaign(&serialize_campaign(&campaign).unwrap(), &engine()).unwrap();
     assert_eq!(serialize_campaign(&again).unwrap(), golden);
@@ -148,7 +176,7 @@ fn mixed_version_inputs_migrate_together() {
     });
     files.insert(path("items/extra.json"), canonical_json(&extra).unwrap());
     let campaign = load_campaign(&files, &engine()).unwrap();
-    assert_eq!(campaign.index.len(), 9);
+    assert_eq!(campaign.index.len(), 12);
     assert_eq!(
         campaign.index[&Ulid::from_u128(10)],
         IndexEntry {
@@ -158,7 +186,7 @@ fn mixed_version_inputs_migrate_together() {
         }
     );
     let output = serialize_campaign(&campaign).unwrap();
-    assert_eq!(output.len(), 12);
+    assert_eq!(output.len(), 15);
     let migrated: Value = serde_json::from_slice(&output[&path("items/item.json")]).unwrap();
     assert_eq!(migrated["schema"], json!("crpg.item/2"));
     let stayed: Value = serde_json::from_slice(&output[&path("items/extra.json")]).unwrap();

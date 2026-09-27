@@ -1,0 +1,17 @@
+{
+  "id": "0000000000000000000000001C",
+  "name": "fixture.first-blood-srd",
+  "participants": [
+    {
+      "initiative": 10,
+      "placement": "00000000000000000000000012"
+    },
+    {
+      "initiative": 9,
+      "placement": "00000000000000000000000013"
+    }
+  ],
+  "ruleset": "00000000000000000000000016",
+  "schema": "crpg.encounter/1",
+  "slug": "first-blood-srd"
+}

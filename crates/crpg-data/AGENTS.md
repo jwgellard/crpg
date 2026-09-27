@@ -119,6 +119,7 @@ cargo test -p crpg-data --test resolver --locked
 cargo test -p crpg-data --test locks --locked
 cargo test -p crpg-data --test validation --locked
 cargo test -p crpg-data --test introspection --locked
+cargo test -p crpg-data --test combat_content --locked
 cargo test -p crpg-data --test schema_drift --locked
 cargo test -p crpg-cli --test validate --locked
 cargo test -p crpg-cli --test migrate --locked
@@ -139,6 +140,125 @@ git diff --check
 Generation is an authoring step before read-only verification, not a gate that
 blesses drift. Retain property regression seeds; never weaken existing tests.
 
+## Combat vocabulary (T016a)
+
+Public module `combat` (re-exported at the root) holds the four generic
+authored combat families: `Ruleset`, `Ability`, `OutcomeTable`, and
+`Encounter`, plus `StatDecl`/`StatKindWire`, `ActionPoolTemplate`,
+`RefreshWire`, `OutcomeWire`, `DamageEntry`, `OutcomeBandWire`,
+`NaturalEffectWire`, `NaturalRuleWire`, and `EncounterParticipant`.
+`StatKindWire` is currently `Int` only. `OutcomeWire`/`RefreshWire`/
+`NaturalEffectWire` mirror the T015 adjacent `type`/`value` snake-case
+shapes with hand-written `Deserialize` impls enforcing exact key sets per
+variant, for the same unit-variant reason as `Trigger`/`NodeBody`/`Port`/
+`DialogueBody`; `Serialize`/`JsonSchema` stay derived. Never depend on
+`crpg-rules` for these shapes: the adjacency is a copied convention, and
+the sim adapter maps values explicitly.
+
+- Nineteen families: the T012a fifteen plus `crpg.ruleset`, `crpg.ability`,
+  `crpg.outcome-table`, `crpg.encounter`, all at version 1 with no edges.
+  Twenty-one generated schemas. Layout families are `rulesets/`,
+  `abilities/`, `outcome_tables/`, `encounters/` via the shared `family`
+  helper; `campaign_document_path` shares the same predicates.
+- Read-time (`validate_local`, `Malformed`) covers every single-document
+  invariant: nonempty names, unique stat names, `health_stat` naming a
+  declared stat, `attributes` nonempty/unique/declared and never holding
+  health, `abilities`/`participants` nonempty with unique entries, dice
+  byte length `1..=128`, `cost >= 1`, bands nonempty/`<=256`/first-`MIN`/
+  strictly increasing, naturals `<=256` with faces `1..=1_000_000` unique,
+  and nonzero tick periods. The kernel-mirrored bounds (128 dice bytes,
+  256 bands/naturals, six-sided-compatible face ceiling) keep authored data
+  inside the T015 constructors; lists with no kernel bound stay unbounded
+  in data.
+- Semantic codes added: `unknown_stat`, `missing_stat`,
+  `invalid_stat_value`, `invalid_cost` (all `Error`). Rules: each listed
+  ability's `attribute` must be one of its owning ruleset's `attributes`
+  and its `cost` within the pool `max` (orphan abilities skip both);
+  encounter prefabs must be creatures carrying every ruleset stat name as
+  a whole fixed value with positive health. Fixed→Int conversion is
+  checked whole-number only (`raw % 65536 == 0`, integer part always fits
+  `i32`); fractional combat stats fail here so the adapter never
+  truncates. Existing campaigns are never converted.
+- `tests/support/migration_gate.rs::representatives` carries one synthetic
+  document per new family so the registry/schema/serde agreement gate
+  cannot pass vacuously. The reserved `combat_content` suite pins the
+  canonical `rulesets/minimal-d6/` source, its byte-identical campaign
+  copies, and every boundary above. `combat_basic` lives at repo-root
+  `campaigns/fixtures/combat_basic/` and does not join gate 8's
+  `tests/fixtures/expected.json` inventory (three roots unchanged).
+
+## Second-ruleset vocabulary (T017a, specified before source)
+
+Public module `combat` gains the data-owned half of the abstraction proof:
+`DefenseWire` (`ActorAttribute` / `TargetStat{stat}`), `AbilityCost`,
+`EffectAimWire` (`Slf`/`Target`), `EffectTargetWire` (`Roll`/`Dc`),
+`EffectOpWire` (`Add`/`Set`), `PolicyWire` (`StackAll` /
+`HighestBonusWorstPenalty` / `HighestPriorityPerName`), `EffectModifierWire`,
+and `Effect`, plus `Ruleset.pools` (replacing `action_pool`), `Ability`
+`extra_costs`/`ends_turn`/`effect`/`defense`/`natural_die` with the retained
+primary-pool `cost` convention (`cost` spends from `pools[0]`, `extra_costs`
+covers all other pools). New `ObjectKind::Effect` (after `Encounter`).
+`Document` gains `Effect` (`crpg.effect/1`); `Ruleset`/`Ability` tags move to
+`/2` with exactly one `/1 → /2` edge each (all-local defaults: `pools:
+[action_pool]`; `extra_costs: []`, `ends_turn: true`, `effect: None`,
+`defense: ActorAttribute`, `natural_die: None`). `crpg.effect` enters at
+version 1 with no edges; registry 19 → 20, schemas 21 → 22 via the existing
+generator only.
+
+- The five new adjacent `type`/`value` enums keep hand-written `Deserialize`
+  impls enforcing exact key sets per variant (the T016a unit-variant trap);
+  `Serialize`/`JsonSchema` stay derived. `effect`/`natural_die` are
+  optional-missing; other nullable fields stay required-nullable.
+- Read-time (`Malformed`) covers the single-document rules: pools nonempty
+  with unique ids, every extra amount `>= 1`, `TargetStat` stat nonempty,
+  `mod_type` nonempty, modifiers nonempty (`<= MAX_EFFECT_MODIFIERS`, 4096,
+  mirroring T014) with unique ids, `duration_rounds >= 1`, `natural_die`
+  well-formed `u32` only. Empty total spend (`cost == 0` with empty
+  `extra_costs`) and over-maximum costs are semantic `invalid_cost`, not
+  `Malformed`; dice-count validity against `natural_die` is B3's check.
+- Semantic codes add only `unknown_pool` (`UnknownPool`); unknown policy
+  strings are `Malformed` at read time (closed enum, no `UnknownPolicy`
+  code). Over-maximum costs reuse `invalid_cost`; undeclared or
+  health-as-defense stats reuse `unknown_stat` (target stats may be any
+  non-health declared stat — ward qualifies); missing/fractional creature
+  stats reuse `missing_stat`/`invalid_stat_value`. Pools are values, not
+  indexed objects: the `unknown_pool` walk resolves each extra entry
+  against its owning ruleset's templates (naming ability and pool), never
+  the object index. Orphan effects keep only generic table/pool checks;
+  minimal content has no orphans (tested).
+- `tests/support/migration_gate.rs::representatives` gains one synthetic
+  document per new/changed shape; `migrations.json` gains the two dictated
+  edge rows sharing the existing `migration_v1/campaign` root (no new
+  fixture root, no gate-8 growth); the reserved `srd_content` suite pins
+  the canonical `rulesets/srd-lite/` source, its byte-identical
+  `combat_srd` copies, and every boundary above. `combat_srd` lives at
+  repo-root `campaigns/fixtures/combat_srd/` and does not join gate 8.
+
+### As-built clarifications (T017a implementation)
+
+- Empty total spend is enforced in both layers to preserve intent:
+  `read_document` rejects `cost == 0` with empty `extra_costs` as
+  `Malformed` (keeping the T016a zero-cost structural test green for file
+  loads), while `validate` reports the same in-memory state as
+  `invalid_cost` at `/cost` (pinning the positioned code for mutations).
+  Zero `extra_costs[*].amount` stays `Malformed` at read time; over-maximum
+  primary/extra amounts and unknown extra pools stay semantic
+  (`invalid_cost` at `/cost` or `/extra_costs/<i>/amount`, `unknown_pool`
+  at `/extra_costs/<i>/pool` naming ability and pool).
+- Pool-template references use a dedicated `RefPolicy::PoolTemplate`
+  inventory variant: enumerated for introspection outbound edges, skipped by
+  the generic `check_ref` loop, and resolved in `walk_combat` against the
+  owning ruleset's templates. `Effect` has no references of its own; orphan
+  effects are clean, orphan abilities keep only generic table/effect refs.
+- Migration fixtures share the existing `migration_v1/campaign` root with
+  three new files (`rulesets/migrated.json`, `abilities/migrated.json`,
+  `outcome_tables/migrated.json` at v1, ids 60/61/62) and three new golden
+  keys (ruleset/ability at /2, table identical); existing keys are
+  byte-identical. `srd_content` is 14 tests; `cargo test -p crpg-data
+  --locked` is 117 passed on Windows/MSVC. The breaking `pools` replacement
+  breaks downstream `crpg-sim` compilation until B3; see `tasks/T017a.md`
+  for the recorded blocker with options and recommendation.
+
 ## Agent log
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established the API, validation, dependency and verification working rules before implementation. The task remains subject to all its acceptance gates.
@@ -146,6 +266,10 @@ blesses drift. Retain property regression seeds; never weaken existing tests.
 - 2026-09-13 (UTC) · opencode/muse-spark + T011a implementation · Extended the surface with the validation API, recorded the collected-diagnostics and classifier-ownership traps, and added the validation focused command.
 - 2026-09-17 (UTC) · opencode/muse-spark + T012a implementation · Recorded the single-registry item-only migration surface, the strict read precedence with clone-then-publish rollback, the three-root fixture and golden-authoring rule, and the migration coverage commands.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a implementation · Extended the surface with the introspection report API, recorded the single-inventory ownership/subtree/ordering traps with no CLI semantics here, and added the introspection plus migrate regression commands.
+- 2026-09-26 (UTC) · opencode/muse-spark + T016a crate opening · Extended the surface with the four generic combat families, the hand-rolled enum trap, read-time versus semantic rule split, checked Fixed-to-Int conversion, and the combat_content plus gate-representative obligations before source implementation.
+
+- 2026-09-27 (UTC) · opencode/muse-spark + T017a crate opening · Extended the surface with the effect family, primary-pool cost convention with all-local /1→/2 defaults, defense selector, and unknown_pool walk before source implementation; no dependency, ADR, downstream, or re-baseline decision is taken here.
+- 2026-09-27 (UTC) · opencode/muse-spark + T017a implementation · Aligned the surface with the as-built dual-layer empty-spend rule, the PoolTemplate inventory variant, the shared-root migration fixtures, and the 14-test srd_content suite; recorded the downstream sim workspace blocker in tasks/T017a.md with no silent workaround.
 
 ## T012a review fixes
 

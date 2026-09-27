@@ -1,14 +1,17 @@
 //! Per-document-type migration chains loaded in memory.
 //!
 //! Old source documents become current values on load without mutating caller
-//! bytes or touching the filesystem. Each of the 15 document families starts
-//! at version 1; [`schema_versions`] exposes the immutable production registry
-//! sorted by schema type, and [`migrate_document`] drives a complete
-//! registered historical chain through pure value-to-value steps. Steps never
-//! run gameplay, expressions or semantic validation, and locks are covered by
-//! the registry without shipping a lock edge.
+//! bytes or touching the filesystem. Nineteen document families start
+//! at version 1 while `crpg.item` is at version 2; [`schema_versions`] exposes
+//! the immutable production registry sorted by schema type, and
+//! [`migrate_document`] drives a complete registered historical chain through
+//! pure value-to-value steps. Steps never run gameplay, expressions or
+//! semantic validation, and locks are covered by the registry without shipping
+//! a lock edge.
 
+mod ability;
 mod item;
+mod ruleset;
 
 #[cfg(test)]
 use crate as gate_api;
@@ -68,21 +71,27 @@ macro_rules! define_registry {
     };
 }
 
-// Fifteen families sorted by schema type, including both locks. Only the
-// item family has advanced past version 1.
+// Twenty families sorted by schema type, including both locks. Item,
+// ruleset and ability families have advanced past version 1; the effect
+// family and all others start at version 1 with no edges.
 define_registry! {
+    "crpg.ability" => 2, edges: &[Edge { from: 1, to: 2, step: ability::v1_to_v2 }];
     "crpg.area" => 1, edges: &[];
     "crpg.assets-lock" => 1, edges: &[];
     "crpg.campaign" => 1, edges: &[];
     "crpg.campaign-lock" => 1, edges: &[];
     "crpg.creature" => 1, edges: &[];
     "crpg.dialogue" => 1, edges: &[];
+    "crpg.effect" => 1, edges: &[];
+    "crpg.encounter" => 1, edges: &[];
     "crpg.faction" => 1, edges: &[];
     "crpg.graph" => 1, edges: &[];
     "crpg.item" => 2, edges: &[Edge { from: 1, to: 2, step: item::v1_to_v2 }];
     "crpg.locale" => 1, edges: &[];
+    "crpg.outcome-table" => 1, edges: &[];
     "crpg.placements" => 1, edges: &[];
     "crpg.quest" => 1, edges: &[];
+    "crpg.ruleset" => 2, edges: &[Edge { from: 1, to: 2, step: ruleset::v1_to_v2 }];
     "crpg.triggers" => 1, edges: &[];
     "crpg.variables" => 1, edges: &[];
     "crpg.world" => 1, edges: &[]
@@ -90,7 +99,7 @@ define_registry! {
 
 /// Exposes the immutable production registry's document families.
 ///
-/// Returns fifteen entries sorted by schema type, including both locks, with
+/// Returns twenty entries sorted by schema type, including both locks, with
 /// names such as `crpg.item` carrying no slash or version suffix.
 pub fn schema_versions() -> &'static [SchemaVersion] {
     VERSIONS
@@ -336,9 +345,9 @@ mod tests {
     }
 
     #[test]
-    fn production_registry_is_sorted_fifteen_with_item_two() {
-        assert_eq!(VERSIONS.len(), 15);
-        assert_eq!(REGISTRY.len(), 15);
+    fn production_registry_is_sorted_twenty_with_item_ruleset_ability_two() {
+        assert_eq!(VERSIONS.len(), 20);
+        assert_eq!(REGISTRY.len(), 20);
         let names: Vec<&str> = VERSIONS.iter().map(|entry| entry.schema_type).collect();
         let mut sorted = names.clone();
         sorted.sort();
@@ -347,15 +356,24 @@ mod tests {
             assert!(!entry.schema_type.contains('/'));
             assert!(entry.current >= 1);
         }
-        let item = VERSIONS
-            .iter()
-            .find(|entry| entry.schema_type == "crpg.item")
-            .unwrap();
-        assert_eq!(item.current, 2);
+        for family in ["crpg.item", "crpg.ruleset", "crpg.ability"] {
+            let entry = VERSIONS
+                .iter()
+                .find(|entry| entry.schema_type == family)
+                .unwrap();
+            assert_eq!(entry.current, 2, "{family}");
+        }
         for entry in VERSIONS {
-            if entry.schema_type != "crpg.item" {
+            if !["crpg.item", "crpg.ruleset", "crpg.ability"].contains(&entry.schema_type) {
                 assert_eq!(entry.current, 1);
             }
+        }
+        for family in ["crpg.outcome-table", "crpg.encounter", "crpg.effect"] {
+            let entry = VERSIONS
+                .iter()
+                .find(|entry| entry.schema_type == family)
+                .unwrap();
+            assert_eq!(entry.current, 1);
         }
         assert!(VERSIONS
             .iter()
@@ -632,6 +650,90 @@ mod tests {
     }
 
     #[test]
+    fn ruleset_edge_moves_single_pool_into_plural_pools() {
+        let mut value = json!({
+            "schema": "crpg.ruleset/1",
+            "id": "0000000000000000000000000J",
+            "slug": "r",
+            "name": "r",
+            "package": "test.ruleset",
+            "version": "0.1.0",
+            "stats": [{"name": "hp", "kind": "int"}],
+            "health_stat": "hp",
+            "attributes": [],
+            "action_pool": {
+                "id": "0000000000000000000000000P",
+                "max": 1,
+                "refresh": {"type": "on_turn_start"}
+            },
+            "abilities": ["0000000000000000000000000K"]
+        });
+        // Attributes empty fails typed decode later; the step itself only
+        // moves the pool shape, so give it a valid attribute first.
+        value["attributes"] = json!(["hp"]);
+        value["stats"] = json!([{"name": "hp", "kind": "int"}, {"name": "pow", "kind": "int"}]);
+        value["health_stat"] = json!("hp");
+        value["attributes"] = json!(["pow"]);
+        let before = value.clone();
+        super::ruleset::v1_to_v2(&mut value).unwrap();
+        assert_eq!(value["schema"], json!("crpg.ruleset/2"));
+        assert_eq!(value["pools"], json!([before["action_pool"]]));
+        assert!(value.get("action_pool").is_none());
+        for key in [
+            "id",
+            "slug",
+            "name",
+            "package",
+            "version",
+            "stats",
+            "health_stat",
+            "attributes",
+            "abilities",
+        ] {
+            assert_eq!(value[key], before[key], "{key}");
+        }
+    }
+
+    #[test]
+    fn ability_edge_keeps_cost_with_all_local_defaults() {
+        let mut value = json!({
+            "schema": "crpg.ability/1",
+            "id": "0000000000000000000000000K",
+            "slug": "a",
+            "name": "a",
+            "dice": "2d6",
+            "attribute": "pow",
+            "outcome_table": "0000000000000000000000000M",
+            "damage": [{"outcome": {"type": "success"}, "amount": 1}],
+            "cost": 1,
+            "requires_target": true,
+            "allow_self_target": false
+        });
+        let before = value.clone();
+        super::ability::v1_to_v2(&mut value).unwrap();
+        assert_eq!(value["schema"], json!("crpg.ability/2"));
+        assert_eq!(value["cost"], before["cost"]);
+        assert_eq!(value["extra_costs"], json!([]));
+        assert_eq!(value["ends_turn"], json!(true));
+        assert_eq!(value["defense"], json!({"type": "actor_attribute"}));
+        assert!(value.get("effect").is_none());
+        assert!(value.get("natural_die").is_none());
+        for key in [
+            "id",
+            "slug",
+            "name",
+            "dice",
+            "attribute",
+            "outcome_table",
+            "damage",
+            "requires_target",
+            "allow_self_target",
+        ] {
+            assert_eq!(value[key], before[key], "{key}");
+        }
+    }
+
+    #[test]
     fn production_edges_match_manifest_and_checked_in_single_step_oracles() {
         use super::gate;
         let files = gate::snapshot().unwrap();
@@ -726,19 +828,46 @@ mod tests {
             encode(&json!({"items/item.json": String::from_utf8(encode(&third)).unwrap()})),
         );
         let mut rows: Value = serde_json::from_slice(&files["migrations.json"]).unwrap();
-        let mut upper = rows[0].clone();
+        let item_row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["schema_type"] == json!("crpg.item"))
+            .unwrap()
+            .clone();
+        let mut upper = item_row;
         upper["from"] = json!(2);
         upper["to"] = json!(3);
         upper["root"] = json!("migration_v2/campaign");
         upper["golden"] = json!(golden_path);
-        rows.as_array_mut().unwrap().push(upper);
+        let mut all = rows.as_array().unwrap().clone();
+        all.push(upper);
+        all.sort_by(|a, b| {
+            (
+                a["schema_type"].as_str().unwrap_or(""),
+                a["from"].as_u64().unwrap_or(0),
+            )
+                .cmp(&(
+                    b["schema_type"].as_str().unwrap_or(""),
+                    b["from"].as_u64().unwrap_or(0),
+                ))
+        });
+        rows = Value::Array(all);
         files.insert("migrations.json".into(), encode(&rows));
         let oracles = gate::check_oracle_inventory(&versions, &files).unwrap();
-        assert_eq!(oracles.len(), 2);
-        assert_eq!(oracles[0].before, first);
-        assert_eq!(oracles[0].after, second);
-        assert_eq!(oracles[1].before, second);
-        assert_eq!(oracles[1].after, third);
+        assert_eq!(oracles.len(), 4);
+        let item_first = oracles
+            .iter()
+            .find(|oracle| oracle.edge == ("crpg.item".into(), 1, 2))
+            .unwrap();
+        let item_second = oracles
+            .iter()
+            .find(|oracle| oracle.edge == ("crpg.item".into(), 2, 3))
+            .unwrap();
+        assert_eq!(item_first.before, first);
+        assert_eq!(item_first.after, second);
+        assert_eq!(item_second.before, second);
+        assert_eq!(item_second.after, third);
         fn to_three(value: &mut Value) -> Result<(), DataError> {
             if value["schema"] != "crpg.item/2" {
                 return Err(crate::error::malformed("expected second step input"));
@@ -762,7 +891,12 @@ mod tests {
                 },
             ],
         }];
-        gate::check_steps(&oracles, |(_, from, _), value| {
+        let item_oracles: Vec<gate::Oracle> = oracles
+            .into_iter()
+            .filter(|oracle| oracle.edge.0 == "crpg.item")
+            .collect();
+        assert_eq!(item_oracles.len(), 2);
+        gate::check_steps(&item_oracles, |(_, from, _), value| {
             let edge = registry[0]
                 .edges
                 .iter()
@@ -773,7 +907,7 @@ mod tests {
         .unwrap();
         // Using the whole chain for the first oracle would incorrectly reach /3.
         assert!(
-            gate::check_steps(&oracles, |_, value| dispatch(value, &registry)
+            gate::check_steps(&item_oracles, |_, value| dispatch(value, &registry)
                 .map_err(|e| e.to_string()))
             .is_err()
         );
@@ -790,7 +924,11 @@ mod tests {
         wrong_second["slug"] = json!("wrong");
         wrong.insert(step_path.into(), encode(&wrong_second));
         let wrong_oracles = gate::check_oracle_inventory(&versions, &wrong).unwrap();
-        assert!(gate::check_steps(&wrong_oracles, |(_, from, _), value| {
+        let wrong_item: Vec<gate::Oracle> = wrong_oracles
+            .into_iter()
+            .filter(|oracle| oracle.edge.0 == "crpg.item")
+            .collect();
+        assert!(gate::check_steps(&wrong_item, |(_, from, _), value| {
             let edge = registry[0]
                 .edges
                 .iter()

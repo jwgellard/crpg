@@ -1,0 +1,250 @@
+{
+  "$defs": {
+    "ActionPoolTemplate": {
+      "additionalProperties": false,
+      "description": "One action-pool template owned by a ruleset.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Shared template identity for per-combatant runtime pools."
+        },
+        "max": {
+          "description": "Maximum balance; sim initializes current to this value.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "refresh": {
+          "$ref": "#/$defs/RefreshWire",
+          "description": "Authored refresh trigger."
+        }
+      },
+      "required": [
+        "id",
+        "max",
+        "refresh"
+      ],
+      "type": "object"
+    },
+    "PackageId": {
+      "description": "Immutable publication coordinate, distinct from an object ULID or slug.",
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "RefreshWire": {
+      "description": "When an action pool refills to maximum.",
+      "oneOf": [
+        {
+          "description": "Refills on every turn start.",
+          "properties": {
+            "type": {
+              "const": "on_turn_start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Refills on every round start.",
+          "properties": {
+            "type": {
+              "const": "on_round_start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Refills on the matching rest only.",
+          "properties": {
+            "type": {
+              "const": "on_rest",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/RestId"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Refills on positive ticks divisible by the period.",
+          "properties": {
+            "type": {
+              "const": "on_tick",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/TickPeriod"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Never refills.",
+          "properties": {
+            "type": {
+              "const": "never",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RestId": {
+      "$ref": "#/$defs/UlidText",
+      "description": "Opaque rest identity for authored refresh triggers."
+    },
+    "StatDecl": {
+      "additionalProperties": false,
+      "description": "One ruleset stat declaration.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/StatKindWire",
+          "description": "Declared value category."
+        },
+        "name": {
+          "description": "Symbolic stat name referenced by abilities and creatures.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "StatKindWire": {
+      "description": "Declared value category of one ruleset stat.",
+      "oneOf": [
+        {
+          "const": "int",
+          "description": "Whole-number integer stat.",
+          "type": "string"
+        }
+      ]
+    },
+    "TickPeriod": {
+      "description": "Nonzero tick period for authored refresh triggers.",
+      "format": "uint64",
+      "maximum": 18446744073709551615,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    },
+    "VersionText": {
+      "description": "Semantic version string; semver 1.x parsing is authoritative.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Authored ruleset: stat declarations, health designation, pools, abilities.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "abilities": {
+          "description": "Ability identities in authored order.",
+          "items": {
+            "$ref": "#/$defs/UlidText"
+          },
+          "type": "array"
+        },
+        "attributes": {
+          "description": "Names of the declared attributes (never containing health).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "health_stat": {
+          "description": "Name of the declared health stat.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Stable authored-object identity."
+        },
+        "name": {
+          "description": "Locale key for the display name.",
+          "type": "string"
+        },
+        "package": {
+          "$ref": "#/$defs/PackageId",
+          "description": "Immutable publication coordinate self-identifying the ruleset."
+        },
+        "pools": {
+          "description": "Action-pool templates in authored order; the first is the primary pool.",
+          "items": {
+            "$ref": "#/$defs/ActionPoolTemplate"
+          },
+          "type": "array"
+        },
+        "schema": {
+          "const": "crpg.ruleset/2",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Renameable human-facing slug.",
+          "type": "string"
+        },
+        "stats": {
+          "description": "Declared stats in authored order.",
+          "items": {
+            "$ref": "#/$defs/StatDecl"
+          },
+          "type": "array"
+        },
+        "version": {
+          "$ref": "#/$defs/VersionText",
+          "description": "Published semantic version of the ruleset."
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "slug",
+        "name",
+        "package",
+        "version",
+        "stats",
+        "health_stat",
+        "attributes",
+        "pools",
+        "abilities"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Ruleset"
+}

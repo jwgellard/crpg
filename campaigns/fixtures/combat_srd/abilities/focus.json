@@ -1,0 +1,37 @@
+{
+  "allow_self_target": true,
+  "attribute": "might",
+  "cost": 0,
+  "damage": [
+    {
+      "amount": 0,
+      "outcome": {
+        "type": "success"
+      }
+    },
+    {
+      "amount": 0,
+      "outcome": {
+        "type": "failure"
+      }
+    }
+  ],
+  "defense": {
+    "type": "actor_attribute"
+  },
+  "dice": "1d6",
+  "effect": "0000000000000000000000001B",
+  "ends_turn": false,
+  "extra_costs": [
+    {
+      "amount": 1,
+      "pool": "0000000000000000000000001F"
+    }
+  ],
+  "id": "00000000000000000000000018",
+  "name": "fixture.focus",
+  "outcome_table": "0000000000000000000000001A",
+  "requires_target": true,
+  "schema": "crpg.ability/2",
+  "slug": "focus"
+}

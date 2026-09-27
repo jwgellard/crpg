@@ -13,7 +13,7 @@ use crpg_core::Ulid;
 use std::collections::BTreeMap;
 
 /// Every indexed object kind; untyped object references accept any of them.
-pub(crate) const ALL_KINDS: [ObjectKind; 13] = [
+pub(crate) const ALL_KINDS: [ObjectKind; 18] = [
     ObjectKind::Campaign,
     ObjectKind::World,
     ObjectKind::Area,
@@ -27,6 +27,11 @@ pub(crate) const ALL_KINDS: [ObjectKind; 13] = [
     ObjectKind::Node,
     ObjectKind::DialogueNode,
     ObjectKind::QuestState,
+    ObjectKind::Ruleset,
+    ObjectKind::Ability,
+    ObjectKind::OutcomeTable,
+    ObjectKind::Encounter,
+    ObjectKind::Effect,
 ];
 
 static ALLOWED_WORLD: &[ObjectKind] = &[ObjectKind::World];
@@ -41,6 +46,10 @@ static ALLOWED_DIALOGUE: &[ObjectKind] = &[ObjectKind::Dialogue];
 static ALLOWED_QUEST_STATE: &[ObjectKind] = &[ObjectKind::QuestState];
 static ALLOWED_NODE: &[ObjectKind] = &[ObjectKind::Node];
 static ALLOWED_GRAPH: &[ObjectKind] = &[ObjectKind::Graph];
+static ALLOWED_ABILITY: &[ObjectKind] = &[ObjectKind::Ability];
+static ALLOWED_TABLE: &[ObjectKind] = &[ObjectKind::OutcomeTable];
+static ALLOWED_RULESET: &[ObjectKind] = &[ObjectKind::Ruleset];
+static ALLOWED_EFFECT: &[ObjectKind] = &[ObjectKind::Effect];
 static ALLOWED_OBJECT: &[ObjectKind] = &ALL_KINDS;
 
 /// Stable lowercase kind word used inside diagnostic messages.
@@ -59,6 +68,11 @@ pub(crate) fn diagnostic_kind_name(kind: ObjectKind) -> &'static str {
         ObjectKind::Node => "node",
         ObjectKind::DialogueNode => "dialogue node",
         ObjectKind::QuestState => "quest state",
+        ObjectKind::Ruleset => "ruleset",
+        ObjectKind::Ability => "ability",
+        ObjectKind::OutcomeTable => "outcome table",
+        ObjectKind::Encounter => "encounter",
+        ObjectKind::Effect => "effect",
     }
 }
 
@@ -107,6 +121,11 @@ pub(crate) fn object_occurrences(
             Document::Quest(v) => Some((v.id, ObjectKind::Quest)),
             Document::Faction(v) => Some((v.id, ObjectKind::Faction)),
             Document::Graph(v) => Some((v.id, ObjectKind::Graph)),
+            Document::Ruleset(v) => Some((v.id, ObjectKind::Ruleset)),
+            Document::Ability(v) => Some((v.id, ObjectKind::Ability)),
+            Document::OutcomeTable(v) => Some((v.id, ObjectKind::OutcomeTable)),
+            Document::Encounter(v) => Some((v.id, ObjectKind::Encounter)),
+            Document::Effect(v) => Some((v.id, ObjectKind::Effect)),
             _ => None,
         };
         if let Some((id, kind)) = root {
@@ -247,6 +266,15 @@ pub(crate) enum RefPolicy {
         /// Human-readable field description used inside messages.
         what: &'static str,
     },
+    /// A pool-template identity carried as a value inside its owning
+    /// ruleset, never as an indexed object. Validation resolves these
+    /// against the owning ruleset's templates (diagnosing `unknown_pool`),
+    /// never against the object index; introspection still inventories
+    /// them as outbound edges with null locations when unresolved.
+    PoolTemplate {
+        /// Human-readable field description used inside messages.
+        what: &'static str,
+    },
     /// An aggregate owner field: introspection inventories it, validation
     /// reports it through its specialized ownership check instead.
     AggregateOwner {
@@ -309,6 +337,23 @@ fn push_owner(
         source: None,
         target,
         policy: RefPolicy::AggregateOwner { what },
+    });
+}
+
+fn push_pool(
+    out: &mut Vec<RefOccurrence>,
+    file: &SourcePath,
+    pointer: String,
+    source: Option<Ulid>,
+    target: Ulid,
+    what: &'static str,
+) {
+    out.push(RefOccurrence {
+        file: file.clone(),
+        pointer,
+        source,
+        target,
+        policy: RefPolicy::PoolTemplate { what },
     });
 }
 
@@ -631,6 +676,79 @@ pub(crate) fn reference_occurrences(
                 }
             }
             Document::Item(_) => {}
+            Document::Ruleset(v) => {
+                for (i, ability) in v.abilities.iter().enumerate() {
+                    push_generic(
+                        &mut out,
+                        path,
+                        format!("/abilities/{i}"),
+                        Some(v.id),
+                        *ability,
+                        ALLOWED_ABILITY,
+                        None,
+                        "ruleset ability",
+                    );
+                }
+            }
+            Document::Ability(v) => {
+                push_generic(
+                    &mut out,
+                    path,
+                    "/outcome_table".into(),
+                    Some(v.id),
+                    v.outcome_table,
+                    ALLOWED_TABLE,
+                    None,
+                    "ability outcome table",
+                );
+                if let Some(effect) = v.effect {
+                    push_generic(
+                        &mut out,
+                        path,
+                        "/effect".into(),
+                        Some(v.id),
+                        effect,
+                        ALLOWED_EFFECT,
+                        None,
+                        "ability effect",
+                    );
+                }
+                for (i, cost) in v.extra_costs.iter().enumerate() {
+                    push_pool(
+                        &mut out,
+                        path,
+                        format!("/extra_costs/{i}/pool"),
+                        Some(v.id),
+                        cost.pool,
+                        "ability extra pool",
+                    );
+                }
+            }
+            Document::OutcomeTable(_) => {}
+            Document::Encounter(v) => {
+                push_generic(
+                    &mut out,
+                    path,
+                    "/ruleset".into(),
+                    Some(v.id),
+                    v.ruleset,
+                    ALLOWED_RULESET,
+                    None,
+                    "encounter ruleset",
+                );
+                for (i, participant) in v.participants.iter().enumerate() {
+                    push_generic(
+                        &mut out,
+                        path,
+                        format!("/participants/{i}/placement"),
+                        Some(v.id),
+                        participant.placement,
+                        ALLOWED_PLACEMENT,
+                        None,
+                        "encounter participant",
+                    );
+                }
+            }
             Document::Dialogue(v) => {
                 push_generic(
                     &mut out,
@@ -850,6 +968,7 @@ pub(crate) fn reference_occurrences(
                     );
                 }
             }
+            Document::Effect(_) => {}
             Document::CampaignLock(_) | Document::AssetsLock(_) => {}
         }
     }

@@ -1,0 +1,42 @@
+{
+  "abilities": [
+    "0000000000000000000000000K"
+  ],
+  "action_pool": {
+    "id": "0000000000000000000000000P",
+    "max": 1,
+    "refresh": {
+      "type": "on_turn_start"
+    }
+  },
+  "attributes": [
+    "might",
+    "guile",
+    "resolve"
+  ],
+  "health_stat": "health",
+  "id": "0000000000000000000000000J",
+  "name": "fixture.minimal-d6",
+  "package": "minimal-d6",
+  "schema": "crpg.ruleset/1",
+  "slug": "minimal-d6",
+  "stats": [
+    {
+      "kind": "int",
+      "name": "might"
+    },
+    {
+      "kind": "int",
+      "name": "guile"
+    },
+    {
+      "kind": "int",
+      "name": "resolve"
+    },
+    {
+      "kind": "int",
+      "name": "health"
+    }
+  ],
+  "version": "0.1.0"
+}

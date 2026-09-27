@@ -10,6 +10,7 @@
 //! parsers; no parser library is authorized.
 
 mod apply;
+mod combat_apply;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -24,8 +25,9 @@ use crpg_data::{Diagnostic, DiagnosticCode, Severity, SourcePath};
 use crpg_testkit::ReplayError;
 
 /// Usage line printed for the `replay` subcommand, kept in sync with the
-/// contract in `tasks/T009b.md`.
-const REPLAY_USAGE: &str = "crpgc replay <replay-path> [--golden <golden-path>]";
+/// contract in `tasks/T016d.md`.
+const REPLAY_USAGE: &str =
+    "crpgc replay <replay-path> [--golden <golden-path>] [--campaign <campaign-root>]";
 
 /// Usage line printed for the `validate` subcommand, kept in sync with the
 /// contract in `tasks/T011b.md`.
@@ -45,6 +47,11 @@ const EXPLAIN_USAGE: &str = "crpgc explain <id> [--root <campaign-root>]";
 const FMT_USAGE: &str = "crpgc fmt [<campaign-root>] [--check]";
 const LOCK_USAGE: &str = "crpgc lock [<campaign-root>] --catalog <catalog-path>";
 const RUN_USAGE: &str = "crpgc run --ticks N --hash-every M [--seed S]";
+
+/// Exact stderr bytes when the compile-time engine version does not parse as
+/// semver for combat `replay --campaign`. A release-process bug, never user
+/// input.
+const REPLAY_ENGINE_FAILURE: &str = "crpgc replay: internal engine version failure\n";
 
 /// Exact stderr bytes when the compile-time engine version does not parse as
 /// semver for `migrate`. A release-process bug, never user input.
@@ -92,6 +99,7 @@ enum Command {
     Replay {
         replay_path: PathBuf,
         golden_path: PathBuf,
+        campaign_root: Option<PathBuf>,
     },
     Validate {
         root: PathBuf,
@@ -243,12 +251,15 @@ fn parse_args(args: &[OsString]) -> Result<Command, CliError> {
     }
 }
 
-/// Parses the `replay` subcommand's arguments. `--golden` may appear once;
-/// omitted, the golden defaults to the replay path with its extension
-/// replaced by `.golden` (`foo.replay` -> `foo.golden`). A flag in
-/// first position — where the replay path is expected — is a usage error
-/// (the T011b first-position repair): `--bogus` used to be mistaken for a
-/// path and fail later as missing-file exit 1.
+/// Parses the `replay` subcommand's arguments. `--golden` and `--campaign`
+/// may each appear once after the replay path, in either order; omitted, the
+/// golden defaults to the replay path with its extension replaced by
+/// `.golden` (`foo.replay` -> `foo.golden`) and the absent campaign selects
+/// the legacy reference adapter. A flag in first position — where the replay
+/// path is expected — is a usage error (the T011b first-position repair):
+/// `--bogus` used to be mistaken for a path and fail later as missing-file
+/// exit 1. `--campaign` explicitly selects combat payload semantics; there is
+/// no content sniffing, fallback, or mixed vocabulary.
 fn parse_replay(args: &[OsString]) -> Result<Command, CliError> {
     let replay = args
         .first()
@@ -259,6 +270,7 @@ fn parse_replay(args: &[OsString]) -> Result<Command, CliError> {
         )));
     }
     let mut golden: Option<&OsString> = None;
+    let mut campaign: Option<&OsString> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match flag_text(arg) {
@@ -268,6 +280,17 @@ fn parse_replay(args: &[OsString]) -> Result<Command, CliError> {
                     .ok_or_else(|| CliError::Usage("--golden needs a value".to_string()))?;
                 if golden.replace(value).is_some() {
                     return Err(CliError::Usage("--golden given more than once".to_string()));
+                }
+            }
+            Some("--campaign") => {
+                let value = iter
+                    .next()
+                    .filter(|next| flag_text(next).is_none())
+                    .ok_or_else(|| CliError::Usage("--campaign needs a value".to_string()))?;
+                if campaign.replace(value).is_some() {
+                    return Err(CliError::Usage(
+                        "--campaign given more than once".to_string(),
+                    ));
                 }
             }
             Some(other) => {
@@ -292,6 +315,7 @@ fn parse_replay(args: &[OsString]) -> Result<Command, CliError> {
     Ok(Command::Replay {
         replay_path: PathBuf::from(replay),
         golden_path,
+        campaign_root: campaign.map(PathBuf::from),
     })
 }
 
@@ -2335,6 +2359,67 @@ fn emit_code(
     }
 }
 
+/// Renders combat semantic findings: one data-owned `Display` line per
+/// finding, in returned order, on stderr with empty stdout and exit 1. The
+/// strict precondition rejects any finding, including future warnings; it
+/// does not change the `validate` command's warnings-only exit policy.
+fn combat_findings_outcome(findings: &[Diagnostic]) -> Outcome {
+    let mut stderr = Vec::new();
+    for finding in findings {
+        stderr.extend_from_slice(&diagnostic_line(finding));
+    }
+    Outcome {
+        code: 1,
+        stdout: Vec::new(),
+        stderr,
+    }
+}
+
+/// Runs the parsed combat `replay --campaign` command: collect the supplied
+/// campaign tree, load it once with the supplied engine text, require empty
+/// validation, then verify the replay against the golden through the private
+/// combat adapter. Error precedence is usage (already parsed) → campaign
+/// collection → engine/load → campaign semantic findings → replay
+/// read/validation → application → golden read/comparison, so a bad campaign
+/// beats a missing replay and an invalid action beats a missing golden.
+fn run_combat_replay_with<W: WalkFs>(
+    walk_fs: &W,
+    replay_path: &Path,
+    golden_path: &Path,
+    campaign_root: &Path,
+    engine_text: &str,
+) -> Outcome {
+    let files = match collect_campaign_files_with(walk_fs, campaign_root) {
+        Ok(files) => files,
+        Err(diagnostic) => return io_outcome(&diagnostic),
+    };
+    let loaded = match load_for_command(&files, engine_text, REPLAY_ENGINE_FAILURE) {
+        Ok(loaded) => loaded,
+        Err(outcome) => return outcome,
+    };
+    let findings = crpg_data::validate(&loaded);
+    if !findings.is_empty() {
+        return combat_findings_outcome(&findings);
+    }
+    let apply = combat_apply::combat_intents(loaded);
+    match crpg_testkit::play_and_verify(replay_path, golden_path, apply) {
+        Ok(_) => Outcome::success(),
+        Err(error) => Outcome::cli_error(&CliError::Replay(error)),
+    }
+}
+
+/// Production combat `replay --campaign` entry: the real filesystem with the
+/// compile-time package engine version.
+fn run_combat_replay(replay_path: &Path, golden_path: &Path, campaign_root: &Path) -> Outcome {
+    run_combat_replay_with(
+        &RealFs,
+        replay_path,
+        golden_path,
+        campaign_root,
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
 /// Runs a parsed command. Replay stays the thin testkit consumer it was at
 /// T009b; validate joins data-owned validation to OS-owned traversal;
 /// migrate joins the same collector to T012a's migration-aware loader and
@@ -2342,18 +2427,25 @@ fn emit_code(
 /// the same collector, data-owned writers, the landed introspection report,
 /// the flat package-lock constructor, and the hash-sequence harness to the
 /// process boundary, each owning only its argument, stream, and exit policy.
+/// Combat `replay --campaign` joins the same collector to `load_campaign`,
+/// empty `validate`, and the private combat adapter through the ordinary
+/// `play_and_verify` gate.
 fn run(command: Command) -> Outcome {
     match command {
         Command::Replay {
             replay_path,
             golden_path,
-        } => match crpg_testkit::play_and_verify(
-            &replay_path,
-            &golden_path,
-            apply::reference_intents(),
-        ) {
-            Ok(_) => Outcome::success(),
-            Err(error) => Outcome::cli_error(&CliError::Replay(error)),
+            campaign_root,
+        } => match campaign_root {
+            None => match crpg_testkit::play_and_verify(
+                &replay_path,
+                &golden_path,
+                apply::reference_intents(),
+            ) {
+                Ok(_) => Outcome::success(),
+                Err(error) => Outcome::cli_error(&CliError::Replay(error)),
+            },
+            Some(root) => run_combat_replay(&replay_path, &golden_path, &root),
         },
         Command::Validate { root, json } => run_validate(&root, json),
         Command::Migrate { root } => run_migrate(&root),
@@ -2425,9 +2517,11 @@ mod tests {
             Command::Replay {
                 replay_path,
                 golden_path,
+                campaign_root,
             } => {
                 assert_eq!(replay_path, PathBuf::from("run/replay_basic.replay"));
                 assert_eq!(golden_path, PathBuf::from("run/replay_basic.golden"));
+                assert_eq!(campaign_root, None);
             }
             Command::Validate { .. }
             | Command::Migrate { .. }
@@ -2493,6 +2587,257 @@ mod tests {
             ])),
             Err(CliError::Usage(_))
         ));
+    }
+
+    #[test]
+    fn replay_campaign_absent_selects_reference_mode() {
+        match parse_args(&args(&["replay", "a.replay"])) {
+            Ok(Command::Replay {
+                replay_path,
+                golden_path,
+                campaign_root,
+            }) => {
+                assert_eq!(replay_path, PathBuf::from("a.replay"));
+                assert_eq!(golden_path, PathBuf::from("a.golden"));
+                assert_eq!(campaign_root, None);
+            }
+            other => panic!("expected replay: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_campaign_present_in_either_post_path_order() {
+        for argv in [
+            args(&["replay", "a.replay", "--golden", "g", "--campaign", "c"]),
+            args(&["replay", "a.replay", "--campaign", "c", "--golden", "g"]),
+            args(&["replay", "a.replay", "--campaign", "c"]),
+        ] {
+            match parse_args(&argv) {
+                Ok(Command::Replay {
+                    replay_path,
+                    golden_path,
+                    campaign_root,
+                }) => {
+                    assert_eq!(replay_path, PathBuf::from("a.replay"));
+                    assert_eq!(campaign_root, Some(PathBuf::from("c")));
+                    if argv.iter().any(|arg| arg == "--golden") {
+                        assert_eq!(golden_path, PathBuf::from("g"));
+                    } else {
+                        assert_eq!(golden_path, PathBuf::from("a.golden"));
+                    }
+                }
+                other => panic!("expected replay with campaign for {argv:?}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn replay_campaign_missing_value_is_exact_usage() {
+        for argv in [
+            args(&["replay", "a.replay", "--campaign"]),
+            args(&["replay", "a.replay", "--campaign", "--golden", "g"]),
+            args(&[
+                "replay",
+                "a.replay",
+                "--golden",
+                "g",
+                "--campaign",
+                "--golden",
+            ]),
+        ] {
+            match parse_args(&argv) {
+                Err(CliError::Usage(message)) => {
+                    assert_eq!(message, "--campaign needs a value");
+                    let outcome = Outcome::cli_error(&CliError::Usage(message));
+                    assert_eq!(outcome.code, 2);
+                    assert!(outcome.stdout.is_empty());
+                    assert_eq!(outcome.stderr, b"crpgc: --campaign needs a value\n");
+                }
+                other => panic!("missing campaign value must be usage: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn replay_campaign_duplicate_is_exact_usage() {
+        match parse_args(&args(&[
+            "replay",
+            "a.replay",
+            "--campaign",
+            "c",
+            "--campaign",
+            "d",
+        ])) {
+            Err(CliError::Usage(message)) => {
+                assert_eq!(message, "--campaign given more than once");
+                let outcome = Outcome::cli_error(&CliError::Usage(message));
+                assert_eq!(outcome.code, 2);
+                assert_eq!(outcome.stderr, b"crpgc: --campaign given more than once\n");
+            }
+            other => panic!("duplicate campaign must be usage: {other:?}"),
+        }
+        // A flag-looking value reports the missing-value error before the
+        // duplicate check, even on the second occurrence.
+        match parse_args(&args(&[
+            "replay",
+            "a.replay",
+            "--campaign",
+            "c",
+            "--campaign",
+            "--golden",
+        ])) {
+            Err(CliError::Usage(message)) => {
+                assert_eq!(message, "--campaign needs a value");
+            }
+            other => panic!("flag value must precede duplicate: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_campaign_parser_rejects_bad_syntax_as_usage() {
+        let cases = [
+            args(&["replay", "a.replay", "extra", "--campaign", "c"]),
+            args(&["replay", "a.replay", "--campaign", "c", "extra"]),
+            args(&["replay", "a.replay", "--campaign=c"]),
+            args(&["replay", "a.replay", "--campaign", "c", "--campaign=c"]),
+            args(&["replay", "a.replay", "--", "--campaign", "c"]),
+            args(&["replay", "a.replay", "--campaign", "c", "--"]),
+            args(&["replay", "a.replay", "--write", "--campaign", "c"]),
+            args(&["replay", "a.replay", "--campaign", "c", "--write"]),
+            args(&["replay", "a.replay", "--bogus", "--campaign", "c"]),
+            args(&["replay", "a.replay", "--campaign", "c", "--bogus"]),
+            args(&["replay", "--campaign", "c", "a.replay"]),
+            args(&["replay", "--campaign", "c"]),
+        ];
+        for argv in &cases {
+            match parse_args(argv) {
+                Err(CliError::Usage(_)) => {
+                    assert_eq!(
+                        Outcome::cli_error(&parse_args(argv).expect_err("must be usage")).code,
+                        2
+                    );
+                }
+                other => panic!("expected usage for {argv:?}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn replay_golden_flag_value_parsing_is_unchanged() {
+        // A flag-looking `--golden` value is still consumed as the golden
+        // path (existing behavior); the trailing token then fails as an
+        // extra positional rather than as a campaign value.
+        match parse_args(&args(&[
+            "replay",
+            "a.replay",
+            "--golden",
+            "--campaign",
+            "c",
+        ])) {
+            Err(CliError::Usage(message)) => {
+                assert!(
+                    message.contains("unexpected argument"),
+                    "golden keeps its value: {message}"
+                );
+            }
+            other => panic!("expected extra-positional usage: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_non_unicode_campaign_parses_for_io() {
+        use std::os::unix::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("replay"),
+            OsString::from("a.replay"),
+            OsString::from("--campaign"),
+            OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]),
+        ];
+        match parse_args(&argv) {
+            Ok(Command::Replay { campaign_root, .. }) => {
+                assert!(campaign_root.is_some());
+            }
+            other => panic!("non-Unicode campaign must parse, failing later as io: {other:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replay_non_unicode_campaign_parses_for_io() {
+        use std::os::windows::ffi::OsStringExt;
+        let argv = vec![
+            OsString::from("replay"),
+            OsString::from("a.replay"),
+            OsString::from("--campaign"),
+            OsString::from_wide(&[0x0066, 0xD800]),
+        ];
+        match parse_args(&argv) {
+            Ok(Command::Replay { campaign_root, .. }) => {
+                assert!(campaign_root.is_some());
+            }
+            other => panic!("non-Unicode campaign must parse, failing later as io: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_engine_failure_bytes_are_exact() {
+        assert_eq!(
+            REPLAY_ENGINE_FAILURE,
+            "crpgc replay: internal engine version failure\n"
+        );
+    }
+
+    #[test]
+    fn combat_collector_failure_precedes_replay_read() {
+        let root = PathBuf::from("/fake/missing-campaign");
+        let replay = PathBuf::from("/fake/missing.replay");
+        let golden = PathBuf::from("/fake/missing.golden");
+        let outcome = run_combat_replay_with(&FakeFs::new(), &replay, &golden, &root, "0.1.0");
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(outcome.stderr).expect("utf-8"),
+            "<campaign>: error[io]: cannot open root <campaign-root>: not_found\n"
+        );
+    }
+
+    #[test]
+    fn combat_engine_failure_performs_zero_replay_work() {
+        let root = PathBuf::from("/fake/root");
+        let mut walk = FakeFs::new();
+        walk.dir(&root, &["campaign.json"]);
+        walk.file(&root.join("campaign.json"), b"{}");
+        let outcome = run_combat_replay_with(
+            &walk,
+            &PathBuf::from("/fake/missing.replay"),
+            &PathBuf::from("/fake/missing.golden"),
+            &root,
+            "not-a-version",
+        );
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.stderr, REPLAY_ENGINE_FAILURE.as_bytes());
+    }
+
+    #[test]
+    fn combat_findings_render_in_order_and_reject_warnings() {
+        let warning = warning_fixture();
+        let error = error_fixture();
+        let outcome = combat_findings_outcome(&[warning.clone(), error.clone()]);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        let stderr = String::from_utf8(outcome.stderr).expect("utf-8");
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("warning["), "{lines:?}");
+        assert!(lines[1].contains("error["), "{lines:?}");
+        // A warnings-only list still fails: the strict combat precondition
+        // rejects future warnings without changing `validate` policy.
+        let outcome = combat_findings_outcome(&[warning]);
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.stdout.is_empty());
+        assert!(!outcome.stderr.is_empty());
     }
 
     #[test]
