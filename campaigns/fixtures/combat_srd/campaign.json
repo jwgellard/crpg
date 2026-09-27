@@ -1,0 +1,15 @@
+{
+  "engine": ">=0.1.0, <1.0.0",
+  "entry": {
+    "area": "00000000000000000000000011",
+    "spawn": "00000000000000000000000012",
+    "world": "00000000000000000000000010"
+  },
+  "id": "0000000000000000000000000Z",
+  "name": "fixture.combat-srd",
+  "package": "fixture.combat-srd",
+  "requires": [],
+  "schema": "crpg.campaign/1",
+  "slug": "combat-srd",
+  "version": "0.1.0"
+}

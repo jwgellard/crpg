@@ -394,8 +394,10 @@ pub struct VariablesDocument {
 
 /// Complete persistence envelope; fields share the schema-tag object.
 ///
-/// All families remain at version 1 except the item family, whose current
-/// tag is `crpg.item/2` behind the registered `1 -> 2` migration.
+/// Ruleset and ability families are current at version 2 behind their
+/// registered `1 -> 2` edges; the item family is current at `crpg.item/2`;
+/// every other family remains at version 1, with `crpg.effect/1` entering
+/// with no edges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum Document {
@@ -426,6 +428,21 @@ pub enum Document {
     /// Independently stored event graph.
     #[serde(rename = "crpg.graph/1")]
     Graph(EventGraph),
+    /// Authored ruleset: stat declarations, health, pools, abilities.
+    #[serde(rename = "crpg.ruleset/2")]
+    Ruleset(crate::Ruleset),
+    /// Authored attack ability.
+    #[serde(rename = "crpg.ability/2")]
+    Ability(crate::Ability),
+    /// Authored margin-band outcome table.
+    #[serde(rename = "crpg.outcome-table/1")]
+    OutcomeTable(crate::OutcomeTable),
+    /// Authored encounter: ruleset plus participants.
+    #[serde(rename = "crpg.encounter/1")]
+    Encounter(crate::Encounter),
+    /// Authored lifetime-bearing effect.
+    #[serde(rename = "crpg.effect/1")]
+    Effect(crate::Effect),
     /// Area placement aggregate.
     #[serde(rename = "crpg.placements/1")]
     Placements(PlacementsDocument),
@@ -482,6 +499,11 @@ pub(crate) fn validate_local(document: &Document) -> Result<(), DataError> {
     match document {
         Document::CampaignLock(lock) => crate::package::validate_campaign_lock(lock),
         Document::AssetsLock(lock) => crate::package::validate_assets_lock(lock),
+        Document::Ruleset(_)
+        | Document::Ability(_)
+        | Document::OutcomeTable(_)
+        | Document::Encounter(_)
+        | Document::Effect(_) => crate::combat::validate_combat_local(document),
         _ => Ok(()),
     }
 }

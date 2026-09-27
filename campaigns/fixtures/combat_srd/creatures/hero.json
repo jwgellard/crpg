@@ -1,0 +1,18 @@
+{
+  "faction": null,
+  "id": "00000000000000000000000014",
+  "inventory": [],
+  "name": "fixture.hero",
+  "schema": "crpg.creature/1",
+  "slug": "hero",
+  "stats": {
+    "guile": 393216,
+    "health": 655360,
+    "might": 524288,
+    "resolve": 458752,
+    "ward": 458752
+  },
+  "tags": [
+    "fixture"
+  ]
+}

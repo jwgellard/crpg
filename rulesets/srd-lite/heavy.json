@@ -1,0 +1,41 @@
+{
+  "allow_self_target": false,
+  "attribute": "might",
+  "cost": 1,
+  "damage": [
+    {
+      "amount": 0,
+      "outcome": {
+        "type": "failure"
+      }
+    },
+    {
+      "amount": 3,
+      "outcome": {
+        "type": "success"
+      }
+    },
+    {
+      "amount": 5,
+      "outcome": {
+        "type": "critical_success"
+      }
+    }
+  ],
+  "defense": {
+    "type": "target_stat",
+    "value": {
+      "stat": "ward"
+    }
+  },
+  "dice": "2d6",
+  "ends_turn": true,
+  "extra_costs": [],
+  "id": "00000000000000000000000017",
+  "name": "fixture.heavy",
+  "natural_die": 0,
+  "outcome_table": "00000000000000000000000019",
+  "requires_target": true,
+  "schema": "crpg.ability/2",
+  "slug": "heavy"
+}

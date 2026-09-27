@@ -1611,8 +1611,13 @@ fn diagnostic_wire_shape_spellings_and_display_are_pinned() {
         (DiagnosticCode::MissingAsset, "missing_asset"),
         (DiagnosticCode::MissingLocaleKey, "missing_locale_key"),
         (DiagnosticCode::ValueTypeMismatch, "value_type_mismatch"),
+        (DiagnosticCode::UnknownStat, "unknown_stat"),
+        (DiagnosticCode::MissingStat, "missing_stat"),
+        (DiagnosticCode::InvalidStatValue, "invalid_stat_value"),
+        (DiagnosticCode::InvalidCost, "invalid_cost"),
+        (DiagnosticCode::UnknownPool, "unknown_pool"),
     ];
-    assert_eq!(codes.len(), 26);
+    assert_eq!(codes.len(), 31);
     for (code, text) in codes {
         assert_eq!(code.as_str(), text);
         assert_eq!(code.to_string(), text);

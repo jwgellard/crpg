@@ -1,0 +1,18 @@
+{
+  "campaign": "0000000000000000000000000B",
+  "locale": "en",
+  "schema": "crpg.locale/1",
+  "strings": {
+    "fixture.combat-basic": "Combat Basic",
+    "fixture.first-blood": "First Blood",
+    "fixture.goblin": "Goblin",
+    "fixture.goblin-spawn": "Goblin Spawn",
+    "fixture.hero": "Hero",
+    "fixture.hero-spawn": "Hero Spawn",
+    "fixture.minimal-d6": "Minimal D6",
+    "fixture.roll-under": "Roll Under",
+    "fixture.start": "Start",
+    "fixture.strike": "Strike",
+    "fixture.world": "World"
+  }
+}

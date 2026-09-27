@@ -13,19 +13,19 @@ fn edit(files: &mut gate::Snapshot, name: &str, change: impl FnOnce(&mut Value))
 }
 
 #[test]
-fn registry_schema_and_serde_agree_on_fifteen_current_tags() {
+fn registry_schema_and_serde_agree_on_twenty_current_tags() {
     let versions = schema_versions();
-    assert_eq!(versions.len(), 15);
+    assert_eq!(versions.len(), 20);
     let schemas = generated_schemas().unwrap();
-    assert_eq!(schemas.len(), 17);
+    assert_eq!(schemas.len(), 22);
     let serialized = gate::representatives(&gate::snapshot().unwrap()).unwrap();
-    assert_eq!(serialized.len(), 15);
+    assert_eq!(serialized.len(), 20);
     gate::check_tags(versions, &schemas, &serialized).unwrap();
-    // Retain the concrete initial-version assertions independently of the checker.
+    // Retain the concrete version assertions independently of the checker.
     for version in versions {
         assert_eq!(
             version.current,
-            if version.schema_type == "crpg.item" {
+            if ["crpg.item", "crpg.ruleset", "crpg.ability"].contains(&version.schema_type) {
                 2
             } else {
                 1
@@ -40,14 +40,32 @@ fn manifest_covers_every_edge_with_checked_in_fixtures() {
     let entries = gate::check_manifest(schema_versions(), &files).unwrap();
     assert_eq!(
         entries,
-        vec![gate::Entry {
-            schema_type: "crpg.item".into(),
-            from: 1,
-            to: 2,
-            root: "migration_v1/campaign".into(),
-            document: "items/item.json".into(),
-            golden: "migration_v1/expected.json".into(),
-        }]
+        vec![
+            gate::Entry {
+                schema_type: "crpg.ability".into(),
+                from: 1,
+                to: 2,
+                root: "migration_v1/campaign".into(),
+                document: "abilities/migrated.json".into(),
+                golden: "migration_v1/expected.json".into(),
+            },
+            gate::Entry {
+                schema_type: "crpg.item".into(),
+                from: 1,
+                to: 2,
+                root: "migration_v1/campaign".into(),
+                document: "items/item.json".into(),
+                golden: "migration_v1/expected.json".into(),
+            },
+            gate::Entry {
+                schema_type: "crpg.ruleset".into(),
+                from: 1,
+                to: 2,
+                root: "migration_v1/campaign".into(),
+                document: "rulesets/migrated.json".into(),
+                golden: "migration_v1/expected.json".into(),
+            },
+        ]
     );
     let roots: Value = serde_json::from_slice(&files["expected.json"]).unwrap();
     assert_eq!(roots.as_array().unwrap().len(), 3);

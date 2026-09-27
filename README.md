@@ -10,7 +10,7 @@ presentation host through GDExtension, and build a fully Godot-free simulation
 core. If Godot ever disappoints, replacing it is a client rewrite — the rules,
 campaign format, netcode, AI, and server are untouched.
 
-> **Status:** early development (Phase 2 — campaign data format).
+> **Status:** early development (Phase 3 — rules kernel).
 > `crpg-core` has the planned Phase 1 primitives; `crpg-sim` has the world,
 > component stores, timeline, fixed-step tick loop, events, and deterministic
 > state hashing; and `crpg-testkit` has the hash-sequence and golden-file
@@ -32,7 +32,10 @@ campaign format, netcode, AI, and server are untouched.
 > introspection CLI (`new`/`schema`/`explain`/`fmt`/`lock`/`run`) is merged
 > (PR #9) with both native gates green; T014 stat/modifier kernel
 > (`crpg-rules`) is merged (PR #11) with both native gates green; T015
-> dice/resolution is next. See
+> dice, outcome tables, and resolution is merged (PR #13); T016 headless
+> combat is in progress — T016a–d plus the T016e invariant repair are
+> implemented and natively verified in the working tree, unmerged, with the
+> encounter-lifecycle decision and milestone merge outstanding. See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
 > [T011a](tasks/T011a.md), [T011b](tasks/T011b.md),
@@ -215,3 +218,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a landed · Updated the status block to the merged T013a data-owned introspection prerequisite (PR #7) with T013 CLI next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Updated the status block to the merged T013 scaffolding/introspection CLI (PR #9) with T014 rules kernel next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Updated the status block to the merged T014 stat/modifier kernel (PR #11) with T015 dice/resolution next.
+- 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Updated the status block past the stale Phase 2 pointer: T015 merged (PR #13), T016 in progress with T016a–e implemented and verified in the working tree, unmerged, and the lifecycle decision plus merge outstanding.

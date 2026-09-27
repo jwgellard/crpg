@@ -1,0 +1,15 @@
+{
+  "engine": ">=0.1.0, <1.0.0",
+  "entry": {
+    "area": "0000000000000000000000000D",
+    "spawn": "0000000000000000000000000E",
+    "world": "0000000000000000000000000C"
+  },
+  "id": "0000000000000000000000000B",
+  "name": "fixture.combat-basic",
+  "package": "fixture.combat-basic",
+  "requires": [],
+  "schema": "crpg.campaign/1",
+  "slug": "combat-basic",
+  "version": "0.1.0"
+}

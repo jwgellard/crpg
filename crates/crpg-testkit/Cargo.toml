@@ -18,3 +18,10 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # Tests name EntityId directly (tracked live ids). Same direction, tests only.
 crpg-core = { path = "../crpg-core" }
+# T016c combat adapter (tests only): production content loading through
+# crpg-data (load_campaign, SourcePath, Document, validate) and the exact
+# trace oracle type from crpg-rules (Outcome). Both are existing workspace
+# members; the lock grows by these edge entries only. Approved in-session
+# 2026-09-26; ALLOWED already permits testkit -> {anything but crpg-godot}.
+crpg-data = { path = "../crpg-data" }
+crpg-rules = { path = "../crpg-rules" }

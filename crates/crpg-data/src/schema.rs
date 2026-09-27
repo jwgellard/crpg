@@ -87,7 +87,7 @@ fn root<T: JsonSchema>(title: &str) -> Result<Vec<u8>, DataError> {
     canonical_json(&schema)
 }
 
-/// Generates exactly 17 filename-to-canonical-byte schemas without filesystem I/O.
+/// Generates exactly 22 filename-to-canonical-byte schemas without filesystem I/O.
 ///
 /// Document roots use single-variant derive wrappers to enforce one schema tag.
 /// Each file has local definitions and no external schema identifier.
@@ -113,6 +113,15 @@ pub fn generated_schemas() -> Result<BTreeMap<String, Vec<u8>>, DataError> {
     document_schema!(Quest, "crpg.quest/1", "quest.schema.json");
     document_schema!(Faction, "crpg.faction/1", "faction.schema.json");
     document_schema!(EventGraph, "crpg.graph/1", "graph.schema.json");
+    document_schema!(Ruleset, "crpg.ruleset/2", "ruleset.schema.json");
+    document_schema!(Ability, "crpg.ability/2", "ability.schema.json");
+    document_schema!(
+        OutcomeTable,
+        "crpg.outcome-table/1",
+        "outcome-table.schema.json"
+    );
+    document_schema!(Encounter, "crpg.encounter/1", "encounter.schema.json");
+    document_schema!(Effect, "crpg.effect/1", "effect.schema.json");
     document_schema!(
         PlacementsDocument,
         "crpg.placements/1",

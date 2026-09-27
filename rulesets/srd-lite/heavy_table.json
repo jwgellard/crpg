@@ -1,0 +1,35 @@
+{
+  "bands": [
+    {
+      "min_margin": -9223372036854775808,
+      "outcome": {
+        "type": "failure"
+      }
+    },
+    {
+      "min_margin": -2,
+      "outcome": {
+        "type": "success"
+      }
+    },
+    {
+      "min_margin": 2,
+      "outcome": {
+        "type": "critical_success"
+      }
+    }
+  ],
+  "id": "00000000000000000000000019",
+  "name": "fixture.heavy-table",
+  "natural_rules": [
+    {
+      "effect": {
+        "type": "shift",
+        "value": 1
+      },
+      "face": 6
+    }
+  ],
+  "schema": "crpg.outcome-table/1",
+  "slug": "heavy-table"
+}

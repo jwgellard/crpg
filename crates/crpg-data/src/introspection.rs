@@ -26,6 +26,11 @@ fn kind_spelling(kind: ObjectKind) -> &'static str {
         ObjectKind::Node => "node",
         ObjectKind::DialogueNode => "dialogue_node",
         ObjectKind::QuestState => "quest_state",
+        ObjectKind::Ruleset => "ruleset",
+        ObjectKind::Ability => "ability",
+        ObjectKind::OutcomeTable => "outcome_table",
+        ObjectKind::Encounter => "encounter",
+        ObjectKind::Effect => "effect",
     }
 }
 
@@ -215,6 +220,11 @@ mod tests {
             (ObjectKind::Node, "node"),
             (ObjectKind::DialogueNode, "dialogue_node"),
             (ObjectKind::QuestState, "quest_state"),
+            (ObjectKind::Ruleset, "ruleset"),
+            (ObjectKind::Ability, "ability"),
+            (ObjectKind::OutcomeTable, "outcome_table"),
+            (ObjectKind::Encounter, "encounter"),
+            (ObjectKind::Effect, "effect"),
         ] {
             assert_eq!(kind_spelling(kind), text);
         }

@@ -1,0 +1,78 @@
+{
+  "format_version": 1,
+  "seed": 0,
+  "campaign_id": "combat-basic",
+  "campaign_version": "0.1.0",
+  "engine_version": "0.1.0",
+  "total_ticks": 11,
+  "inputs": [
+    {
+      "tick": 0,
+      "payload": {
+        "combat": 1,
+        "encounter": "0000000000000000000000000N",
+        "op": "init"
+      }
+    },
+    {
+      "tick": 1,
+      "payload": {
+        "ability": "0000000000000000000000000K",
+        "actor": "0000000000000000000000000F",
+        "combat": 1,
+        "op": "attack",
+        "target": "0000000000000000000000000E"
+      }
+    },
+    {
+      "tick": 2,
+      "payload": {
+        "ability": "0000000000000000000000000K",
+        "actor": "0000000000000000000000000E",
+        "combat": 1,
+        "op": "attack",
+        "target": "0000000000000000000000000F"
+      }
+    },
+    {
+      "tick": 3,
+      "payload": {
+        "ability": "0000000000000000000000000K",
+        "actor": "0000000000000000000000000F",
+        "combat": 1,
+        "op": "attack",
+        "target": "0000000000000000000000000E"
+      }
+    },
+    {
+      "tick": 4,
+      "payload": {
+        "ability": "0000000000000000000000000K",
+        "actor": "0000000000000000000000000E",
+        "combat": 1,
+        "op": "attack",
+        "target": "0000000000000000000000000F"
+      }
+    },
+    {
+      "tick": 5,
+      "payload": {
+        "ability": "0000000000000000000000000K",
+        "actor": "0000000000000000000000000F",
+        "combat": 1,
+        "op": "attack",
+        "target": "0000000000000000000000000E"
+      }
+    },
+    {
+      "tick": 6,
+      "payload": {
+        "ability": "0000000000000000000000000K",
+        "actor": "0000000000000000000000000E",
+        "combat": 1,
+        "op": "attack",
+        "target": "0000000000000000000000000F"
+      }
+    }
+  ]
+}

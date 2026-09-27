@@ -1,10 +1,26 @@
 [
   {
+    "document": "abilities/migrated.json",
+    "from": 1,
+    "golden": "migration_v1/expected.json",
+    "root": "migration_v1/campaign",
+    "schema_type": "crpg.ability",
+    "to": 2
+  },
+  {
     "document": "items/item.json",
     "from": 1,
     "golden": "migration_v1/expected.json",
     "root": "migration_v1/campaign",
     "schema_type": "crpg.item",
+    "to": 2
+  },
+  {
+    "document": "rulesets/migrated.json",
+    "from": 1,
+    "golden": "migration_v1/expected.json",
+    "root": "migration_v1/campaign",
+    "schema_type": "crpg.ruleset",
     "to": 2
   }
 ]

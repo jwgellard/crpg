@@ -223,6 +223,144 @@ fn documents(
             disposition: raw,
         }],
     }));
+    let label = if text.is_empty() {
+        "x".to_string()
+    } else {
+        text.clone()
+    };
+    let dice = if text.is_empty() {
+        "2d6".to_string()
+    } else {
+        text.clone()
+    };
+    for refresh in [
+        RefreshWire::OnTurnStart,
+        RefreshWire::OnRoundStart,
+        RefreshWire::OnRest(RestId(id)),
+        RefreshWire::OnTick(TickPeriod(if ticks == 0 { 1 } else { ticks })),
+        RefreshWire::Never,
+    ] {
+        result.push(Document::Ruleset(Ruleset {
+            id,
+            slug: label.clone(),
+            name: label.clone(),
+            note: Some(text.clone()),
+            package: "example.pkg".parse().unwrap(),
+            version: "1.2.3".parse().unwrap(),
+            stats: vec![
+                StatDecl {
+                    name: label.clone(),
+                    kind: StatKindWire::Int,
+                },
+                StatDecl {
+                    name: format!("{label}-health"),
+                    kind: StatKindWire::Int,
+                },
+            ],
+            health_stat: format!("{label}-health"),
+            attributes: vec![label.clone()],
+            pools: vec![ActionPoolTemplate {
+                id,
+                max: ticks as u32,
+                refresh,
+            }],
+            abilities: vec![id],
+        }));
+    }
+    result.push(Document::Ability(Ability {
+        id,
+        slug: label.clone(),
+        name: label.clone(),
+        note: Some(text.clone()),
+        dice,
+        attribute: label.clone(),
+        outcome_table: id,
+        damage: vec![
+            DamageEntry {
+                outcome: OutcomeWire::CriticalSuccess,
+                amount: ticks as u32,
+            },
+            DamageEntry {
+                outcome: OutcomeWire::Success,
+                amount: ticks as u32,
+            },
+            DamageEntry {
+                outcome: OutcomeWire::Failure,
+                amount: ticks as u32,
+            },
+            DamageEntry {
+                outcome: OutcomeWire::CriticalFailure,
+                amount: ticks as u32,
+            },
+            DamageEntry {
+                outcome: OutcomeWire::Custom(7),
+                amount: ticks as u32,
+            },
+        ],
+        cost: 1 + (ticks % 1000) as u32,
+        extra_costs: Vec::new(),
+        ends_turn: true,
+        effect: None,
+        defense: DefenseWire::ActorAttribute,
+        natural_die: None,
+        requires_target: true,
+        allow_self_target: false,
+    }));
+    result.push(Document::Effect(Effect {
+        id,
+        slug: label.clone(),
+        name: label.clone(),
+        note: Some(text.clone()),
+        aim: EffectAimWire::Slf,
+        mod_type: label.clone(),
+        policy: PolicyWire::StackAll,
+        modifiers: vec![EffectModifierWire {
+            id,
+            target: EffectTargetWire::Roll,
+            op: EffectOpWire::Add,
+            value: raw,
+            priority: 0,
+            name: None,
+        }],
+        duration_rounds: 1,
+    }));
+    result.push(Document::OutcomeTable(OutcomeTable {
+        id,
+        slug: label.clone(),
+        name: label.clone(),
+        note: Some(text.clone()),
+        bands: vec![
+            OutcomeBandWire {
+                min_margin: i64::MIN,
+                outcome: OutcomeWire::CriticalSuccess,
+            },
+            OutcomeBandWire {
+                min_margin: raw as i64,
+                outcome: OutcomeWire::Success,
+            },
+        ],
+        natural_rules: vec![
+            NaturalRuleWire {
+                face: 1,
+                effect: NaturalEffectWire::Shift(-1),
+            },
+            NaturalRuleWire {
+                face: 2,
+                effect: NaturalEffectWire::Override(OutcomeWire::Custom(7)),
+            },
+        ],
+    }));
+    result.push(Document::Encounter(Encounter {
+        id,
+        slug: label.clone(),
+        name: label.clone(),
+        note: Some(text.clone()),
+        ruleset: id,
+        participants: vec![EncounterParticipant {
+            placement: id,
+            initiative: raw,
+        }],
+    }));
     for document in &mut result {
         match document {
             Document::Campaign(v) => {

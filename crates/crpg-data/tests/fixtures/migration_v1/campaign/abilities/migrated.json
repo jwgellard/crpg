@@ -1,0 +1,20 @@
+{
+  "allow_self_target": false,
+  "attribute": "pow",
+  "cost": 1,
+  "damage": [
+    {
+      "amount": 1,
+      "outcome": {
+        "type": "success"
+      }
+    }
+  ],
+  "dice": "2d6",
+  "id": "0000000000000000000000001X",
+  "name": "fixture.creature",
+  "outcome_table": "0000000000000000000000001Y",
+  "requires_target": true,
+  "schema": "crpg.ability/1",
+  "slug": "migrated-ability"
+}

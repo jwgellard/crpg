@@ -340,7 +340,7 @@ fn copied_v1_campaign_migrates_to_complete_data_golden() {
     // checked-in T012a golden; the golden is reviewed output, never computed
     // from the actual result inside this test.
     let golden = read_golden_map();
-    assert_eq!(golden.len(), 11, "golden pins eleven documents");
+    assert_eq!(golden.len(), 14, "golden pins fourteen documents");
     for (logical, expected_bytes) in &golden {
         let mut path = root.clone();
         for part in logical.split('/') {

@@ -7,7 +7,8 @@ use std::{
     path::Path,
 };
 
-const NAMES: [&str; 17] = [
+const NAMES: [&str; 22] = [
+    "ability",
     "action-signature",
     "area",
     "assets-lock",
@@ -15,13 +16,17 @@ const NAMES: [&str; 17] = [
     "campaign",
     "creature",
     "dialogue",
+    "effect",
+    "encounter",
     "faction",
     "graph",
     "item",
     "locale",
+    "outcome-table",
     "placement",
     "placements",
     "quest",
+    "ruleset",
     "triggers",
     "variables",
     "world",
@@ -120,7 +125,14 @@ fn walk(value: &Value, root: &Value) {
                     _ => None,
                 };
                 if let Some((min, max)) = expected {
-                    assert_eq!(map["type"], "integer");
+                    // Optional-missing integer fields (ability natural_die)
+                    // carry a nullable type; all other integers stay bare.
+                    let bare = json!("integer");
+                    let nullable = json!(["integer", "null"]);
+                    assert!(
+                        map["type"] == bare || map["type"] == nullable,
+                        "unexpected integer type for {format}"
+                    );
                     assert_eq!(map["minimum"], min);
                     assert_eq!(map["maximum"], max);
                 }
@@ -168,6 +180,12 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
         } else {
             let expected = if name == "item" {
                 "crpg.item/2".to_string()
+            } else if name == "ruleset" {
+                "crpg.ruleset/2".to_string()
+            } else if name == "ability" {
+                "crpg.ability/2".to_string()
+            } else if name == "effect" {
+                "crpg.effect/1".to_string()
             } else {
                 format!("crpg.{name}/1")
             };
@@ -175,13 +193,24 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
             assert!(required.contains(&json!("schema")));
         }
         assert!(!required.contains(&json!("_note")));
+        // Ability effect/natural_die are optional-missing by contract.
+        let optional: &[&str] = match name {
+            "ability" => &["_note", "effect", "natural_die"],
+            _ => &["_note"],
+        };
         for key in shape["properties"]
             .as_object()
             .unwrap()
             .keys()
-            .filter(|k| k.as_str() != "_note")
+            .filter(|k| !optional.contains(&k.as_str()))
         {
             assert!(required.contains(&json!(key)), "{name}.{key}");
+        }
+        for key in optional.iter().skip(1) {
+            assert!(
+                !required.contains(&json!(*key)),
+                "{name}.{key} must stay optional-missing"
+            );
         }
         let title = match name {
             "campaign" => "Campaign",
@@ -201,6 +230,11 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
             "assets-lock" => "AssetsLock",
             "placement" => "Placement",
             "action-signature" => "ActionSignature",
+            "ruleset" => "Ruleset",
+            "ability" => "Ability",
+            "outcome-table" => "OutcomeTable",
+            "encounter" => "Encounter",
+            "effect" => "Effect",
             _ => unreachable!(),
         };
         assert_eq!(root["title"], title);

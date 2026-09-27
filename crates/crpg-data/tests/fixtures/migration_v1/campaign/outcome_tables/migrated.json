@@ -1,0 +1,15 @@
+{
+  "bands": [
+    {
+      "min_margin": -9223372036854775808,
+      "outcome": {
+        "type": "success"
+      }
+    }
+  ],
+  "id": "0000000000000000000000001Y",
+  "name": "fixture.creature",
+  "natural_rules": [],
+  "schema": "crpg.outcome-table/1",
+  "slug": "migrated-table"
+}

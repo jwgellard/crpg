@@ -1,0 +1,54 @@
+{
+  "area": "00000000000000000000000011",
+  "placements": [
+    {
+      "id": "00000000000000000000000012",
+      "name": "fixture.hero-spawn",
+      "overrides": {},
+      "prefab": "00000000000000000000000014",
+      "slug": "hero-spawn",
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          65536,
+          65536,
+          65536
+        ]
+      }
+    },
+    {
+      "id": "00000000000000000000000013",
+      "name": "fixture.goblin-spawn",
+      "overrides": {},
+      "prefab": "00000000000000000000000015",
+      "slug": "goblin-spawn",
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          65536,
+          65536,
+          65536
+        ]
+      }
+    }
+  ],
+  "schema": "crpg.placements/1"
+}

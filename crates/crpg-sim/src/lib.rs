@@ -13,6 +13,7 @@
 //! later tasks; the module docs say which task owns each missing piece so
 //! nothing here reads as finished.
 
+pub mod combat;
 pub mod event;
 pub mod hash;
 pub mod store;
@@ -21,6 +22,13 @@ pub mod timeline;
 pub mod transform;
 pub mod world;
 
+pub use combat::{
+    end_encounter, perform_action, start_encounter, AbilityDefense, AbilityDefinition,
+    ActionOutcome, AttachedEffect, CombatAction, CombatDefinition, CombatError, CombatState,
+    Combatant, EffectAim, EffectDefinition, EffectModifier, EffectOp, EffectTarget, EncounterSpec,
+    EncounterSummary, ParticipantResult, PlacementAndArea, PoolTemplate, COMBAT_ROLL_STREAM,
+    COMBAT_ROLL_TAG, MAX_COMBATANTS, MAX_COMBAT_STATS,
+};
 pub use event::SimEvent;
 pub use hash::state_hash;
 pub use store::ComponentStore;
