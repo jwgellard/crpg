@@ -47,7 +47,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-nav` | due with its first task | spec §6.3 |
 | `crpg-script` | due with its first task | spec §5, ADR-0005 |
 | `crpg-ai` | due with its first task | spec §6 |
-| `crpg-net` | due with T018 | spec §7, ADR-0004 |
+| `crpg-net` | [crpg-net.md](crpg-net.md) | spec §7, ADR-0004 |
 | `crpg-persist` | due with its first task | spec §8 |
 | `crpg-edit` | due with its first task | spec §11 |
 | `crpg-contracts` | due with its first task | spec §15.1 (human-owned) |
@@ -75,3 +75,4 @@ superseded by appending, never rewritten.
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Linked the data architecture document before source implementation. The opening documents describe the approved contract; completion remains gated by T010 verification.
 - 2026-09-18 (UTC) · opencode/muse-spark + T010–T012a landing catch-up · Noted the data doc opened at T010 and extended through T011a/T011b validation and the T012a migration framework; the index already links all five live crate docs.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 crate opening · Linked the new crpg-rules doc; the stat/modifier kernel is the crate's first real code, so the §15.6 gate is satisfied and the "due with T014" place-holder is retired.
+- 2026-09-28 (UTC) · opencode/muse-spark + T018a crate opening · Linked the new crpg-net doc; the lane-0 protocol v1 plus bounded codec plus local Transport is the crate's first real code, so the §15.6 gate is satisfied and the "due with T018" place-holder is retired.
