@@ -95,7 +95,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T018 | open | — | `crpg-net` protocol v1 + simulated-network transport |
+| T018 | open | — | `crpg-net` lane-0 combat protocol + simulated transport + conformance (parent split into T018a/b/c, all `crpg-net`-only) |
 
 ---
 
@@ -257,3 +257,4 @@ Record it here, one line per week.
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Marked T015 done (merged PR #13, `76a48da`, 2026-09-26), moved T016 to in progress with its T016a–e working-tree states and A2/merge outstanding, and moved throughput to 28; unmerged work is never counted.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017/B1 specification · Recorded the approved T017 milestone contract and the specified B1 data contract on the open T017 row; neither implementation nor merge is claimed.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Marked T016 and T017 done (merged PR #14, `4686a73`), moved throughput to 30 with T018 `crpg-net` protocol next.
+- 2026-09-28 (UTC) · opencode/gpt-6-astra + T018 parent and child contracts · Split open T018 into lane-0 protocol/codec (T018a), simulated transport (T018b), and conformance (T018c), all single-crate `crpg-net` per E004, on approved E017 Appendix B with recommended defaults; no implementation, merge, or throughput change.

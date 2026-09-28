@@ -5,3 +5,19 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# T018a: protocol/canonical-identity vocabulary (Ulid) + bounded postcard codec.
+# serde is the workspace-standard derive/bound provider, explicitly named as
+# usable by tasks/T018a.md ("serde derive already in workspace; use it").
+crpg-core = { path = "../crpg-core" }
+serde = { workspace = true }
+postcard = { workspace = true }
+
+[dev-dependencies]
+# T018c: sim-backed conformance driver + authored fixtures. Anticipated by
+# tasks/T018a.md ("dev-only crpg-data/crpg-sim only if a test needs authored
+# fixtures"): the T018c NetDriver sequences public sim calls over an authored
+# encounter. serde_json authors the fixture documents (workspace-standard,
+# zero new lock packages: data/sim already pull it). Test-only edges.
+crpg-data = { path = "../crpg-data" }
+crpg-sim = { path = "../crpg-sim" }
+serde_json = { workspace = true }
