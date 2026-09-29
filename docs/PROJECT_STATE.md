@@ -1,12 +1,12 @@
 # Project state
 
-Updated: 2026-09-27
+Updated: 2026-09-28
 
 ## Phase
-Phase 4 — server and networking (T016/T017 landed; T018 next).
+Phase 4 — server and networking (T016/T017/T018 landed; T019 review/merge next, then T020).
 
 ## Branch state
-All merged work is on `master` through `4686a73`. T010's campaign
+All merged work is on `master` through `bc54896`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
 T011b's thin `crpgc validate` wrapper, T012a's data-half migration
 framework (plus the T012/T012b Stage-2 specs), T012b's thin `crpgc migrate`
@@ -20,8 +20,14 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   adapter/controller, lifecycle/release, replay goldens, CLI proof) and
   T017's second-ruleset abstraction proof with `rulesets/srd-lite`
   (multi-pool/effect/defense/turn generalization, replay goldens, CLI
-  proof) are merged (PR #14, `4686a73`, 2026-09-27). The Done history below is
-  merged work only.
+   proof) are merged (PR #14, `4686a73`, 2026-09-27). T018's lane-0 combat
+   protocol with bounded postcard codec, deterministic simulated transport,
+   and conformance suite (T018a/b/c, 75 net tests per native target) is
+   merged (PR #16, implementation `2fc54b7`, merge `bc54896`, 2026-09-28)
+   with both native gates green; the post-T018 follow-on queue
+   (T019–T029b, D01–D18 decided under delegation) is specified in
+   `tasks/POST-T018.md`. The Done history below is
+   merged work only.
 
 ## Done
 - T004 workspace, 15 stub crates, CI green on Linux and Windows
@@ -320,8 +326,19 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   sim controller (per-ability definitions, plural pools, target-stat
   defense, natural selection, lifetime-bearing effects, explicit
   `EndTurn`), cross-layer `combat_srd` replay with independent native
-  goldens, and the CLI `end`-op proof; ADRs 0015/0016. Dual-native
-  green with all 9 PR checks passing. Unblocks T018 `crpg-net`.
+   goldens, and the CLI `end`-op proof; ADRs 0015/0016. Dual-native
+   green with all 9 PR checks passing. Unblocks T018 `crpg-net`.
+- T018 lane-0 combat protocol + simulated transport + conformance in
+  `crpg-net` (merged `bc54896`, PR #16, 2026-09-28): versioned lane-0
+  combat wire with bounded postcard codec (T018a), deterministic in-memory
+  simulated transport with fault schedules (T018b), and the conformance
+  gate — codec round-trip, malicious-client rejection without mutation,
+  filtered replica convergence, and the 5,000-tick loss/jitter exercise
+  (T018c); 28 + 25 + 22 net tests per native target. Dual-native green
+  with all 9 PR checks passing. Unblocks the post-T018 queue
+  (`tasks/POST-T018.md`); T019 `crpg-sim` same-pool affordability repair
+  is implemented and dual-native verified in the working tree, unmerged,
+  with review/merge outstanding.
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -352,7 +369,8 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T018 `crpg-net` protocol v1 + simulated-network transport (Phase 4).
+- T019 `crpg-sim` same-pool affordability repair (Phase 4 repair): implemented and dual-native verified in the working tree with unchanged replay/goldens; review/merge outstanding.
+- T020 C1-sim authoritative history (exact D08 API/ADR still required), then the post-T018 queue in `tasks/POST-T018.md` order.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -397,7 +415,9 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
     (PR #11) is merged on `master` through `18145d4`; T015's dice,
     outcome tables, and resolution (PR #13) is merged on `master` through
     `76a48da`; T016's headless combat and T017's second-ruleset abstraction
-    proof (PR #14) are merged on `master` through `4686a73`.
+     proof (PR #14) are merged on `master` through `4686a73`; T018's
+     lane-0 combat protocol, simulated transport and conformance (PR #16)
+     are merged on `master` through `bc54896`.
 
 ## Future platform obligations
 - [E012](../tasks/E012-binary-crate-naming.md) and
@@ -534,3 +554,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Recorded the T014 stat/modifier kernel merge (`18145d4`, PR #11, all 9 checks green after a test-only review follow-up) in branch state, Done history, Phase, Next, and verification history; T015 dice/resolution is next.
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Recorded the T015 dice/resolution merge (`76a48da`, PR #13, 2026-09-26) in branch state, Done history, Phase, Next, and verification history; T016a–e noted as implemented and natively verified in the working tree, unmerged, with the A2 lifecycle decision and milestone merge outstanding.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Recorded the T016 headless combat and T017 second-ruleset abstraction proof merge (`4686a73`, PR #14, all 9 checks green) in branch state, Done history, Phase, Next, and verification history; T018 `crpg-net` protocol is next.
+- 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Recorded the T018 lane-0 protocol + simulated transport + conformance merge (`bc54896`, PR #16, all 9 checks green, verified against `origin/master`) in branch state, Done history, Phase, Next, and verification history; T019 is implemented and dual-native verified in the working tree with review/merge outstanding, T020 specification next.

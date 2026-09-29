@@ -37,14 +37,17 @@ campaign format, netcode, AI, and server are untouched.
 > proof) and T017 second-ruleset abstraction proof (`rulesets/srd-lite`,
 > multi-pool/effect/defense/turn generalization, replay goldens, CLI proof)
 > are merged (PR #14) with both native gates green; T018 `crpg-net`
-> protocol is next. See
+> lane-0 combat protocol + simulated transport + conformance (T018a/b/c)
+> is merged (PR #16) with both native gates green; T019 `crpg-sim`
+> same-pool affordability repair is implemented and dual-native verified
+> in the working tree, unmerged, with review/merge outstanding. See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
 > [T011a](tasks/T011a.md), [T011b](tasks/T011b.md),
 > [T012](tasks/T012.md), [T012b](tasks/T012b.md),
 > [T013a](tasks/T013a.md), [T013](tasks/T013.md),
 > [T014](tasks/T014.md), [T015](tasks/T015.md),
-> [T016](tasks/T016.md), [T017](tasks/T017.md) and
+> [T016](tasks/T016.md), [T017](tasks/T017.md), [T018](tasks/T018.md) and
 > [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ---
@@ -223,3 +226,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Updated the status block to the merged T014 stat/modifier kernel (PR #11) with T015 dice/resolution next.
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Updated the status block past the stale Phase 2 pointer: T015 merged (PR #13), T016 in progress with T016a–e implemented and verified in the working tree, unmerged, and the lifecycle decision plus merge outstanding.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Updated the status block to the merged T016 headless combat and T017 second-ruleset abstraction proof (PR #14, `4686a73`) with T018 `crpg-net` protocol next.
+- 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Updated the status block to the merged T018 lane-0 protocol + simulated transport + conformance (PR #16, `bc54896`) with T019 implemented and dual-native verified in the working tree, unmerged, and review/merge outstanding.

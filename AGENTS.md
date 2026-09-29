@@ -112,12 +112,18 @@ python -m unittest discover -s tools/lint -p "test_*.py"
    abstraction proof (`rulesets/srd-lite`, multi-pool/effect/defense/turn
    generalization, replay goldens, CLI proof) are merged on `master`
    (PR #14, `4686a73`) with both native gates green; T018 `crpg-net`
-   protocol is next.
+   lane-0 combat protocol + simulated transport + conformance is merged on
+   `master` (PR #16, implementation `2fc54b7`, merge `bc54896`,
+   2026-09-28) with both native gates green; T019 `crpg-sim` same-pool
+   affordability repair is implemented and dual-native verified in the
+   working tree, unmerged, with review/merge outstanding; T020 C1-sim
+   history is next (exact API/ADR still required).
    See the [completion record](tasks/T009c.md),
    [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
    [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
    [T013a](tasks/T013a.md), [T013](tasks/T013.md), [T014](tasks/T014.md),
-   [T015](tasks/T015.md), [T016](tasks/T016.md) and [T017](tasks/T017.md).
+   [T015](tasks/T015.md), [T016](tasks/T016.md), [T017](tasks/T017.md),
+   [T018](tasks/T018.md) and [POST-T018](tasks/POST-T018.md).
 
 ## Agent log
 
@@ -135,3 +141,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-26 (UTC) · opencode/muse-spark + T013 landed · Updated the note to the merged T013 scaffolding/introspection CLI (PR #9, `9a6304f`) with T014 rules kernel next.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Updated the note to the merged T014 stat/modifier kernel (PR #11, `18145d4`) with T015 dice/resolution next.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Updated the note to the merged T016 headless combat and T017 second-ruleset abstraction proof (PR #14, `4686a73`) with T018 `crpg-net` protocol next.
+- 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Updated the note to the merged T018 lane-0 protocol + simulated transport + conformance (PR #16, `bc54896`) with T019 implemented and verified in the working tree, unmerged, and T020 next.
