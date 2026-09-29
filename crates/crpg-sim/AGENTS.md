@@ -73,7 +73,10 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
   rejected action leaves the whole world — resources, RNG, events, event
   sequence — unchanged. A valid failed attack consumes its action; an
   invalid action consumes nothing. Combat turn logic lives only in these
-  two operations, never in `tick` / `run_systems` / `end_turn`.
+  two operations, never in `tick` / `run_systems` / `end_turn`. Affordability
+  sums same-pool entries as one total in authored template order, primary
+  first, with checked `u32` addition (`ValueOverflow`) and `InsufficientAction`
+  carrying the total and original balance (T019).
 - `end_encounter(world) -> Result<EncounterSummary, CombatError>`: releases
   the active encounter any time it is active (terminal or mid-fight) and
   returns the retained summary (`encounter`/`ruleset` ULIDs, closing
@@ -128,6 +131,18 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
 8. No `HashMap`/`HashSet` — anywhere, including tests. No clock, no threads,
    no I/O. `DeterministicRng` via `rng_mut` with explicit stream names is
    the only randomness.
+10. **Same-pool costs are atomic (T019, ADR-0016 §2).** At the existing
+    affordability stage (after actor/target/turn/ability/self-target checks,
+    before RNG or mutation) every pool's entries sum as one `u32` total in
+    authored template order, primary first, never ULID-sorted. An
+    unrepresentable sum returns `ValueOverflow`; a representable total above
+    balance returns `InsufficientAction` with the total and original balance;
+    the first failing pool in template order wins, so a later overflow never
+    replaces an earlier insufficiency. Only fully affordable actions reach
+    resolution/spending (exact sums; zero entries harmless); persisted vectors
+    keep their order, RNG draw order is unchanged, and the adapter's per-entry
+    validation plus load coherence still reject impossible shapes before
+    execution.
 
 ## Allowed dependencies
 
@@ -313,3 +328,4 @@ proof.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017b boundary implementation · Implemented the accepted UnsupportedAuthored gate with pinned order/Display/field-order/multifault coverage; per-field retirement stays with B3, no generalization added.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d crate opening · Extended the contract with the accepted multi-ability/pool/effect/turn generalization (per-ability ULID definitions, plural pools, EndTurn with Option return, six new variants, Phase A–E precedence, absence-skip hash preservation, per-field retirement) under ADR-0016 before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d implementation · Aligned the contract with the as-built generalization, joint absence-skip persistence, per-field retirement with combat_multi coverage, and the user-authorized narrow downstream mechanical fix; no commit/push/PR.
+- 2026-09-28 (UTC) · opencode/muse-spark + T019 implementation · Recorded the atomic same-pool affordability invariant (template-order sums, checked overflow, first-failing wins, exact-sum spending) with the perform_action clarification above; no API, dependency, fixture, or golden change.

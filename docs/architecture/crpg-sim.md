@@ -152,6 +152,20 @@ the breaking API required a user-authorized narrow mechanical fix in the two
 downstream adapters (effects wiring plus one `Option` unwrap, no
 golden/behavior change); B4 owns replay/goldens, B5 the CLI proof.
 
+## Atomic same-pool affordability (T019)
+
+The T018c adjacent defect (same-pool entries passing per-amount validation
+then panicking in `spend_costs`) is repaired as ADR-0016 §2's atomic-cost
+promise: `perform_action` sums every pool's entries as one `u32` total in
+authored template order, primary first, with checked addition. An
+unrepresentable sum returns `ValueOverflow`; a representable total above
+balance returns `InsufficientAction` with the total and original balance; the
+first failing pool in template order wins. Only fully affordable actions reach
+resolution/spending (exact sums; zero entries harmless); persisted vectors keep
+their order, RNG draw order is unchanged, adapter per-entry validation and load
+coherence are preserved, and existing successful actions stay byte-identical
+per target. Covered by the 11-test `tests/combat_costs.rs` public-API suite.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
@@ -165,3 +179,4 @@ golden/behavior change); B4 owns replay/goldens, B5 the CLI proof.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017b boundary implementation · Aligned the module with the accepted per-field gate, pinned orders, and multifault coverage; retirement stays with B3.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d crate opening · Recorded the accepted multi-ability/pool/effect/turn generalization with absence-skip persistence and per-field retirement under ADR-0016 before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d implementation · Aligned the module with the as-built generalization, joint absence-skip persistence, extended coherence, deleted gate with combat_multi coverage, unchanged legacy goldens, and the user-authorized downstream mechanical fix.
+- 2026-09-28 (UTC) · opencode/muse-spark + T019 implementation · Recorded the atomic same-pool affordability repair (template-order sums, checked overflow, first-failing wins) with its combat_costs coverage and unchanged per-target goldens.

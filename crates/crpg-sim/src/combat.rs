@@ -1492,7 +1492,7 @@ pub fn perform_action(
 ) -> Result<Option<ActionOutcome>, CombatError> {
     use CombatError::{
         AbsentActor, AbsentTarget, DeadActor, DeadTarget, InsufficientAction, NoEncounter,
-        NotParticipant, OutOfTurn, SelfTarget, UnknownAbility,
+        NotParticipant, OutOfTurn, SelfTarget, UnknownAbility, ValueOverflow,
     };
 
     match *action {
@@ -1583,12 +1583,48 @@ pub fn perform_action(
             if target == actor && !entry.allow_self_target {
                 return Err(SelfTarget);
             }
-            for (pool, cost) in &entry.costs {
-                let current = pool_balance(actor_state, pool.0).unwrap_or(0);
-                if current < *cost {
+            for template in &definition.pools {
+                let mut total: u32 = 0;
+                let mut present = false;
+                for (pool, amount) in &entry.costs {
+                    if pool.0 == template.id {
+                        present = true;
+                        total = total.checked_add(*amount).ok_or(ValueOverflow)?;
+                    }
+                }
+                if !present {
+                    continue;
+                }
+                let current = pool_balance(actor_state, template.id).unwrap_or(0);
+                if current < total {
                     return Err(InsufficientAction {
-                        pool: pool.0,
-                        cost: *cost,
+                        pool: template.id,
+                        cost: total,
+                        current,
+                    });
+                }
+            }
+            let mut unknown: Vec<Ulid> = Vec::new();
+            for (pool, _) in &entry.costs {
+                if definition.pools.iter().any(|item| item.id == pool.0) {
+                    continue;
+                }
+                if !unknown.contains(&pool.0) {
+                    unknown.push(pool.0);
+                }
+            }
+            for pool_id in unknown {
+                let mut summed: u32 = 0;
+                for (other, amount) in &entry.costs {
+                    if other.0 == pool_id {
+                        summed = summed.checked_add(*amount).ok_or(ValueOverflow)?;
+                    }
+                }
+                let current = pool_balance(actor_state, pool_id).unwrap_or(0);
+                if current < summed {
+                    return Err(InsufficientAction {
+                        pool: pool_id,
+                        cost: summed,
                         current,
                     });
                 }
