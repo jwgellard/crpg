@@ -95,7 +95,24 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T018 | open | — | `crpg-net` lane-0 combat protocol + simulated transport + conformance (parent split into T018a/b/c, all `crpg-net`-only) |
+| T018 | done | 2026-09-28 | `crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance (T018a/b/c; PR #16, implementation `2fc54b7`, merge `bc54896`; 75 net tests per native target). Phase 4 host/QUIC/movement/reconnect remains open; follow-on queue: POST-T018.md. |
+| T019 | on branch | `task/T018-net-protocol` | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native verified in the working tree, unmerged; see [T019](T019.md) |
+| T020 | blocked | — | C1-sim opt-in history wrapper selected; exact D08 API/ADR and T019 required |
+| T021 | blocked | — | `crpg-net` N-EVENTS-v2 selected; exact D09 contract + T020; v1 compatibility |
+| T022 | blocked | — | `crpg-server` C4 capture/checkpoint slice; D02/D03/D10 selected, exact API + T020/T021 required |
+| T023 | blocked | — | `crpg-net` N-QUIC; carry-patch selected in D04, source/patch/dependency evidence and exact contract required |
+| T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
+| T024 | blocked | — | `crpg-net` versioned bounded snapshot transfer; T021/T023b + D11 |
+| T025a | blocked | — | `crpg-net` reconnect/resync mechanisms; T024 + D12 |
+| T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
+| T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
+| T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
+| T027a | blocked | — | `crpg-sim` missing interest facts or approved sufficiency proof; D14 |
+| T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
+| T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
+| T028 | blocked | — | `crpg-sim` shared legality query; T019 + D15; before AI |
+| T029a | blocked | — | `crpg-data` versioned IR signature declarations; D16 |
+| T029b | blocked | — | `crpg-script` trusted IR executable bindings; T029a + E010/D17 |
 
 ---
 
@@ -120,7 +137,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | E001 | done | — | Event ownership → A′ (ADR-0008) |
 | E002 | done | — | Single `EntityId` in core (spec §2.4 fix) |
-| E003 | open | T018 | Contracts placement (Transport trait home) |
+| E003 | open | post-T018 reconciliation | Contracts placement (Transport trait home; net-local Transport retained per C0, E003 definitions-vs-placement reconciliation still pending) |
 | E004 | done | — | One-task-one-crate → split (T008a sim / T008b testkit; later splits at Stage 2) |
 | E005 | done | — | Testkit is a one-way integration consumer; lower-layer integration tests live there |
 | E006 | done | — | `f64`-in-sim → banned (E006-A: `no-f64` lint for sim) |
@@ -134,7 +151,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | E014 | done | — | `World: Serialize` vs interned-handle caveat (skeleton-only serde) |
 | E015 | done | — | Replica/prediction model + `Timeline` owner (buffer outside sim) |
 | E016 | done | — | Entity/aggregate documents, lock authorities, package ids, tick waits |
-| E017 | open | T018 | T018 interface debt (intents, registry, caps) |
+| E017 | open | post-T018 reconciliation | T018 interface debt (intents, registry, caps; direction decided under delegation in POST-T018-DECISIONS.md, ADR/spec reconciliation still pending) |
 | E018 | open | server | Privileged-channel capability model |
 | E019 | open | CI | Perf measurability + `crpgc bench` task |
 | E020 | done | — | Gates 7–13 activate with capabilities; T009c supersedes its Linux-only T009a gate assignment |
@@ -156,7 +173,11 @@ Deferred input-hardening requirements (S001; land with the tasks that own
 them, not here): T010 `crpg-data` loader caps — campaign JSON file size and
 nesting-depth ceilings (`serde_json` recursion is a stack-overflow DoS); T018
 `crpg-net` postcard decode caps — message size and `Vec`/`String` length
-ceilings (a hostile length field is an OOM); `SnapshotBackend`
+ceilings (a hostile length field is an OOM), complete for the implemented v1
+vocabulary in PR #16 (`2fc54b7`: 4 KiB intent / 64 KiB delta frames, 256 delta
+operations and 256-byte strings; string allocation is frame-bounded before its
+field-length rejection; future vocabularies inherit separate
+bound-before-allocation obligations); `SnapshotBackend`
 (`crpg-persist`) decompression-bomb cap on `zstd` saves — input size *and*
 decompressed-size ceiling.
 
@@ -222,6 +243,7 @@ Record it here, one line per week.
 | 2026-09-26 | 27 | T014 (stat/modifier kernel in `crpg-rules`: 122-row table, 1024-case properties, boundary coverage, PR #11) merged. The review follow-up closing the enum/tag-literal/capacity boundary and reversal-occurrence gaps merged alongside T014 and is not counted, being a fix rather than a numbered task. Cost per merged task not tracked yet. T015 dice/resolution is next. |
 | 2026-09-26 | 28 | T015 (dice, outcome tables, and resolution in `crpg-rules`, PR #13, `76a48da`) merged. Cost per merged task not tracked yet. T016 headless combat is next; its T016a–d children plus the T016e invariant repair are implemented and verified in the working tree, unmerged, so none is counted here. |
 | 2026-09-27 | 30 | T016 (headless combat with `rulesets/minimal-d6`: content, sim adapter/controller, lifecycle/release, replay goldens, CLI proof) and T017 (second-ruleset abstraction proof with `rulesets/srd-lite`: multi-pool/effect/defense/turn generalization, replay goldens, CLI proof) merged (PR #14, `4686a73`). Cost per merged task not tracked yet. T018 `crpg-net` protocol is next. |
+| 2026-09-28 | 31 | T018 (`crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance: T018a/b/c, PR #16, `bc54896`) merged. Cost per merged task not tracked yet. T019 `crpg-sim` same-pool repair is implemented and dual-native verified in the working tree, unmerged, so it is not counted here. |
 
 ---
 
@@ -258,3 +280,4 @@ Record it here, one line per week.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017/B1 specification · Recorded the approved T017 milestone contract and the specified B1 data contract on the open T017 row; neither implementation nor merge is claimed.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Marked T016 and T017 done (merged PR #14, `4686a73`), moved throughput to 30 with T018 `crpg-net` protocol next.
 - 2026-09-28 (UTC) · opencode/gpt-6-astra + T018 parent and child contracts · Split open T018 into lane-0 protocol/codec (T018a), simulated transport (T018b), and conformance (T018c), all single-crate `crpg-net` per E004, on approved E017 Appendix B with recommended defaults; no implementation, merge, or throughput change.
+- 2026-09-28 (UTC) · opencode/muse-spark + T018 landed/post-T018 queue · Marked T018 done (merged PR #16, `bc54896`, 2026-09-28), added the T019–T029b follow-on rows from the POST-T018 maintainer drafts (T019 as `on branch`: implemented and dual-native verified in the working tree per its completion record, unmerged — a truthful deviation from the draft's `next`), retargeted E003/E017 blocker cells to post-T018 reconciliation, annotated the S001 postcard closure for the v1 vocabulary, and moved throughput to 31; review/merge of T019 and T020 specification remain outstanding.
