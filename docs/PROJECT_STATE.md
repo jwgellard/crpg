@@ -3,7 +3,7 @@
 Updated: 2026-09-30
 
 ## Phase
-Phase 4 — server and networking (T016/T017/T018/T019 landed; T020 spec-review next).
+Phase 4 — server and networking (T016–T021 landed; T022 host needs specification inputs; T027a/T028/T029a/T030–T032 specified and implementable).
 
 ## Branch state
 All merged work is on `master` through `f3d1560`. T010's campaign
@@ -348,6 +348,16 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   with byte/hash rollback evidence; existing replay fixtures and goldens
   unchanged per native target. Dual-native green with all 9 PR checks
   passing. Unblocks T020 history (specification review).
+- T020 `crpg-sim` opt-in authoritative history and T021 `crpg-net`
+  explicit v2 event protocol (merged `a991fe9`, PR #18, 2026-09-30,
+  implementations `ea681c6`/`e25d0fd`, with the post-T018 specification
+  frontier `81b73a2`): `HistoryWorld` with transactional typed mutations,
+  bounded read/ack journal and full-wrapper `history_hash`, per-target
+  `history_v1` goldens (ADR-0017); `protocol_v2`/`codec_v2`/`projection_v2`
+  beside frozen v1 (ADR-0019). T020's completion record reports dual-native
+  green and leaves independent review of its golden artifacts open;
+  `tasks/T021.md` has no completion record. ADR-0017/0019 still read
+  "Selected".
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -378,8 +388,13 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T020 C1-sim authoritative history: specification (exact D08 API/ADR) under review; implementation follows approval.
-- T021+ in `tasks/POST-T018.md` order once T020 lands.
+- T022 `crpg-server` host capture/checkpoint: specification inputs missing
+  (authentication/dependency evidence, admission/checkpoint limits,
+  lifecycle API) per `tasks/SPECIFICATION-READINESS.md`.
+- Specified and implementable now: T028 legality (`crpg-sim`), then T027a
+  area identity (`crpg-sim`, serialized after T028), T029a IR declarations
+  (`crpg-data`), T030 quinn dossier, T031 preflight runners, T032
+  documentation reconciliation.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -565,3 +580,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Recorded the T016 headless combat and T017 second-ruleset abstraction proof merge (`4686a73`, PR #14, all 9 checks green) in branch state, Done history, Phase, Next, and verification history; T018 `crpg-net` protocol is next.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Recorded the T018 lane-0 protocol + simulated transport + conformance merge (`bc54896`, PR #16, all 9 checks green, verified against `origin/master`) in branch state, Done history, Phase, Next, and verification history; T019 is implemented and dual-native verified in the working tree with review/merge outstanding, T020 specification next.
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Recorded the T019 same-pool affordability repair merge (`f3d1560`, PR #17, all 9 checks green) in branch state, Done history, Phase, and Next; T020 specification review is next.
+- 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Recorded the PR #18 merge of T020/T021 in Phase, Done and Next, replacing the stale "T020 spec-review next" pointer; the open golden review, missing T021 record and "Selected" ADR statuses are stated rather than resolved.

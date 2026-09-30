@@ -98,9 +98,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | T018 | done | 2026-09-28 | `crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance (T018a/b/c; PR #16, implementation `2fc54b7`, merge `bc54896`; 75 net tests per native target). Phase 4 host/QUIC/movement/reconnect remains open; follow-on queue: POST-T018.md. |
 | T019 | done | 2026-09-29 | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native green (PR #17, implementation `56931eb`, merge `f3d1560`); see [T019](T019.md) |
-| T020 | blocked | — | C1-sim opt-in history wrapper selected; exact D08 API/ADR required (T019 dependency met 2026-09-29) |
-| T021 | blocked | — | `crpg-net` N-EVENTS-v2 selected; exact D09 contract + T020; v1 compatibility 
-
+| T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Open: the record's independent review of the two golden artifacts, and ADR-0017 still reads "Selected", not Accepted; see [T020](T020.md) |
+| T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). `tasks/T021.md` carries no completion record; its suite is reported green on both natives only in T020's review-fix log. ADR-0019 still reads "Selected"; see [T021](T021.md) |
 | T022 | blocked | — | `crpg-server` C4 capture/checkpoint slice; D02/D03/D10 selected, exact API + T020/T021 required |
 | T023 | blocked | — | `crpg-net` N-QUIC; carry-patch selected in D04, source/patch/dependency evidence and exact contract required |
 | T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
@@ -109,7 +108,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
 | T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
-| T027a | blocked | — | Specified: persisted single-area identity and atomic noncombat transfer; ADR-0020; history integration requires T020 |
+| T027a | open | — | Specified: persisted single-area identity and atomic noncombat transfer; ADR-0020; history integration prerequisite T020 merged 2026-09-30 |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
 | T028 | open | — | Specified: shared pure validation and bounded legal-action enumeration; ADR-0018; implementation requires T019 regression gate |
@@ -255,6 +254,7 @@ Record it here, one line per week.
 | 2026-09-27 | 30 | T016 (headless combat with `rulesets/minimal-d6`: content, sim adapter/controller, lifecycle/release, replay goldens, CLI proof) and T017 (second-ruleset abstraction proof with `rulesets/srd-lite`: multi-pool/effect/defense/turn generalization, replay goldens, CLI proof) merged (PR #14, `4686a73`). Cost per merged task not tracked yet. T018 `crpg-net` protocol is next. |
 | 2026-09-28 | 31 | T018 (`crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance: T018a/b/c, PR #16, `bc54896`) merged. Cost per merged task not tracked yet. T019 `crpg-sim` same-pool repair is implemented and dual-native verified in the working tree, unmerged, so it is not counted here. |
 | 2026-09-29 | 32 | T019 (`crpg-sim` same-pool affordability repair, PR #17, `f3d1560`) merged. Cost per merged task not tracked yet. T020 history (specification review) is next. |
+| 2026-09-30 | 34 | T020 (`crpg-sim` opt-in history) and T021 (`crpg-net` v2 event protocol) merged in PR #18 (`a991fe9`) together with the post-T018 specification frontier (ADRs 0018–0022, T022–T032 contracts). Cost per merged task not tracked yet. T022 host needs specification inputs; T027a, T028, T029a and T030–T032 are specified and implementable. |
 
 ---
 
@@ -295,3 +295,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Marked T019 done (merged PR #17, `f3d1560`, 2026-09-29), noted the T019 dependency met on the T020 row, and moved throughput to 32 with T020 specification review next.
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + specification frontier · Indexed six exact implementation contracts and three independent preparation/tooling contracts, with four new decision records. Kept specification readiness distinct from unmet implementation/dependency gates and left merged status/throughput unchanged.
 - 2026-09-30 (UTC) · opencode/muse-spark + review-fix pass · Corrected the T019 row's stale branch pointer (`task/T018-net-protocol` → `task/T019-same-pool`); implementation/merge status and throughput unchanged.
+- 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Marked T020 and T021 done (merged in PR #18, `a991fe9`, after the T019 bookkeeping in PR #19 had already recorded them as blocked) and moved throughput to 34; kept the T020 golden-artifact review, the missing T021 completion record, and the still-"Selected" ADR-0017/0019 statuses visible as open items rather than implying approval.
