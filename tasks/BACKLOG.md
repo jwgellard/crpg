@@ -112,7 +112,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
 | T028 | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T028](T028.md) |
-| T029a | open | — | Specified: immutable IR declarations, content-derived exact bundle identity, bounded call validation; no predecessor code |
+| T029a | on branch | `claude/blissful-rubin-59repd` | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite, schemas/fixtures unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T029a](T029a.md) |
 | T029b | blocked | — | Specified: synchronous trusted bindings and transactional combat proposals; implementation requires T029a/T028 plus dependency approval |
 
 ## Independent preparation and tooling
@@ -298,3 +298,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Marked T020 and T021 done (merged in PR #18, `a991fe9`, after the T019 bookkeeping in PR #19 had already recorded them as blocked) and moved throughput to 34; kept the T020 golden-artifact review, the missing T021 completion record, and the still-"Selected" ADR-0017/0019 statuses visible as open items rather than implying approval.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Moved T028 to `on branch` with Linux-only verification, so the unrun Windows/MSVC gate and review/merge stay explicit instead of reading as done.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Moved T027a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
+- 2026-09-30 (UTC) · claude-code + T029a implementation · Moved T029a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
