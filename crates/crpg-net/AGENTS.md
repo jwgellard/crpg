@@ -43,6 +43,25 @@ requires an ADR.
   (`loss_every`/`dup_every`/`reorder_depth`/`seed`, plus `clean()`),
   `InMemoryTransport` (`new`, `clock_mut`, `add_peer`, `remove_peer`,
   `send_to`, `recv_from`, `tick`). T018a shapes unchanged.
+- `protocol_v2` (T021): `PROTOCOL_VERSION = 2`, `DELTA_TAG_ACTION_RESOLVED`
+  (8) / `DELTA_TAG_TURN_STARTED` (9) / `DELTA_TAG_ENCOUNTER_ENDED` (10),
+  re-exported v1 `IntentFrame`/`IntentBody`/`NetId`/`SessionEpoch`/
+  `ReceiptStatus`/`RejectionCode` (not v1's version const), `DeltaFrame`
+  (`lane`, `server_tick`, `event_seq`, `ops`), `DeltaOp` (`Legacy` plus the
+  three event variants with actor/target/ability/outcome/damage,
+  actor/round, encounter/round fields). Derives `Debug, Clone, PartialEq,
+  Eq`; no serde. `Legacy` adds no wire tag.
+- `codec_v2` (T021): `encode_intent`/`decode_intent`/
+  `encode_delta`/`decode_delta`; `CodecError` re-exported from `codec`
+  (same six variants). v2 intent is v1 with first byte 2; v2 delta header
+  is version/lane/`server_tick`/`event_seq`/op-count; tags 0..7 identical
+  to v1; new payloads in exact spec order. Delta `event_seq` accepts full
+  `u64`; intent/receipt `seq` keeps `SEQ_FIRST..=SEQ_LAST`.
+- `projection_v2` (T021): `EventCandidate` (all-`Option` per-field
+  candidates with disclose flags), `ProjectionError`
+  (`TooManyEvents`/`InvalidOutcome`/`StringLimit`, `Error`+`Display` as
+  `<VariantName> at projection/events`), `project_events` (at most 256
+  inputs, ordered subsequence, no partial output on error).
 
 ## Invariants
 
@@ -108,6 +127,37 @@ requires an ADR.
   from the sent log. The oracle compares per-fact with events as multisets;
   negative controls must fail loudly. Every rejection needs a positive
   control and a byte-identical complete-state assertion.
+- v2 is explicit and additive: v1 bytes/fixtures/precedence untouched (the
+  v2 codec duplicates the staged skeleton; no shared version-parameterized
+  path). v1 refuses byte 2, v2 refuses byte 1 (`UnsupportedVersion`); a new
+  tag in a valid v1 envelope is `UnknownMessage` — separate tests, no
+  autodetect/negotiation/downgrade. `Legacy` flattens to tags 0..7 with
+  unchanged payloads. Outcome is T020's five symbolic forms only
+  (`custom:<0..255>`, no leading zeros); no roll/DC/margin/grants on wire.
+- v2 strings are bounded before allocation: the length varint is checked
+  against `MAX_WIRE_STRING_BYTES` before body availability, UTF-8, or any
+  copy (a hostile length with an absent body is `LimitExceeded`, never
+  truncation). Outcome-length errors are `LimitExceeded`; bad UTF-8,
+  truncation, short bodies, and ULID/outcome semantics are `Malformed`.
+  Reject overflowing tenth-byte length payloads before shifting; exercise
+  all v2 string paths with overflowing, truncated, and valid oversized
+  prefixes, including otherwise-valid bodies that would expose wrapping.
+  The op vector grows by push, never `with_capacity` from the untrusted
+  count; encode checks lane/count/op-semantics then frame length with no
+  partial bytes.
+- Projection consumes host-authorized candidates only: any missing required
+  field/grant omits the whole event without inspecting hidden payload
+  further (a hidden bad outcome is suppression, not an error). Output is an
+  ordered subsequence (no sort/dedup); same-tick order is journal order.
+  The codec checks shape, not entitlement; per-client frame `event_seq`
+  starts at 1 after suppression/chunking and never reuses history seq; a
+  suppressed-only page emits no frame. State ops stay host-assembled, so
+  event suppression never suppresses Health/Turn updates.
+- v2 retry conformance must enter the same fixture admission path on retry,
+  recover a genuinely dropped simulated-transport frame from cached bytes,
+  and consume duplicate delivery once in sequence order. Check the complete
+  authority hash, full journal, execution count, and independent event oracle;
+  cloning bytes and calling the codec alone does not establish recovery.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`. No `HashMap`/`HashSet`
   (use `BTreeMap`/`IndexMap`); no `f32`/`f64` in policy paths (no spatial
   wire in v1 lane 0); no `SystemTime`/threads/I-O/unseeded RNG
@@ -119,7 +169,9 @@ requires an ADR.
 bounds; explicitly named usable by T018a), `postcard = "1"` (crates.io:
 bounded wire codec; approval, license, and ban/source justification recorded
 in [T018a](../../tasks/T018a.md); if `cargo deny` objects, stop — do not
-widen `deny.toml`). Dev-only for the T018c suites: `crpg-data`, `crpg-sim`
+widen `deny.toml`). T021 adds no dependency: production net consumes
+host-supplied candidates and the v2 codec reuses the same two crates.
+Dev-only for the T018c/T021 suites: `crpg-data`, `crpg-sim`
 (path: authored fixtures and public sim calls, anticipated by T018a) and
 `serde_json` (workspace: fixture authoring only; zero new lock packages).
 Anything else needs approval.
@@ -164,6 +216,7 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - **ULID parse leniency is inherited from core.** Display emits canonical
   26-character uppercase; parsing accepts case aliases. The length gate fires
   before parsing, so over-long text is `LimitExceeded`, not `Malformed`.
+  v2 re-encodes canonically after accepting aliases.
 - **Receipt `lane` is checked.** A receipt echoing a foreign lane is
   `WrongDirection`, matching the intent/frame lane rule.
 - **Reorder must be provably bounded.** A forward windowed swap lets a
@@ -192,7 +245,10 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 
 ## Agent log
 
+- 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
+
 - 2026-09-28 (UTC) · opencode/muse-spark + T018a crate opening · Wrote the crate contract for lane-0 v1 (exact surface, decode precedence, bound-before-alloc, NetId/seq discipline, allowed deps with the postcard approval pointer) plus the trap list (explicit u8 tags, no host invention, no sim-enum serialization, no queue drain) before T018b/T018c build on it.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018b simulated transport · Extended the surface with the sim fabric (clock, caps, buckets, peers, faults), the fabric-versus-drivers admission split with its check order and bounded-reorder rule, and the provisional-snapshot caveat, keeping no-new-deps and no host API.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018c conformance · Extended the contract with the test-only driver/oracle vocabulary, the admission and disclosure rules, and the dev-only fixture edges, closing the T018 proof without claiming host completion.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 review fixes · Enforced the specified failure-response budgets on the wire path (drops retain outcomes for retry), pinned egress enforcement to fabric staging with v1_egress depths, made SeqExhausted reachable with cache-first precedence, and bound driver peer binding to the 8-peer proof population.
+- 2026-09-29 (UTC) · opencode/muse-spark + T021 v2 event protocol · Added the explicit protocol_v2/codec_v2/projection_v2 surface with the version/tag/disclosure rules above (bounded-before-allocation strings, full-u64 delta event_seq, ordered host-fed projection) and the six-case events_v2 suite against real T020 history, keeping v1 frozen and adding no dependency.

@@ -89,6 +89,38 @@ positive control and a byte-identical complete-state assertion. A passing
 double is not host integration passing: E012/E018/E022 still own the real
 host.
 
+## v2 event wire (T021)
+
+`protocol_v2` adds the explicit history-projection vocabulary beside frozen
+v1: `PROTOCOL_VERSION = 2`, tags 8/9/10
+(`ActionResolved`/`TurnStarted`/`EncounterEnded`), and `DeltaOp::Legacy` — a
+Rust-only wrapper that contributes no extra tag, so old-vocabulary v2 bytes
+differ from v1 only in the version byte. v1 exports, bytes, and fixtures
+are unchanged. `codec_v2` duplicates the staged skeleton with version byte
+2 (byte 1 is `UnsupportedVersion`, never reinterpreted) and reads string
+lengths as bounded integers checked against `MAX_WIRE_STRING_BYTES` before
+any body inspection or copy — never v1's owned-string-before-check shape.
+The length reader rejects overflow in the tenth varint byte before shifting;
+unrepresentable lengths are `Malformed`, while representable lengths above
+the string cap remain `LimitExceeded` even without a body.
+`projection_v2` consumes host-supplied per-field `EventCandidate`s (each
+`Some` is an independently authorized disclosure for this
+viewer/generation) and appends exactly one op per fully disclosed event in
+input order, omitting anything partially hidden without inspecting it
+further; the host assigns gapless per-client frame `event_seq` after
+suppression/chunking and assembles permitted state ops itself. The six-case
+`tests/events_v2.rs` suite proves explicit version selection (both
+directions, plus separate unknown-tag refusal), literal new-tag byte
+oracles, bounded-before-allocation limits, field-by-field suppression with
+two-peer views, ordered projection of real T020 `HistoryWorld` journals,
+and byte-identical redelivery from a driver cache with exactly one sim
+mutation. The retry fixture sends initial history and action results through
+the simulated fabric, drops the action result, then retries the same command
+through cache-first admission. Duplicate deliveries are consumed once by a
+sequence-keyed receiver and checked against a hand-authored ordered oracle;
+the full authority hash and journal remain unchanged after retry. No new
+dependency; the sim edge stays dev-only for tests.
+
 ## Authorities and consumers
 
 Netids are client-scoped replica ids: zero is never valid, ids are never
@@ -115,10 +147,16 @@ queue). Working contract:
 [`codec`]: ../../crates/crpg-net/src/codec.rs
 [`sim`]: ../../crates/crpg-net/src/sim.rs
 [`transport::Transport`]: ../../crates/crpg-net/src/transport.rs
+[`protocol_v2`]: ../../crates/crpg-net/src/protocol_v2.rs
+[`codec_v2`]: ../../crates/crpg-net/src/codec_v2.rs
+[`projection_v2`]: ../../crates/crpg-net/src/projection_v2.rs
 
 ## Agent log
+
+- 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
 
 - 2026-09-28 (UTC) · opencode/muse-spark + T018a crate opening · Opened the doc with the lane-0 v1 protocol/codec/local-Transport shape, the frozen-wire and no-gameplay-execution boundaries, and the T018b/c plus evolution-queue plan, so later tasks extend rather than restart it.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018b simulated transport · Extended the scope and module flow with the injected-time fabric (rate → size → queue staging, seeded bounded faults, driver-owned seq/cache state) and the bytes-only fabric versus admission-drivers split, leaving T018c conformance and the evolution queue planned.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018c conformance · Extended the scope with the sim-backed driver, replica oracle, and four suites (rejection-without-mutation, filtered convergence with negative controls, 5,000-tick exercise, receipt liveness), closing the T018 proof with the evolution queue still planned.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 review fixes · Recorded enforced failure-response budgets with wire drops, egress staging under v1_egress depths, reachable SeqExhausted precedence, and the bound driver peer table.
+- 2026-09-29 (UTC) · opencode/muse-spark + T021 v2 event wire · Recorded the as-built explicit v2 modules (tagged history events beside frozen v1, bounded-before-allocation codec, host-fed ordered projection) and the six-case acceptance suite, so T022 consumes version-selected codecs plus ordered conformance evidence.
