@@ -97,9 +97,10 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | Task | Status | Merged | Summary |
 |---|---|---|---|
 | T018 | done | 2026-09-28 | `crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance (T018a/b/c; PR #16, implementation `2fc54b7`, merge `bc54896`; 75 net tests per native target). Phase 4 host/QUIC/movement/reconnect remains open; follow-on queue: POST-T018.md. |
-| T019 | on branch | `task/T019-same-pool` | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native verified in the working tree, unmerged; see [T019](T019.md) |
-| T020 | open | — | Specified: opt-in transactional history, exact API/load/hash/new-native-golden contract; ADR-0017; implementation requires T019 regression gate |
-| T021 | blocked | — | Specified: explicit v2 codec and per-field event projection; ADR-0019; implementation/integration requires T020; v1 frozen |
+| T019 | done | 2026-09-29 | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native green (PR #17, implementation `56931eb`, merge `f3d1560`); see [T019](T019.md) |
+| T020 | blocked | — | C1-sim opt-in history wrapper selected; exact D08 API/ADR required (T019 dependency met 2026-09-29) |
+| T021 | blocked | — | `crpg-net` N-EVENTS-v2 selected; exact D09 contract + T020; v1 compatibility 
+
 | T022 | blocked | — | `crpg-server` C4 capture/checkpoint slice; D02/D03/D10 selected, exact API + T020/T021 required |
 | T023 | blocked | — | `crpg-net` N-QUIC; carry-patch selected in D04, source/patch/dependency evidence and exact contract required |
 | T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
@@ -253,6 +254,7 @@ Record it here, one line per week.
 | 2026-09-26 | 28 | T015 (dice, outcome tables, and resolution in `crpg-rules`, PR #13, `76a48da`) merged. Cost per merged task not tracked yet. T016 headless combat is next; its T016a–d children plus the T016e invariant repair are implemented and verified in the working tree, unmerged, so none is counted here. |
 | 2026-09-27 | 30 | T016 (headless combat with `rulesets/minimal-d6`: content, sim adapter/controller, lifecycle/release, replay goldens, CLI proof) and T017 (second-ruleset abstraction proof with `rulesets/srd-lite`: multi-pool/effect/defense/turn generalization, replay goldens, CLI proof) merged (PR #14, `4686a73`). Cost per merged task not tracked yet. T018 `crpg-net` protocol is next. |
 | 2026-09-28 | 31 | T018 (`crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance: T018a/b/c, PR #16, `bc54896`) merged. Cost per merged task not tracked yet. T019 `crpg-sim` same-pool repair is implemented and dual-native verified in the working tree, unmerged, so it is not counted here. |
+| 2026-09-29 | 32 | T019 (`crpg-sim` same-pool affordability repair, PR #17, `f3d1560`) merged. Cost per merged task not tracked yet. T020 history (specification review) is next. |
 
 ---
 
@@ -290,5 +292,6 @@ Record it here, one line per week.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Marked T016 and T017 done (merged PR #14, `4686a73`), moved throughput to 30 with T018 `crpg-net` protocol next.
 - 2026-09-28 (UTC) · opencode/gpt-6-astra + T018 parent and child contracts · Split open T018 into lane-0 protocol/codec (T018a), simulated transport (T018b), and conformance (T018c), all single-crate `crpg-net` per E004, on approved E017 Appendix B with recommended defaults; no implementation, merge, or throughput change.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed/post-T018 queue · Marked T018 done (merged PR #16, `bc54896`, 2026-09-28), added the T019–T029b follow-on rows from the POST-T018 maintainer drafts (T019 as `on branch`: implemented and dual-native verified in the working tree per its completion record, unmerged — a truthful deviation from the draft's `next`), retargeted E003/E017 blocker cells to post-T018 reconciliation, annotated the S001 postcard closure for the v1 vocabulary, and moved throughput to 31; review/merge of T019 and T020 specification remain outstanding.
+- 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Marked T019 done (merged PR #17, `f3d1560`, 2026-09-29), noted the T019 dependency met on the T020 row, and moved throughput to 32 with T020 specification review next.
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + specification frontier · Indexed six exact implementation contracts and three independent preparation/tooling contracts, with four new decision records. Kept specification readiness distinct from unmet implementation/dependency gates and left merged status/throughput unchanged.
 - 2026-09-30 (UTC) · opencode/muse-spark + review-fix pass · Corrected the T019 row's stale branch pointer (`task/T018-net-protocol` → `task/T019-same-pool`); implementation/merge status and throughput unchanged.

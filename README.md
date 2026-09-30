@@ -39,8 +39,8 @@ campaign format, netcode, AI, and server are untouched.
 > are merged (PR #14) with both native gates green; T018 `crpg-net`
 > lane-0 combat protocol + simulated transport + conformance (T018a/b/c)
 > is merged (PR #16) with both native gates green; T019 `crpg-sim`
-> same-pool affordability repair is implemented and dual-native verified
-> in the working tree, unmerged, with review/merge outstanding. See
+> same-pool affordability repair is merged (PR #17, merge `f3d1560`,
+> 2026-09-29) with both native gates green; T020 history is next. See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
 > [T011a](tasks/T011a.md), [T011b](tasks/T011b.md),
@@ -227,3 +227,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Updated the status block past the stale Phase 2 pointer: T015 merged (PR #13), T016 in progress with T016a–e implemented and verified in the working tree, unmerged, and the lifecycle decision plus merge outstanding.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Updated the status block to the merged T016 headless combat and T017 second-ruleset abstraction proof (PR #14, `4686a73`) with T018 `crpg-net` protocol next.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Updated the status block to the merged T018 lane-0 protocol + simulated transport + conformance (PR #16, `bc54896`) with T019 implemented and dual-native verified in the working tree, unmerged, and review/merge outstanding.
+- 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Updated the status block to the merged T019 same-pool affordability repair (PR #17, merge `f3d1560`, 2026-09-29) with T020 history next.
