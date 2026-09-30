@@ -16,6 +16,7 @@
 pub mod combat;
 pub mod event;
 pub mod hash;
+pub mod history;
 pub mod store;
 pub mod tick;
 pub mod timeline;
@@ -31,6 +32,10 @@ pub use combat::{
 };
 pub use event::SimEvent;
 pub use hash::state_hash;
+pub use history::{
+    history_hash, HistoryEnvelope, HistoryError, HistoryEvent, HistoryWorld, HISTORY_VERSION,
+    MAX_HISTORY_BYTES, MAX_HISTORY_EVENTS, MAX_HISTORY_PAGE, MAX_HISTORY_STRING_BYTES,
+};
 pub use store::ComponentStore;
 pub use tick::{end_turn, tick};
 pub use timeline::{InitiativeKey, Timeline};
