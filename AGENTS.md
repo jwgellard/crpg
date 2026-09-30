@@ -115,9 +115,9 @@ python -m unittest discover -s tools/lint -p "test_*.py"
    lane-0 combat protocol + simulated transport + conformance is merged on
    `master` (PR #16, implementation `2fc54b7`, merge `bc54896`,
    2026-09-28) with both native gates green; T019 `crpg-sim` same-pool
-   affordability repair is implemented and dual-native verified in the
-   working tree, unmerged, with review/merge outstanding; T020 C1-sim
-   history is next (exact API/ADR still required).
+   affordability repair is merged on `master` (PR #17, implementation
+   `56931eb`, merge `f3d1560`, 2026-09-29) with both native gates green;
+   T020 C1-sim history is next (exact API/ADR still required).
    See the [completion record](tasks/T009c.md),
    [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
    [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
@@ -142,3 +142,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 landed · Updated the note to the merged T014 stat/modifier kernel (PR #11, `18145d4`) with T015 dice/resolution next.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Updated the note to the merged T016 headless combat and T017 second-ruleset abstraction proof (PR #14, `4686a73`) with T018 `crpg-net` protocol next.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Updated the note to the merged T018 lane-0 protocol + simulated transport + conformance (PR #16, `bc54896`) with T019 implemented and verified in the working tree, unmerged, and T020 next.
+- 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Updated the note to the merged T019 same-pool affordability repair (PR #17, merge `f3d1560`, 2026-09-29) with T020 history next.

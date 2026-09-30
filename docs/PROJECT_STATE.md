@@ -1,12 +1,12 @@
 # Project state
 
-Updated: 2026-09-28
+Updated: 2026-09-30
 
 ## Phase
-Phase 4 — server and networking (T016/T017/T018 landed; T019 review/merge next, then T020).
+Phase 4 — server and networking (T016/T017/T018/T019 landed; T020 spec-review next).
 
 ## Branch state
-All merged work is on `master` through `bc54896`. T010's campaign
+All merged work is on `master` through `f3d1560`. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
 T011b's thin `crpgc validate` wrapper, T012a's data-half migration
 framework (plus the T012/T012b Stage-2 specs), T012b's thin `crpgc migrate`
@@ -24,7 +24,11 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
    protocol with bounded postcard codec, deterministic simulated transport,
    and conformance suite (T018a/b/c, 75 net tests per native target) is
    merged (PR #16, implementation `2fc54b7`, merge `bc54896`, 2026-09-28)
-   with both native gates green; the post-T018 follow-on queue
+   with both native gates green; T019's same-pool affordability repair
+   (`crpg-sim`: summed per-pool costs, checked overflow, 11-test
+   regression, unchanged replay/goldens) is merged (PR #17,
+   implementation `56931eb`, merge `f3d1560`, 2026-09-29) with both
+   native gates green; the post-T018 follow-on queue
    (T019–T029b, D01–D18 decided under delegation) is specified in
    `tasks/POST-T018.md`. The Done history below is
    merged work only.
@@ -335,10 +339,15 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   gate — codec round-trip, malicious-client rejection without mutation,
   filtered replica convergence, and the 5,000-tick loss/jitter exercise
   (T018c); 28 + 25 + 22 net tests per native target. Dual-native green
-  with all 9 PR checks passing. Unblocks the post-T018 queue
-  (`tasks/POST-T018.md`); T019 `crpg-sim` same-pool affordability repair
-  is implemented and dual-native verified in the working tree, unmerged,
-  with review/merge outstanding.
+   with all 9 PR checks passing. Unblocks the post-T018 queue
+   (`tasks/POST-T018.md`).
+- T019 `crpg-sim` same-pool affordability repair (merged `f3d1560`,
+  PR #17, 2026-09-29): per-pool summed costs in authored template order
+  with checked `u32` addition (`ValueOverflow`) and `InsufficientAction`
+  carrying the total and original balance; 11-test public-API regression
+  with byte/hash rollback evidence; existing replay fixtures and goldens
+  unchanged per native target. Dual-native green with all 9 PR checks
+  passing. Unblocks T020 history (specification review).
 - T001 GDExtension rendering spike — go (ADR-0003), 200 chars @ 231.7 fps,
   FFI cost 87.4 µs/frame, on the RTX 4060 laptop. Spike lives in
   `C:\CRPG\Dev\spike-gdext`, not this workspace.
@@ -369,8 +378,8 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   Spike lives in `C:\CRPG\Dev\spike-quic`, not this workspace.
 
 ## Next
-- T019 `crpg-sim` same-pool affordability repair (Phase 4 repair): implemented and dual-native verified in the working tree with unchanged replay/goldens; review/merge outstanding.
-- T020 C1-sim authoritative history (exact D08 API/ADR still required), then the post-T018 queue in `tasks/POST-T018.md` order.
+- T020 C1-sim authoritative history: specification (exact D08 API/ADR) under review; implementation follows approval.
+- T021+ in `tasks/POST-T018.md` order once T020 lands.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -555,3 +564,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Recorded the T015 dice/resolution merge (`76a48da`, PR #13, 2026-09-26) in branch state, Done history, Phase, Next, and verification history; T016a–e noted as implemented and natively verified in the working tree, unmerged, with the A2 lifecycle decision and milestone merge outstanding.
 - 2026-09-27 (UTC) · opencode/muse-spark + T016/T017 landed · Recorded the T016 headless combat and T017 second-ruleset abstraction proof merge (`4686a73`, PR #14, all 9 checks green) in branch state, Done history, Phase, Next, and verification history; T018 `crpg-net` protocol is next.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Recorded the T018 lane-0 protocol + simulated transport + conformance merge (`bc54896`, PR #16, all 9 checks green, verified against `origin/master`) in branch state, Done history, Phase, Next, and verification history; T019 is implemented and dual-native verified in the working tree with review/merge outstanding, T020 specification next.
+- 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Recorded the T019 same-pool affordability repair merge (`f3d1560`, PR #17, all 9 checks green) in branch state, Done history, Phase, and Next; T020 specification review is next.
