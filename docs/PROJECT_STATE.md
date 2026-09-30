@@ -395,6 +395,12 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   area identity (`crpg-sim`, serialized after T028), T029a IR declarations
   (`crpg-data`), T030 quinn dossier, T031 preflight runners, T032
   documentation reconciliation.
+- *Update 2026-09-30:* all six are implemented on branch
+  `claude/blissful-rubin-59repd` (unmerged) with Linux/GNU gates green; each
+  still needs its native Windows/MSVC run and review/merge. T030 found the
+  ADR-0004 symptom not reproduced end-to-end and keeps T023 blocked on native
+  Windows evidence, a `cargo deny` bans failure (`windows-sys` split) and
+  pending dependency approval. Details: `tasks/BACKLOG.md` rows T027a–T032.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -581,3 +587,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Recorded the T018 lane-0 protocol + simulated transport + conformance merge (`bc54896`, PR #16, all 9 checks green, verified against `origin/master`) in branch state, Done history, Phase, Next, and verification history; T019 is implemented and dual-native verified in the working tree with review/merge outstanding, T020 specification next.
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Recorded the T019 same-pool affordability repair merge (`f3d1560`, PR #17, all 9 checks green) in branch state, Done history, Phase, and Next; T020 specification review is next.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Recorded the PR #18 merge of T020/T021 in Phase, Done and Next, replacing the stale "T020 spec-review next" pointer; the open golden review, missing T021 record and "Selected" ADR statuses are stated rather than resolved.
+- 2026-09-30 (UTC) · claude-code + post-T018 batch on branch · Recorded that T027a, T028, T029a and T030–T032 are implemented on branch with Linux-only verification, keeping the Windows gates, review/merge and T030's T023 blockers explicit.
