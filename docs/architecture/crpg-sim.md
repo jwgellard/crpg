@@ -14,8 +14,10 @@ Decisions: [ADR-0006](../adr/0006-crpg-core-primitives.md),
 [ADR-0007](../adr/0007-reserved-arena-generation.md),
 [ADR-0008](../adr/0008-event-ownership.md),
 [ADR-0009](../adr/0009-determinism-scope.md),
-[ADR-0013](../adr/0013-combat-simulation-state.md) and
-[ADR-0014](../adr/0014-combat-encounter-release.md).
+[ADR-0013](../adr/0013-combat-simulation-state.md),
+[ADR-0014](../adr/0014-combat-encounter-release.md),
+[ADR-0016](../adr/0016-sim-multi-ability-pools-effects-turns.md) and
+[ADR-0017](../adr/0017-opt-in-authoritative-history.md).
 Working contract: [`crates/crpg-sim/AGENTS.md`](../../crates/crpg-sim/AGENTS.md).
 
 ---
@@ -82,6 +84,18 @@ substrate (core), the campaign content types (data) and the rules kernel
   included, exclusions none (governed list per ADR-0009, starting empty).
   Non-finite floats are rejected up front because JSON would collapse them
   to `null`.
+- **`history` — `HistoryWorld`, `HistoryEvent`, `history_hash`.** The opt-in
+  authoritative journal (T020, ADR-0017): one privately owned `World` plus
+  its bounded single-consumer journal of adjacent-tagged history envelopes.
+  Typed transactional mutations stage a full clone, reuse the combat
+  controller on staged state, drain and translate the staged legacy queue
+  exactly once, attach branch-observed turn/terminal facts, validate the
+  journal in pinned order, and publish only on success — gameplay errors
+  first, rejection committing nothing. Reads page at most 256 envelopes
+  with stale/future cursors and inert semantics; acknowledgements retire
+  the contiguous prefix monotonically and idempotently. `history_hash`
+  covers the complete canonical wrapper with no exclusions; the legacy
+  path — `SimEvent`, free functions, bytes, hashes — is untouched.
 
 ## Today versus planned
 
@@ -166,6 +180,28 @@ their order, RNG draw order is unchanged, adapter per-entry validation and load
 coherence are preserved, and existing successful actions stay byte-identical
 per target. Covered by the 11-test `tests/combat_costs.rs` public-API suite.
 
+## Opt-in authoritative history (T020)
+
+`HistoryWorld` wraps one privately owned `World` with a bounded journal of
+`HistoryEvent` envelopes (`Spawned`, `Despawned`, `Died` mirroring the
+drained legacy queue; `ActionResolved` with symbolic outcome text and
+reported damage; `TurnStarted` and `EncounterEnded` from branch-observed
+controller facts, never inferred). Each typed operation validates through
+the existing controllers on staged state and publishes only after the
+journal validates in pinned order — strings, sequence range, event count
+(4096), canonical byte total (one MiB) — with gameplay errors first and
+atomic rollback otherwise. Retention is the contiguous suffix
+`(acknowledged, next_seq)` with checked non-wrapping sequences, 256-envelope
+pages, monotonic idempotent acknowledgement, and a single host consumer
+(T022). Persistence keeps `version`, `world`, `acknowledged`, `next_seq`,
+`pending` with streaming type-before-value payloads and bounded visitors;
+retained-history bounds are distinguished from JSON parser scratch, whose
+mandatory pre-parse byte cap is the host loading boundary. `history_hash`
+(BLAKE3 over the complete canonical wrapper) has no exclusions. Legacy
+`state_hash`, emissions, bytes, and goldens are unchanged per target, and
+the new `history_v1` goldens are generated independently per native target
+from the pinned sim-local schedule with its hand-authored oracle.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
@@ -180,3 +216,4 @@ per target. Covered by the 11-test `tests/combat_costs.rs` public-API suite.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d crate opening · Recorded the accepted multi-ability/pool/effect/turn generalization with absence-skip persistence and per-field retirement under ADR-0016 before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d implementation · Aligned the module with the as-built generalization, joint absence-skip persistence, extended coherence, deleted gate with combat_multi coverage, unchanged legacy goldens, and the user-authorized downstream mechanical fix.
 - 2026-09-28 (UTC) · opencode/muse-spark + T019 implementation · Recorded the atomic same-pool affordability repair (template-order sums, checked overflow, first-failing wins) with its combat_costs coverage and unchanged per-target goldens.
+- 2026-09-29 (UTC) · opencode/muse-spark + T020 implementation · Recorded the opt-in history wrapper with its transactional journal, bounded read/ack, full-wrapper hash, retained-vs-parser-memory persistence boundary, and independently generated per-target history goldens; legacy path unchanged.

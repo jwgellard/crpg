@@ -2,8 +2,9 @@
 
 The index of every numbered task. Derived from `docs/CRPG_ENGINE_SPEC.md` §24
 (the first eighteen tasks) and §19.1 (the small backlog). One line per task;
-detail lives in `tasks/TNNN.md`. Rows with no file yet (T007 and later) are
-intentional — task files are written when the task is specified (Stage 2).
+detail lives in `tasks/TNNN.md`. Task files distinguish specification readiness
+from implementation readiness; a specified successor may still await source
+prerequisites. See [the current specification index](SPECIFICATION-READINESS.md).
 
 Status: `done` · `on branch` · `in progress` · `next` · `open` · `blocked` · `human` (needs a
 person, not an agent).
@@ -98,7 +99,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T018 | done | 2026-09-28 | `crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance (T018a/b/c; PR #16, implementation `2fc54b7`, merge `bc54896`; 75 net tests per native target). Phase 4 host/QUIC/movement/reconnect remains open; follow-on queue: POST-T018.md. |
 | T019 | done | 2026-09-29 | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native green (PR #17, implementation `56931eb`, merge `f3d1560`); see [T019](T019.md) |
 | T020 | blocked | — | C1-sim opt-in history wrapper selected; exact D08 API/ADR required (T019 dependency met 2026-09-29) |
-| T021 | blocked | — | `crpg-net` N-EVENTS-v2 selected; exact D09 contract + T020; v1 compatibility |
+| T021 | blocked | — | `crpg-net` N-EVENTS-v2 selected; exact D09 contract + T020; v1 compatibility 
+
 | T022 | blocked | — | `crpg-server` C4 capture/checkpoint slice; D02/D03/D10 selected, exact API + T020/T021 required |
 | T023 | blocked | — | `crpg-net` N-QUIC; carry-patch selected in D04, source/patch/dependency evidence and exact contract required |
 | T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
@@ -107,12 +109,20 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
 | T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
-| T027a | blocked | — | `crpg-sim` missing interest facts or approved sufficiency proof; D14 |
+| T027a | blocked | — | Specified: persisted single-area identity and atomic noncombat transfer; ADR-0020; history integration requires T020 |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
-| T028 | blocked | — | `crpg-sim` shared legality query; T019 + D15; before AI |
-| T029a | blocked | — | `crpg-data` versioned IR signature declarations; D16 |
-| T029b | blocked | — | `crpg-script` trusted IR executable bindings; T029a + E010/D17 |
+| T028 | open | — | Specified: shared pure validation and bounded legal-action enumeration; ADR-0018; implementation requires T019 regression gate |
+| T029a | open | — | Specified: immutable IR declarations, content-derived exact bundle identity, bounded call validation; no predecessor code |
+| T029b | blocked | — | Specified: synchronous trusted bindings and transactional combat proposals; implementation requires T029a/T028 plus dependency approval |
+
+## Independent preparation and tooling
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T030 | open | — | Specified: isolated quinn patch/reproduction/native/dependency dossier; supplies T023 evidence, no product integration approval |
+| T031 | open | — | Specified: native PowerShell/Bash preflight runners with fail-fast gates and subprocess acceptance |
+| T032 | open | — | Specified: selected documentation-authority reconciliation, evidence-based T004 retrospective and ADR template |
 
 ---
 
@@ -283,3 +293,5 @@ Record it here, one line per week.
 - 2026-09-28 (UTC) · opencode/gpt-6-astra + T018 parent and child contracts · Split open T018 into lane-0 protocol/codec (T018a), simulated transport (T018b), and conformance (T018c), all single-crate `crpg-net` per E004, on approved E017 Appendix B with recommended defaults; no implementation, merge, or throughput change.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed/post-T018 queue · Marked T018 done (merged PR #16, `bc54896`, 2026-09-28), added the T019–T029b follow-on rows from the POST-T018 maintainer drafts (T019 as `on branch`: implemented and dual-native verified in the working tree per its completion record, unmerged — a truthful deviation from the draft's `next`), retargeted E003/E017 blocker cells to post-T018 reconciliation, annotated the S001 postcard closure for the v1 vocabulary, and moved throughput to 31; review/merge of T019 and T020 specification remain outstanding.
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Marked T019 done (merged PR #17, `f3d1560`, 2026-09-29), noted the T019 dependency met on the T020 row, and moved throughput to 32 with T020 specification review next.
+- 2026-09-29 (UTC) · opencode/gpt-6-astra + specification frontier · Indexed six exact implementation contracts and three independent preparation/tooling contracts, with four new decision records. Kept specification readiness distinct from unmet implementation/dependency gates and left merged status/throughput unchanged.
+- 2026-09-30 (UTC) · opencode/muse-spark + review-fix pass · Corrected the T019 row's stale branch pointer (`task/T018-net-protocol` → `task/T019-same-pool`); implementation/merge status and throughput unchanged.

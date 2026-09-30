@@ -821,6 +821,35 @@ impl std::fmt::Display for CombatError {
     }
 }
 
+impl std::error::Error for CombatError {}
+
+/// Branch-observed transition facts for the opt-in history wrapper.
+///
+/// Recorded by the controller branches that actually fire — never inferred
+/// from changed actor ids or round arithmetic — so logical turn starts are
+/// still reported when the same actor returns, including saturating `u32`
+/// round rollover, and terminal transitions are reported exactly once on the
+/// first active-`Some` to active-`None` edge (T020, ADR-0017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct TransitionFacts {
+    /// The new logical turn head with its round, when an advance branch
+    /// refreshed one.
+    pub turn_started: Option<(EntityId, u32)>,
+    /// The naturally completed encounter with its round, on the first
+    /// transition to terminal.
+    pub encounter_ended: Option<(Ulid, u32)>,
+}
+
+/// Initial-turn facts one encounter start actually published.
+///
+/// The incoming turn head with its round (always round zero), when the
+/// timeline scheduled one (T020, ADR-0017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct StartFacts {
+    /// The initial turn head with its round, when scheduled.
+    pub initial_turn: Option<(EntityId, u32)>,
+}
+
 /// Maps one authored outcome label to its runtime counterpart.
 fn map_outcome(outcome: crpg_data::OutcomeWire) -> Outcome {
     match outcome {
@@ -879,6 +908,20 @@ fn map_policy(policy: crpg_data::PolicyWire) -> StackingPolicy {
 /// Data-owned preconditions (enforced at data read time, asserted here):
 /// participants and the ruleset ability list are nonempty.
 pub fn start_encounter(world: &mut World, spec: &EncounterSpec<'_>) -> Result<(), CombatError> {
+    start_encounter_tracked(world, spec).map(|_| ())
+}
+
+/// Validates and publishes one encounter into `world`, reporting the initial
+/// turn the publication actually scheduled.
+///
+/// Crate-visible only: [`start_encounter`] delegates here and discards the
+/// facts, so legacy emissions, bytes and signatures are unchanged; the
+/// history wrapper consumes the facts to journal its initial `TurnStarted`
+/// (T020, ADR-0017).
+pub(crate) fn start_encounter_tracked(
+    world: &mut World,
+    spec: &EncounterSpec<'_>,
+) -> Result<StartFacts, CombatError> {
     use CombatError::{
         DuplicateModifier, EncounterActive, InvalidCost, InvalidDice, InvalidEffect,
         InvalidNaturalDie, InvalidOutcomeTable, InvalidStatValue, MissingCreature, MissingEffect,
@@ -1354,7 +1397,9 @@ pub fn start_encounter(world: &mut World, spec: &EncounterSpec<'_>) -> Result<()
         round: 0,
         active,
     });
-    Ok(())
+    Ok(StartFacts {
+        initial_turn: active.map(|actor| (actor, 0)),
+    })
 }
 
 /// Looks up one ability entry by identity, scanning in ascending order.
@@ -1490,6 +1535,20 @@ pub fn perform_action(
     world: &mut World,
     action: &CombatAction,
 ) -> Result<Option<ActionOutcome>, CombatError> {
+    perform_action_tracked(world, action).map(|(outcome, _)| outcome)
+}
+
+/// Applies one validated action transactionally, reporting the turn or
+/// terminal transition the advance branches actually took.
+///
+/// Crate-visible only: [`perform_action`] delegates here and discards the
+/// facts, so legacy emissions, bytes and signatures are unchanged; the
+/// history wrapper consumes the facts to journal its trailing `TurnStarted`
+/// or `EncounterEnded` (T020, ADR-0017).
+pub(crate) fn perform_action_tracked(
+    world: &mut World,
+    action: &CombatAction,
+) -> Result<(Option<ActionOutcome>, TransitionFacts), CombatError> {
     use CombatError::{
         AbsentActor, AbsentTarget, DeadActor, DeadTarget, InsufficientAction, NoEncounter,
         NotParticipant, OutOfTurn, SelfTarget, UnknownAbility, ValueOverflow,
@@ -1531,8 +1590,8 @@ pub fn perform_action(
             }
             let popped = end_turn(world);
             debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
-            advance_after_removal(world);
-            Ok(None)
+            let facts = advance_tracked(world);
+            Ok((None, facts))
         }
         CombatAction::UseAbility {
             actor,
@@ -1824,6 +1883,7 @@ pub fn perform_action(
                 .iter()
                 .filter(|(_, state)| !state.dead)
                 .count();
+            let mut facts = TransitionFacts::default();
             if alive < 2 {
                 if world.timeline().contains(actor) {
                     let popped = end_turn(world);
@@ -1834,10 +1894,11 @@ pub fn perform_action(
                     .as_mut()
                     .expect("the encounter is checked above")
                     .active = None;
+                facts.encounter_ended = Some((definition.encounter, round));
             } else if entry.ends_turn {
                 let popped = end_turn(world);
                 debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
-                advance_after_removal(world);
+                facts = advance_tracked(world);
             } else {
                 let head = world.timeline().iter().next().map(|(_, id)| id);
                 debug_assert_eq!(head, Some(actor));
@@ -1848,19 +1909,22 @@ pub fn perform_action(
                     .active = Some(actor);
             }
 
-            Ok(Some(ActionOutcome {
-                actor,
-                target,
-                ability,
-                roll: outcome
-                    .actor
-                    .roll
-                    .expect("combat always rolls its dice expression"),
-                margin: outcome.margin,
-                outcome: outcome.decision.outcome,
-                damage,
-                target_died,
-            }))
+            Ok((
+                Some(ActionOutcome {
+                    actor,
+                    target,
+                    ability,
+                    roll: outcome
+                        .actor
+                        .roll
+                        .expect("combat always rolls its dice expression"),
+                    margin: outcome.margin,
+                    outcome: outcome.decision.outcome,
+                    damage,
+                    target_died,
+                }),
+                facts,
+            ))
         }
     }
 }
@@ -1925,18 +1989,21 @@ fn attach_effect(
     }
 }
 
-/// Settles the turn after the scheduled head left the timeline.
+/// Settles the turn after the scheduled head left the timeline, reporting
+/// the transition the branches actually took.
 ///
-/// Crate-visible only: `perform_action` calls this after popping its actor,
-/// and `World::despawn` calls this after removing the active combatant. The
-/// rule is one, owned here: timeline nonempty with two or more alive sets
-/// the new head with one `TurnStart` refresh; timeline empty with two or
-/// more alive rolls the round over (`round + 1`, `RoundStart` refresh of
-/// all alive, re-add alive at their initiative keys, head with `TurnStart`,
-/// expired attachments dropped); otherwise terminal (`active =
-/// `None`). The caller has already removed the departed entity from the
-/// timeline.
-pub(crate) fn advance_after_removal(world: &mut World) {
+/// Crate-visible only: the tracked combat entry points and the history
+/// wrapper consume the facts (T020, ADR-0017). The rule is one, owned here:
+/// timeline nonempty with two or more alive sets the new head with one
+/// `TurnStart` refresh; timeline empty with two or more alive rolls the round
+/// over (`round + 1`, `RoundStart` refresh of all alive, re-add alive at
+/// their initiative keys, head with `TurnStart`, expired attachments
+/// dropped); otherwise terminal (`active = `None`). The caller has already
+/// removed the departed entity from the timeline. Legacy behavior —
+/// emissions, bytes and signatures — is unchanged; only the branch facts are
+/// additionally reported.
+pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
+    let mut facts = TransitionFacts::default();
     if world.timeline().is_empty() {
         let alive = world
             .combatants()
@@ -1995,12 +2062,18 @@ pub(crate) fn advance_after_removal(world: &mut World) {
                 .as_mut()
                 .expect("the encounter is checked above")
                 .round = round;
+            facts.turn_started = Some((head, round));
         } else {
+            let ended = {
+                let state = world.combat().expect("the encounter is checked above");
+                (state.definition.encounter, state.round)
+            };
             world
                 .combat_mut()
                 .as_mut()
                 .expect("the encounter is checked above")
                 .active = None;
+            facts.encounter_ended = Some(ended);
         }
     } else {
         let alive = world
@@ -2030,14 +2103,25 @@ pub(crate) fn advance_after_removal(world: &mut World) {
                 .as_mut()
                 .expect("the encounter is checked above")
                 .active = Some(head);
+            let round = world
+                .combat()
+                .expect("the encounter is checked above")
+                .round;
+            facts.turn_started = Some((head, round));
         } else {
+            let ended = {
+                let state = world.combat().expect("the encounter is checked above");
+                (state.definition.encounter, state.round)
+            };
             world
                 .combat_mut()
                 .as_mut()
                 .expect("the encounter is checked above")
                 .active = None;
+            facts.encounter_ended = Some(ended);
         }
     }
+    facts
 }
 
 /// Releases the active encounter, retaining its summary for authoritative
