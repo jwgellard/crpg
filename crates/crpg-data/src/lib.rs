@@ -5,6 +5,7 @@
 //! Callers own I/O. Structural acceptance is fail-fast; semantic diagnostics,
 //! migration, runtime conversion and graph execution belong to later tasks.
 
+pub mod action_signatures;
 pub mod canonical;
 pub mod combat;
 pub mod document;
@@ -20,6 +21,7 @@ pub mod validation;
 
 mod inventory;
 
+pub use action_signatures::*;
 pub use canonical::*;
 pub use combat::*;
 pub use document::*;

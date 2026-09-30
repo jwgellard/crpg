@@ -1,0 +1,84 @@
+# PROPOSED INTEGRATION — NOT APPLIED. Approval status: PENDING.
+#
+# Reviewed diff artifact for T023/T023b (crpg T030). Nothing below is applied
+# to the product tree. It shows exactly what an approved integration would
+# change. Two gates stop it today:
+#   1. `cargo deny check` fails `bans` under the unchanged deny.toml:
+#      windows-sys 0.52.0 (ring 0.17.14, pulled by quinn-proto 0.11.19 with
+#      either crypto provider) and windows-sys 0.61.2 (tokio/mio/socket2/
+#      quinn-udp). Resolving that needs a separate human policy decision; this
+#      diff deliberately does NOT add a deny.toml skip.
+#   2. Explicit human approval of these dependency edges (T018a-style record),
+#      plus native Windows/MSVC evidence, which T030 could not produce.
+#
+# Integration mechanism: checksum-pinned local vendoring of the unmodified
+# crates.io archive plus the reviewed patch. No git source, no fork URL.
+
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -24,3 +24,22 @@
+ # core (`to_extend`, `take_from_bytes`), so nothing is lost; deny.toml is
+ # untouched per the T018a rule.
+ postcard = { version = "1", default-features = false }
++# PROPOSED (T030 dossier, approval pending): QUIC transport for T023/T023b.
++# Exact pins; default features off. `rustls-ring` selects the ring crypto
++# provider; `runtime-tokio` the async runtime. No platform verifier: the
++# client trusts the operator-supplied server certificate/root (T022 owns
++# credential handling). Entropy: ring's SystemRandom and rand/getrandom as
++# pulled by quinn-proto; no additional entropy crate.
++quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
++quinn-proto = { version = "=0.11.19", default-features = false, features = ["rustls-ring"] }
++tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "net", "time", "macros", "sync"] }
++rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
++
++[patch.crates-io]
++# PROPOSED: quinn-proto 0.11.19 vendored from the crates.io archive
++# (sha256 0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe,
++# equal to the registry index checksum) with
++# docs/reviews/T030-quinn/dedup-window.patch applied
++# (src/connection/spaces.rs sha256 after patch:
++# 2274f18c6f6d0f2855ba7fb9699427158e35561a69046b4bc532f732c79f9cc5).
++quinn-proto = { path = "third_party/quinn-proto" }
+
+--- /dev/null
++++ b/third_party/quinn-proto/VENDOR.md
+@@ -0,0 +1,27 @@
++# Vendored quinn-proto 0.11.19 + dedup-window patch
++
++Upstream: https://github.com/quinn-rs/quinn, tag quinn-proto-0.11.19
++(commit 8192ed399a26a6e8f0aba43d10ec8badaa5b905e), crates.io archive sha256
++0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe.
++Licence: MIT OR Apache-2.0; LICENSE-MIT and LICENSE-APACHE kept verbatim.
++
++This directory is the unmodified archive contents plus exactly one patch,
++docs/reviews/T030-quinn/dedup-window.patch (2048-bit dedup history,
++effective window 2049). The test harness patch is NOT applied here.
++
++Re-derive and verify (must reproduce this directory byte-for-byte):
++  curl -sSfL -o quinn-proto-0.11.19.crate \
++    https://static.crates.io/crates/quinn-proto/quinn-proto-0.11.19.crate
++  sha256sum quinn-proto-0.11.19.crate   # must equal the value above
++  tar xzf quinn-proto-0.11.19.crate
++  (cd quinn-proto-0.11.19 && patch -p1 < <repo>/docs/reviews/T030-quinn/dedup-window.patch)
++  diff -r quinn-proto-0.11.19 <repo>/third_party/quinn-proto   # excluding VENDOR.md
++
++Owner: project dependency maintainer. Upgrades: re-select a published
++release, re-run the T030 regression harness (unpatched must still show the
++defect or the patch must be retired), the upstream suites and the impairment
++matrix on native Windows/MSVC and Linux/GNU, and `cargo deny check` under the
++unchanged policy. Security advisories against quinn/quinn-proto/rustls/ring:
++proposed response: patch-level upgrade soon after a fixed release, with the same evidence (exact window for the maintainer role to set).
++Retirement: remove this directory and the [patch] entry once a pinned upstream
++release passes the same independent regression and control suite unpatched.
+
+--- /dev/null
++++ b/third_party/quinn-proto/**   (unmodified archive contents, patched)
+@@ (tree; see VENDOR.md for the re-derivation command) @@
+
+# crates/crpg-net/Cargo.toml and crates/crpg-server/Cargo.toml edges are owned
+# by T023 (N-QUIC, crpg-net) and T023b (host adapter, crpg-server) under their
+# own exact contracts and approvals; this dossier proposes the workspace pins
+# and the vendoring mechanism only.
+#
+# deny.toml: NO CHANGE PROPOSED. The windows-sys duplicate is reported as a
+# blocker for a separate decision (options in README.md §Policy audit).

@@ -49,6 +49,8 @@ use crate::world::{EntityMeta, World};
 pub const MAX_COMBATANTS: usize = 1024;
 /// Maximum stat declarations in one encounter ruleset.
 pub const MAX_COMBAT_STATS: usize = 1024;
+/// Maximum options one [`legal_actions`] query returns, `EndTurn` included.
+pub const MAX_LEGAL_ACTIONS: usize = 4096;
 /// The named RNG stream used for all combat resolution draws.
 pub const COMBAT_ROLL_STREAM: &str = "combat.roll";
 /// The tag symbol interned for the resolution roll tag.
@@ -779,6 +781,14 @@ pub enum CombatError {
         /// The conflicting modifier-type name.
         mod_type: String,
     },
+    /// The encounter's participants resolve to an area other than the bound
+    /// world's (T027a, ADR-0020).
+    AreaMismatch {
+        /// The bound world's area.
+        expected: Ulid,
+        /// The participants' resolved area.
+        found: Ulid,
+    },
 }
 
 impl std::fmt::Display for CombatError {
@@ -817,6 +827,7 @@ impl std::fmt::Display for CombatError {
             Self::DuplicateModifier { .. } => write!(f, "DuplicateModifier at spec/effects"),
             Self::InvalidNaturalDie { .. } => write!(f, "InvalidNaturalDie at spec/ability"),
             Self::PolicyConflict { .. } => write!(f, "PolicyConflict at spec/effects"),
+            Self::AreaMismatch { .. } => write!(f, "AreaMismatch at spec/areas"),
         }
     }
 }
@@ -966,6 +977,14 @@ pub(crate) fn start_encounter_tracked(
             return Err(MixedArea {
                 area_a: first_area,
                 area_b: *area,
+            });
+        }
+    }
+    if let Some(expected) = world.area() {
+        if expected != first_area {
+            return Err(CombatError::AreaMismatch {
+                expected,
+                found: first_area,
             });
         }
     }
@@ -1518,48 +1537,30 @@ fn dc_modifiers(
     out
 }
 
-/// Applies one validated action transactionally; rejected actions leave
-/// `world` unchanged (resources, RNG, events, and event sequence included).
+/// Checks one action against the authoritative admission rules without
+/// mutating anything (T028, ADR-0018).
 ///
-/// Validation runs in pinned precedence order before any mutation,
-/// including before any RNG stream is created. An accepted attack then
-/// runs one fixed order: kernel resolution over the world-owned
-/// [`COMBAT_ROLL_STREAM`] with the interned [`COMBAT_ROLL_TAG`], cost
-/// spending, saturating nonnegative damage with exactly-once death, effect
-/// attachment on success, and turn advance (next head plus `TurnStart`
-/// refresh, round rollover, or terminal; a non-ending turn keeps the active
-/// head with no refresh). An accepted `EndTurn` advances with no spend, no
-/// draw, no damage, and no effect. A valid failed attack consumes its
-/// action; an invalid action consumes nothing.
-pub fn perform_action(
-    world: &mut World,
-    action: &CombatAction,
-) -> Result<Option<ActionOutcome>, CombatError> {
-    perform_action_tracked(world, action).map(|(outcome, _)| outcome)
-}
-
-/// Applies one validated action transactionally, reporting the turn or
-/// terminal transition the advance branches actually took.
-///
-/// Crate-visible only: [`perform_action`] delegates here and discards the
-/// facts, so legacy emissions, bytes and signatures are unchanged; the
-/// history wrapper consumes the facts to journal its trailing `TurnStarted`
-/// or `EncounterEnded` (T020, ADR-0017).
-pub(crate) fn perform_action_tracked(
-    world: &mut World,
-    action: &CombatAction,
-) -> Result<(Option<ActionOutcome>, TransitionFacts), CombatError> {
+/// This is the single pre-mutation validation path: [`perform_action`] runs
+/// it first, and [`legal_actions`] filters candidates through it, so the two
+/// can never disagree. The pinned precedence is unchanged. `UseAbility`:
+/// `NoEncounter`; live nonparticipant actor; live nonparticipant target;
+/// `AbsentActor`; `AbsentTarget`; `DeadActor`; `DeadTarget`; `OutOfTurn`;
+/// `UnknownAbility`; `SelfTarget`; then per-pool affordability in template
+/// order (checked sums, `ValueOverflow`/`InsufficientAction`, T019).
+/// `EndTurn`: `NoEncounter`; live nonparticipant actor; `AbsentActor`;
+/// `DeadActor`; `OutOfTurn`. Validation stops before interning, creating RNG
+/// streams, resolving, spending, or advancing. `Ok` is not a lease: state can
+/// change before execution, which always revalidates.
+pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), CombatError> {
     use CombatError::{
         AbsentActor, AbsentTarget, DeadActor, DeadTarget, InsufficientAction, NoEncounter,
         NotParticipant, OutOfTurn, SelfTarget, UnknownAbility, ValueOverflow,
     };
 
+    let combat = world.combat().ok_or(NoEncounter)?;
+    let combatants = world.combatants();
     match *action {
         CombatAction::EndTurn { actor } => {
-            if world.combat().is_none() {
-                return Err(NoEncounter);
-            }
-            let combatants = world.combatants();
             if world.contains(actor) && !combatants.contains(actor) {
                 return Err(NotParticipant { entity: actor });
             }
@@ -1572,38 +1573,20 @@ pub(crate) fn perform_action_tracked(
             if actor_state.dead {
                 return Err(DeadActor { actor });
             }
-            let active = world
-                .combat()
-                .expect("the encounter is checked above")
-                .active;
-            if active != Some(actor) {
-                return Err(OutOfTurn { actor, active });
+            if combat.active != Some(actor) {
+                return Err(OutOfTurn {
+                    actor,
+                    active: combat.active,
+                });
             }
-            let dead: Vec<EntityId> = world
-                .combatants()
-                .iter()
-                .filter(|(_, state)| state.dead)
-                .map(|(id, _)| id)
-                .collect();
-            for id in dead {
-                world.timeline_mut().remove(id);
-            }
-            let popped = end_turn(world);
-            debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
-            let facts = advance_tracked(world);
-            Ok((None, facts))
+            Ok(())
         }
         CombatAction::UseAbility {
             actor,
             ability,
             target,
         } => {
-            let definition = world.combat().ok_or(NoEncounter)?.definition.clone();
-            let round = world
-                .combat()
-                .expect("the encounter is checked above")
-                .round;
-            let combatants = world.combatants();
+            let definition = &combat.definition;
             if world.contains(actor) && !combatants.contains(actor) {
                 return Err(NotParticipant { entity: actor });
             }
@@ -1628,17 +1611,15 @@ pub(crate) fn perform_action_tracked(
             if target_state.dead {
                 return Err(DeadTarget { target });
             }
-            let active = world
-                .combat()
-                .expect("the encounter is checked above")
-                .active;
-            if active != Some(actor) {
-                return Err(OutOfTurn { actor, active });
+            if combat.active != Some(actor) {
+                return Err(OutOfTurn {
+                    actor,
+                    active: combat.active,
+                });
             }
-            let Some(entry) = ability_entry(&definition, ability) else {
+            let Some(entry) = ability_entry(definition, ability) else {
                 return Err(UnknownAbility { ability });
             };
-            let entry = entry.clone();
             if target == actor && !entry.allow_self_target {
                 return Err(SelfTarget);
             }
@@ -1688,6 +1669,173 @@ pub(crate) fn perform_action_tracked(
                     });
                 }
             }
+            Ok(())
+        }
+    }
+}
+
+/// Why a [`legal_actions`] query produced no option list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegalActionsError {
+    /// The actor cannot act at all: the `EndTurn { actor }` validation error.
+    Actor(CombatError),
+    /// The options would exceed [`MAX_LEGAL_ACTIONS`]; no partial list is
+    /// returned.
+    TooManyOptions {
+        /// The exceeded output bound.
+        limit: usize,
+    },
+}
+
+impl std::fmt::Display for LegalActionsError {
+    /// Renders the wrapped combat error unchanged, or `TooManyOptions at
+    /// combat/options`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Actor(error) => std::fmt::Display::fmt(error, f),
+            Self::TooManyOptions { .. } => write!(f, "TooManyOptions at combat/options"),
+        }
+    }
+}
+
+impl std::error::Error for LegalActionsError {
+    /// Exposes the wrapped combat error for `Actor`; nothing otherwise.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Actor(error) => Some(error),
+            Self::TooManyOptions { .. } => None,
+        }
+    }
+}
+
+/// Enumerates every action `actor` could currently execute, read-only
+/// (T028, ADR-0018).
+///
+/// `EndTurn { actor }` is validated first; its failure is returned as
+/// [`LegalActionsError::Actor`]. Otherwise every listed ability in ascending
+/// ULID order is paired with every current combatant in ascending
+/// [`EntityId`] order, and exactly the `UseAbility` candidates accepted by
+/// [`validate_action`] are kept (a candidate's own failure, `ValueOverflow`
+/// included, only excludes that candidate); `EndTurn` comes last. Every
+/// `UseAbility` names a live combatant target, whatever the ability's
+/// `requires_target` flag; `allow_self_target` alone governs self-targets.
+///
+/// The result is bounded by [`MAX_LEGAL_ACTIONS`], `EndTurn` included: the
+/// query fails as a whole with `TooManyOptions` rather than truncating. The
+/// bound limits output size, not running time. Options confer no
+/// authorization and go stale when state changes; execution revalidates.
+pub fn legal_actions(
+    world: &World,
+    actor: EntityId,
+) -> Result<Vec<CombatAction>, LegalActionsError> {
+    let end_turn = CombatAction::EndTurn { actor };
+    validate_action(world, &end_turn).map_err(LegalActionsError::Actor)?;
+    let combat = world
+        .combat()
+        .expect("EndTurn validation checks the encounter");
+    let mut abilities: Vec<Ulid> = combat
+        .definition
+        .abilities
+        .iter()
+        .map(|entry| entry.ability)
+        .collect();
+    abilities.sort_unstable();
+    abilities.dedup();
+    let mut targets: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
+    targets.sort_unstable();
+
+    let mut options: Vec<CombatAction> = Vec::new();
+    let mut push = |option: CombatAction| {
+        if options.len() == MAX_LEGAL_ACTIONS {
+            return Err(LegalActionsError::TooManyOptions {
+                limit: MAX_LEGAL_ACTIONS,
+            });
+        }
+        options.push(option);
+        Ok(())
+    };
+    for &ability in &abilities {
+        for &target in &targets {
+            let candidate = CombatAction::UseAbility {
+                actor,
+                ability,
+                target,
+            };
+            if validate_action(world, &candidate).is_ok() {
+                push(candidate)?;
+            }
+        }
+    }
+    push(end_turn)?;
+    Ok(options)
+}
+
+/// Applies one validated action transactionally; rejected actions leave
+/// `world` unchanged (resources, RNG, events, and event sequence included).
+///
+/// Validation runs in pinned precedence order before any mutation,
+/// including before any RNG stream is created. An accepted attack then
+/// runs one fixed order: kernel resolution over the world-owned
+/// [`COMBAT_ROLL_STREAM`] with the interned [`COMBAT_ROLL_TAG`], cost
+/// spending, saturating nonnegative damage with exactly-once death, effect
+/// attachment on success, and turn advance (next head plus `TurnStart`
+/// refresh, round rollover, or terminal; a non-ending turn keeps the active
+/// head with no refresh). An accepted `EndTurn` advances with no spend, no
+/// draw, no damage, and no effect. A valid failed attack consumes its
+/// action; an invalid action consumes nothing.
+pub fn perform_action(
+    world: &mut World,
+    action: &CombatAction,
+) -> Result<Option<ActionOutcome>, CombatError> {
+    perform_action_tracked(world, action).map(|(outcome, _)| outcome)
+}
+
+/// Applies one validated action transactionally, reporting the turn or
+/// terminal transition the advance branches actually took.
+///
+/// Crate-visible only: [`perform_action`] delegates here and discards the
+/// facts, so legacy emissions, bytes and signatures are unchanged; the
+/// history wrapper consumes the facts to journal its trailing `TurnStarted`
+/// or `EncounterEnded` (T020, ADR-0017).
+pub(crate) fn perform_action_tracked(
+    world: &mut World,
+    action: &CombatAction,
+) -> Result<(Option<ActionOutcome>, TransitionFacts), CombatError> {
+    validate_action(world, action)?;
+    match *action {
+        CombatAction::EndTurn { actor } => {
+            let dead: Vec<EntityId> = world
+                .combatants()
+                .iter()
+                .filter(|(_, state)| state.dead)
+                .map(|(id, _)| id)
+                .collect();
+            for id in dead {
+                world.timeline_mut().remove(id);
+            }
+            let popped = end_turn(world);
+            debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
+            let facts = advance_tracked(world);
+            Ok((None, facts))
+        }
+        CombatAction::UseAbility {
+            actor,
+            ability,
+            target,
+        } => {
+            let combat = world.combat().expect("validation checks the encounter");
+            let definition = combat.definition.clone();
+            let round = combat.round;
+            let combatants = world.combatants();
+            let actor_state = combatants
+                .get(actor)
+                .expect("validation checks the actor is a live combatant");
+            let target_state = combatants
+                .get(target)
+                .expect("validation checks the target is a live combatant");
+            let entry = ability_entry(&definition, ability)
+                .expect("validation checks the ability is listed")
+                .clone();
             let tag = world
                 .interners()
                 .tag(COMBAT_ROLL_TAG)

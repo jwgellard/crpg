@@ -34,7 +34,12 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
 `EncounterSummary`, `end_encounter`, plus the T020 opt-in history surface:
 `HistoryWorld`, `HistoryEvent`, `HistoryEnvelope`, `HistoryError`,
 `history_hash`, `MAX_HISTORY_EVENTS`, `MAX_HISTORY_BYTES`,
-`MAX_HISTORY_PAGE`, `MAX_HISTORY_STRING_BYTES`, `HISTORY_VERSION`.
+`MAX_HISTORY_PAGE`, `MAX_HISTORY_STRING_BYTES`, `HISTORY_VERSION`, plus the
+T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
+`LegalActionsError`, `MAX_LEGAL_ACTIONS`, plus the T027a area surface
+(ADR-0020): `World::new_in_area` / `area` / `area_of`,
+`HistoryWorld::new_in_area`, `AreaError`, `transfer_entity`,
+`transfer_history_entity`, and `CombatError::AreaMismatch`.
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -107,6 +112,30 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
   `history_hash` covers the complete canonical wrapper (world, version,
   pending payloads, sequence/ack state) with no exclusions; legacy
   `state_hash`, APIs, emissions, bytes, and hashes are unchanged.
+
+- `validate_action(world, action)` / `legal_actions(world, actor)` (T028,
+  ADR-0018): `validate_action` is the only pre-mutation admission path —
+  `perform_action` calls it first — and changes nothing (no interning, no
+  RNG stream, no event, no spend, no advance). `legal_actions` returns
+  `Actor(error)` when `EndTurn { actor }` fails, otherwise every accepted
+  `UseAbility` over abilities by ascending ULID × current combatants by
+  ascending full `EntityId`, then `EndTurn`; each candidate's own failure
+  excludes only that candidate. Over `MAX_LEGAL_ACTIONS` (4096, `EndTurn`
+  counted) the whole query fails with `TooManyOptions`, never a partial list.
+- Area identity (T027a, ADR-0020): `World::new_in_area(seed, area)` binds an
+  immutable authored area ULID (no setter, no late binding); `new`/`Default`
+  stay unbound and byte-identical (`area` omitted when `None`; missing or
+  `null` loads as `None`). `area_of` is the world's area iff the full id is
+  live — death and release keep presence, despawn and slot reuse do not
+  restore it. A bound `start_encounter` returns `AreaMismatch` after the
+  `MissingPlacement`/`MixedArea` checks and before creature/stat checks.
+  `transfer_entity` / `transfer_history_entity` move one noncombat,
+  unscheduled entity (`EntityMeta` plus optional finite `Transform`) between
+  two bound worlds with a fresh destination id, checking `UnboundSource`,
+  `UnboundDestination`, `SameArea`, `AbsentEntity`, `CombatParticipant`,
+  `ScheduledEntity`, `InvalidTransform` in order, then (history pair only)
+  `SourceHistory` before `DestinationHistory`; any failure publishes neither
+  side.
 
 ## Invariants
 
@@ -185,6 +214,22 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
     directly with bounded visitors — retained-history bounds, not a claim
     about parser scratch, whose mandatory pre-parse byte cap belongs to
     T022's host boundary.
+
+12. **One legality source (T028, ADR-0018).** Never re-check admission in a
+    second predicate or validate by executing on a clone: add a new rule to
+    `validate_action` and both execution and enumeration inherit it. Every
+    `UseAbility` names a live combatant target whatever `requires_target`
+    says; `allow_self_target` alone governs self-targets. Do not cache
+    options across state changes; they confer no authorization, and host
+    disclosure filtering stays outside sim.
+13. **Area identity is world-owned and immutable (T027a, ADR-0020).** One
+    `World` is one area; presence is liveness, so there is no membership
+    index to dangle. Cross-world identity is `(area, EntityId)` — never key
+    anything across worlds by `EntityId` alone. Transfer supports only the
+    shape it can copy completely: a new per-entity component must extend the
+    move contract or make transfer fail, never be silently dropped. Viewer
+    grants, snapshot cancellation and actionable-mapping retirement belong to
+    the host (T027c) and net (T027b), not sim.
 
 ## Allowed dependencies
 
@@ -372,3 +417,5 @@ proof.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d implementation · Aligned the contract with the as-built generalization, joint absence-skip persistence, per-field retirement with combat_multi coverage, and the user-authorized narrow downstream mechanical fix; no commit/push/PR.
 - 2026-09-28 (UTC) · opencode/muse-spark + T019 implementation · Recorded the atomic same-pool affordability invariant (template-order sums, checked overflow, first-failing wins, exact-sum spending) with the perform_action clarification above; no API, dependency, fixture, or golden change.
 - 2026-09-29 (UTC) · opencode/muse-spark + T020 implementation · Extended the API with the opt-in history surface (privately owned world, transactional typed mutations, bounded read/ack journal, full-wrapper hash) and the branch-observed transition-fact and retained-vs-parser-memory invariants above; legacy APIs, emissions, bytes, and hashes unchanged, no dependency added.
+- 2026-09-30 (UTC) · claude-code + T028 implementation · Added the validate_action/legal_actions surface and the one-legality-source invariant so later rules land in the shared validator instead of a divergent copy; no dependency, persisted field, or golden change.
+- 2026-09-30 (UTC) · claude-code + T027a implementation · Added the persisted area identity and dual-world transfer surface with its world-owned, immutable-identity invariant, so later components know they must join the move contract rather than vanish on transfer.

@@ -34,7 +34,7 @@ ADR that motivated it.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T004 | done | 2026-09-03 | Workspace, 15 stub crates, CI on Linux + Windows |
+| T004 | done | 2026-09-03 | Workspace, 15 stub crates, CI on Linux + Windows; retrospective record [T004](T004.md) (2026-09-30, T032) |
 | T005 | done | 2026-09-03 | Dependency-direction lint |
 | T005b | done | 2026-09-03 | Determinism lint |
 | T005c | done | 2026-09-04 | `deny.toml` + `cargo deny` in CI; narrow CI to `push: master` |
@@ -98,9 +98,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | T018 | done | 2026-09-28 | `crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance (T018a/b/c; PR #16, implementation `2fc54b7`, merge `bc54896`; 75 net tests per native target). Phase 4 host/QUIC/movement/reconnect remains open; follow-on queue: POST-T018.md. |
 | T019 | done | 2026-09-29 | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native green (PR #17, implementation `56931eb`, merge `f3d1560`); see [T019](T019.md) |
-| T020 | blocked | — | C1-sim opt-in history wrapper selected; exact D08 API/ADR required (T019 dependency met 2026-09-29) |
-| T021 | blocked | — | `crpg-net` N-EVENTS-v2 selected; exact D09 contract + T020; v1 compatibility 
-
+| T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Open: the record's independent review of the two golden artifacts, and ADR-0017 still reads "Selected", not Accepted; see [T020](T020.md) |
+| T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). `tasks/T021.md` carries no completion record; its suite is reported green on both natives only in T020's review-fix log. ADR-0019 still reads "Selected"; see [T021](T021.md) |
 | T022 | blocked | — | `crpg-server` C4 capture/checkpoint slice; D02/D03/D10 selected, exact API + T020/T021 required |
 | T023 | blocked | — | `crpg-net` N-QUIC; carry-patch selected in D04, source/patch/dependency evidence and exact contract required |
 | T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
@@ -109,20 +108,20 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
 | T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
-| T027a | blocked | — | Specified: persisted single-area identity and atomic noncombat transfer; ADR-0020; history integration requires T020 |
+| T027a | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T027a](T027a.md) |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
-| T028 | open | — | Specified: shared pure validation and bounded legal-action enumeration; ADR-0018; implementation requires T019 regression gate |
-| T029a | open | — | Specified: immutable IR declarations, content-derived exact bundle identity, bounded call validation; no predecessor code |
+| T028 | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T028](T028.md) |
+| T029a | on branch | `claude/blissful-rubin-59repd` | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite, schemas/fixtures unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T029a](T029a.md) |
 | T029b | blocked | — | Specified: synchronous trusted bindings and transactional combat proposals; implementation requires T029a/T028 plus dependency approval |
 
 ## Independent preparation and tooling
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T030 | open | — | Specified: isolated quinn patch/reproduction/native/dependency dossier; supplies T023 evidence, no product integration approval |
-| T031 | open | — | Specified: native PowerShell/Bash preflight runners with fail-fast gates and subprocess acceptance |
-| T032 | open | — | Specified: selected documentation-authority reconciliation, evidence-based T004 retrospective and ADR template |
+| T030 | on branch | `claude/blissful-rubin-59repd` | quinn 0.11.12 / quinn-proto 0.11.19 dossier in `docs/reviews/T030-quinn/`: verified sources, 2049-packet dedup patch with independent-model reproduction (Linux), end-to-end symptom not reproduced; blockers: native Windows, `cargo deny` bans (`windows-sys` split), approval pending — T023 stays blocked; see [T030](T030.md) |
+| T031 | on branch | `claude/blissful-rubin-59repd` | `tools/preflight.sh` / `tools/preflight.ps1` fail-fast native gate runners with exact membership validation; 22 subprocess tests (Bash + PowerShell-on-Linux) and real Linux runs green; native Windows run and review/merge outstanding; see [T031](T031.md) |
+| T032 | on branch | `claude/blissful-rubin-59repd` | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md`; docs-only gates green; see [T032](T032.md) |
 
 ---
 
@@ -147,17 +146,17 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | E001 | done | — | Event ownership → A′ (ADR-0008) |
 | E002 | done | — | Single `EntityId` in core (spec §2.4 fix) |
-| E003 | open | post-T018 reconciliation | Contracts placement (Transport trait home; net-local Transport retained per C0, E003 definitions-vs-placement reconciliation still pending) |
+| E003 | done | — | Contracts are definitions only; `Transport` permanently net-local (D01, option B); spec reconciled 2026-09-30 by T032. E017 residuals stay open |
 | E004 | done | — | One-task-one-crate → split (T008a sim / T008b testkit; later splits at Stage 2) |
 | E005 | done | — | Testkit is a one-way integration consumer; lower-layer integration tests live there |
 | E006 | done | — | `f64`-in-sim → banned (E006-A: `no-f64` lint for sim) |
-| E007 | open | — | ADR immutability wording |
+| E007 | done | — | ADR policy: Decision never rewritten; supersede by new ADR or dated appended note; exact status vocabulary (T032, 2026-09-30; template `docs/adr/0000-template.md`). Architecture README pointer is a follow-up |
 | E008 | done | — | Instruction (not wall-clock) event budget |
 | E009 | done | — | ADR-0008 residue (sketch, diagrams, §24 text) |
 | E010 | open | script | Script budgets + sandbox-strip alignment |
 | E011 | done | — | Determinism-scope ADR-0009 (replay, not lockstep) |
-| E012 | open | bridge/server | Binary/crate naming and shared authoritative host package placement with E022 |
-| E013 | open | — | Diagram direction + "core" meaning |
+| E012 | done | — | Naming/placement: `crpg-server` host library + dedicated binary, client/editor Godot projects over `crpg-godot` (D02; spec reconciled by T032, 2026-09-30). E022 interfaces and capability-gated smoke obligations stay open |
+| E013 | open | — | Spec diagram/`core` wording reconciled by T032 (2026-09-30); README diagram still pending (outside T032 scope) |
 | E014 | done | — | `World: Serialize` vs interned-handle caveat (skeleton-only serde) |
 | E015 | done | — | Replica/prediction model + `Timeline` owner (buffer outside sim) |
 | E016 | done | — | Entity/aggregate documents, lock authorities, package ids, tick waits |
@@ -165,7 +164,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | E018 | open | server | Privileged-channel capability model |
 | E019 | open | CI | Perf measurability + `crpgc bench` task |
 | E020 | done | — | Gates 7–13 activate with capabilities; T009c supersedes its Linux-only T009a gate assignment |
-| E021 | open | — | Embedded-contract hygiene + T004 file |
+| E021 | done | — | §15.1 example labelled illustrative-only; retrospective `tasks/T004.md` backfilled from git evidence (T032, 2026-09-30) |
 | E022 | open | post-T018 | Server/editor/bridge API-shape ledger; one authoritative host for Windows embedded/dedicated and Linux dedicated adapters with E012 |
 | E023 | open | native extensions | T0 target-specific artifacts, ABI/loading and packaging decisions for Windows/MSVC and Linux/GNU; reconcile unsafe governance before implementation |
 
@@ -192,7 +191,8 @@ bound-before-allocation obligations); `SnapshotBackend`
 decompressed-size ceiling.
 
 Missing scaffolding from the workflow plan §15 checklist, none of it blocking:
-`tools/preflight.ps1` (+ `.sh`), `docs/adr/0000-template.md`, per-crate
+`tools/preflight.ps1` (+ `.sh`) (on branch via T031), `docs/adr/0000-template.md`
+(on branch via T032), per-crate
 `AGENTS.md` beyond the five that exist (`crpg-core`, `crpg-sim`,
 `crpg-testkit`, `crpg-cli`, `crpg-data`), and a self-hosted runner for the
 slow CI layer.
@@ -255,6 +255,7 @@ Record it here, one line per week.
 | 2026-09-27 | 30 | T016 (headless combat with `rulesets/minimal-d6`: content, sim adapter/controller, lifecycle/release, replay goldens, CLI proof) and T017 (second-ruleset abstraction proof with `rulesets/srd-lite`: multi-pool/effect/defense/turn generalization, replay goldens, CLI proof) merged (PR #14, `4686a73`). Cost per merged task not tracked yet. T018 `crpg-net` protocol is next. |
 | 2026-09-28 | 31 | T018 (`crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance: T018a/b/c, PR #16, `bc54896`) merged. Cost per merged task not tracked yet. T019 `crpg-sim` same-pool repair is implemented and dual-native verified in the working tree, unmerged, so it is not counted here. |
 | 2026-09-29 | 32 | T019 (`crpg-sim` same-pool affordability repair, PR #17, `f3d1560`) merged. Cost per merged task not tracked yet. T020 history (specification review) is next. |
+| 2026-09-30 | 34 | T020 (`crpg-sim` opt-in history) and T021 (`crpg-net` v2 event protocol) merged in PR #18 (`a991fe9`) together with the post-T018 specification frontier (ADRs 0018–0022, T022–T032 contracts). Cost per merged task not tracked yet. T022 host needs specification inputs; T027a, T028, T029a and T030–T032 are specified and implementable. |
 
 ---
 
@@ -295,3 +296,10 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Marked T019 done (merged PR #17, `f3d1560`, 2026-09-29), noted the T019 dependency met on the T020 row, and moved throughput to 32 with T020 specification review next.
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + specification frontier · Indexed six exact implementation contracts and three independent preparation/tooling contracts, with four new decision records. Kept specification readiness distinct from unmet implementation/dependency gates and left merged status/throughput unchanged.
 - 2026-09-30 (UTC) · opencode/muse-spark + review-fix pass · Corrected the T019 row's stale branch pointer (`task/T018-net-protocol` → `task/T019-same-pool`); implementation/merge status and throughput unchanged.
+- 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Marked T020 and T021 done (merged in PR #18, `a991fe9`, after the T019 bookkeeping in PR #19 had already recorded them as blocked) and moved throughput to 34; kept the T020 golden-artifact review, the missing T021 completion record, and the still-"Selected" ADR-0017/0019 statuses visible as open items rather than implying approval.
+- 2026-09-30 (UTC) · claude-code + T028 implementation · Moved T028 to `on branch` with Linux-only verification, so the unrun Windows/MSVC gate and review/merge stay explicit instead of reading as done.
+- 2026-09-30 (UTC) · claude-code + T027a implementation · Moved T027a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
+- 2026-09-30 (UTC) · claude-code + T029a implementation · Moved T029a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
+- 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Closed E003/E007/E012/E021 with scope notes and kept E013 open for its README diagram, so the backlog does not claim debt outside T032's allowed files is resolved.
+- 2026-09-30 (UTC) · claude-code + T031 implementation · Moved T031 to `on branch` and annotated the scaffolding checklist for the preflight runners and ADR template, keeping the native Windows run open.
+- 2026-09-30 (UTC) · claude-code + T030 dossier · Moved T030 to `on branch` with its evidence location and the three blockers that keep T023 blocked.

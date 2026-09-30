@@ -1,0 +1,283 @@
+--- a/src/connection/spaces.rs
++++ b/src/connection/spaces.rs
+@@ -1,5 +1,4 @@
+ use std::{
+-    cmp,
+     collections::{BTreeMap, VecDeque},
+     mem,
+     ops::{Bound, Index, IndexMut, Range},
+@@ -473,19 +472,29 @@
+     next: u64,
+ }
+ 
+-/// Inner bitfield type.
++/// Inner bitfield type: `WINDOW_BITS` history bits stored little-endian by word, so history bit
++/// `i` (word `i / 64`, bit `i % 64`) tracks packet `highest - 1 - i`.
+ ///
+ /// Because QUIC never reuses packet numbers, this only needs to be large enough to deal with
+ /// packets that are reordered but still delivered in a timely manner.
+-type Window = u128;
++type Window = [u64; WINDOW_WORDS];
+ 
+-/// Number of packets tracked by `Dedup`.
+-const WINDOW_SIZE: u64 = 1 + mem::size_of::<Window>() as u64 * 8;
++/// Number of 64-bit words in the history bitfield.
++const WINDOW_WORDS: usize = 32;
++
++/// Number of history bits, i.e. packets tracked strictly below the highest one.
++const WINDOW_BITS: u64 = WINDOW_WORDS as u64 * 64;
++
++/// Number of packets tracked by `Dedup`, including the highest one.
++const WINDOW_SIZE: u64 = 1 + WINDOW_BITS;
+ 
+ impl Dedup {
+     /// Construct an empty window positioned at the start.
+     pub(super) fn new() -> Self {
+-        Self { window: 0, next: 0 }
++        Self {
++            window: [0; WINDOW_WORDS],
++            next: 0,
++        }
+     }
+ 
+     /// Highest packet number authenticated.
+@@ -493,24 +502,79 @@
+         self.next - 1
+     }
+ 
++    /// Whether history bit `index` (`< WINDOW_BITS`) is set.
++    fn bit(&self, index: u64) -> bool {
++        (self.window[(index / 64) as usize] >> (index % 64)) & 1 != 0
++    }
++
++    /// Sets history bit `index` (`< WINDOW_BITS`).
++    fn set_bit(&mut self, index: u64) {
++        self.window[(index / 64) as usize] |= 1 << (index % 64);
++    }
++
++    /// Moves every history bit `shift` positions towards older packets; bits moved past
++    /// `WINDOW_BITS` are discarded and vacated bits are cleared.
++    fn shift_older(&mut self, shift: u64) {
++        if shift >= WINDOW_BITS {
++            self.window = [0; WINDOW_WORDS];
++            return;
++        }
++        let words = (shift / 64) as usize;
++        let bits = (shift % 64) as u32;
++        for i in (0..WINDOW_WORDS).rev() {
++            let high = i.checked_sub(words).map_or(0, |source| self.window[source]);
++            let low = i
++                .checked_sub(words + 1)
++                .map_or(0, |source| self.window[source]);
++            self.window[i] = if bits == 0 {
++                high
++            } else {
++                (high << bits) | (low >> (64 - bits))
++            };
++        }
++    }
++
++    /// The highest set bit of `!window` within history bits `[start, end)`, if any.
++    fn highest_gap(&self, start: u64, end: u64) -> Option<u64> {
++        debug_assert!(start < end && end <= WINDOW_BITS);
++        let first_word = (start / 64) as usize;
++        let last_word = ((end - 1) / 64) as usize;
++        for word in (first_word..=last_word).rev() {
++            let word_start = word as u64 * 64;
++            let from = start.max(word_start) - word_start;
++            let to = end.min(word_start + 64) - word_start;
++            let mask = if to - from == 64 {
++                u64::MAX
++            } else {
++                ((1u64 << (to - from)) - 1) << from
++            };
++            let gaps = !self.window[word] & mask;
++            if gaps != 0 {
++                return Some(word_start + 63 - u64::from(gaps.leading_zeros()));
++            }
++        }
++        None
++    }
++
+     /// Record a newly authenticated packet number.
+     ///
+     /// Returns whether the packet might be a duplicate.
+     pub(super) fn insert(&mut self, packet: u64) -> bool {
+         if let Some(diff) = packet.checked_sub(self.next) {
+-            // Right of window
+-            self.window = ((self.window << 1) | 1)
+-                .checked_shl(cmp::min(diff, u64::from(u32::MAX)) as u32)
+-                .unwrap_or(0);
++            // Right of window: the previous highest becomes history bit `diff`, as
++            // `((window << 1) | 1) << diff` did for the single-integer window.
++            self.shift_older(diff.saturating_add(1));
++            if diff < WINDOW_BITS {
++                self.set_bit(diff);
++            }
+             self.next = packet + 1;
+             false
+         } else if self.highest() - packet < WINDOW_SIZE {
+             // Within window
+             if let Some(bit) = (self.highest() - packet).checked_sub(1) {
+                 // < highest
+-                let mask = 1 << bit;
+-                let duplicate = self.window & mask != 0;
+-                self.window |= mask;
++                let duplicate = self.bit(bit);
++                self.set_bit(bit);
+                 duplicate
+             } else {
+                 // == highest
+@@ -528,7 +592,6 @@
+     fn smallest_missing_in_interval(&self, lower_bound: u64, upper_bound: u64) -> Option<u64> {
+         debug_assert!(lower_bound <= upper_bound);
+         debug_assert!(upper_bound <= self.highest());
+-        const BITFIELD_SIZE: u64 = (mem::size_of::<Window>() * 8) as u64;
+ 
+         // Since we already know the packets at the boundaries have been received, we only need to
+         // check those in between them (this removes the necessity of extra logic to deal with the
+@@ -539,7 +602,7 @@
+         // Note: the offsets are counted from the right
+         // The highest packet is not included in the bitfield, so we subtract 1 to account for that
+         let start_offset = (self.highest() - upper_bound).max(1) - 1;
+-        if start_offset >= BITFIELD_SIZE {
++        if start_offset >= WINDOW_BITS {
+             // The start offset is outside of the window. All packets outside of the window are
+             // considered to be received.
+             return None;
+@@ -551,21 +614,17 @@
+         // considered to be received
+         let range_len = end_offset_exclusive
+             .saturating_sub(start_offset)
+-            .min(BITFIELD_SIZE);
++            .min(WINDOW_BITS);
+         if range_len == 0 {
+             return None;
+         }
++        let end = (start_offset + range_len).min(WINDOW_BITS);
+ 
+-        // Ensure the shift is within bounds (we already know start_offset < BITFIELD_SIZE,
+-        // because of the early return)
+-        let mask = if range_len == BITFIELD_SIZE {
+-            u128::MAX
+-        } else {
+-            ((1u128 << range_len) - 1) << start_offset
+-        };
+-        let gaps = !self.window & mask;
+-
+-        let smallest_missing_offset = 128 - gaps.leading_zeros() as u64;
++        // The oldest gap is the highest missing history bit; with no gap the offset is 0, which
++        // names the highest packet and is rejected by the bound check below.
++        let smallest_missing_offset = self
++            .highest_gap(start_offset, end)
++            .map_or(0, |bit| bit + 1);
+         let smallest_missing_packet = self.highest() - smallest_missing_offset;
+ 
+         if smallest_missing_packet <= upper_bound {
+@@ -927,37 +986,43 @@
+ mod test {
+     use super::*;
+ 
++    /// The lowest 128 history bits as one integer, for assertions written against the
++    /// original single-integer window.
++    fn low_bits(dedup: &Dedup) -> u128 {
++        u128::from(dedup.window[0]) | (u128::from(dedup.window[1]) << 64)
++    }
++
+     #[test]
+     fn sanity() {
+         let mut dedup = Dedup::new();
+         assert!(!dedup.insert(0));
+         assert_eq!(dedup.next, 1);
+-        assert_eq!(dedup.window, 0b1);
++        assert_eq!(low_bits(&dedup), 0b1);
+         assert!(dedup.insert(0));
+         assert_eq!(dedup.next, 1);
+-        assert_eq!(dedup.window, 0b1);
++        assert_eq!(low_bits(&dedup), 0b1);
+         assert!(!dedup.insert(1));
+         assert_eq!(dedup.next, 2);
+-        assert_eq!(dedup.window, 0b11);
++        assert_eq!(low_bits(&dedup), 0b11);
+         assert!(!dedup.insert(2));
+         assert_eq!(dedup.next, 3);
+-        assert_eq!(dedup.window, 0b111);
++        assert_eq!(low_bits(&dedup), 0b111);
+         assert!(!dedup.insert(4));
+         assert_eq!(dedup.next, 5);
+-        assert_eq!(dedup.window, 0b11110);
++        assert_eq!(low_bits(&dedup), 0b11110);
+         assert!(!dedup.insert(7));
+         assert_eq!(dedup.next, 8);
+-        assert_eq!(dedup.window, 0b1111_0100);
++        assert_eq!(low_bits(&dedup), 0b1111_0100);
+         assert!(dedup.insert(4));
+         assert!(!dedup.insert(3));
+         assert_eq!(dedup.next, 8);
+-        assert_eq!(dedup.window, 0b1111_1100);
++        assert_eq!(low_bits(&dedup), 0b1111_1100);
+         assert!(!dedup.insert(6));
+         assert_eq!(dedup.next, 8);
+-        assert_eq!(dedup.window, 0b1111_1101);
++        assert_eq!(low_bits(&dedup), 0b1111_1101);
+         assert!(!dedup.insert(5));
+         assert_eq!(dedup.next, 8);
+-        assert_eq!(dedup.window, 0b1111_1111);
++        assert_eq!(low_bits(&dedup), 0b1111_1111);
+     }
+ 
+     #[test]
+@@ -977,10 +1042,19 @@
+         dedup.insert(2 * WINDOW_SIZE);
+         assert!(dedup.insert(WINDOW_SIZE));
+         assert_eq!(dedup.next, 2 * WINDOW_SIZE + 1);
+-        assert_eq!(dedup.window, 0);
++        assert!(dedup.window.iter().all(|word| *word == 0));
+         assert!(!dedup.insert(WINDOW_SIZE + 1));
+         assert_eq!(dedup.next, 2 * WINDOW_SIZE + 1);
+-        assert_eq!(dedup.window, 1 << (WINDOW_SIZE - 2));
++        // Only history bit WINDOW_SIZE - 2 (the oldest tracked packet) is set.
++        assert!(dedup.bit(WINDOW_SIZE - 2));
++        assert_eq!(
++            dedup
++                .window
++                .iter()
++                .map(|word| word.count_ones())
++                .sum::<u32>(),
++            1
++        );
+     }
+ 
+     #[test]
+@@ -1038,15 +1112,26 @@
+         dedup.insert(2);
+         assert_eq!(dedup.smallest_missing_in_interval(1, 7), Some(3));
+ 
++        // Width-generic form of the original 170/172/300/500 -> 372 case (identical values
++        // when WINDOW_SIZE == 129): 171 falls out of the window once `far_a` arrives.
++        let far_a = WINDOW_SIZE + 171;
+         dedup.insert(170);
+         dedup.insert(172);
+-        dedup.insert(300);
++        dedup.insert(far_a);
+         assert_eq!(dedup.smallest_missing_in_interval(170, 172), None);
+ 
+-        dedup.insert(500);
+-        assert_eq!(dedup.smallest_missing_in_interval(0, 500), Some(372));
+-        assert_eq!(dedup.smallest_missing_in_interval(0, 373), Some(372));
+-        assert_eq!(dedup.smallest_missing_in_interval(0, 372), None);
++        let far_b = 2 * WINDOW_SIZE + 242;
++        let oldest_tracked = far_b - (WINDOW_SIZE - 1);
++        dedup.insert(far_b);
++        assert_eq!(
++            dedup.smallest_missing_in_interval(0, far_b),
++            Some(oldest_tracked)
++        );
++        assert_eq!(
++            dedup.smallest_missing_in_interval(0, oldest_tracked + 1),
++            Some(oldest_tracked)
++        );
++        assert_eq!(dedup.smallest_missing_in_interval(0, oldest_tracked), None);
+     }
+ 
+     #[test]

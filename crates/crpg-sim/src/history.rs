@@ -49,6 +49,7 @@ use crate::combat::{
     EncounterSpec, EncounterSummary,
 };
 use crate::event::SimEvent;
+use crate::transform::Transform;
 use crate::world::{EntityMeta, World};
 
 /// Maximum envelopes retained in one history journal.
@@ -298,6 +299,24 @@ impl HistoryWorld {
             next_seq: 1,
             pending: Vec::new(),
         }
+    }
+
+    /// A new, empty history world whose inner world is bound to the authored
+    /// `area` (T027a, ADR-0020); otherwise identical to [`new`](Self::new).
+    pub fn new_in_area(seed: u64, area: Ulid) -> Self {
+        Self {
+            world: World::new_in_area(seed, area),
+            ..Self::new(seed)
+        }
+    }
+
+    /// Attaches an already validated transform to a live entity of the staged
+    /// wrapper, journaling nothing. Crate-visible only: the area transfer's
+    /// pair transaction uses it after its typed spawn; no public mutable-inner
+    /// path exists.
+    pub(crate) fn attach_transform(&mut self, entity: EntityId, transform: Transform) {
+        debug_assert!(self.world.contains(entity), "attach to a live entity");
+        self.world.transforms_mut().insert(entity, transform);
     }
 
     /// Immutable view of the privately owned authoritative world.

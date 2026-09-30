@@ -34,3 +34,25 @@ Fix the layer diagram's dependency direction and the double meaning of
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: the diagram and the lint table point in opposite directions.
+
+## Resolution — 2026-09-30 (T032, POST-T018 D18) — spec part
+
+In `docs/CRPG_ENGINE_SPEC.md`:
+
+- §2.2 is redrawn so that drawn-above means "may import", matching the
+  `ALLOWED` table in `tools/lint/deps.py` (net/AI/script/persist above sim,
+  `crpg-edit` and `crpg-nav` beside sim, `crpg-server` above them, `crpg-godot`
+  on top), with a caption: `A -> B` means A imports B, so the spine
+  `core <- data <- rules <- sim <- {net, ai, script} <- server` means data
+  imports core. The lint table remains the normative edge list.
+- §0.1 renames the umbrella box to **simulation stack** (core/data/rules/sim
+  collectively); bare "core" / `crpg-core` means only the bottom primitives
+  crate. §2.1's table rows are annotated the same way.
+- Non-dependency arrows are labelled: §0.1 is product composition and the §23
+  diagram is data/session flow.
+
+**Still open:** the ambiguous stacking in `README.md` (its architecture
+diagram) is outside T032's allowed files and still needs the same caption or
+redraw. This task stays open until that README edit lands.
+
+- 2026-09-30 (UTC) · claude-code + T032 E013 spec resolution · Recorded the spec's corrected diagram direction and core/simulation-stack vocabulary, keeping the task open for the README diagram outside T032's scope.

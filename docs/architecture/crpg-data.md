@@ -221,3 +221,26 @@ the public API, Item-only version bump and lock authorities are unchanged.
 - 2026-09-26 (UTC) · opencode/muse-spark + T016a crate opening · Documented the four generic combat families, the read-time versus semantic validation split, the checked whole-number conversion preserving existing fixed-point meaning, and the canonical-source versus campaign-copy content ownership before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017a crate opening · Documented the effect family with effect-scoped policy, the plural-pool primary-cost convention with all-local migration defaults, and the canonical-source parity for the second ruleset before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017a implementation · Aligned the document with the as-built modifier bound, dual-layer empty-spend rule, shared-root migration oracles, and the downstream sim blocker recorded in tasks/T017a.md.
+
+## Action-signature declarations (T029a)
+
+Public module `action_signatures` (root re-export) is a declaration-only
+store for IR action vocabulary under D16. `ActionSignatureStore::new` takes
+caller-supplied, trusted `ActionSignature` values keyed by exact action id
+(BTreeMap, lexical iteration), preserves parameter declaration order, and
+derives an `ActionBundleIdentity`: the caller's bundle ULID plus a BLAKE3
+revision over the canonical JSON of `{version, bundle, actions}`. Identity is
+exact; there is no semver or additive compatibility. The bundle reader and
+writer (`read_action_signatures` / `write_action_signatures`) use the crate's
+strict integer JSON with duplicate-key rejection and a 32 MiB byte ceiling;
+the reader recomputes the revision and refuses disagreement.
+`validate_call` / `read_call` / `write_call` check an `ActionCall` against the
+store in one pinned first-failure order: identity, identifiers, argument
+count, depth/node/string budgets (iterative, before any recursive serde
+walk), counted 64 KiB canonical size, unknown action, extra arguments, then
+parameters in declaration order. Errors carry a stable code and logical JSON
+pointer. The store holds no runtime implementation, registers no handler and
+grants no authority to install one; T029b binds trusted handlers to this
+identity. No schema, document family, migration or fixture changed.
+
+- 2026-09-30 (UTC) · claude-code + T029a implementation · Documented the declaration-only store, content-derived bundle identity, strict bundle/call boundaries and first-failure order, stating that declarations carry no execution authority.

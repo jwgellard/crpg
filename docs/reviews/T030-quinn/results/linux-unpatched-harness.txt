@@ -1,0 +1,300 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.189
+   Compiling wasm-bindgen-shared v0.2.128
+   Compiling rustversion v1.0.23
+   Compiling once_cell v1.21.4
+   Compiling find-msvc-tools v0.1.13
+   Compiling shlex v2.0.1
+   Compiling cc v1.4.7
+   Compiling syn v3.0.6
+   Compiling pin-project-lite v0.2.17
+   Compiling bumpalo v3.20.3
+   Compiling wasm-bindgen v0.2.128
+   Compiling libm v0.2.16
+   Compiling serde_core v1.0.229
+   Compiling getrandom v0.2.17
+   Compiling untrusted v0.9.0
+   Compiling futures-task v0.3.34
+   Compiling powerfmt v0.2.0
+   Compiling num_threads v0.1.7
+   Compiling time-core v0.1.9
+   Compiling rand_core v0.10.1
+   Compiling ring v0.17.14
+   Compiling slab v0.4.12
+   Compiling futures-core v0.3.34
+   Compiling zeroize v1.9.0
+   Compiling num-conv v0.2.2
+   Compiling zmij v1.0.23
+   Compiling deranged v0.5.8
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+   Compiling rustls-pki-types v1.15.1
+   Compiling time v0.3.55
+   Compiling futures-util v0.3.34
+   Compiling wasm-bindgen-macro-support v0.2.128
+   Compiling getrandom v0.4.3
+   Compiling portable-atomic v1.15.0
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling regex-syntax v0.8.11
+   Compiling serde_derive v1.0.229
+   Compiling tracing-core v0.1.36
+   Compiling cpufeatures v0.3.1
+   Compiling regex-automata v0.4.18
+   Compiling log v0.4.34
+   Compiling lazy_static v1.5.0
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling wasm-bindgen-macro v0.2.128
+   Compiling base64 v0.23.1
+   Compiling thiserror v2.0.20
+   Compiling nu-ansi-term v0.50.3
+   Compiling rustls v0.23.45
+   Compiling pem v4.0.0
+   Compiling matchers v0.2.0
+   Compiling sharded-slab v0.1.7
+   Compiling js-sys v0.3.105
+   Compiling tracing v0.1.44
+   Compiling chacha20 v0.10.2
+   Compiling wasm-bindgen-test-macro v0.3.78
+   Compiling thiserror-impl v2.0.20
+   Compiling async-trait v0.1.92
+   Compiling rustls-webpki v0.103.15
+   Compiling yasna v0.6.0
+   Compiling thread_local v1.1.10
+   Compiling subtle v2.6.1
+   Compiling wasm-bindgen-test-shared v0.2.128
+   Compiling oorandom v11.1.5
+   Compiling siphasher v1.0.3
+   Compiling cast v0.3.0
+   Compiling foldhash v0.2.0
+   Compiling fastbloom v0.17.0
+   Compiling rcgen v0.14.10
+   Compiling tracing-subscriber v0.3.23
+   Compiling rand v0.10.3
+   Compiling rand_pcg v0.10.2
+   Compiling hex-literal v1.1.0
+   Compiling bytes v1.12.1
+   Compiling assert_matches v1.5.0
+   Compiling rustc-hash v2.1.3
+   Compiling lru-slab v0.1.3
+   Compiling tinyvec v1.13.3
+   Compiling wasm-bindgen-futures v0.4.78
+   Compiling wasm-bindgen-test v0.3.78
+   Compiling quinn-proto v0.11.19 (<t030>/work/unpatched/quinn-proto-0.11.19)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.37s
+     Running unittests src/lib.rs (target/debug/deps/quinn_proto-143cee4c9d76163c)
+
+running 17 tests
+test connection::assembler::test::chunks_dedup ... ok
+test connection::assembler::test::unordered_dedup ... ok
+test connection::spaces::dedup_reference::control_ages_127_and_128 ... ok
+test connection::spaces::dedup_reference::control_empty_first_and_identical_duplicate ... ok
+T030_LAYOUT size_of::<Dedup>()=32 align_of::<Dedup>()=16
+
+thread 'connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond' (7093) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(30) with highest Some(159): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+test connection::spaces::dedup_reference::measure_layout ... ok
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond
+             at ./src/connection/dedup_reference.rs:216:22
+   6: quinn_proto::connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond::{closure#0}
+             at ./src/connection/dedup_reference.rs:207:55
+   7: <quinn_proto::connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+test connection::spaces::dedup_reference::control_reordering_within_original_window ... ok
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'connection::spaces::dedup_reference::target_age_129_is_inside_the_window' (7094) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(4871) with highest Some(5000): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_age_129_is_inside_the_window
+             at ./src/connection/dedup_reference.rs:193:10
+   6: quinn_proto::connection::spaces::dedup_reference::target_age_129_is_inside_the_window::{closure#0}
+             at ./src/connection/dedup_reference.rs:189:41
+   7: <quinn_proto::connection::spaces::dedup_reference::target_age_129_is_inside_the_window::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'connection::spaces::dedup_reference::target_ages_2047_2048_2049' (7095) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(7953) with highest Some(10000): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+test connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond ... FAILED
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<booltest connection::spaces::dedup_reference::target_age_129_is_inside_the_window ... , FAILEDbool
+>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_ages_2047_2048_2049
+             at ./src/connection/dedup_reference.rs:201:14
+   6: quinn_proto::connection::spaces::dedup_reference::target_ages_2047_2048_2049::{closure#0}
+             at ./src/connection/dedup_reference.rs:197:32
+   7: <quinn_proto::connection::spaces::dedup_reference::target_ages_2047_2048_2049::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'connection::spaces::dedup_reference::target_duplicates_after_eviction' (7096) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(12) with highest Some(2060): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+test connection::spaces::dedup_reference::target_ages_2047_2048_2049 ... FAILED
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_duplicates_after_eviction
+             at ./src/connection/dedup_reference.rs:264:10
+   6: quinn_proto::connection::spaces::dedup_reference::target_duplicates_after_eviction::{closure#0}
+             at ./src/connection/dedup_reference.rs:255:38
+   7: <quinn_proto::connection::spaces::dedup_reference::target_duplicates_after_eviction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'connection::spaces::dedup_reference::target_generated_schedules_fixed_seed' (7097) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(0) with highest Some(469): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1test connection::spaces::dedup_reference::target_duplicates_after_eviction ... : FAILEDcore
+::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_generated_schedules_fixed_seed
+             at ./src/connection/dedup_reference.rs:297:30
+   6: quinn_proto::connection::spaces::dedup_reference::target_generated_schedules_fixed_seed::{closure#0}
+             at ./src/connection/dedup_reference.rs:269:43
+   7: <quinn_proto::connection::spaces::dedup_reference::target_generated_schedules_fixed_seed::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'connection::spaces::dedup_reference::target_packet_number_range_limits' (7099) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(4611686018427387774) with highest Some(4611686018427387903): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_packet_number_range_limits
+             at ./src/connection/dedup_reference.rs:230:14
+   6: quinn_proto::connection::spaces::dedup_reference::target_packet_number_range_limits::{closure#0}
+             at ./src/connection/dedup_reference.rs:224:39
+   7: <quinn_proto::connection::spaces::dedup_reference::target_packet_number_range_limits::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test connection::spaces::dedup_reference::target_generated_schedules_fixed_seed ... FAILED
+test connection::spaces::dedup_reference::target_packet_number_range_limits ... FAILED
+test connection::spaces::test::dedup_outside_of_window_has_missing ... ok
+test connection::spaces::test::dedup_has_missing ... ok
+test connection::spaces::test::dedup_smallest_missing ... ok
+
+thread 'connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint' (7098) panicked at src/connection/dedup_reference.rs:123:17:
+assertion `left == right` failed: smallest_missing_in_interval(252, 600) with highest Some(2300)
+  left: None
+ right: Some(401)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<core::option::Option<u64>, core::option::Option<u64>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::check_queries
+             at ./src/connection/dedup_reference.rs:123:17
+   5: quinn_proto::connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint
+             at ./src/connection/dedup_reference.rs:251:10
+   6: quinn_proto::connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint::{closure#0}
+             at ./src/connection/dedup_reference.rs:236:60
+   7: <quinn_proto::connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint ... FAILED
+test connection::spaces::dedup_reference::control_generated_schedules_shallow_reordering ... ok
+
+failures:
+
+failures:
+    connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond
+    connection::spaces::dedup_reference::target_age_129_is_inside_the_window
+    connection::spaces::dedup_reference::target_ages_2047_2048_2049
+    connection::spaces::dedup_reference::target_duplicates_after_eviction
+    connection::spaces::dedup_reference::target_generated_schedules_fixed_seed
+    connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint
+    connection::spaces::dedup_reference::target_packet_number_range_limits
+
+test result: FAILED. 10 passed; 7 failed; 0 ignored; 0 measured; 308 filtered out; finished in 0.48s
+
+error: test failed, to rerun pass `--lib`
+EXIT=101

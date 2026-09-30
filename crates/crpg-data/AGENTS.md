@@ -9,7 +9,8 @@ T010, [T011a](../../tasks/T011a.md) and [T012](../../tasks/T012.md).
 ## Public surface
 
 Public modules `types`, `ir`, `document`, `canonical`, `package`, `loader`,
-`schema`, `error`, `validation`, `migrations`, `introspection` re-export their
+`schema`, `error`, `validation`, `migrations`, `introspection`,
+`action_signatures` (T029a) re-export their
 public items at the root. T010 lists every required model, field and variant.
 Operations are `read_document`, `write_document`, `canonical_json`,
 `generated_schemas`, `resolve_packages`, `assets_lock_digest`,
@@ -291,3 +292,37 @@ The private two-edge inventory test is synthetic in-memory data only, not a
 new production version or permission to regenerate historical fixtures.
 
 - 2026-09-17 (UTC) · opencode/gpt-6-astra + T012a review fixes · Added working rules for checked version parsing, shared negative-test enforcement and actual single-edge oracle coverage. This supersedes the initial gate's weaker checks without changing the migration API or fixture baselines.
+
+## Action-signature declarations (T029a)
+
+Public module `action_signatures` adds `ActionSignatureStore` (`new`,
+`identity`, `len`, `is_empty`, `get`, `iter`, `validate_call`, `read_call`,
+`write_call`), `ActionBundleIdentity`, `read_action_signatures`,
+`write_action_signatures`, `SignatureError` / `SignatureErrorCode` /
+`SignatureLimit`, and the `ACTION_BUNDLE_VERSION` / `MAX_ACTION_*`
+constants. The existing `ActionCall`, `ActionSignature`, `ActionParameter`,
+`ValueType` and `DataValue` shapes and their schemas are unchanged.
+
+- Declarations only: no handler, function pointer, library loading or
+  registration API may be added here; trusted execution binds to the
+  identity in `crpg-script` (T029b). Action ids are symbolic strings, never
+  combat ability ULIDs or paths.
+- Identifiers are 1..=128 UTF-8 **bytes**, preserved exactly (no trimming,
+  case folding or normalization). Check `len()`, never `chars().count()`.
+- First-failure orders are part of the contract (constructor: action count,
+  invalid ids lexically, first duplicate id, then per action lexically:
+  parameter count, invalid names, duplicate names; calls: identity, action
+  id, argument names, argument count, value budgets, canonical size, unknown
+  action, extra arguments, then parameters in declaration order). Pointers
+  are logical RFC 6901 locations, not source offsets.
+- The revision is content-derived and exact. Reordering action input must
+  not change it; any change to an id, parameter order/name/type/required
+  flag, or bundle id must. Never add a compatibility fallback here.
+- Value budgets run iteratively with lazy pointer construction before any
+  serde traversal; canonical call and bundle sizes go through a capped
+  writer that counts (or hashes) without retaining oversized output. The
+  private canonical views serialize keys lexically; `bundle_revision_is_canonical`
+  pins equality with `canonical_json` against a hand-written literal oracle.
+- Rejections are read-only for the store and the caller's call.
+
+- 2026-09-30 (UTC) · claude-code + T029a implementation · Added the declaration-only surface and its working rules (byte-length identifiers, pinned failure orders, exact content-derived identity, bounded traversal) so later edits cannot quietly add execution authority or loosen compatibility.
