@@ -119,8 +119,9 @@ python -m unittest discover -s tools/lint -p "test_*.py"
    `56931eb`, merge `f3d1560`, 2026-09-29) with both native gates green;
    T020 C1-sim opt-in history (`crpg-sim`, ADR-0017) and T021 v2 event
    protocol (`crpg-net`, ADR-0019) are merged on `master` (PR #18, merge
-   `a991fe9`, 2026-09-30); see `tasks/BACKLOG.md` for their open review
-   items and for the specified-and-implementable post-T018 tasks.
+   `a991fe9`, 2026-09-30); T027a, T028, T029a, T030, T031 and T032 are
+   merged on `master` (PR #20, merge `c1bc6ab`, 2026-09-30) with CI green on
+   both OSes; see `tasks/BACKLOG.md` for open review items and next tasks.
    See the [completion record](tasks/T009c.md),
    [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
    [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
@@ -147,3 +148,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Updated the note to the merged T018 lane-0 protocol + simulated transport + conformance (PR #16, `bc54896`) with T019 implemented and verified in the working tree, unmerged, and T020 next.
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Updated the note to the merged T019 same-pool affordability repair (PR #17, merge `f3d1560`, 2026-09-29) with T020 history next.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Updated the note to the PR #18 merge of T020/T021, replacing the stale "T020 next" pointer and deferring open review items to the backlog rather than restating them.
+- 2026-09-30 (UTC) · claude-code + PR #20 landed · Updated the note to the PR #20 merge of the six post-T018 tasks, deferring open items to the backlog.

@@ -42,7 +42,10 @@ campaign format, netcode, AI, and server are untouched.
 > same-pool affordability repair is merged (PR #17, merge `f3d1560`,
 > 2026-09-29) with both native gates green; T020 `crpg-sim` opt-in
 > authoritative history and T021 `crpg-net` v2 event protocol are merged
-> (PR #18, merge `a991fe9`, 2026-09-30). See
+> (PR #18, merge `a991fe9`, 2026-09-30); T027a area identity, T028 legality,
+> T029a action-signature declarations, T030 quinn dossier, T031 preflight
+> runners and T032 documentation reconciliation are merged (PR #20, merge
+> `c1bc6ab`, 2026-09-30). See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
 > [T011a](tasks/T011a.md), [T011b](tasks/T011b.md),
@@ -231,3 +234,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 landed · Updated the status block to the merged T018 lane-0 protocol + simulated transport + conformance (PR #16, `bc54896`) with T019 implemented and dual-native verified in the working tree, unmerged, and review/merge outstanding.
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Updated the status block to the merged T019 same-pool affordability repair (PR #17, merge `f3d1560`, 2026-09-29) with T020 history next.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Updated the status block past the stale "T020 history is next" pointer to the PR #18 merge of T020/T021.
+- 2026-09-30 (UTC) · claude-code + PR #20 landed · Added the six tasks merged in PR #20 to the status block.

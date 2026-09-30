@@ -397,7 +397,12 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   documentation reconciliation.
 - *Update 2026-09-30:* all six are implemented on branch
   `claude/blissful-rubin-59repd` (unmerged) with Linux/GNU gates green; each
-  still needs its native Windows/MSVC run and review/merge. T030 found the
+  still needs its native Windows/MSVC run and review/merge.
+- *Update 2026-09-30 (later):* PR #20 merged all six (`c1bc6ab`) with CI green
+  on Windows/MSVC and Linux/GNU; T031's `tools/tests` suite has not yet run on
+  native Windows. Next: T022 host and T029b bindings, each waiting on its
+  dependency approval; ADR-0017–0022 acceptance, the T023 `windows-sys` policy
+  call and the remaining E-task wording are open decisions for the maintainer. T030 found the
   ADR-0004 symptom not reproduced end-to-end and keeps T023 blocked on native
   Windows evidence, a `cargo deny` bans failure (`windows-sys` split) and
   pending dependency approval. Details: `tasks/BACKLOG.md` rows T027a–T032.
@@ -588,3 +593,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Recorded the T019 same-pool affordability repair merge (`f3d1560`, PR #17, all 9 checks green) in branch state, Done history, Phase, and Next; T020 specification review is next.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Recorded the PR #18 merge of T020/T021 in Phase, Done and Next, replacing the stale "T020 spec-review next" pointer; the open golden review, missing T021 record and "Selected" ADR statuses are stated rather than resolved.
 - 2026-09-30 (UTC) · claude-code + post-T018 batch on branch · Recorded that T027a, T028, T029a and T030–T032 are implemented on branch with Linux-only verification, keeping the Windows gates, review/merge and T030's T023 blockers explicit.
+- 2026-09-30 (UTC) · claude-code + PR #20 landed · Recorded the merge of the six post-T018 tasks with dual-OS CI and listed the maintainer decisions that now gate T022, T029b and T023.

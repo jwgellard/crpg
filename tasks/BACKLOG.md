@@ -108,20 +108,20 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
 | T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
-| T027a | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T027a](T027a.md) |
+| T027a | done | 2026-09-30 | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T027a](T027a.md) |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
-| T028 | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T028](T028.md) |
-| T029a | on branch | `claude/blissful-rubin-59repd` | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite, schemas/fixtures unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T029a](T029a.md) |
+| T028 | done | 2026-09-30 | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T028](T028.md) |
+| T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
 | T029b | blocked | — | Specified: synchronous trusted bindings and transactional combat proposals; implementation requires T029a/T028 plus dependency approval |
 
 ## Independent preparation and tooling
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T030 | on branch | `claude/blissful-rubin-59repd` | quinn 0.11.12 / quinn-proto 0.11.19 dossier in `docs/reviews/T030-quinn/`: verified sources, 2049-packet dedup patch with independent-model reproduction (Linux), end-to-end symptom not reproduced; blockers: native Windows, `cargo deny` bans (`windows-sys` split), approval pending — T023 stays blocked; see [T030](T030.md) |
-| T031 | on branch | `claude/blissful-rubin-59repd` | `tools/preflight.sh` / `tools/preflight.ps1` fail-fast native gate runners with exact membership validation; 22 subprocess tests (Bash + PowerShell-on-Linux) and real Linux runs green; native Windows run and review/merge outstanding; see [T031](T031.md) |
-| T032 | on branch | `claude/blissful-rubin-59repd` | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md`; docs-only gates green; see [T032](T032.md) |
+| T030 | done | 2026-09-30 | quinn 0.11.12 / quinn-proto 0.11.19 investigation dossier in `docs/reviews/T030-quinn/` (PR #20, merge `c1bc6ab`): verified sources, 2049-packet dedup patch with independent-model reproduction, end-to-end symptom not reproduced. T023 stays blocked on its open decisions (windows-sys bans, dependency approval) and its Windows probe run; see [T030](T030.md) |
+| T031 | done | 2026-09-30 | `tools/preflight.sh` / `tools/preflight.ps1` gate runners (PR #20, merge `c1bc6ab`). Native Windows run of `tools/tests` still outstanding (CI does not run it); see [T031](T031.md) |
+| T032 | done | 2026-09-30 | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md` (PR #20, merge `c1bc6ab`); see [T032](T032.md) |
 
 ---
 
@@ -256,6 +256,7 @@ Record it here, one line per week.
 | 2026-09-28 | 31 | T018 (`crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance: T018a/b/c, PR #16, `bc54896`) merged. Cost per merged task not tracked yet. T019 `crpg-sim` same-pool repair is implemented and dual-native verified in the working tree, unmerged, so it is not counted here. |
 | 2026-09-29 | 32 | T019 (`crpg-sim` same-pool affordability repair, PR #17, `f3d1560`) merged. Cost per merged task not tracked yet. T020 history (specification review) is next. |
 | 2026-09-30 | 34 | T020 (`crpg-sim` opt-in history) and T021 (`crpg-net` v2 event protocol) merged in PR #18 (`a991fe9`) together with the post-T018 specification frontier (ADRs 0018–0022, T022–T032 contracts). Cost per merged task not tracked yet. T022 host needs specification inputs; T027a, T028, T029a and T030–T032 are specified and implementable. |
+| 2026-09-30 | 40 | T027a, T028, T029a (sim/data), T030 (quinn dossier), T031 (preflight runners) and T032 (documentation reconciliation) merged in PR #20 (`c1bc6ab`), CI green on Windows/MSVC and Linux/GNU. Cost per merged task not tracked yet. Next: T022 host and T029b bindings, both waiting on dependency approval. |
 
 ---
 
@@ -303,3 +304,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Closed E003/E007/E012/E021 with scope notes and kept E013 open for its README diagram, so the backlog does not claim debt outside T032's allowed files is resolved.
 - 2026-09-30 (UTC) · claude-code + T031 implementation · Moved T031 to `on branch` and annotated the scaffolding checklist for the preflight runners and ADR template, keeping the native Windows run open.
 - 2026-09-30 (UTC) · claude-code + T030 dossier · Moved T030 to `on branch` with its evidence location and the three blockers that keep T023 blocked.
+- 2026-09-30 (UTC) · claude-code + PR #20 landed · Marked T027a/T028/T029a/T030/T031/T032 done (merged `c1bc6ab`, dual-OS CI green) and moved throughput to 40, keeping T031's missing native Windows test run and T023's open decisions explicit.
