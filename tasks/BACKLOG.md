@@ -111,7 +111,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T027a | open | — | Specified: persisted single-area identity and atomic noncombat transfer; ADR-0020; history integration prerequisite T020 merged 2026-09-30 |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
-| T028 | open | — | Specified: shared pure validation and bounded legal-action enumeration; ADR-0018; implementation requires T019 regression gate |
+| T028 | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T028](T028.md) |
 | T029a | open | — | Specified: immutable IR declarations, content-derived exact bundle identity, bounded call validation; no predecessor code |
 | T029b | blocked | — | Specified: synchronous trusted bindings and transactional combat proposals; implementation requires T029a/T028 plus dependency approval |
 
@@ -296,3 +296,4 @@ Record it here, one line per week.
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + specification frontier · Indexed six exact implementation contracts and three independent preparation/tooling contracts, with four new decision records. Kept specification readiness distinct from unmet implementation/dependency gates and left merged status/throughput unchanged.
 - 2026-09-30 (UTC) · opencode/muse-spark + review-fix pass · Corrected the T019 row's stale branch pointer (`task/T018-net-protocol` → `task/T019-same-pool`); implementation/merge status and throughput unchanged.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Marked T020 and T021 done (merged in PR #18, `a991fe9`, after the T019 bookkeeping in PR #19 had already recorded them as blocked) and moved throughput to 34; kept the T020 golden-artifact review, the missing T021 completion record, and the still-"Selected" ADR-0017/0019 statuses visible as open items rather than implying approval.
+- 2026-09-30 (UTC) · claude-code + T028 implementation · Moved T028 to `on branch` with Linux-only verification, so the unrun Windows/MSVC gate and review/merge stay explicit instead of reading as done.

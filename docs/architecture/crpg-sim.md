@@ -202,6 +202,24 @@ mandatory pre-parse byte cap is the host loading boundary. `history_hash`
 the new `history_v1` goldens are generated independently per native target
 from the pinned sim-local schedule with its hand-authored oracle.
 
+## Shared read-only combat legality (T028)
+
+`combat` exposes the pure admission check as `validate_action(&World,
+&CombatAction)` and a bounded enumerator `legal_actions(&World, EntityId)`
+(ADR-0018). `perform_action` runs `validate_action` first, so execution and
+queries share one validation path with the pinned multifault precedence and
+T019's per-pool sums; neither query interns, creates or draws RNG streams,
+emits events, spends, or advances. `legal_actions` validates `EndTurn` for the
+actor first (its failure is `LegalActionsError::Actor`), then keeps the
+`UseAbility` candidates the validator accepts over abilities in ascending
+ULID order and current combatants in ascending full `EntityId` order, with
+`EndTurn` last. Output is bounded by `MAX_LEGAL_ACTIONS = 4096` including
+`EndTurn`, failing wholly (`TooManyOptions`) rather than truncating; the bound
+is on output size, not running time. Options are not leases: host,
+network entitlement filtering and AI consumption belong to higher crates,
+and execution always revalidates. No persisted field, hash, replay or golden
+changes.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
@@ -217,3 +235,4 @@ from the pinned sim-local schedule with its hand-authored oracle.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d implementation · Aligned the module with the as-built generalization, joint absence-skip persistence, extended coherence, deleted gate with combat_multi coverage, unchanged legacy goldens, and the user-authorized downstream mechanical fix.
 - 2026-09-28 (UTC) · opencode/muse-spark + T019 implementation · Recorded the atomic same-pool affordability repair (template-order sums, checked overflow, first-failing wins) with its combat_costs coverage and unchanged per-target goldens.
 - 2026-09-29 (UTC) · opencode/muse-spark + T020 implementation · Recorded the opt-in history wrapper with its transactional journal, bounded read/ack, full-wrapper hash, retained-vs-parser-memory persistence boundary, and independently generated per-target history goldens; legacy path unchanged.
+- 2026-09-30 (UTC) · claude-code + T028 implementation · Recorded the shared validate_action/legal_actions surface (single validation path, pinned enumeration order, whole-failure output bound) so consumers see a read-only query with no persisted or hash change.
