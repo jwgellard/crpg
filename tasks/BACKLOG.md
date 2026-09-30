@@ -108,7 +108,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
 | T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
-| T027a | open | — | Specified: persisted single-area identity and atomic noncombat transfer; ADR-0020; history integration prerequisite T020 merged 2026-09-30 |
+| T027a | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T027a](T027a.md) |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
 | T028 | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T028](T028.md) |
@@ -297,3 +297,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · opencode/muse-spark + review-fix pass · Corrected the T019 row's stale branch pointer (`task/T018-net-protocol` → `task/T019-same-pool`); implementation/merge status and throughput unchanged.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Marked T020 and T021 done (merged in PR #18, `a991fe9`, after the T019 bookkeeping in PR #19 had already recorded them as blocked) and moved throughput to 34; kept the T020 golden-artifact review, the missing T021 completion record, and the still-"Selected" ADR-0017/0019 statuses visible as open items rather than implying approval.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Moved T028 to `on branch` with Linux-only verification, so the unrun Windows/MSVC gate and review/merge stay explicit instead of reading as done.
+- 2026-09-30 (UTC) · claude-code + T027a implementation · Moved T027a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.

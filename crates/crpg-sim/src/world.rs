@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crpg_core::{DeterministicRng, EntityId, EventQueue, GenerationalArena, Interners, Tick};
+use crpg_core::{DeterministicRng, EntityId, EventQueue, GenerationalArena, Interners, Tick, Ulid};
 
 use crate::combat::{CombatState, Combatant, TransitionFacts, COMBAT_ROLL_TAG};
 use crate::event::SimEvent;
@@ -86,6 +86,13 @@ pub struct World {
     /// serialized (E014). Empty in worlds that never started an encounter.
     #[serde(default, skip_serializing_if = "interners_empty")]
     interners: Interners,
+    /// The authored area this world simulates (T027a, ADR-0020).
+    ///
+    /// Immutable after construction; `None` for legacy unbound worlds, which
+    /// omit the field and serialize byte-identically. An absence
+    /// compatibility shape, not a hash exclusion: a present area hashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    area: Option<Ulid>,
 }
 
 /// Reports whether an interner holds no strings in either namespace.
@@ -111,6 +118,8 @@ struct WorldRepr {
     combat: Option<CombatState>,
     #[serde(default)]
     interners: Interners,
+    #[serde(default)]
+    area: Option<Ulid>,
 }
 
 impl<'de> Deserialize<'de> for World {
@@ -529,6 +538,7 @@ impl<'de> Deserialize<'de> for World {
             combatants: repr.combatants,
             combat: repr.combat,
             interners: repr.interners,
+            area: repr.area,
         })
     }
 }
@@ -549,7 +559,45 @@ impl World {
             combatants: ComponentStore::new(),
             combat: None,
             interners: Interners::new(),
+            area: None,
         }
+    }
+
+    /// A new, empty world bound to the authored `area` (T027a, ADR-0020).
+    ///
+    /// Otherwise identical to [`new`](Self::new). The area is immutable: there
+    /// is no setter and no late binding of an unbound world. Sim cannot check
+    /// that `area` names an authored area; the host that loads content does.
+    pub fn new_in_area(seed: u64, area: Ulid) -> Self {
+        Self {
+            area: Some(area),
+            ..Self::new(seed)
+        }
+    }
+
+    /// The authored area this world simulates, or `None` when unbound.
+    pub fn area(&self) -> Option<Ulid> {
+        self.area
+    }
+
+    /// The area `entity` is present in: this world's area iff the full,
+    /// generation-bearing id is live here, otherwise `None`.
+    ///
+    /// Death is not despawn, so a dead, retained combatant is still present.
+    /// Across worlds, identity is `(area, EntityId)`: two worlds can mint
+    /// equal ids.
+    pub fn area_of(&self, entity: EntityId) -> Option<Ulid> {
+        if self.contains(entity) {
+            self.area
+        } else {
+            None
+        }
+    }
+
+    /// The metadata of one live entity. Crate-visible only: the area transfer
+    /// copies it to the destination.
+    pub(crate) fn entity_meta(&self, entity: EntityId) -> Option<EntityMeta> {
+        self.entities.get(entity).copied()
     }
 
     /// Mints an entity holding `meta` and enqueues `Spawned` at the current

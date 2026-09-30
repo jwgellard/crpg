@@ -781,6 +781,14 @@ pub enum CombatError {
         /// The conflicting modifier-type name.
         mod_type: String,
     },
+    /// The encounter's participants resolve to an area other than the bound
+    /// world's (T027a, ADR-0020).
+    AreaMismatch {
+        /// The bound world's area.
+        expected: Ulid,
+        /// The participants' resolved area.
+        found: Ulid,
+    },
 }
 
 impl std::fmt::Display for CombatError {
@@ -819,6 +827,7 @@ impl std::fmt::Display for CombatError {
             Self::DuplicateModifier { .. } => write!(f, "DuplicateModifier at spec/effects"),
             Self::InvalidNaturalDie { .. } => write!(f, "InvalidNaturalDie at spec/ability"),
             Self::PolicyConflict { .. } => write!(f, "PolicyConflict at spec/effects"),
+            Self::AreaMismatch { .. } => write!(f, "AreaMismatch at spec/areas"),
         }
     }
 }
@@ -968,6 +977,14 @@ pub(crate) fn start_encounter_tracked(
             return Err(MixedArea {
                 area_a: first_area,
                 area_b: *area,
+            });
+        }
+    }
+    if let Some(expected) = world.area() {
+        if expected != first_area {
+            return Err(CombatError::AreaMismatch {
+                expected,
+                found: first_area,
             });
         }
     }

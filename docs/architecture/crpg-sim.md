@@ -220,6 +220,23 @@ network entitlement filtering and AI consumption belong to higher crates,
 and execution always revalidates. No persisted field, hash, replay or golden
 changes.
 
+## Area identity and explicit transfer (T027a)
+
+`World` gains an optional, immutable authored area ULID (ADR-0020), set only
+by `World::new_in_area` / `HistoryWorld::new_in_area`; unbound worlds omit it
+and keep legacy bytes, bound worlds persist and hash it in full. The fact is
+deliberately minimal: presence in the area is liveness in the world
+(`area_of`), so there is no per-entity membership index; death and release
+keep presence. A bound world's `start_encounter` rejects participants whose
+resolved area differs (`AreaMismatch`). The new `area` module holds the only
+producer that moves an entity between worlds: `transfer_entity` for plain
+worlds and `transfer_history_entity` for history wrappers, which stage both
+authorities, despawn in the source and spawn a fresh identity (with the copied
+optional transform) in the destination, and publish both or neither. Only
+noncombat, unscheduled entities move. Runtime identity across worlds is
+`(area, EntityId)`. Consumers: T027b projects whole-area presence; T027c
+validates the authored area against loaded content and owns viewer grants.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
@@ -236,3 +253,4 @@ changes.
 - 2026-09-28 (UTC) · opencode/muse-spark + T019 implementation · Recorded the atomic same-pool affordability repair (template-order sums, checked overflow, first-failing wins) with its combat_costs coverage and unchanged per-target goldens.
 - 2026-09-29 (UTC) · opencode/muse-spark + T020 implementation · Recorded the opt-in history wrapper with its transactional journal, bounded read/ack, full-wrapper hash, retained-vs-parser-memory persistence boundary, and independently generated per-target history goldens; legacy path unchanged.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Recorded the shared validate_action/legal_actions surface (single validation path, pinned enumeration order, whole-failure output bound) so consumers see a read-only query with no persisted or hash change.
+- 2026-09-30 (UTC) · claude-code + T027a implementation · Recorded the persisted area identity, liveness-based presence and the atomic two-world transfer producer, naming the net/host consumers that own disclosure.

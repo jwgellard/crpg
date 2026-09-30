@@ -13,6 +13,7 @@
 //! later tasks; the module docs say which task owns each missing piece so
 //! nothing here reads as finished.
 
+pub mod area;
 pub mod combat;
 pub mod event;
 pub mod hash;
@@ -23,6 +24,7 @@ pub mod timeline;
 pub mod transform;
 pub mod world;
 
+pub use area::{transfer_entity, transfer_history_entity, AreaError};
 pub use combat::{
     end_encounter, legal_actions, perform_action, start_encounter, validate_action, AbilityDefense,
     AbilityDefinition, ActionOutcome, AttachedEffect, CombatAction, CombatDefinition, CombatError,
