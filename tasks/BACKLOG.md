@@ -34,7 +34,7 @@ ADR that motivated it.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T004 | done | 2026-09-03 | Workspace, 15 stub crates, CI on Linux + Windows |
+| T004 | done | 2026-09-03 | Workspace, 15 stub crates, CI on Linux + Windows; retrospective record [T004](T004.md) (2026-09-30, T032) |
 | T005 | done | 2026-09-03 | Dependency-direction lint |
 | T005b | done | 2026-09-03 | Determinism lint |
 | T005c | done | 2026-09-04 | `deny.toml` + `cargo deny` in CI; narrow CI to `push: master` |
@@ -121,7 +121,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | T030 | open | — | Specified: isolated quinn patch/reproduction/native/dependency dossier; supplies T023 evidence, no product integration approval |
 | T031 | open | — | Specified: native PowerShell/Bash preflight runners with fail-fast gates and subprocess acceptance |
-| T032 | open | — | Specified: selected documentation-authority reconciliation, evidence-based T004 retrospective and ADR template |
+| T032 | on branch | `claude/blissful-rubin-59repd` | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md`; docs-only gates green; see [T032](T032.md) |
 
 ---
 
@@ -146,17 +146,17 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | E001 | done | — | Event ownership → A′ (ADR-0008) |
 | E002 | done | — | Single `EntityId` in core (spec §2.4 fix) |
-| E003 | open | post-T018 reconciliation | Contracts placement (Transport trait home; net-local Transport retained per C0, E003 definitions-vs-placement reconciliation still pending) |
+| E003 | done | — | Contracts are definitions only; `Transport` permanently net-local (D01, option B); spec reconciled 2026-09-30 by T032. E017 residuals stay open |
 | E004 | done | — | One-task-one-crate → split (T008a sim / T008b testkit; later splits at Stage 2) |
 | E005 | done | — | Testkit is a one-way integration consumer; lower-layer integration tests live there |
 | E006 | done | — | `f64`-in-sim → banned (E006-A: `no-f64` lint for sim) |
-| E007 | open | — | ADR immutability wording |
+| E007 | done | — | ADR policy: Decision never rewritten; supersede by new ADR or dated appended note; exact status vocabulary (T032, 2026-09-30; template `docs/adr/0000-template.md`). Architecture README pointer is a follow-up |
 | E008 | done | — | Instruction (not wall-clock) event budget |
 | E009 | done | — | ADR-0008 residue (sketch, diagrams, §24 text) |
 | E010 | open | script | Script budgets + sandbox-strip alignment |
 | E011 | done | — | Determinism-scope ADR-0009 (replay, not lockstep) |
-| E012 | open | bridge/server | Binary/crate naming and shared authoritative host package placement with E022 |
-| E013 | open | — | Diagram direction + "core" meaning |
+| E012 | done | — | Naming/placement: `crpg-server` host library + dedicated binary, client/editor Godot projects over `crpg-godot` (D02; spec reconciled by T032, 2026-09-30). E022 interfaces and capability-gated smoke obligations stay open |
+| E013 | open | — | Spec diagram/`core` wording reconciled by T032 (2026-09-30); README diagram still pending (outside T032 scope) |
 | E014 | done | — | `World: Serialize` vs interned-handle caveat (skeleton-only serde) |
 | E015 | done | — | Replica/prediction model + `Timeline` owner (buffer outside sim) |
 | E016 | done | — | Entity/aggregate documents, lock authorities, package ids, tick waits |
@@ -164,7 +164,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | E018 | open | server | Privileged-channel capability model |
 | E019 | open | CI | Perf measurability + `crpgc bench` task |
 | E020 | done | — | Gates 7–13 activate with capabilities; T009c supersedes its Linux-only T009a gate assignment |
-| E021 | open | — | Embedded-contract hygiene + T004 file |
+| E021 | done | — | §15.1 example labelled illustrative-only; retrospective `tasks/T004.md` backfilled from git evidence (T032, 2026-09-30) |
 | E022 | open | post-T018 | Server/editor/bridge API-shape ledger; one authoritative host for Windows embedded/dedicated and Linux dedicated adapters with E012 |
 | E023 | open | native extensions | T0 target-specific artifacts, ABI/loading and packaging decisions for Windows/MSVC and Linux/GNU; reconcile unsafe governance before implementation |
 
@@ -299,3 +299,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Moved T028 to `on branch` with Linux-only verification, so the unrun Windows/MSVC gate and review/merge stay explicit instead of reading as done.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Moved T027a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
 - 2026-09-30 (UTC) · claude-code + T029a implementation · Moved T029a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
+- 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Closed E003/E007/E012/E021 with scope notes and kept E013 open for its README diagram, so the backlog does not claim debt outside T032's allowed files is resolved.

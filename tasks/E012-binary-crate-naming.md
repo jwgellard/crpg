@@ -59,3 +59,28 @@ do not choose a loader, ABI, dependency, or unsafe exception here.
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: three names for the bridge, two incompatible binary counts.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Added the shared authoritative host packaging obligation and supported product targets while leaving package/API placement open with E022. Recorded capability-gated product checks and the E023 extension decision boundary without selecting an implementation.
+
+## Resolution — 2026-09-30 (T032, POST-T018 D02)
+
+**Naming and placement resolved (option a).** Client and editor are Godot
+projects (`apps/client`, `apps/editor`) over the `crpg-godot` GDExtension
+crate, shipped as the `crpg-client` / `crpg-editor` applications; they are
+never Rust packages. There is no `crpg-client-bridge` crate: the bridge is
+`crpg-godot`. `crpg-server` owns the reusable platform-neutral authoritative
+host as a **library target** plus a thin dedicated binary; Windows embedded
+single-player uses that same library through a `crpg-godot` adapter; Linux
+headless never imports Godot. `ReplicaWorld`: `crpg-net` owns filtered replica
+storage, delta application and engine-neutral read queries; `crpg-godot` owns
+the engine-facing query/presentation objects. No new package and no `ALLOWED`
+change.
+
+Spec reconciled in `docs/CRPG_ENGINE_SPEC.md` §0.1, §2.1, §2.2, §9.1, §14 and
+the §23 diagram, each with a dated note. The README's binary table already
+names the shipped applications and needs no change for this decision.
+
+Still open: **E022** owns the exact host/editor/FFI interfaces; the T009c
+platform obligations above (Windows embedded/dedicated and Linux dedicated
+smoke tests) stay capability-gated on their implementing tasks; E023 native
+extensions stay deferred (D07). Nothing here is implemented yet.
+
+- 2026-09-30 (UTC) · claude-code + T032 E012 resolution · Closed the naming/placement choice per D02 with the replica-query split, leaving E022 interfaces and capability-gated smoke obligations open.

@@ -34,3 +34,17 @@ T004 file. Human-decision task (small hygiene).
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: a stale example gate plus the one fileless done task.
+
+## Resolution — 2026-09-30 (T032, POST-T018 D07)
+
+- Spec §15.1's embedded `crpg-rules` contract is now labelled an
+  **illustrative, non-authoritative sketch**, pointing to the root
+  `AGENTS.md`, each crate's `AGENTS.md`, `docs/architecture/`, `tasks/`, and
+  the enforced `tools/lint/deps.py` / `tools/lint/determinism.py`. The example
+  itself is not rewritten, so it cannot silently broaden or restate the live
+  rules.
+- `tasks/T004.md` is backfilled as a one-page retrospective from the original
+  bootstrap and CI commits (`06646f2`, `751c937`, `621769c`), marking
+  2026-09-03 test/CI results as unknown.
+
+- 2026-09-30 (UTC) · claude-code + T032 E021 resolution · Recorded the illustrative-only label and the evidence-based T004 backfill that close this hygiene item.

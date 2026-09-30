@@ -15,8 +15,8 @@
 Concretely:
 
 ```
-crpg-core (Rust, no Godot)   ← rules, world state, simulation, campaign data,
-                                scripting, AI, networking protocol, persistence
+simulation stack (Rust, no Godot)  ← rules, world state, simulation, campaign data,
+                                     scripting, AI, networking protocol, persistence
         │
         ├── crpg-server        headless binary. Links core. No graphics. Authoritative.
         │
@@ -27,6 +27,14 @@ crpg-core (Rust, no Godot)   ← rules, world state, simulation, campaign data,
                                Custom UI. Edits campaign data via core's command API.
                                Connects to a running server as a privileged client.
 ```
+
+*Note 2026-09-30 (E013/E012, T032):* this tree shows product composition, not
+dependency arrows. "Simulation stack" names `crpg-core`, `crpg-data`,
+`crpg-rules` and `crpg-sim` collectively (with script, AI, net and persistence
+built on them); bare "core" or `crpg-core` means only the bottom primitives
+crate. `crpg-client` and `crpg-editor` are shipped Godot applications built
+from the `apps/client` and `apps/editor` projects over the `crpg-godot`
+GDExtension — not Rust packages (POST-T018 D02).
 
 Godot ships as a **pinned upstream tag plus a small patch queue**, consumed through GDExtension. Not a fork. If the patch queue exceeds roughly 5,000 lines or 20 touched files, that is a defect in the plan, not a milestone.
 
@@ -152,6 +160,18 @@ simulation. E012/E022 own the reusable host API/package decision, including
 whether it is a library target in `crpg-server` or code in another existing
 crate. This policy does not decide that placement or implement hosting.
 
+*Resolved 2026-09-30 (E012, POST-T018 D02, T032):* the placement is now
+selected. `crpg-server` owns the reusable platform-neutral authoritative host
+as a **library target** plus a thin dedicated binary; Windows embedded
+single-player uses that same library through a `crpg-godot` adapter; the
+client and editor are Godot projects over `crpg-godot`, not new Rust packages;
+Linux headless never imports Godot. `crpg-net` owns filtered replica storage,
+delta application and engine-neutral read queries; `crpg-godot` owns the
+engine-facing query and presentation objects, and neither gets mutable
+authoritative access. E022 still owns the exact host, editor and FFI
+interfaces, and none of this hosting is implemented yet. In the table above,
+"core" in the client/editor rows means the simulation stack, not `crpg-core`.
+
 There is no "single-player code path". This is the single most important structural decision after the Godot decision, and it must be enforced by making the client physically incapable of mutating authoritative state: the client's copy of the world is behind a `ReplicaWorld` type with no mutating methods except `apply_delta`. Prediction of own movement uses a buffer outside sim (bridge/client), never a mutable replica; `apply_delta` coverage is reserved here and defined fully in T018 (E015 decision 2026-09-06).
 
 The authority boundary is unchanged when transport is in-memory. Keep
@@ -163,24 +183,20 @@ platform dependencies (ADR-0012).
 ### 2.2 Layer diagram
 
 ```
+Presentation (Godot 4 projects: apps/client, apps/editor)
+        │ GDExtension (godot-rust), narrow FFI surface
+        ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ Presentation (Godot 4)                                        │
-│  client: scene proxies, cameras, UI, VFX, audio, input       │
-│  editor: document UIs, viewport gizmos, graph editors        │
-└───────────────┬──────────────────────────────────────────────┘
-                │ GDExtension (godot-rust), narrow FFI surface
-┌───────────────▼──────────────────────────────────────────────┐
-│ crpg-client-bridge / crpg-edit                                │
-│  replica world, interpolation, input encoding, command+undo  │
-└───────────────┬──────────────────────────────────────────────┘
-                │ pure Rust, no Godot types below this line
-┌───────────────▼──────────────────────────────────────────────┐
-│ crpg-net   protocol, codec, QUIC transport, interest mgmt    │
+│ crpg-godot  [cdylib] engine-facing replica queries, input    │
+│             encoding, editor FFI, embedded-host adapter      │
 ├──────────────────────────────────────────────────────────────┤
-│ crpg-sim   world store, systems, tick, spatial queries,      │
-│            movement, LOS, encounter/turn management          │
+│ crpg-server  authoritative host library + dedicated binary   │
 ├──────────────────────────────────────────────────────────────┤
-│ crpg-ai  │ crpg-script │ crpg-persist                        │
+│ crpg-net │ crpg-ai │ crpg-script │ crpg-persist              │
+│ protocol, codec, transport, interest; AI; scripting; saves   │
+├──────────────────────────────────────────────────────────────┤
+│ crpg-sim  world store, systems, tick, encounters │ crpg-edit │
+│                                                  │ crpg-nav  │
 ├──────────────────────────────────────────────────────────────┤
 │ crpg-rules  stats, modifiers, effects, resolution, actions   │
 ├──────────────────────────────────────────────────────────────┤
@@ -188,9 +204,27 @@ platform dependencies (ADR-0012).
 ├──────────────────────────────────────────────────────────────┤
 │ crpg-core   ids, Fx16_16, RNG, time, event substrate, errors │
 └──────────────────────────────────────────────────────────────┘
+        pure Rust, no Godot types below crpg-godot
 ```
 
-Dependency direction is strictly downward. A CI lint enforces it (Section 17.4). Cycles are a build failure, not a code review comment.
+Dependency direction is strictly downward: a crate may import only crates
+drawn below it, never above, and cycles are a build failure, not a code review
+comment. In text, `A -> B` means A imports B, so the root spine
+`core <- data <- rules <- sim <- {net, ai, script} <- server` means data
+imports core, rules imports data, and so on. The diagram is a summary: the
+complete, enforced edge list is the `ALLOWED` table in `tools/lint/deps.py`,
+which is normative (for example `crpg-edit` imports only core/data/rules,
+`crpg-nav` only core, `crpg-ai` imports `crpg-nav`, `crpg-server` may not
+import `crpg-godot` or `crpg-edit`, and `crpg-godot` sits on top because its
+embedded-host adapter imports the server library). `crpg-cli` and
+`crpg-testkit` are tooling above the simulation stack and are omitted.
+
+*Correction 2026-09-30 (E013, T032):* the previous drawing stacked `crpg-net`
+above `crpg-sim` above `crpg-ai | crpg-script | crpg-persist`, which read
+literally as sim importing AI, script and persistence — the reverse of the
+enforced edges — and labelled the bridge layer `crpg-client-bridge /
+crpg-edit`, a crate that does not exist. It is redrawn above to match `ALLOWED`
+and D02's `crpg-godot` bridge; no dependency edge changed.
 
 ### 2.3 Language selection
 
@@ -787,8 +821,8 @@ Sharding, cross-server travel, a login/master server, matchmaking, NAT punching 
 ### 9.1 Structure
 
 ```
-crpg-client (Godot 4 application)
-├── Rust (GDExtension, crpg-client-bridge)
+crpg-client (Godot 4 application, project apps/client)
+├── Rust (GDExtension, crpg-godot)
 │   ├── net client (quinn), delta application
 │   ├── ReplicaWorld  (crpg-sim in read-only replica mode)
 │   ├── interpolation buffer, own-movement prediction
@@ -802,6 +836,12 @@ crpg-client (Godot 4 application)
     ├── VFX / audio      driven by SimEvent stream
     └── Input            action map, click-to-move, hotbar, controller
 ```
+
+*Note 2026-09-30 (E012, POST-T018 D02, T032):* the Rust side is the
+`crpg-godot` GDExtension crate (previously named `crpg-client-bridge` here, a
+crate that never existed). Replica storage, delta application and
+engine-neutral read queries belong to `crpg-net`; `crpg-godot` owns the
+engine-facing query objects.
 
 ### 9.2 Rules the client must obey
 
@@ -1072,7 +1112,7 @@ crpg/
 ├─ deny.toml                  ← licence + dependency policy
 ├─ docs/
 │  ├─ architecture/           system-by-system design docs (this document, split)
-│  ├─ adr/                    numbered, immutable architecture decision records
+│  ├─ adr/                    numbered ADRs; superseded by new ADRs or dated appended notes, never rewritten (E007)
 │  ├─ contracts/              cross-crate API contracts + invariants
 │  └─ guides/                 authoring guides for campaign creators
 ├─ crates/
@@ -1088,9 +1128,9 @@ crpg/
 │  ├─ crpg-edit/              campaign document, edit commands, undo, validation
 │  ├─ crpg-contracts/         shared traits ONLY. Human-owned. Rarely changes.
 │  ├─ crpg-testkit/           fixtures, harnesses, replay runner, state hashing
-│  ├─ crpg-server/            dedicated binary; shared embedded host placement owned by E012/E022
+│  ├─ crpg-server/            authoritative host library + thin dedicated binary (D02); exact API E022
 │  ├─ crpg-cli/               [bin] crpgc: validate, fmt, migrate, pack, run, replay
-│  └─ crpg-godot/             [cdylib] GDExtension bridge for client + editor
+│  └─ crpg-godot/             [cdylib] GDExtension bridge for client + editor, embedded-host adapter
 ├─ apps/
 │  ├─ client/                 Godot project: scenes, UI, GDScript views
 │  └─ editor/                 Godot project: editor UI, panels, graph views
@@ -1108,7 +1148,7 @@ crpg/
 └─ .github/workflows/         CI
 ```
 
-Why each part exists, briefly: `crpg-contracts` is the human-owned choke point that keeps agents from redefining interfaces unilaterally. `crpg-testkit` exists so that test infrastructure is a dependency rather than copy-pasted into every crate. `schemas/` is checked in so external tools and agents can read it without building. `third_party/godot/` holds a pinned tag and a patch queue whose size is a tracked metric. `rulesets/pf2e/` is physically separate so its licence obligations never contaminate the engine.
+Why each part exists, briefly: `crpg-contracts` is the human-owned choke point that keeps agents from redefining interfaces unilaterally; it holds trait definitions only, never cross-crate implementations, and protocol-specific traits such as `Transport` stay in their owning crate (*resolved 2026-09-30, E003 option B / POST-T018 D01, T032*). `crpg-testkit` exists so that test infrastructure is a dependency rather than copy-pasted into every crate. `schemas/` is checked in so external tools and agents can read it without building. `third_party/godot/` holds a pinned tag and a patch queue whose size is a tracked metric. `rulesets/pf2e/` is physically separate so its licence obligations never contaminate the engine.
 
 ---
 
@@ -1120,7 +1160,12 @@ This section is what makes the rest of the plan achievable by one person.
 
 Each crate is a work unit with an owner, a public API, an invariant list, and a test command. Two agents working in two crates cannot break each other except through `crpg-contracts`, which they are not permitted to change.
 
-Every crate has an `AGENTS.md`:
+Every crate has an `AGENTS.md`. The block below is an **illustrative,
+non-authoritative sketch** of the shape of one (*labelled 2026-09-30, E021 /
+POST-T018 D07, T032*); do not copy its gate or dependency list. The
+authoritative sources are the root `AGENTS.md`, each crate's own `AGENTS.md`,
+`docs/architecture/`, the task contracts in `tasks/`, and the enforced lints
+`tools/lint/deps.py` (the `ALLOWED` edge table) and `tools/lint/determinism.py`.
 
 ```markdown
 # crpg-rules — agent contract
@@ -1176,6 +1221,14 @@ pub fn assert_ruleset<R: Ruleset>(r: &R) { /* stat declarations resolve, tables 
 ```
 
 An agent implementing a new backend calls one function and knows immediately whether it is correct. This is the highest-value piece of test infrastructure in the project.
+
+*Correction 2026-09-30 (E003 option B, POST-T018 D01, T032):* `Transport` is
+defined and permanently owned by `crpg-net`
+(`crates/crpg-net/src/transport.rs`, T018), not by `crpg-contracts`, and its
+conformance suite lives with its owner (`crpg-net`'s T018 tests), not in
+testkit runtime code. `crpg-contracts` holds definitions only; there is no
+net→contracts edge. The `assert_transport` line above is an illustrative
+sketch, not a live API.
 
 ### 15.4 The integration gate
 
@@ -1748,6 +1801,12 @@ independently generated exact-build replay golden, never the other's hashes.
                     └──────── in-process server ───────┘   (Play button)
 ```
 
+*Note 2026-09-30 (E013/E012, T032):* arrows in this diagram are data and
+session flow (deltas, events, commands), not dependency edges; see §2.2 and
+`tools/lint/deps.py` for imports. The client and editor boxes are Godot
+projects over `crpg-godot`, and the in-process server is the same
+`crpg-server` library the dedicated binary wraps (D02).
+
 **What this buys you that the alternatives do not:** a server you can run on a $5 VPS, a test suite that can prove behavioural equivalence across refactors, a campaign format an AI agent can author natively, an editor whose complexity is bounded by generated UI, and an engine dependency you can replace in a quarter rather than a decade.
 
 **What it costs you:** roughly two to three months of extra up-front work before anything is visible on screen, and the discipline to keep Godot types out of the core when it would be five minutes faster to let them in. The second cost is the one that will actually threaten the project. Put the rule in `AGENTS.md`, enforce it with a CI lint on `crpg-godot` being the only crate allowed to depend on `godot`, and never grant an exception.
@@ -1930,7 +1989,7 @@ one crate.)
 
 **T18. `crpg-net` protocol v1 and the simulated-network transport**
 *Purpose:* start the networking layer against a testable transport before real sockets.
-*Affected:* `crates/crpg-net`, `crpg-contracts` (the `Transport` trait), `crpg-testkit`.
+*Affected:* `crates/crpg-net`, `crpg-contracts` (the `Transport` trait), `crpg-testkit`. (*As built 2026-09-28, noted 2026-09-30 per E003/D01, T032:* T018 changed `crpg-net` only; `Transport` and its conformance suite stay net-local.)
 *Dependencies:* T16.
 *Work:* message enums for `ClientIntent` and `DeltaOp`, `postcard` codec with a version byte, `Transport` trait, an in-memory transport with configurable latency, jitter, loss, and reorder, plus `assert_transport` conformance tests.
 *Test:* codec round-trip property tests; conformance suite passes for the in-memory transport; a two-`World` desync test over 5,000 ticks with 3% loss.
@@ -1967,3 +2026,4 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c final audit · Updated active gate and roadmap status to the reported completed final audit and working-tree implementation/verification completion, retaining completion-record links. Review/merge remains outstanding, T009a is also uncommitted, and T009c retains priority before T009b without changing platform policy.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the replay/step-9 status text and the T9a/T9c done-when rows to the merged state; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the step 9/phase-1 status, the T9b done-when row, and the T9c done-when tail to the merged `crpgc replay` wrapper; T010 is next.
+- 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Applied the settled E003 (definitions-only contracts, net-local Transport), E012 (crpg-server library + dedicated binary, Godot projects over crpg-godot), E013 (dependency diagram redrawn to match ALLOWED, "simulation stack" vs `crpg-core`, flow arrows labelled) and E021 (illustrative-only contract example) wording with dated notes; E022 interfaces and all hosting remain unimplemented and open.

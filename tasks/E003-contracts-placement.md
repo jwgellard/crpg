@@ -35,3 +35,24 @@ fulfillable as written without either (a) changing the ALLOWED table / rule, or
 ## Constraints
 - Out-of-scope for the 2026-09-06 autonomous session; required human sign-off.
 - Any `deps.py` ALLOWED change must also update its self-tests.
+
+## Resolution — 2026-09-30 (T032, POST-T018 D01)
+
+**Placement resolved: Option B.** `crpg-contracts` contains trait
+*definitions* only, never cross-crate implementations. `Transport` stays local
+to `crpg-net` permanently: it is defined in `crates/crpg-net/src/transport.rs`
+and was built and conformance-tested there by T018 (PR #16) without touching
+`crpg-contracts` or `crpg-testkit`. Higher consumers may define narrow
+adapters. No net→contracts edge, no `crpg-contracts` edit and no `ALLOWED`
+change is made or implied; `tools/lint/deps.py` already permits exactly this.
+
+Spec wording reconciled in `docs/CRPG_ENGINE_SPEC.md` §14 (the "why"
+paragraph), §15.3 (conformance ownership; `assert_transport` is an
+illustrative sketch, not a live API) and §24 T18 (as-built affected crates),
+each with a dated note. A roadmap sketch stays a sketch; it does not become a
+live API by being in the spec.
+
+Still open: the E017 residual items (the post-T018 evolution queue), which
+this resolution does not close.
+
+- 2026-09-30 (UTC) · claude-code + T032 E003 resolution · Recorded the D01 definitions-only placement with the live Transport location and the reconciled spec sections, leaving E017 residuals explicitly open.
