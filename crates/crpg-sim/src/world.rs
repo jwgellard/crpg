@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use crpg_core::{DeterministicRng, EntityId, EventQueue, GenerationalArena, Interners, Tick};
 
-use crate::combat::{CombatState, Combatant, COMBAT_ROLL_TAG};
+use crate::combat::{CombatState, Combatant, TransitionFacts, COMBAT_ROLL_TAG};
 use crate::event::SimEvent;
 use crate::store::ComponentStore;
 use crate::timeline::Timeline;
@@ -579,14 +579,38 @@ impl World {
     /// (`combat` back to `None`). Despawning never emits `Died`.
     /// Interners, events, RNG, and tick are retained either way.
     pub fn despawn(&mut self, id: EntityId) -> bool {
+        self.despawn_tracked(id).0
+    }
+
+    /// Removes `id` like [`despawn`](Self::despawn), reporting the turn or
+    /// terminal transition the removal actually caused.
+    ///
+    /// Crate-visible only: [`despawn`](Self::despawn) delegates here and
+    /// discards the facts, so legacy emissions, bytes and signatures are
+    /// unchanged; the history wrapper consumes the facts to journal its
+    /// trailing `TurnStarted` or `EncounterEnded` (T020, ADR-0017). The
+    /// encounter and round behind an implicit last-participant release are
+    /// captured before the removal; releasing an already terminal encounter
+    /// reports no second end.
+    pub(crate) fn despawn_tracked(&mut self, id: EntityId) -> (bool, TransitionFacts) {
+        let prior = self
+            .combat
+            .as_ref()
+            .map(|state| (state.definition.encounter, state.round, state.active));
         if self.entities.remove(id).is_none() {
-            return false;
+            return (false, TransitionFacts::default());
         }
         self.transforms.remove(id);
         self.combatants.remove(id);
         self.timeline.remove(id);
+        let mut facts = TransitionFacts::default();
         if self.combatants.is_empty() {
             self.combat = None;
+            if let Some((encounter, round, active)) = prior {
+                if active.is_some() {
+                    facts.encounter_ended = Some((encounter, round));
+                }
+            }
         } else if self.combat.is_some()
             && self
                 .combat
@@ -595,11 +619,11 @@ impl World {
                 .active
                 == Some(id)
         {
-            crate::combat::advance_after_removal(&mut *self);
+            facts = crate::combat::advance_tracked(&mut *self);
         }
         self.events
             .push(self.tick, SimEvent::Despawned { entity: id });
-        true
+        (true, facts)
     }
 
     /// Whether `id` names a live entity.

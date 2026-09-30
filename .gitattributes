@@ -1,2 +1,3 @@
 *.replay text eol=lf
 *.golden text eol=lf
+crates/crpg-sim/tests/goldens/*.txt text eol=lf

@@ -10,7 +10,7 @@ this file, following the module docs that already name their owner.
 Design doc: [`docs/architecture/crpg-sim.md`](../../docs/architecture/crpg-sim.md)
 — what the crate is and how its pieces fit. This file is the working contract:
 what you may do and what will break. Decisions live in ADR-0006, ADR-0007,
-ADR-0008, ADR-0009, ADR-0013, and ADR-0014. Keep them linked rather than copied.
+ADR-0008, ADR-0009, ADR-0013, ADR-0014, ADR-0016, and ADR-0017. Keep them linked rather than copied.
 
 One loaded area's simulation state and the operations that keep it coherent:
 `World` (entity arena, component stores, timeline container, live event
@@ -31,7 +31,10 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
 `CombatError`, `start_encounter`, `perform_action`,
 `MAX_COMBATANTS`, `MAX_COMBAT_STATS`, `COMBAT_ROLL_STREAM`,
 `COMBAT_ROLL_TAG`, plus the T016f release surface: `ParticipantResult`,
-`EncounterSummary`, `end_encounter`.
+`EncounterSummary`, `end_encounter`, plus the T020 opt-in history surface:
+`HistoryWorld`, `HistoryEvent`, `HistoryEnvelope`, `HistoryError`,
+`history_hash`, `MAX_HISTORY_EVENTS`, `MAX_HISTORY_BYTES`,
+`MAX_HISTORY_PAGE`, `MAX_HISTORY_STRING_BYTES`, `HISTORY_VERSION`.
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -85,6 +88,25 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
   operation strips combat scheduling and components, keeps every entity
   live, and emits no events. Second encounters reuse content (same spec
   shapes) with fresh runtime ids as a deterministic continuation.
+- `HistoryWorld` (T020, ADR-0017): the opt-in wrapper privately owning one
+  `World` plus its bounded journal. Immutable queries via `world()` only —
+  no `&mut World`, stores, queues, RNG, or free mutating controllers escape
+  (pinned by `compile_fail` rustdoc examples) — and typed transactional
+  mutations (`spawn`, `despawn`, `tick`, `start_encounter`,
+  `perform_action`, `end_encounter`) that stage a full clone, reuse the
+  existing controllers, drain staged legacy events exactly once, translate
+  each exactly once, collect branch-observed transition facts, validate the
+  journal in pinned order (strings, sequence range, event count, canonical
+  byte total), and publish only on success. Gameplay errors win before
+  history errors; rejection preserves authoritative state, RNG, entity
+  allocation, and all counters. Emission order per operation is
+  `ActionResolved`, drained `Died`s, then the actual `TurnStarted` or first
+  `EncounterEnded`; explicit release journals nothing. `read_after` pages at
+  most 256 envelopes with `StaleCursor`/`FutureCursor` errors and inert
+  reads; `acknowledge` is monotonic and idempotent with no slow-peer cursor.
+  `history_hash` covers the complete canonical wrapper (world, version,
+  pending payloads, sequence/ack state) with no exclusions; legacy
+  `state_hash`, APIs, emissions, bytes, and hashes are unchanged.
 
 ## Invariants
 
@@ -143,6 +165,26 @@ combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
     keep their order, RNG draw order is unchanged, and the adapter's per-entry
     validation plus load coherence still reject impossible shapes before
     execution.
+11. **History is opt-in, transactional, and fully hashed (T020, ADR-0017).**
+    The wrapper owns its `World` privately; the only mutations are the typed
+    methods above — no store/timeline/RNG manipulation, no `From<World>`,
+    no into-inner escape, no low-level pop-only `end_turn`. Turn and terminal
+    facts come from the controller branches that fired (same-actor returns
+    and saturated-`u32` rollover still start logical turns), never from actor
+    comparison or round arithmetic; `CombatState.round` stays a persisted
+    saturating `u32`, widened to `u64` only inside history payloads. The
+    inner legacy queue is empty at every wrapper boundary with its sequence
+    counter retained, never reset. Retention is exactly the contiguous suffix
+    `(acknowledged, next_seq)` under 4096 envelopes and one MiB of canonical
+    bytes with 256-byte strings and 256-envelope pages; sequences never wrap
+    (`u64::MAX` is the exhausted sentinel) and partial appends are forbidden.
+    Persistence (`version`, `world`, `acknowledged`, `next_seq`, `pending`;
+    adjacent-tag payloads with `type` before `value`) rejects
+    duplicate/unknown/missing keys, over-limit shapes, gapped sequences,
+    decreasing or future ticks, and nonempty inner queues, decoding payloads
+    directly with bounded visitors — retained-history bounds, not a claim
+    about parser scratch, whose mandatory pre-parse byte cap belongs to
+    T022's host boundary.
 
 ## Allowed dependencies
 
@@ -329,3 +371,4 @@ proof.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d crate opening · Extended the contract with the accepted multi-ability/pool/effect/turn generalization (per-ability ULID definitions, plural pools, EndTurn with Option return, six new variants, Phase A–E precedence, absence-skip hash preservation, per-field retirement) under ADR-0016 before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017d implementation · Aligned the contract with the as-built generalization, joint absence-skip persistence, per-field retirement with combat_multi coverage, and the user-authorized narrow downstream mechanical fix; no commit/push/PR.
 - 2026-09-28 (UTC) · opencode/muse-spark + T019 implementation · Recorded the atomic same-pool affordability invariant (template-order sums, checked overflow, first-failing wins, exact-sum spending) with the perform_action clarification above; no API, dependency, fixture, or golden change.
+- 2026-09-29 (UTC) · opencode/muse-spark + T020 implementation · Extended the API with the opt-in history surface (privately owned world, transactional typed mutations, bounded read/ack journal, full-wrapper hash) and the branch-observed transition-fact and retained-vs-parser-memory invariants above; legacy APIs, emissions, bytes, and hashes unchanged, no dependency added.
