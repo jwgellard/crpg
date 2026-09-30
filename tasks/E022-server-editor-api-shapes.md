@@ -61,3 +61,11 @@ that only `crpg-godot` may use `unsafe`; no implementation is selected here.
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: verbs without signatures, inventoried before anyone builds on them.
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Added shared-host API/package scoping for Windows embedded/dedicated and Linux dedicated adapters without choosing placement or signatures. Recorded authority boundaries, capability-gated smoke/build obligations, and the separate E023 native-extension governance owner.
+
+## Resolution — 2026-09-30 (T033, D02/D03/D18)
+
+The ledger is in `tasks/BACKLOG.md` ("API-shape ledger (E022)"): each shape
+from §§9–11 with its owning crate(s), prerequisite and phase, derived from D02,
+D03, D07 and D18. Spec §11.3 points at it. No API was designed here.
+
+- 2026-09-30 (UTC) · claude-code + T033 · Recorded how the already-selected decision closes this item and where the spec now says it, per D25.

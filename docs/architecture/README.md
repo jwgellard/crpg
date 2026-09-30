@@ -23,7 +23,7 @@ Keeping them apart is what stops them drifting into three copies of each other:
 
 | | Question | Lifetime |
 |---|---|---|
-| `docs/adr/NNNN-*.md` | **Why** this and not the alternative | Immutable. Superseded by a new ADR, never edited |
+| `docs/adr/NNNN-*.md` | **Why** this and not the alternative | Decision text never rewritten: superseded by a new ADR, or corrected by a dated appended note (E007 policy; statuses and template in `docs/adr/0000-template.md`) |
 | `docs/architecture/<crate>.md` | **What** the crate is, and how its pieces fit together | Living. Updated when the design changes |
 | `crates/<crate>/AGENTS.md` | **How to work on it** without breaking it | Living. The contract an agent reads before editing |
 
@@ -76,3 +76,4 @@ superseded by appending, never rewritten.
 - 2026-09-18 (UTC) · opencode/muse-spark + T010–T012a landing catch-up · Noted the data doc opened at T010 and extended through T011a/T011b validation and the T012a migration framework; the index already links all five live crate docs.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 crate opening · Linked the new crpg-rules doc; the stat/modifier kernel is the crate's first real code, so the §15.6 gate is satisfied and the "due with T014" place-holder is retired.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018a crate opening · Linked the new crpg-net doc; the lane-0 protocol v1 plus bounded codec plus local Transport is the crate's first real code, so the §15.6 gate is satisfied and the "due with T018" place-holder is retired.
+- 2026-09-30 (UTC) · claude-code + T033 E007 follow-up · Pointed the ADR row at the E007 append-only supersession policy and the ADR template, replacing the stricter "never edited" wording that dated status/evidence appendices already contradicted.

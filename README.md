@@ -64,17 +64,26 @@ downward and enforced by CI — a cycle is a build failure, not a code-review
 comment.
 
 ```
-Presentation (Godot 4)          crpg-client, crpg-editor
+Presentation (Godot 4 projects)   apps/client, apps/editor
       │
       │ GDExtension (godot-rust), narrow FFI surface
       ▼
-         crpg-net   protocol, codec, QUIC transport, interest management
-         crpg-sim   world store, systems, tick, movement, encounters
-         crpg-ai  │ crpg-script │ crpg-persist
-         crpg-rules   stats, modifiers, effects, resolution, actions
-         crpg-data   campaign schema, serde, validation, migration
-          crpg-core   ids, fixed-point math, RNG, time, event queue, errors
+   crpg-godot    [cdylib] bridge, embedded-host adapter
+   crpg-server   authoritative host library + dedicated binary
+   crpg-net │ crpg-ai │ crpg-script │ crpg-persist
+   crpg-sim      world store, systems, tick, encounters   (crpg-edit, crpg-nav beside it)
+   crpg-rules    stats, modifiers, effects, resolution, actions
+   crpg-data     campaign schema, serde, validation, migration
+   crpg-core     ids, fixed-point math, RNG, time, event queue, errors
 ```
+
+A crate may import only crates drawn below it (`A -> B` means A imports B).
+The diagram is a summary; the complete enforced edge list is the `ALLOWED`
+table in `tools/lint/deps.py` — for example `crpg-edit` imports only
+core/data/rules and `crpg-nav` only core. "Core" alone means `crpg-core`; the
+"simulation stack" is core, data, rules and sim together. (*Redrawn
+2026-09-30, E013, T033:* the previous drawing put net above sim and AI/script/
+persist below it, which read as sim importing them.)
 
 The planned shipped surface is three binaries plus a CLI:
 
@@ -235,3 +244,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Updated the status block to the merged T019 same-pool affordability repair (PR #17, merge `f3d1560`, 2026-09-29) with T020 history next.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Updated the status block past the stale "T020 history is next" pointer to the PR #18 merge of T020/T021.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Added the six tasks merged in PR #20 to the status block.
+- 2026-09-30 (UTC) · claude-code + T033 E013 · Redrew the architecture diagram to match the enforced `ALLOWED` edges and D02 placement, with the import-direction caption, closing the README half of E013.

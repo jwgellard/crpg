@@ -402,7 +402,14 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   on Windows/MSVC and Linux/GNU; T031's `tools/tests` suite has not yet run on
   native Windows. Next: T022 host and T029b bindings, each waiting on its
   dependency approval; ADR-0017–0022 acceptance, the T023 `windows-sys` policy
-  call and the remaining E-task wording are open decisions for the maintainer. T030 found the
+  call and the remaining E-task wording are open decisions for the maintainer.
+- *Update 2026-09-30 (decisions):* the user approved D19–D26
+  (`tasks/DECISIONS-2026-09-30.md`): ADR-0017/0018/0019/0020/0022 accepted,
+  ADR-0021 superseded, T022 and T029b dependency edges approved (both now
+  **open and ready**), `windows-sys` resolved by ADR-0023 (applied by T023),
+  T023 scoped to lane-0 reliable streams without vendoring the dedup patch,
+  movement scheduled after T024, remaining E-task wording closed by T033
+  (E023 deferred), and preflight tests added to CI. Next: T022, then T029b. T030 found the
   ADR-0004 symptom not reproduced end-to-end and keeps T023 blocked on native
   Windows evidence, a `cargo deny` bans failure (`windows-sys` split) and
   pending dependency approval. Details: `tasks/BACKLOG.md` rows T027a–T032.
@@ -594,3 +601,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Recorded the PR #18 merge of T020/T021 in Phase, Done and Next, replacing the stale "T020 spec-review next" pointer; the open golden review, missing T021 record and "Selected" ADR statuses are stated rather than resolved.
 - 2026-09-30 (UTC) · claude-code + post-T018 batch on branch · Recorded that T027a, T028, T029a and T030–T032 are implemented on branch with Linux-only verification, keeping the Windows gates, review/merge and T030's T023 blockers explicit.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Recorded the merge of the six post-T018 tasks with dual-OS CI and listed the maintainer decisions that now gate T022, T029b and T023.
+- 2026-09-30 (UTC) · claude-code + D19–D26 recorded · Summarized the user-approved decisions and the resulting next tasks (T022, then T029b).
