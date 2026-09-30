@@ -422,3 +422,13 @@ as ready implementation. Only T019 is source-ready in this checkout today.
 ## Agent log
 
 - 2026-09-28 (UTC) · opencode/gpt-6-astra + delegated post-T018 decisions · Exercised the user's explicit delegation to settle the recorded choices, using live quinn evidence and the existing graph/compatibility rules. Kept selections distinct from unfiled ADRs, unaudited dependencies and unimplemented interfaces so agents can advance specifications without inventing approval provenance.
+
+## Follow-on decisions — 2026-09-30 (UTC)
+
+D19–D26, approved by the user on 2026-09-30, are recorded in
+[DECISIONS-2026-09-30.md](DECISIONS-2026-09-30.md). D23 supersedes only the
+*timing* of D04's patch: T023 uses the audited pins without vendoring; the
+prepared patch is applied with the first unreliable-datagram lane. D04's
+carry-a-patch strategy and no-git-source rule stand.
+
+- 2026-09-30 (UTC) · claude-code + D19–D26 pointer · Linked the follow-on decisions and named the one D04 clause D23 supersedes, so readers of this record do not act on stale timing.

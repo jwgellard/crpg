@@ -98,22 +98,22 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | T018 | done | 2026-09-28 | `crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance (T018a/b/c; PR #16, implementation `2fc54b7`, merge `bc54896`; 75 net tests per native target). Phase 4 host/QUIC/movement/reconnect remains open; follow-on queue: POST-T018.md. |
 | T019 | done | 2026-09-29 | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native green (PR #17, implementation `56931eb`, merge `f3d1560`); see [T019](T019.md) |
-| T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Open: the record's independent review of the two golden artifacts, and ADR-0017 still reads "Selected", not Accepted; see [T020](T020.md) |
-| T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). `tasks/T021.md` carries no completion record; its suite is reported green on both natives only in T020's review-fix log. ADR-0019 still reads "Selected"; see [T021](T021.md) |
-| T022 | blocked | — | `crpg-server` C4 capture/checkpoint slice; D02/D03/D10 selected, exact API + T020/T021 required |
-| T023 | blocked | — | `crpg-net` N-QUIC; carry-patch selected in D04, source/patch/dependency evidence and exact contract required |
+| T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Golden review closed and ADR-0017 accepted (D19); see [T020](T020.md) |
+| T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). Retrospective completion record added from PR #18 dual-OS CI; ADR-0019 accepted (D19); see [T021](T021.md) |
+| T022 | open | — | `crpg-server` host capture/checkpoint slice (ADR-0022 accepted, D19); dependency edges approved (D20). Ready to implement; see [T022](T022.md) |
+| T023 | blocked | — | `crpg-net` N-QUIC lane-0 reliable streams; pins and the `windows-sys` skip approved (D22/D23, ADR-0023), no vendored patch; needs its exact endpoint/stream contract and T022 |
 | T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
 | T024 | blocked | — | `crpg-net` versioned bounded snapshot transfer; T021/T023b + D11 |
 | T025a | blocked | — | `crpg-net` reconnect/resync mechanisms; T024 + D12 |
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
-| T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
+| T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13; movement spec scheduled after T024 (D24); first datagram lane applies the T030 patch (D23) |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
 | T027a | done | 2026-09-30 | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T027a](T027a.md) |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
 | T028 | done | 2026-09-30 | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T028](T028.md) |
 | T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
-| T029b | blocked | — | Specified: synchronous trusted bindings and transactional combat proposals; implementation requires T029a/T028 plus dependency approval |
+| T029b | open | — | `crpg-script` synchronous trusted bindings; T029a/T028 merged, dependency edges approved (D21). Ready to implement; see [T029b](T029b.md) |
 
 ## Independent preparation and tooling
 
@@ -305,3 +305,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + T031 implementation · Moved T031 to `on branch` and annotated the scaffolding checklist for the preflight runners and ADR template, keeping the native Windows run open.
 - 2026-09-30 (UTC) · claude-code + T030 dossier · Moved T030 to `on branch` with its evidence location and the three blockers that keep T023 blocked.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Marked T027a/T028/T029a/T030/T031/T032 done (merged `c1bc6ab`, dual-OS CI green) and moved throughput to 40, keeping T031's missing native Windows test run and T023's open decisions explicit.
+- 2026-09-30 (UTC) · claude-code + D19–D24 · Opened T022 and T029b, narrowed T023 to its own contract, noted D24/D23 on T026p, and closed the T020/T021 review items per the user-approved decisions.

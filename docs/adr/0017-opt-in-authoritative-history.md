@@ -58,3 +58,9 @@ EncounterEnded.
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T020/D08 specification · Filed the selected opt-in history and full-hash decision with explicit native golden scope. Preserved historical ADRs and distinguished delegated design authority from unperformed artifact review and implementation verification.
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + ADR-0017 review corrections · Clarified retained-history versus parser-memory bounds and the mandatory host pre-parse limit, adopting streaming type-before-value payload decoding. Made the event-only round conversion explicit so the legacy persisted counter and saturation semantics remain unchanged.
+
+## Status update — 2026-09-30 (UTC)
+
+**Accepted** — approved by the user on 2026-09-30 ("Approved.", decision D19). Merged in PR #18 with its suites and independently generated `history_v1` goldens green on Windows/MSVC and Linux/GNU CI; the golden review found the Windows and Linux files identical and the equal hashes at steps 14→15 and 16→17 to be the two inert `read_after` steps, as designed. See [tasks/DECISIONS-2026-09-30.md](../../tasks/DECISIONS-2026-09-30.md).
+
+- 2026-09-30 (UTC) · claude-code + D19 status update · Appended the user-approved status change as a dated section instead of editing the original status line, per the E007 append-only policy.
