@@ -1,0 +1,258 @@
+warning: patch `quinn-proto v0.11.19 (<t030>/work/patched/quinn-proto-0.11.19)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling stable_deref_trait v1.2.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v1.3.0
+   Compiling cc v1.2.62
+   Compiling once_cell v1.21.4
+   Compiling zeroize v1.8.2
+   Compiling rustls-pki-types v1.14.1
+   Compiling syn v2.0.117
+   Compiling log v0.4.29
+   Compiling getrandom v0.2.17
+   Compiling writeable v0.6.3
+   Compiling untrusted v0.9.0
+   Compiling pin-project-lite v0.2.17
+   Compiling litemap v0.8.2
+   Compiling tracing-core v0.1.36
+   Compiling icu_normalizer_data v2.1.1
+   Compiling ring v0.17.14
+   Compiling icu_properties_data v2.1.2
+   Compiling cfg_aliases v0.2.1
+   Compiling rand_core v0.10.1
+   Compiling tracing v0.1.44
+   Compiling portable-atomic v1.13.1
+   Compiling getrandom v0.4.3
+   Compiling libm v0.2.16
+   Compiling powerfmt v0.2.0
+   Compiling rustls v0.23.40
+   Compiling deranged v0.5.8
+   Compiling utf8parse v0.2.2
+   Compiling cpufeatures v0.3.0
+   Compiling num-conv v0.2.1
+   Compiling itoa v1.0.18
+   Compiling openssl-probe v0.2.1
+   Compiling smallvec v1.15.1
+   Compiling thiserror v2.0.18
+   Compiling subtle v2.6.1
+   Compiling num_threads v0.1.7
+   Compiling time-core v0.1.8
+   Compiling time v0.3.47
+   Compiling rustls-native-certs v0.8.3
+   Compiling chacha20 v0.10.1
+   Compiling anstyle-parse v1.0.0
+   Compiling synstructure v0.13.2
+   Compiling rustls-webpki v0.103.13
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerovec-derive v0.11.3
+   Compiling displaydoc v0.2.5
+   Compiling zerofrom v0.1.8
+   Compiling thiserror-impl v2.0.18
+   Compiling yoke v0.8.2
+   Compiling zerotrie v0.2.4
+   Compiling zerovec v0.11.6
+   Compiling quinn-udp v0.5.15
+   Compiling foldhash v0.2.0
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.1.1
+   Compiling icu_locale_core v2.1.1
+   Compiling colorchoice v1.0.5
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle v1.0.14
+   Compiling tinyvec_macros v0.1.1
+   Compiling regex-syntax v0.8.10
+   Compiling siphasher v1.0.3
+   Compiling icu_provider v2.1.1
+   Compiling icu_properties v2.1.2
+   Compiling icu_normalizer v2.1.1
+   Compiling regex-automata v0.4.14
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling idna_adapter v1.2.1
+   Compiling fastbloom v0.17.0
+   Compiling anstream v1.0.0
+   Compiling tinyvec v1.11.0
+   Compiling tokio-macros v2.7.0
+   Compiling pin-project-internal v1.1.13
+   Compiling rand v0.10.1
+   Compiling rand_pcg v0.10.2
+   Compiling quinn v0.11.12 (<t030>/orig/quinn-0.11.12)
+   Compiling socket2 v0.6.3
+   Compiling socket2 v0.5.10
+   Compiling mio v1.2.0
+   Compiling rustc-hash v2.1.2
+   Compiling strsim v0.11.1
+   Compiling clap_lex v1.1.0
+   Compiling percent-encoding v2.3.2
+   Compiling slab v0.4.12
+   Compiling lazy_static v1.5.0
+   Compiling heck v0.5.0
+   Compiling lru-slab v0.1.2
+   Compiling base64 v0.22.1
+   Compiling anyhow v1.0.103
+   Compiling utf8_iter v1.0.4
+   Compiling bytes v1.11.1
+   Compiling idna v1.1.0
+   Compiling pem v3.0.6
+   Compiling clap_derive v4.6.1
+   Compiling sharded-slab v0.1.7
+   Compiling quinn-proto v0.11.18
+   Compiling form_urlencoded v1.2.2
+   Compiling clap_builder v4.6.0
+   Compiling tokio v1.52.3
+   Compiling pin-project v1.1.13
+   Compiling matchers v0.2.0
+   Compiling yasna v0.5.2
+   Compiling dirs-sys-next v0.1.2
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling crc-catalog v2.5.0
+   Compiling crc v3.4.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling directories-next v2.0.0
+   Compiling clap v4.6.1
+   Compiling rcgen v0.14.7
+   Compiling tracing-futures v0.2.5
+   Compiling url v2.5.8
+   Compiling bencher v0.1.5
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.38s
+     Running unittests src/lib.rs (<t030>/target-quinn-tests-patched/debug/deps/quinn-e9438f4e70210fa2)
+
+running 25 tests
+test recv_stream::tests::read_to_end_gaps_and_empty ... ok
+test recv_stream::tests::read_to_end_reordered_exact_limit_after_prefix ... ok
+test recv_stream::tests::read_to_end_reordered_limit ... ok
+test tests::close_endpoint ... ok
+test tests::export_keying_material ... ok
+test tests::echo_v4 ... ok
+test tests::ip_blocking ... ok
+test tests::echo_v6 ... FAILED
+test tests::local_addr ... FAILED
+test tests::echo_dualstack ... FAILED
+test tests::rebind_recv ... ok
+test tests::multiple_conns_with_zero_length_cids ... ok
+test tests::recv_stream_cancel_stop_drop ... ok
+test tests::stream_drop_removes_blocked_reader ... ok
+test tests::stream_stopped ... ok
+test tests::stream_stopped_2 ... ok
+test tests::stress_both_windows ... ignored
+test tests::stress_receive_window ... ignored
+test tests::stress_stream_receive_window ... ignored
+test tests::two_datagram_readers ... ok
+test tests::stream_id_flow_control ... ok
+test work_limiter::tests::limit_work ... ok
+test tests::read_after_close ... ok
+test tests::zero_rtt ... ok
+test tests::handshake_timeout ... ok
+
+failures:
+
+---- tests::echo_v6 stdout ----
+
+thread 'tests::echo_v6' (15965) panicked at src/tests.rs:508:61:
+called `Result::unwrap()` on an `Err` value: Os { code: 97, kind: Uncategorized, message: "Address family not supported by protocol" }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/result.rs:1870:5
+   3: <core::result::Result<std::net::udp::UdpSocket, core::io::error::Error>>::unwrap
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/result.rs:1231:23
+   4: quinn::tests::run_echo
+             at ./src/tests.rs:508:61
+   5: quinn::tests::echo_v6
+             at ./src/tests.rs:403:5
+   6: quinn::tests::echo_v6::{closure#0}
+             at ./src/tests.rs:402:13
+   7: <quinn::tests::echo_v6::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- tests::local_addr stdout ----
+
+thread 'tests::local_addr' (15973) panicked at src/tests.rs:127:60:
+called `Result::unwrap()` on an `Err` value: Os { code: 97, kind: Uncategorized, message: "Address family not supported by protocol" }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/result.rs:1870:5
+   3: <core::result::Result<std::net::udp::UdpSocket, core::io::error::Error>>::unwrap
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/result.rs:1231:23
+   4: quinn::tests::local_addr
+             at ./src/tests.rs:127:60
+   5: quinn::tests::local_addr::{closure#0}
+             at ./src/tests.rs:126:16
+   6: <quinn::tests::local_addr::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- tests::echo_dualstack stdout ----
+
+thread 'tests::echo_dualstack' (15963) panicked at src/tests.rs:535:48:
+called `Result::unwrap()` on an `Err` value: Os { code: 97, kind: Uncategorized, message: "Address family not supported by protocol" }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/result.rs:1870:5
+   3: <core::result::Result<quinn::endpoint::Endpoint, core::io::error::Error>>::unwrap
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/result.rs:1231:23
+   4: quinn::tests::run_echo
+             at ./src/tests.rs:535:48
+   5: quinn::tests::echo_dualstack
+             at ./src/tests.rs:429:5
+   6: quinn::tests::echo_dualstack::{closure#0}
+             at ./src/tests.rs:428:20
+   7: <quinn::tests::echo_dualstack::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    tests::echo_dualstack
+    tests::echo_v6
+    tests::local_addr
+
+test result: FAILED. 19 passed; 3 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+error: test failed, to rerun pass `--lib`
+     Running tests/many_connections.rs (<t030>/target-quinn-tests-patched/debug/deps/many_connections-a0edfaabc946c449)
+
+running 1 test
+test connect_n_nodes_to_1_and_send_1mb_data ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests quinn
+
+running 1 test
+test src/endpoint.rs - endpoint::Endpoint::client (line 68) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+error: 1 target failed:
+    `--lib`
+EXIT=101

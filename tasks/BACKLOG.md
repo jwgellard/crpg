@@ -119,7 +119,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T030 | open | — | Specified: isolated quinn patch/reproduction/native/dependency dossier; supplies T023 evidence, no product integration approval |
+| T030 | on branch | `claude/blissful-rubin-59repd` | quinn 0.11.12 / quinn-proto 0.11.19 dossier in `docs/reviews/T030-quinn/`: verified sources, 2049-packet dedup patch with independent-model reproduction (Linux), end-to-end symptom not reproduced; blockers: native Windows, `cargo deny` bans (`windows-sys` split), approval pending — T023 stays blocked; see [T030](T030.md) |
 | T031 | on branch | `claude/blissful-rubin-59repd` | `tools/preflight.sh` / `tools/preflight.ps1` fail-fast native gate runners with exact membership validation; 22 subprocess tests (Bash + PowerShell-on-Linux) and real Linux runs green; native Windows run and review/merge outstanding; see [T031](T031.md) |
 | T032 | on branch | `claude/blissful-rubin-59repd` | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md`; docs-only gates green; see [T032](T032.md) |
 
@@ -302,3 +302,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + T029a implementation · Moved T029a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
 - 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Closed E003/E007/E012/E021 with scope notes and kept E013 open for its README diagram, so the backlog does not claim debt outside T032's allowed files is resolved.
 - 2026-09-30 (UTC) · claude-code + T031 implementation · Moved T031 to `on branch` and annotated the scaffolding checklist for the preflight runners and ADR template, keeping the native Windows run open.
+- 2026-09-30 (UTC) · claude-code + T030 dossier · Moved T030 to `on branch` with its evidence location and the three blockers that keep T023 blocked.

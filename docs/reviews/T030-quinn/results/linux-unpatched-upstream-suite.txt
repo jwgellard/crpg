@@ -1,0 +1,536 @@
+   Compiling quinn-proto v0.11.19 (<t030>/work/unpatched/quinn-proto-0.11.19)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.79s
+     Running unittests src/lib.rs (target/debug/deps/quinn_proto-143cee4c9d76163c)
+
+running 325 tests
+test bloom_token_log::test::identity_hash_test ... ok
+test bloom_token_log::test::k_num_zero ... ok
+test bloom_token_log::test::optimal_k_num_test ... ok
+test bloom_token_log::test::max_bytes_zero ... ok
+test bloom_token_log::test::bloom_token_log_conversion ... ok
+test cid_queue::tests::always_valid ... ok
+test cid_generator::tests::validate_keyed_cid ... ok
+test cid_queue::tests::insert_duplicate ... ok
+test cid_queue::tests::insert_limit ... ok
+test cid_queue::tests::insert_retired ... ok
+test bloom_token_log::test::turn_over ... ok
+test cid_queue::tests::next_dense ... ok
+test cid_queue::tests::next_sparse ... ok
+test cid_queue::tests::retire_many ... ok
+test cid_queue::tests::retire_dense ... ok
+test cid_queue::tests::wrap ... ok
+test cid_queue::tests::retire_sparse ... ok
+test cid_queue::tests::retire_then_insert_next ... ok
+test congestion::bbr::min_max::test::test ... ok
+test congestion::cubic::tests::congestion_avoidance_does_not_overflow_after_long_lossless_period ... ok
+test congestion::cubic::tests::fast_convergence_reduces_w_max_without_double_reducing_window ... ok
+test connection::ack_frequency::tests::peer_min_ack_delay_can_exceed_rtt_with_large_max ... ok
+test connection::ack_frequency::tests::peer_min_ack_delay_can_exceed_rtt ... ok
+test connection::assembler::test::assemble_complex ... ok
+test bloom_token_log::test::expected_hits_zero ... ok
+test connection::assembler::test::assemble_complex_compact ... ok
+test connection::assembler::test::assemble_contained ... ok
+test connection::assembler::test::assemble_contains ... ok
+test connection::assembler::test::assemble_contained_compact ... ok
+test connection::assembler::test::assemble_contains_compact ... ok
+test connection::assembler::test::assemble_duplicate ... ok
+test connection::assembler::test::assemble_duplicate_compact ... ok
+test connection::assembler::test::assemble_old ... ok
+test connection::assembler::test::assemble_ordered ... ok
+test connection::assembler::test::assemble_overlapping ... ok
+test connection::assembler::test::assemble_overlapping_compact ... ok
+test connection::assembler::test::assemble_unordered ... ok
+test connection::assembler::test::chunks_dedup ... ok
+test connection::assembler::test::compact ... ok
+test connection::assembler::test::defrag_read_chunk ... ok
+test connection::assembler::test::bounded_chunks_under_low_over_allocation ... ok
+test connection::assembler::test::defrag_with_missing_prefix ... ok
+test connection::assembler::test::ordered_eager_discard ... ok
+test connection::assembler::test::ordered_insert_unordered_read ... ok
+test connection::assembler::test::defrag_respects_max_chunks_at_rounding_boundary ... ok
+test connection::assembler::test::unordered_dedup ... ok
+test connection::assembler::test::unordered_happy_path ... ok
+test connection::assembler::test::bounded_chunks_duplicate_flood ... ok
+test connection::datagrams::tests::drop_oversized_keeps_datagrams_at_limit ... ok
+test connection::datagrams::tests::make_space_for_accounts_for_empty_datagram_metadata ... ok
+test connection::datagrams::tests::make_space_for_accounts_for_new_datagram ... ok
+test connection::datagrams::tests::make_space_for_handles_overflowing_capacity_check ... ok
+test connection::datagrams::tests::send_buffer_space_handles_metadata_overflow ... ok
+test connection::mtud::tests::black_hole_detector_counts_burst_containing_only_suspicious_packets ... ok
+test connection::mtud::tests::black_hole_detector_ignores_burst_containing_non_suspicious_packet ... ok
+test connection::mtud::tests::black_hole_detector_ignores_empty_burst ... ok
+test connection::mtud::tests::bursts_count_once ... ok
+test connection::mtud::tests::dynamic_mtu_reduction ... ok
+test connection::mtud::tests::equal_size_delivery_clears_preceding_bursts ... ok
+test connection::mtud::tests::interleaved_bursts ... ok
+test connection::mtud::tests::mixed_non_suspicious_bursts ... ok
+test connection::mtud::tests::mtu_discovery_after_complete_reactivates_when_interval_elapsed ... ok
+test connection::mtud::tests::mtu_discovery_disabled_does_nothing ... ok
+test connection::mtud::tests::mtu_discovery_disabled_lost_four_packet_bursts_triggers_black_hole_detection ... ok
+test connection::mtud::tests::mtu_discovery_lost_four_packet_bursts_triggers_black_hole_detection_and_resets_timer ... ok
+test connection::mtud::tests::mtu_discovery_lost_half_of_probes_finds_maximum_udp_payload ... ok
+test connection::mtud::tests::mtu_discovery_lost_three_probes_lowers_probe_size ... ok
+test connection::mtud::tests::mtu_discovery_lost_two_packet_bursts_does_not_trigger_black_hole_detection ... ok
+test connection::mtud::tests::mtu_discovery_no_lost_probes_finds_maximum_udp_payload ... ok
+test connection::mtud::tests::mtu_discovery_with_1500_limit ... ok
+test connection::mtud::tests::mtu_discovery_with_1500_limit_and_10000_upper_bound ... ok
+test connection::mtud::tests::mtu_discovery_with_peer_max_udp_payload_size_clamps_upper_bound ... ok
+test connection::assembler::test::ordered_lossless_stream_is_not_rejected ... ok
+test connection::mtud::tests::mtu_discovery_with_previous_peer_max_udp_payload_size_clamps_upper_bound ... ok
+test connection::mtud::tests::non_suspicious_bursts ... ok
+test connection::mtud::tests::retroactively_non_suspicious ... ok
+test connection::mtud::tests::search_state_lower_bound_higher_than_peer_max_udp_payload_size_clamps_lower_bound ... ok
+test connection::mtud::tests::search_state_upper_bound_higher_than_peer_max_udp_payload_size_clamps_upper_bound ... ok
+test connection::mtud::tests::search_state_lower_bound_higher_than_upper_bound_clamps_upper_bound ... ok
+test connection::mtud::tests::simple_black_hole_detection ... ok
+test connection::mtud::tests::suspicious_after_acked ... ok
+test connection::pacing::tests::adjusts_capacity ... ok
+test connection::pacing::tests::computes_pause_correctly ... ok
+test connection::pacing::tests::derives_initial_capacity ... ok
+test connection::pacing::tests::does_not_panic_on_bad_instant ... ok
+test connection::paths::tests::reset_refreshes_pacer_budget ... ok
+test connection::send_buffer::tests::ack ... ok
+test connection::send_buffer::tests::fragment_with_length ... ok
+test connection::send_buffer::tests::fragment_without_length ... ok
+test connection::send_buffer::tests::multiple_segments ... ok
+test connection::send_buffer::tests::reordered_ack ... ok
+test connection::send_buffer::tests::retransmit ... ok
+test connection::send_buffer::tests::reserves_encoded_offset ... ok
+test connection::spaces::dedup_reference::control_ages_127_and_128 ... ok
+test connection::spaces::dedup_reference::control_empty_first_and_identical_duplicate ... ok
+test connection::assembler::test::bounded_chunks_unordered_overlap_flood ... ok
+test connection::spaces::dedup_reference::measure_layout ... ok
+test connection::mtud::tests::mtu_discovery_with_peer_max_udp_payload_size_during_search_panics - should panic ... ok
+test connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond ... FAILED
+test connection::spaces::dedup_reference::target_age_129_is_inside_the_window ... FAILED
+test connection::spaces::dedup_reference::target_ages_2047_2048_2049 ... FAILED
+test connection::spaces::dedup_reference::target_generated_schedules_fixed_seed ... FAILED
+test connection::spaces::dedup_reference::target_duplicates_after_eviction ... FAILED
+test connection::spaces::dedup_reference::target_packet_number_range_limits ... FAILED
+test connection::spaces::test::dedup_has_missing ... ok
+test connection::spaces::test::dedup_outside_of_window_has_missing ... ok
+test connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint ... FAILED
+test connection::spaces::test::dedup_smallest_missing ... ok
+test connection::spaces::test::jump ... ok
+test connection::spaces::test::happypath ... ok
+test connection::spaces::test::pending_acks_after_immediate_ack_set ... ok
+test connection::spaces::test::pending_acks_ack_delay ... ok
+test connection::spaces::test::pending_acks_first_packet_is_not_considered_reordered ... ok
+test connection::spaces::test::sanity ... ok
+test connection::spaces::test::sent_packet_size ... ok
+test connection::streams::send::tests::byte_slice ... ok
+test connection::streams::recv::tests::reordered_frames_while_stopped ... ok
+test connection::streams::send::tests::bytes_array ... ok
+test connection::streams::state::tests::duplicate_reset_flow_control ... ok
+test connection::streams::state::tests::expand_receive_window ... ok
+test connection::streams::state::tests::final_offset_flow_control ... ok
+test connection::streams::state::tests::max_stream_data_over_stream_limit ... ok
+test connection::streams::state::tests::recv_stopped ... ok
+test connection::streams::state::tests::remote_stream_capacity ... ok
+test connection::streams::state::tests::requeue_stream_priority ... ok
+test connection::spaces::dedup_reference::control_reordering_within_original_window ... ok
+test connection::streams::state::tests::reset_after_empty_frame_flow_control ... ok
+test connection::streams::state::tests::reset_flow_control ... ok
+test connection::streams::state::tests::reset_releases_retained_send_storage ... ok
+test connection::streams::state::tests::reset_stream_cannot_send ... ok
+test connection::streams::state::tests::send_stopped ... ok
+test connection::streams::state::tests::same_stream_priority ... ok
+test connection::streams::state::tests::send_window_retains_selectively_acked_data ... ok
+test connection::streams::state::tests::shrink_receive_window ... ok
+test connection::streams::state::tests::stop_finished ... ok
+test connection::streams::state::tests::expand_send_window ... ok
+test connection::streams::state::tests::stream_limit_fixed ... ok
+test connection::streams::state::tests::stopped_reset ... ok
+test connection::streams::state::tests::stream_limit_grows ... ok
+test connection::streams::state::tests::stream_limit_shrinks ... ok
+test connection::streams::state::tests::stream_priority ... ok
+test connection::streams::state::tests::trivial_flow_control ... ok
+test connection::streams::state::tests::unfair_priority_bump ... ok
+test connection::tests::negotiate_max_idle_timeout_commutative ... ok
+test frame::test::ack_coding ... ok
+test connection::streams::state::tests::shrink_send_window ... ok
+test frame::test::ack_frequency_coding ... ok
+test frame::test::immediate_ack_coding ... ok
+test packet::tests::pn_encode ... ok
+test packet::tests::header_encoding ... ok
+test packet::tests::roundtrip_packet_numbers ... ok
+test range_set::btree_range_set::tests::replace_contained ... ok
+test range_set::btree_range_set::tests::replace_contains ... ok
+test range_set::btree_range_set::tests::replace_empty ... ok
+test range_set::btree_range_set::tests::replace_exact_pred ... ok
+test range_set::btree_range_set::tests::replace_exact_succ ... ok
+test range_set::btree_range_set::tests::replace_pred ... ok
+test range_set::btree_range_set::tests::replace_succ ... ok
+test connection::tests::large_initial_token_leaves_room_for_close ... ok
+test packet::tests::pn_expand_roundtrip ... ok
+test range_set::tests::array_range_set::double_insert ... ok
+test range_set::tests::array_range_set::double_merge_exact ... ok
+test range_set::tests::array_range_set::double_merge_wide ... ok
+test range_set::tests::array_range_set::double_remove ... ok
+test range_set::tests::array_range_set::insert_multiple ... ok
+test range_set::tests::array_range_set::merge_and_split ... ok
+test range_set::tests::array_range_set::min_max ... ok
+test range_set::tests::array_range_set::remove_multiple ... ok
+test range_set::tests::array_range_set::single_merge_high ... ok
+test range_set::tests::array_range_set::single_merge_low ... ok
+test range_set::tests::array_range_set::skip_empty_ranges ... ok
+test range_set::tests::array_range_set::compare_insert_to_reference ... ok
+test range_set::tests::array_range_set::compare_remove_to_reference ... ok
+test range_set::tests::range_set::double_insert ... ok
+test range_set::tests::range_set::double_merge_exact ... ok
+test range_set::tests::range_set::double_merge_wide ... ok
+test range_set::tests::range_set::double_remove ... ok
+test range_set::tests::range_set::insert_multiple ... ok
+test range_set::tests::range_set::merge_and_split ... ok
+test range_set::tests::range_set::min_max ... ok
+test range_set::tests::range_set::remove_multiple ... ok
+test range_set::tests::range_set::single_merge_high ... ok
+test range_set::tests::range_set::single_merge_low ... ok
+test range_set::tests::range_set::skip_empty_ranges ... ok
+test tests::ack_bundled_with_datagrams ... ok
+test range_set::tests::range_set::compare_insert_to_reference ... ok
+test tests::ack_frequency_ack_delayed_from_first_of_flight ... ok
+test tests::ack_frequency_ack_sent_after_max_ack_delay ... ok
+test tests::ack_frequency_ack_sent_after_reordered_packets_above_threshold ... ok
+test range_set::tests::range_set::compare_remove_to_reference ... ok
+test tests::ack_frequency_ack_sent_after_packets_above_threshold ... ok
+test tests::alpn_mismatch ... ok
+test tests::ack_frequency_ack_sent_after_reordered_packets_below_threshold ... ok
+test tests::alpn_success ... ok
+test tests::ack_frequency_update_max_delay ... ok
+test tests::blackhole_after_mtu_change_repairs_itself ... ok
+test tests::cid_retirement ... ok
+test tests::client_alpn_unset ... ok
+test tests::cid_rotation ... ok
+test tests::client_stateless_reset ... ok
+test tests::congested_tail_loss ... ok
+test tests::congestion ... ok
+test tests::conn_flow_control ... ok
+test tests::connect_runs_mtud_again_after_600_seconds ... ok
+test tests::connect_too_low_mtu ... ok
+test tests::connect_lost_mtu_probes_do_not_trigger_congestion_control ... ok
+test tests::connection_close_sends_acks ... ok
+test tests::data_blocked ... ok
+test tests::connect_detects_mtu ... ok
+test tests::data_blocked_dropped_when_limit_raised ... ok
+test tests::data_blocked_not_sent_for_local_send_window ... ok
+test tests::data_blocked_not_sent_under_limit ... ok
+test tests::data_blocked_retransmit ... ok
+test tests::datagram_larger_than_send_buffer_is_too_large ... ok
+test tests::datagram_gso ... ok
+test tests::datagram_recv_buffer_overflow ... ok
+test tests::datagram_send_buffer_blocks_until_drained ... ok
+test tests::datagram_send_buffer_overflow ... ok
+test tests::datagram_send_buffer_space_preserves_queued_datagrams ... ok
+test tests::datagram_unsupported ... ok
+test tests::datagram_send_recv ... ok
+test tests::endpoint_and_connection_impl_send_sync ... ok
+test tests::draft_version_compat ... ok
+test tests::export_keying_material ... ok
+test tests::finish_acked ... ok
+test tests::finish_retransmit ... ok
+test tests::finish_stream_flow_control_reordered ... ok
+test tests::finish_stream_simple ... ok
+test tests::gso_truncation ... ok
+test tests::handshake_1rtt_handling ... ok
+test tests::datagram_send_buffer_metadata_boundaries ... ok
+test tests::handshake_anti_deadlock_probe ... ok
+test tests::high_latency_handshake ... ok
+test tests::idle_timeout ... ok
+test tests::immediate_ack_triggers_ack ... ok
+test tests::instant_close_1 ... ok
+test tests::instant_close_2 ... ok
+test tests::implicit_open ... ok
+test tests::instant_server_close ... ok
+test tests::initial_retransmit ... ok
+test tests::key_update_reordered ... ok
+test tests::key_update_simple ... ok
+test tests::keep_alive ... ok
+test tests::large_initial ... ok
+test tests::large_datagram_with_acks ... ok
+test tests::malformed_token_len ... ok
+test tests::lifecycle ... ok
+test tests::loss_probe_requests_immediate_ack ... ok
+test tests::min_mtu_does_not_pad_application_data ... ok
+test connection::spaces::dedup_reference::control_generated_schedules_shallow_reordering ... ok
+test tests::migrate_detects_new_mtu_and_respects_original_peer_max_udp_payload_size ... ok
+test tests::migration ... ok
+test tests::min_mtu_respects_peer_max_udp_payload_size ... ok
+test tests::min_mtu_limits_application_loss_probes ... ok
+test tests::mtud_probes_include_immediate_ack ... ok
+test tests::out_of_order_ack_eliciting_packet_triggers_ack ... ok
+test tests::packet_splitting_not_necessary_after_higher_mtu_discovered ... ok
+test tests::min_mtu_does_not_pad_zero_rtt_batch_tail ... ok
+test tests::packet_splitting_with_default_mtu ... ok
+test tests::oversized_datagrams_trigger_unblock ... ok
+test tests::pad_server_initial_to_min_mtu ... ok
+test tests::pad_initial_to_min_mtu ... ok
+test tests::pad_to_mtu ... ok
+test tests::pending_incoming_can_retry_after_disabling_server ... ok
+test tests::preferred_address ... ok
+test tests::pending_incoming_survives_server_config_change ... ok
+test tests::reject_manually ... ok
+test tests::reject_missing_client_cert ... ok
+test tests::reject_short_idcid ... ok
+test tests::reject_self_signed_server_cert ... ok
+test tests::reset_stream ... ok
+test tests::path_changes_unblock_oversized_datagrams ... ok
+test tests::server_alpn_unset ... ok
+test tests::repeated_request_response ... ok
+test tests::server_stateless_reset ... ok
+test tests::server_hs_retransmit ... ok
+test tests::server_can_send_3_inital_packets ... ok
+test tests::silently_drop_rejected_initials ... ok
+test tests::pure_sender_voluntarily_acks ... ok
+test tests::stateless_reset_limit ... ok
+test tests::single_ack_eliciting_packet_triggers_ack_after_delay ... ok
+test tests::single_ack_eliciting_packet_with_ce_bit_triggers_immediate_ack ... ok
+test tests::stop_before_finish ... ok
+test tests::stop_during_finish ... ok
+test tests::stop_opens_bidi ... ok
+test tests::stop_stream ... ok
+test tests::stream_data_blocked ... ok
+test tests::stream_data_blocked_not_sent_after_reset ... ok
+test tests::stream_id_limit ... ok
+test tests::stream_flow_control ... ok
+test tests::stream_gso ... ok
+test tests::tail_loss_respect_max_datagrams ... ok
+test tests::token::oversized_cached_initial_token ... ok
+test tests::token::retry_token_expired ... ok
+test tests::token::oversized_retry_token ... ok
+test tests::tail_loss_small_segment_size ... ok
+test tests::token::stateless_retry ... ok
+test tests::token::retry_then_use_token ... ok
+test tests::token::use_token ... ok
+test tests::validate_then_reject_manually ... ok
+test tests::version_negotiate_client ... ok
+test tests::version_negotiate_server ... ok
+test tests::token::use_same_token_twice ... ok
+test tests::token::use_token_then_retry ... ok
+test tests::token::use_token_expired ... ok
+test tests::zero_length_cid ... ok
+test tests::zero_rtt_happypath ... ok
+test tests::zero_rtt_incoming_buffer_size ... ok
+test token::test::invalid_token_returns_err ... ok
+test token::test::retry_token_sanity ... ok
+test token::test::validation_token_sanity ... ok
+test token_memory_cache::tests::cache_test ... ok
+test token_memory_cache::tests::zero_max_server_names ... ok
+test token_memory_cache::tests::zero_queue_length ... ok
+test transport_parameters::test::coding ... ok
+test transport_parameters::test::read_length_mismatch ... ok
+test transport_parameters::test::read_min_ack_delay_length_mismatch ... ok
+test transport_parameters::test::read_preferred_address_length_mismatch ... ok
+test transport_parameters::test::read_semantic_validation ... ok
+test transport_parameters::test::reserved_transport_parameter_generate_reserved_id ... ok
+test transport_parameters::test::reserved_transport_parameter_ignored_when_read ... ok
+test transport_parameters::test::resumption_params_validation ... ok
+test tests::zero_rtt_incoming_buffer_size_total ... ok
+test tests::zero_rtt_rejection ... ok
+test tests::voluntary_ack_with_large_datagrams ... ok
+
+failures:
+
+---- connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond stdout ----
+
+thread 'connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond' (7481) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(30) with highest Some(159): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond
+             at ./src/connection/dedup_reference.rs:216:22
+   6: quinn_proto::connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond::{closure#0}
+             at ./src/connection/dedup_reference.rs:207:55
+   7: <quinn_proto::connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- connection::spaces::dedup_reference::target_age_129_is_inside_the_window stdout ----
+
+thread 'connection::spaces::dedup_reference::target_age_129_is_inside_the_window' (7482) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(4871) with highest Some(5000): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_age_129_is_inside_the_window
+             at ./src/connection/dedup_reference.rs:193:10
+   6: quinn_proto::connection::spaces::dedup_reference::target_age_129_is_inside_the_window::{closure#0}
+             at ./src/connection/dedup_reference.rs:189:41
+   7: <quinn_proto::connection::spaces::dedup_reference::target_age_129_is_inside_the_window::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- connection::spaces::dedup_reference::target_ages_2047_2048_2049 stdout ----
+
+thread 'connection::spaces::dedup_reference::target_ages_2047_2048_2049' (7483) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(7953) with highest Some(10000): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_ages_2047_2048_2049
+             at ./src/connection/dedup_reference.rs:201:14
+   6: quinn_proto::connection::spaces::dedup_reference::target_ages_2047_2048_2049::{closure#0}
+             at ./src/connection/dedup_reference.rs:197:32
+   7: <quinn_proto::connection::spaces::dedup_reference::target_ages_2047_2048_2049::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- connection::spaces::dedup_reference::target_generated_schedules_fixed_seed stdout ----
+
+thread 'connection::spaces::dedup_reference::target_generated_schedules_fixed_seed' (7485) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(0) with highest Some(469): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_generated_schedules_fixed_seed
+             at ./src/connection/dedup_reference.rs:297:30
+   6: quinn_proto::connection::spaces::dedup_reference::target_generated_schedules_fixed_seed::{closure#0}
+             at ./src/connection/dedup_reference.rs:269:43
+   7: <quinn_proto::connection::spaces::dedup_reference::target_generated_schedules_fixed_seed::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- connection::spaces::dedup_reference::target_duplicates_after_eviction stdout ----
+
+thread 'connection::spaces::dedup_reference::target_duplicates_after_eviction' (7484) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(12) with highest Some(2060): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_duplicates_after_eviction
+             at ./src/connection/dedup_reference.rs:264:10
+   6: quinn_proto::connection::spaces::dedup_reference::target_duplicates_after_eviction::{closure#0}
+             at ./src/connection/dedup_reference.rs:255:38
+   7: <quinn_proto::connection::spaces::dedup_reference::target_duplicates_after_eviction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- connection::spaces::dedup_reference::target_packet_number_range_limits stdout ----
+
+thread 'connection::spaces::dedup_reference::target_packet_number_range_limits' (7487) panicked at src/connection/dedup_reference.rs:103:9:
+assertion `left == right` failed: insert(4611686018427387774) with highest Some(4611686018427387903): implementation says duplicate=true, model says false
+  left: true
+ right: false
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<bool, bool>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::insert
+             at ./src/connection/dedup_reference.rs:103:9
+   5: quinn_proto::connection::spaces::dedup_reference::target_packet_number_range_limits
+             at ./src/connection/dedup_reference.rs:230:14
+   6: quinn_proto::connection::spaces::dedup_reference::target_packet_number_range_limits::{closure#0}
+             at ./src/connection/dedup_reference.rs:224:39
+   7: <quinn_proto::connection::spaces::dedup_reference::target_packet_number_range_limits::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint stdout ----
+
+thread 'connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint' (7486) panicked at src/connection/dedup_reference.rs:123:17:
+assertion `left == right` failed: smallest_missing_in_interval(252, 600) with highest Some(2300)
+  left: None
+ right: Some(401)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<core::option::Option<u64>, core::option::Option<u64>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: <quinn_proto::connection::spaces::dedup_reference::Pair>::check_queries
+             at ./src/connection/dedup_reference.rs:123:17
+   5: quinn_proto::connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint
+             at ./src/connection/dedup_reference.rs:251:10
+   6: quinn_proto::connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint::{closure#0}
+             at ./src/connection/dedup_reference.rs:236:60
+   7: <quinn_proto::connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    connection::spaces::dedup_reference::target_advance_by_zero_one_word_window_and_beyond
+    connection::spaces::dedup_reference::target_age_129_is_inside_the_window
+    connection::spaces::dedup_reference::target_ages_2047_2048_2049
+    connection::spaces::dedup_reference::target_duplicates_after_eviction
+    connection::spaces::dedup_reference::target_generated_schedules_fixed_seed
+    connection::spaces::dedup_reference::target_missing_queries_whole_partial_full_and_disjoint
+    connection::spaces::dedup_reference::target_packet_number_range_limits
+
+test result: FAILED. 318 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s
+
+error: test failed, to rerun pass `--lib`
+EXIT=101

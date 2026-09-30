@@ -1,0 +1,82 @@
+{
+  "generated": "2026-09-30 (UTC), crpg T030, isolated scratch directory (not the product tree)",
+  "registry": "https://github.com/rust-lang/crates.io-index (sparse: https://index.crates.io)",
+  "packages": [
+    {
+      "name": "quinn-proto",
+      "version": "0.11.19",
+      "download_url": "https://static.crates.io/crates/quinn-proto/quinn-proto-0.11.19.crate",
+      "registry_index_cksum": "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe",
+      "archive_sha256_independent": "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe",
+      "checksum_match": true,
+      "yanked": false,
+      "rust_version": "1.85",
+      "license_expression": "MIT OR Apache-2.0",
+      "license_files_sha256": {
+        "LICENSE-MIT": "4b2d0aca6789fa39e03d6738e869ea0988cceba210ca34ebb59c15c463e93a04",
+        "LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "repository": "https://github.com/quinn-rs/quinn",
+      "path_in_vcs": "quinn-proto",
+      "cargo_vcs_info_sha1": "8192ed399a26a6e8f0aba43d10ec8badaa5b905e",
+      "tag": "quinn-proto-0.11.19",
+      "tag_object": "983a6096bb8c6d82203b53c5b0b2a2523a185a77",
+      "tag_peeled_commit": "8192ed399a26a6e8f0aba43d10ec8badaa5b905e",
+      "tag_matches_vcs_info": true,
+      "verified_against_git": {
+        "commit": "8192ed399a26a6e8f0aba43d10ec8badaa5b905e",
+        "method": "git fetch --depth 1 https://github.com/quinn-rs/quinn <commit>; sha256 of `git show <commit>:<path>` vs archive file",
+        "src/connection/spaces.rs": "match",
+        "src/connection/mod.rs": "match",
+        "LICENSE-MIT / LICENSE-APACHE": "repo stores quinn-proto/LICENSE-* as symlinks to ../LICENSE-*; archive files match the root files"
+      }
+    },
+    {
+      "name": "quinn",
+      "version": "0.11.12",
+      "download_url": "https://static.crates.io/crates/quinn/quinn-0.11.12.crate",
+      "registry_index_cksum": "4051e23e9185c255a7e33ef59cdbca87a22d359052eecd22fc6b901fb37d9d11",
+      "archive_sha256_independent": "4051e23e9185c255a7e33ef59cdbca87a22d359052eecd22fc6b901fb37d9d11",
+      "checksum_match": true,
+      "yanked": false,
+      "rust_version": "1.85",
+      "license_expression": "MIT OR Apache-2.0",
+      "license_files_sha256": {
+        "LICENSE-MIT": "4b2d0aca6789fa39e03d6738e869ea0988cceba210ca34ebb59c15c463e93a04",
+        "LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "repository": "https://github.com/quinn-rs/quinn",
+      "path_in_vcs": "quinn",
+      "cargo_vcs_info_sha1": "eaec0db4bcb698f76df736d89938743c88a2ad5f",
+      "tag": "quinn-0.11.12",
+      "tag_object": "54c50a081d11eb94596ae9c526538bf5f684201f",
+      "tag_peeled_commit": "eaec0db4bcb698f76df736d89938743c88a2ad5f",
+      "tag_matches_vcs_info": true
+    }
+  ],
+  "patch": {
+    "file": "dedup-window.patch",
+    "sha256": "32e186ea350cbb8a0e4a9cafd9b71e6b0aa2f1d065bb63d6ec2e45415dc9cc63",
+    "applies_to": "quinn-proto-0.11.19 archive root, `patch -p1`",
+    "touched_files": [
+      {
+        "path": "src/connection/spaces.rs",
+        "sha256_before": "a1b44aa9c1ff38a545741fff5546552b9650ae9381a6fdf5f9ef9ea62ef6a45c",
+        "sha256_after": "2274f18c6f6d0f2855ba7fb9699427158e35561a69046b4bc532f732c79f9cc5"
+      }
+    ]
+  },
+  "harness": {
+    "file": "harness.patch",
+    "sha256": "ce12893370517fc52474984dcd518091fa6ce7f63b2a4fe98ded71c93e34a1ca",
+    "adds": [
+      "src/connection/dedup_reference.rs (test-only)",
+      "4-line #[cfg(test)] module hook appended to src/connection/spaces.rs"
+    ],
+    "dedup_reference_rs_sha256": "8d3b1d2e03c8ca19a825c465f892fe3db360e8453b2f82726c6ffe612a8a558e",
+    "tested_trees": {
+      "unpatched_plus_harness_spaces_rs_sha256": "6a685c9e57bece56afc68cd32dda754b476fb4b165d8a662eea841419ff67ec2",
+      "patched_plus_harness_spaces_rs_sha256": "d149d95eb739a4aa956971eabf95a7e1f05e40f2dd016e56140eeb9b158c3c5b"
+    }
+  }
+}

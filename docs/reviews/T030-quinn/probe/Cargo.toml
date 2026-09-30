@@ -1,0 +1,22 @@
+# Isolated T030 probe: NOT a crpg workspace member and NOT a product
+# dependency record. Exact pins document the dependency set proposed for
+# review; approval status is pending (see ../README.md).
+[package]
+name = "t030-quinn-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dependencies]
+# Proposed product edges (for T023 review):
+quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+quinn-proto = { version = "=0.11.19", default-features = false, features = ["rustls-ring"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "net", "time", "macros", "sync"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+# Probe-only (measurement and local test credentials, not proposed product edges):
+rcgen = { version = "=0.14.7" }
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+bytes = "=1.11.1"

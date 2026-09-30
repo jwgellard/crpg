@@ -1,0 +1,47 @@
+error[duplicate]: found 2 duplicate entries for crate 'windows-sys'
+   ┌─ <t030>/audit-awslc/Cargo.lock:64:1
+   │
+64 │ ╭ windows-sys 0.52.0 registry+https://github.com/rust-lang/crates.io-index
+65 │ │ windows-sys 0.61.2 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰────────────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ windows-sys v0.52.0
+     └── ring v0.17.14
+         └── quinn-proto v0.11.19
+             ├── quinn v0.11.12
+             │   └── t030-quinn-probe-awslc v0.0.0
+             └── t030-quinn-probe-awslc v0.0.0 (*)
+   ├ windows-sys v0.61.2
+     ├── mio v1.2.3
+     │   └── tokio v1.53.1
+     │       ├── quinn v0.11.12
+     │       │   └── t030-quinn-probe-awslc v0.0.0
+     │       └── t030-quinn-probe-awslc v0.0.0 (*)
+     ├── quinn-udp v0.5.16
+     │   └── quinn v0.11.12 (*)
+     ├── socket2 v0.6.5
+     │   ├── quinn v0.11.12 (*)
+     │   ├── quinn-udp v0.5.16 (*)
+     │   └── tokio v1.53.1 (*)
+     └── tokio v1.53.1 (*)
+
+warning[unmatched-skip]: skipped crate 'getrandom = =0.3.4' was not encountered
+   ┌─ <t030>/audit-awslc/deny.toml:63:6
+   │
+63 │     "getrandom@0.3.4",
+   │      ━━━━━━━━━━━━━━━ unmatched skip configuration
+
+warning[unmatched-skip]: skipped crate 'r-efi = =5.3.0' was not encountered
+   ┌─ <t030>/audit-awslc/deny.toml:65:6
+   │
+65 │     "r-efi@5.3.0",
+   │      ━━━━━━━━━━━ unmatched skip configuration
+
+warning[unnecessary-skip]: skip 'r-efi = =6.0.0' applied to a crate with only one version
+   ┌─ <t030>/audit-awslc/deny.toml:66:6
+   │
+66 │     "r-efi@6.0.0",
+   │      ━━━━━━━━━━━ unnecessary skip configuration
+
+advisories ok, bans FAILED, licenses ok, sources ok
+EXIT=2
