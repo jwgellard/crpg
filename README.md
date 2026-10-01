@@ -45,7 +45,9 @@ campaign format, netcode, AI, and server are untouched.
 > (PR #18, merge `a991fe9`, 2026-09-30); T027a area identity, T028 legality,
 > T029a action-signature declarations, T030 quinn dossier, T031 preflight
 > runners and T032 documentation reconciliation are merged (PR #20, merge
-> `c1bc6ab`, 2026-09-30). See
+> `c1bc6ab`, 2026-09-30); decisions D19–D26 and T033 are merged (PR #21,
+> merge `ac137ac`, 2026-10-01), and the path to completion is
+> [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md). See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
 > [T011a](tasks/T011a.md), [T011b](tasks/T011b.md),
@@ -245,3 +247,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Updated the status block past the stale "T020 history is next" pointer to the PR #18 merge of T020/T021.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Added the six tasks merged in PR #20 to the status block.
 - 2026-09-30 (UTC) · claude-code + T033 E013 · Redrew the architecture diagram to match the enforced `ALLOWED` edges and D02 placement, with the import-direction caption, closing the README half of E013.
+- 2026-10-01 (UTC) · claude-code + PR #21 landed · Added the PR #21 merge and the implementation-plan link to the status block.

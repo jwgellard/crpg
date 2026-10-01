@@ -121,7 +121,10 @@ python -m unittest discover -s tools/lint -p "test_*.py"
    protocol (`crpg-net`, ADR-0019) are merged on `master` (PR #18, merge
    `a991fe9`, 2026-09-30); T027a, T028, T029a, T030, T031 and T032 are
    merged on `master` (PR #20, merge `c1bc6ab`, 2026-09-30) with CI green on
-   both OSes; see `tasks/BACKLOG.md` for open review items and next tasks.
+   both OSes; decisions D19–D26, ADR-0023 and T033 are merged on `master`
+   (PR #21, merge `ac137ac`, 2026-10-01) with CI green on both OSes; the
+   delegated plan to completion is `docs/IMPLEMENTATION_PLAN.md`; see
+   `tasks/BACKLOG.md` for open review items and next tasks.
    See the [completion record](tasks/T009c.md),
    [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
    [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
@@ -149,3 +152,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-30 (UTC) · opencode/muse-spark + T019 landed · Updated the note to the merged T019 same-pool affordability repair (PR #17, merge `f3d1560`, 2026-09-29) with T020 history next.
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Updated the note to the PR #18 merge of T020/T021, replacing the stale "T020 next" pointer and deferring open review items to the backlog rather than restating them.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Updated the note to the PR #20 merge of the six post-T018 tasks, deferring open items to the backlog.
+- 2026-10-01 (UTC) · claude-code + PR #21 landed · Updated the note to the PR #21 merge and linked the implementation plan, deferring task status to the backlog.
