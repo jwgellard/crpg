@@ -34,3 +34,14 @@ and §9.1 specifies only the per-entity polling the ADR warns against
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: unfalsifiable targets plus one already-falsified triple.
+
+## Resolution — 2026-09-30 (T033, D06)
+
+POST-T018 D06 selected "measure before enforcing ceilings". T033 marked the
+§13.1 rows as aspirations until deterministic workloads and controlled-runner
+baselines exist, dropped the falsified 1,000-entity / 60 fps / no-LOD
+combination (bulk scene sync and animation LOD become separate bridge work),
+scoped the §13.2 20% threshold to stored baselines, and added the bench/workload
+row to the BACKLOG.
+
+- 2026-09-30 (UTC) · claude-code + T033 · Recorded how the already-selected decision closes this item and where the spec now says it, per D25.

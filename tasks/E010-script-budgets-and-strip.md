@@ -40,3 +40,18 @@ Three related gaps, one silent-hole class:
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: groups the E008 near-miss, the ADR-0005 strip gap, and the undefined nested budget.
+
+## Resolution — 2026-09-30 (T033, D17)
+
+The budgets were selected in POST-T018 D17: 1024 node dispatches and 100,000
+execution units per resumed trigger slice, nested call depth 32, a node
+charged once on entry, nested graphs sharing counters, each Lua instruction
+consuming one shared unit with a per-call ceiling of 100,000 that never grants
+extra shared budget, abort at the first exceeded limit with staged effects
+discarded, and a 2 MiB Lua state ceiling; no wall-clock abort. T033 wrote these
+into spec §5.2/§5.4 (marked as initial, unmeasured policy values), corrected
+§12.1's "time budgets" to instruction/memory budgets, and completed the loader
+strip list (`load`, `loadfile`, `dofile`, plus `loadstring`) in §5.4 and §24 T3.
+The numbers are tuned only by a separately recorded policy change with tests.
+
+- 2026-09-30 (UTC) · claude-code + T033 · Recorded how the already-selected decision closes this item and where the spec now says it, per D25.

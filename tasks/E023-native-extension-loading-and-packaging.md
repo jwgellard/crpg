@@ -50,3 +50,13 @@ no tolerance, runtime golden selection, or cross-platform equality promise.
 ## Agent log
 
 - 2026-09-07 (UTC) · opencode/gpt-6-astra + T009c · Filed the open native-extension decision for target artifacts, ABI/loading, and packaging across Windows/MSVC and Linux/GNU. Made unsafe governance and Godot-free headless support explicit prerequisites without choosing or implementing a loader.
+
+## Deferral recorded — 2026-09-30 (T033, D07)
+
+**Deferred** by POST-T018 D07: native dynamic loading/ABI and native
+signing/packaging are postponed beyond the current queue; portable data and
+sandboxed scripting are the extension path. The only-`crpg-godot`-unsafe rule
+and Godot-free headless policy are unchanged. This is a recorded deferral, not
+an open question; reopening it is a new product decision.
+
+- 2026-09-30 (UTC) · claude-code + T033 · Recorded how the already-selected decision closes this item and where the spec now says it, per D25.

@@ -613,14 +613,16 @@ Node    := Condition(expr)              -> true/false ports
 
 Properties the IR must have:
 
-- **Serializable mid-execution.** A `Wait` node inside a running graph must survive save/load and server restart. Model running graphs as entities with a `ScriptContinuation` component. Get this right early; retrofitting it is painful.
+- **Serializable mid-execution.** A `Wait` node inside a running graph must survive save/load and server restart. Model running graphs as entities with a `ScriptContinuation` component. Get this right early; retrofitting it is painful. (*2026-09-30, E010/POST-T018 D17, T033:* continuations are world-owned serializable IR state added by a separate sim task before the interpreter; a live Lua stack or coroutine is never saved.)
 - **Tick-based waits.** `Wait` stores a relative count of simulation ticks,
   never seconds, rounds, or turns. Ticks exist in every simulation mode and
   resume exactly after save/load; a ruleset that exposes round- or turn-based
   waiting translates that concept into explicit rules scheduling.
 - **Deterministic.** Node execution order is the edge order in the file. No implicit concurrency.
-- **Budgeted.** A graph gets a maximum node count and instruction/bytecode budget per trigger invocation (deterministic; cf ADR-0005 — corrected from wall-clock per E008 2026-09-05, since a wall-clock abort diverges across machines). Exceeding it aborts the graph, logs an error with the campaign file and node id, and does not stall the tick.
+- **Budgeted.** A graph gets a maximum node count and instruction/bytecode budget per trigger invocation (deterministic; cf ADR-0005 — corrected from wall-clock per E008 2026-09-05, since a wall-clock abort diverges across machines). Exceeding it aborts the graph, logs an error with the campaign file and node id, and does not stall the tick. (*Initial policy values, 2026-09-30, E010/POST-T018 D17, T033 — not measured throughput claims:* 1024 node dispatches and 100,000 execution units per resumed trigger slice, nested call depth ≤ 32. A node is charged once on entry; nested graphs share the counters; each Lua instruction run by `CallScript` consumes one shared execution unit, and a per-call Lua ceiling of 100,000 never grants extra shared budget. The first exceeded limit aborts, propagates to the trigger and discards staged effects since the last committed boundary; `Wait` commits the slice and a resume gets a fresh slice budget. Aggregate triggers per tick are scheduled and capped separately by the interpreter task.)
 - **Server-only.** Graphs execute on the server. The client receives their *effects*.
+
+*Note 2026-09-30 (E017 action-registry item, T029a/T029b, T033):* the declaration half is data — `ActionSignatureStore` in `crpg-data` (T029a) holds signatures with a content-derived bundle identity and validates calls; trusted Rust handlers bind to that exact identity in `crpg-script` (T029b, D17). Campaign data cannot register handlers. IR action ids are symbolic strings, distinct from combat ability ULIDs. The paragraph below is the original design intent.
 
 The `Action` vocabulary is registered by the engine and by rulesets: `StartDialogue`, `SetVariable`, `GiveItem`, `SpawnEncounter`, `AdvanceQuest`, `OpenDoor`, `PlayCinematic`, `ApplyEffect`, `MoveEntity`, `PlaySound`, `ShowMessage`, `TeleportParty`, and so on. Each action is a Rust function with a declared JSON-schema signature, so the editor can generate its property form automatically. **Do not hand-write editor UI per action.** Generate it from the signature. This is worth a day and saves months.
 
@@ -670,10 +672,10 @@ Reasons for Lua: two decades of precedent as *the* game modding language, so you
 
 **The sandbox is not optional.** Campaign Lua runs in an environment with:
 
-- No `io`, `os` (except a whitelisted `os.time` returning *sim* time), `require`, `dofile`, `loadstring`, `debug`, `package`, or raw FFI.
+- No `io`, `os` (except a whitelisted `os.time` returning *sim* time), `require`, `load`, `loadfile`, `dofile`, `loadstring`, `debug`, `package`, or raw FFI. (*Corrected 2026-09-30, E010, T033:* ADR-0005 showed `mlua`'s `StdLib` gating does not remove the base-library loaders, so `load`/`loadfile`/`dofile` are removed by hand and `loadstring` stays listed as belt-and-braces.)
 - `math.random` replaced by the deterministic sim RNG, seeded per-invocation from `(tick, entity, call_index)`.
 - `pairs` replaced with a deterministic ordered iterator. This one line prevents an entire class of desync and replay bugs.
-- An instruction-count hook that aborts after N instructions, and a memory ceiling per script context.
+- An instruction-count hook that aborts after N instructions, and a memory ceiling per script context. (*Initial values 2026-09-30, D17, T033:* the hook checks every instruction against the shared §5.2 budget and a per-call ceiling of 100,000; memory ceiling 2 MiB per Lua state. No wall-clock abort.)
 - No coroutine yields across tick boundaries; long waits use the IR's `Wait` node, which is serializable, not a suspended Lua coroutine, which is not.
 - API surface exposed through a single generated binding module, so you can audit exactly what campaigns can touch.
 
@@ -710,7 +712,7 @@ Considerations are engine-provided; **weights are ruleset and creature data**, s
 
 ### 6.2 Two constraints that matter architecturally
 
-1. **AI may only use the same action-legality API as a player.** `fn legal_actions(world, entity) -> Vec<ActionOption>` is shared. If the AI can do something a player cannot, that is a bug by construction. This also gives you player-party auto-resolve and "suggested action" hints for free.
+1. **AI may only use the same action-legality API as a player.** `fn legal_actions(world, entity) -> Vec<ActionOption>` is shared. (*As built 2026-09-30, T028/ADR-0018, T033:* `crpg_sim::legal_actions(&World, EntityId) -> Result<Vec<CombatAction>, LegalActionsError>`, sharing `validate_action` with execution; AI consumes it, never a net-side copy (D18).) If the AI can do something a player cannot, that is a bug by construction. This also gives you player-party auto-resolve and "suggested action" hints for free.
 2. **AI is server-side, budgeted, and time-sliced.** Combat AI computes on turn start with a node budget. Ambient AI (schedules, wandering) runs on a round-robin across ticks: at most N entities re-evaluate per tick. This keeps tick time bounded regardless of population.
 
 ### 6.3 Navigation
@@ -750,6 +752,17 @@ Channels:
 | `snapshot` | unreliable datagram | positions, orientations, animation state |
 | `bulk` | separate reliable stream | campaign package transfer, asset delivery |
 
+*Note 2026-09-30 (E017/E018, POST-T018 D03/D13/D23, ADR-0023, T033):* the as-built
+wire carries an explicit lane byte; lane 0 is reliable ordered combat (T018),
+and movement will get its own separately versioned lane (D13). Privileged
+(GM/admin) traffic uses a separate typed control protocol/stream, possibly on
+the same authenticated connection, never an intent flag, and stays
+fail-closed until its own task (D03). Authentication is an operator-provisioned,
+revocable invitation credential verified over TLS against a server
+certificate pinned out of band; no trust-on-first-use, anonymous authority or
+LAN bypass (D03). T023 implements lane 0 over QUIC streams at the pins audited
+by T030 (D23).
+
 ### 7.3 Protocol shape
 
 **Server → client** is a stream of `WorldDelta` messages:
@@ -781,11 +794,23 @@ enum ClientIntent {
 
 There is no `SetPosition`, no `ApplyDamage`, no `SetVariable`. **If a message name is a verb the server should decide, it does not exist.** Every intent is validated against `legal_actions` before execution, with an explicit rate limit and payload size cap.
 
+*As built 2026-09-30 (E017, T018/T021, ADR-0019, T033):* the enums above are
+design sketches. The live shapes are `crates/crpg-net/src/protocol.rs` (v1,
+T018) and `protocol_v2.rs` (v2 event projection beside frozen v1, T021). Command
+identity is a per-lane sequence (`SEQ_FIRST`..`SEQ_LAST`) with the observed
+tick advisory only, resolving the `seq`-versus-`tick` question. Hard caps are
+wire constants (`MAX_INTENT_FRAME_BYTES` 4096, `MAX_DELTA_FRAME_BYTES` 65536,
+`MAX_DELTA_OPS` 256, `MAX_WIRE_STRING_BYTES` 256); rate and queue limits are
+separate `POLICY_*` values that can be lowered without a wire change.
+Rejection reasons are the typed protocol errors in those modules. `SimEvent` is
+never serialized directly: the wire carries versioned projections with their
+own tags.
+
 ### 7.4 Interest management and the anti-cheat boundary
 
 - **Tier 1 (now):** interest set = the area the player's character is in. Simple, correct, sufficient for 8 players in a 500×500 m area.
 - **Tier 2 (designed for, not built):** grid-cell AOI within an area. `InterestSet` is an interface from day one, so replacing the implementation touches one file.
-- **Per-client component filtering is mandatory, not optional.** A hidden creature must not be sent to a client that has not perceived it. A trap's existence must not be replicated until detected. A locked chest's contents must not be sent. This is computed server-side per client per tick. Skipping it means stealth, perception, and secrets are cheatable by anyone with a packet sniffer, and retrofitting it means auditing every component. Build `fn visible_to(world, viewer, entity) -> ComponentMask` in the first networking milestone.
+- **Per-client component filtering is mandatory, not optional.** A hidden creature must not be sent to a client that has not perceived it. A trap's existence must not be replicated until detected. A locked chest's contents must not be sent. This is computed server-side per client per tick. Skipping it means stealth, perception, and secrets are cheatable by anyone with a packet sniffer, and retrofitting it means auditing every component. Build `fn visible_to(world, viewer, entity) -> ComponentMask` in the first networking milestone. (*2026-09-30, E017, POST-T018 D14, ADR-0020/0022, T033:* realized as whole-area presence from persisted area facts (T027a) plus explicit per-entity, per-field disclosure grants held by the host (ADR-0022) and projected by net (T027b/T027c); unknown entities and fields are denied.)
 
 ### 7.5 Prediction, reconciliation, interpolation
 
@@ -793,12 +818,14 @@ There is no `SetPosition`, no `ApplyDamage`, no `SetVariable`. **If a message na
 - Server sends authoritative position with the last-processed input tick. Client discards acknowledged inputs, and if the divergence exceeds a threshold, snaps or eases to the server position and replays unacknowledged inputs.
 - All other entities are interpolated between the last two snapshots with a fixed ~100 ms buffer.
 - **Nothing else is predicted.** An attack shows a wind-up animation and a "pending" state until the server resolves it. This is the correct trade for the genre and it removes an entire category of bugs.
+- *Note 2026-09-30 (E017, D13/D24, T033):* movement prediction waits for an authoritative movement/nav specification (scheduled after T024), a separately versioned movement lane with processed-seq/server-tick acknowledgments (T026p), and the bridge task (T026). Thresholds are measured, not assumed (D06).
 
 ### 7.6 Reconnection and persistence
 
 - Session token issued at auth; on reconnect within a grace window the server re-attaches the player to their existing character rather than rejoining fresh.
 - Resync is a full area snapshot, not a delta. Delta-since-disconnect is an optimisation for later.
 - The character remains in the world during the grace window, controlled by party AI or frozen (campaign-configurable). Combat cannot be escaped by pulling the ethernet cable.
+- *Note 2026-09-30 (E017, D11/D12, T033):* the first grace window is 30 seconds within the same host process (T025a/T025b); resync uses the versioned bounded snapshot transfer of T024. After a process restart, sessions are fresh and old epochs are refused (D10, ADR-0022).
 
 ### 7.7 Deliberately deferred
 
@@ -877,6 +904,11 @@ This is one platform-neutral authoritative implementation, with Windows
 in-process single-player hosting and Windows/Linux dedicated process adapters
 (ADR-0012). The diagram separates dedicated startup from reusable host logic;
 E012/E022 must decide its actual API/package allocation before implementation.
+(*Resolved 2026-09-30, D02/D03, ADR-0022, T033:* the reusable host is the
+`crpg-server` library whose first slice is T022; sessions own epochs, grants
+are explicit per-entity/per-field sets checked immediately before execution,
+and the admin/RPC surface below is the privileged control protocol of D03,
+fail-closed until its task.)
 Neither embedded hosting nor editor Play grants the client direct mutation
 access. OS-specific adapters stay above core/rules/sim, and all headless
 server surfaces remain Godot-free.
@@ -935,6 +967,14 @@ support is not promised. This single decision gives you:
 
 Godot's own editor works this way (in-editor play), and this is the one editor idea worth borrowing.
 
+*Note 2026-09-30 (E018, POST-T018 D03, T033):* the editor's GM session gets a
+host-issued binding with an explicit set of allowed operations and resources,
+checked immediately before execution and revocable before the next command.
+Nothing is granted for being in the same process, and role names are not
+wildcards. Live-edit commands travel on the privileged control protocol, which
+does not exist until its own task and fails closed meanwhile. The headless
+editor command API (`crpg-edit`) precedes any editor UI (D18).
+
 ### 11.2 Document model, undo, and validation live in Rust
 
 ```rust
@@ -962,6 +1002,11 @@ Consequences worth stating plainly:
 - The GDScript UI is a **view**. It renders document state and emits commands. When a command is applied, the document emits a change notification and views refresh. Keep GDScript logic-free enough that a bug there cannot corrupt a campaign.
 
 ### 11.3 The FFI surface (keep it small)
+
+*Note 2026-09-30 (E022, T033):* the owners, prerequisites and phases of the
+FFI, replica-query, edit-command, session and distribution shapes named in
+§§9–11 are ledgered in `tasks/BACKLOG.md` ("API-shape ledger"). The verbs
+below are design intent until their owning task pins exact signatures.
 
 Between Rust and GDScript there are roughly five object types:
 
@@ -1026,8 +1071,18 @@ Three UX commitments that distinguish this from every hobby editor:
 | Tier | Examples | Trust | Enforcement |
 |---|---|---|---|
 | **T0 Native** | engine, rulesets shipped as Rust, server plugins | Full | Operator installs them deliberately. Not sandboxed. Signed and listed in the server config. |
-| **T1 Campaign content** | campaign JSON, Lua scripts, event graphs, assets | Semi | Runs **server-side only**, in the Lua sandbox, with instruction/memory/time budgets and a whitelisted API. |
+| **T1 Campaign content** | campaign JSON, Lua scripts, event graphs, assets | Semi | Runs **server-side only**, in the Lua sandbox, with instruction/memory budgets (no wall-clock abort; *corrected 2026-09-30, E008/E010, T033*) and a whitelisted API. |
 | **T2 Client-side** | UI themes, HUD layouts, model replacements, sounds | **None** | Never executes code. Data only. Never affects sim. Server-verified where it could confer advantage. |
+
+*Enforcement notes 2026-09-30 (E018, POST-T018 D03/D07, T033):* T0 native
+loading and signing are **deferred** (D07; E023): no signed-plugin trust root
+is claimed, and portable data plus sandboxed scripting are the extension path
+for now. T1 enforcement is the sandbox and budgets above plus host validation.
+T2 enforcement is data minimization: clients receive a generated, allowlisted
+presentation manifest — never the server package with files deleted — that
+excludes server Lua, event handlers, hidden gameplay data, native binaries and
+credentials; unknown content categories fail the export. The export, host
+distribution and client import are separate tasks with their own leak tests.
 
 The dangerous idea to reject explicitly: **do not let clients download and run campaign scripts.** If a player connects to a server, they receive data and events, never logic. This keeps the "join a stranger's server" case safe, which is the one that would otherwise sink the project's reputation.
 
@@ -1075,13 +1130,24 @@ not implement a new performance gate or define cross-target equality.
 | Entities per area, active | 200 | plus ~2,000 static props |
 | Entities per area, ceiling | 1,000 | AI budgeted, not all thinking each tick |
 | Players per server | 8 initially; 32 designed-for | area-scoped worlds are the lever |
-| Server tick | 20 Hz; ≤ 8 ms per area per tick at target load | measured, with a CI perf gate |
+| Server tick | 20 Hz; ≤ 8 ms per area per tick at target load | aspiration until a measured baseline exists (D06) |
 | Area size | 500 × 500 m | one navmesh, one nav bake |
 | Bandwidth per client | ≤ 15 KB/s steady, ≤ 60 KB/s in busy combat | delta compression + component filtering |
 | Pathfinding | ≤ 0.5 ms average per query, cached per (start-cell, goal-cell) | |
 | Client frame | 60 fps at 1080p on a 2019 mid-range GPU | Godot forward+ handles this easily at these entity counts |
 | Save file | ≤ 20 MB for a large campaign state; write ≤ 200 ms | |
 | Memory, server | ≤ 500 MB per loaded area | |
+
+*Note 2026-09-30 (E019, POST-T018 D06, T033):* every row above is an
+aspiration, not a gate, until a versioned deterministic workload (pinned seed,
+content, schedule, entity/system counts and interest policy) and a
+controlled-runner baseline per target/toolchain/profile/hardware exist. Initial
+workload families: minimal-d6 combat, srd-lite combat, eight-peer filtered
+replication and snapshot assembly. The unsupported "1,000 entities at 60 fps
+without LOD" combination is dropped (ADR-0003 measured 43.7 fps at 1,000);
+bulk scene synchronization and animation LOD are separate bridge work, and no
+lower entity count is invented before it is measured. Time never enters
+replay state.
 
 ### 13.2 Design for scale now (cheap)
 
@@ -1091,7 +1157,7 @@ not implement a new performance gate or define cross-target equality.
 - No O(n²) loops over entities anywhere. Spatial queries go through `SpatialIndex` (uniform grid). Enforce by review.
 - Budgeted AI scheduling from the very first AI implementation.
 - Message-based cross-area communication.
-- Measure from the start: a `crpgc bench` command that loads a synthetic 1,000-entity area and reports per-system tick times. Run it in CI and fail on a 20% regression.
+- Measure from the start: a `crpgc bench` command that loads a synthetic 1,000-entity area and reports per-system tick times. Run it in CI and fail on a 20% regression. (*Note 2026-09-30, E019/D06, T033:* subsystem-owned workload APIs come first and `crpgc bench` is a thin wrapper over them; shared CI runners verify workload/report correctness only; the 20% threshold applies only against stored controlled-runner baselines once they exist.)
 
 ### 13.3 Deliberately simple (do not optimise)
 
@@ -1839,7 +1905,7 @@ Start here, in this order. Tasks 1–3 are spikes and should be thrown away.
 *Purpose:* confirm `mlua` can be locked down and budgeted.
 *Affected:* throwaway repo.
 *Dependencies:* none.
-*Work:* an `mlua` environment with `io`, `os`, `require`, `debug`, `package`, `load`, `loadstring` removed; an instruction-count hook; a memory limit; a deterministic `pairs` and `math.random`.
+*Work:* an `mlua` environment with `io`, `os`, `require`, `debug`, `package`, `load`, `loadstring` removed; an instruction-count hook; a memory limit; a deterministic `pairs` and `math.random`. (*Note 2026-09-30, E010, T033:* the sandbox must also remove `loadfile` and `dofile`; see §5.4.)
 *Test:* ten scripted escape attempts all fail; an infinite loop aborts within the budget rather than hanging; two runs with the same seed produce identical output.
 *Done when:* all pass and the sandbox module is small enough to copy into `crpg-script` later.
 
@@ -2027,3 +2093,4 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the replay/step-9 status text and the T9a/T9c done-when rows to the merged state; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the step 9/phase-1 status, the T9b done-when row, and the T9c done-when tail to the merged `crpgc replay` wrapper; T010 is next.
 - 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Applied the settled E003 (definitions-only contracts, net-local Transport), E012 (crpg-server library + dedicated binary, Godot projects over crpg-godot), E013 (dependency diagram redrawn to match ALLOWED, "simulation stack" vs `crpg-core`, flow arrows labelled) and E021 (illustrative-only contract example) wording with dated notes; E022 interfaces and all hosting remain unimplemented and open.
+- 2026-09-30 (UTC) · claude-code + T033 E-task reconciliation · Applied the already-decided E010 (budgets, loader strip list, no wall-clock), E017 (as-built wire, legality, interest, movement, reconnect), E018 (auth, grants, privileged channel, T0/T2 enforcement), E019 (aspirational perf rows, D06 measurement) and E022 (ledger pointer) wording with dated notes; history text kept.

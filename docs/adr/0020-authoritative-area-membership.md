@@ -37,3 +37,9 @@ goldens are unchanged. No dependency/core/contract change.
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T027a/D14 specification · Recorded persisted area membership and its narrow atomic producer without contradicting one-area-per-World ownership. Kept permissions, network handoff and unsupported combat migration out of the sim facts contract.
+
+## Status update — 2026-09-30 (UTC)
+
+**Accepted** — approved by the user on 2026-09-30 ("Approved.", decision D19). Implemented by T027a and merged in PR #20 with its suite green on Windows/MSVC and Linux/GNU CI. See [tasks/DECISIONS-2026-09-30.md](../../tasks/DECISIONS-2026-09-30.md).
+
+- 2026-09-30 (UTC) · claude-code + D19 status update · Appended the user-approved status change as a dated section instead of editing the original status line, per the E007 append-only policy.

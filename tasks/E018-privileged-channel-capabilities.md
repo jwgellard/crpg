@@ -40,3 +40,18 @@ The highest-severity forward-looking hole in the review:
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark · Filed as part of the spec-gap triage: a promised privileged channel with no authorization story.
+
+## Resolution — 2026-09-30 (T033, D03)
+
+The capability model was selected in POST-T018 D03: operator-provisioned,
+revocable invitation credentials; a server certificate pinned out of band; no
+trust-on-first-use, anonymous authority or LAN bypass; ordinary, scoped-GM and
+admin grants as explicit operation/resource sets checked immediately before
+execution; a separate typed control protocol for privileged traffic,
+fail-closed until its own task; no privilege from being in-process; and an
+allowlisted client presentation manifest instead of a stripped server package.
+T033 wrote this into spec §7.2, §10, §11.1 and §12.1. Building the endpoints,
+the manifest export and its leak test belongs to the tasks in the BACKLOG
+API-shape ledger.
+
+- 2026-09-30 (UTC) · claude-code + T033 · Recorded how the already-selected decision closes this item and where the spec now says it, per D25.

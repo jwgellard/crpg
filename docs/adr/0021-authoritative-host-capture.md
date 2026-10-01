@@ -105,3 +105,9 @@ this specification: writing them now would describe code that does not exist.
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/muse-spark + T022 readiness ADR · Filed the selected host-capture/restart rationale under D02/D03/D10 delegation, keeping the normative contract in tasks/T022.md and naming the unaudited-auth, persist-backend, and exhaustion-reachability residuals as open gates rather than silent choices.
+
+## Status update — 2026-09-30 (UTC)
+
+**Superseded by [ADR-0022](0022-host-session-capture-retirement.md)** (decision D19, approved by the user on 2026-09-30). The text above is kept as decided. See [tasks/DECISIONS-2026-09-30.md](../../tasks/DECISIONS-2026-09-30.md).
+
+- 2026-09-30 (UTC) · claude-code + D19 status update · Appended the user-approved status change as a dated section instead of editing the original status line, per the E007 append-only policy.

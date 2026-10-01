@@ -173,11 +173,19 @@ class PreflightCase:
             "FAKE_LOG": str(self.log),
             "FAKE_METADATA": str(self.metadata),
         }
-        for key in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE", "PSModulePath"):
+        passthrough = (
+            "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
+            "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PSModulePath",
+        )
+        for key in passthrough:
             if key in os.environ:
                 env[key] = os.environ[key]
         if WINDOWS:
             env["PATHEXT"] = ".COM;.EXE;.BAT;.CMD"
+            # PowerShell runs .cmd shims through cmd.exe, found via COMSPEC or
+            # System32; System32 holds none of the faked tool names.
+            system32 = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32"
+            env["PATH"] = os.pathsep.join([str(self.bin), str(system32)])
         env.update(env_extra)
         return subprocess.run(
             self.launcher.command(self.script, args),

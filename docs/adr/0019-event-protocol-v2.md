@@ -36,3 +36,9 @@ rebaselines. No dependency approval is needed for the specified API.
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021/D09 specification · Filed the exact version/tag and disclosure decision while preserving the existing dependency boundary. Linked the normative task contract rather than creating a second copy of the wire layout.
+
+## Status update — 2026-09-30 (UTC)
+
+**Accepted** — approved by the user on 2026-09-30 ("Approved.", decision D19). Implemented by T021 and merged in PR #18 with `events_v2` green on Windows/MSVC and Linux/GNU CI. See [tasks/DECISIONS-2026-09-30.md](../../tasks/DECISIONS-2026-09-30.md).
+
+- 2026-09-30 (UTC) · claude-code + D19 status update · Appended the user-approved status change as a dated section instead of editing the original status line, per the E007 append-only policy.

@@ -588,3 +588,17 @@ about new protocol/host claims.
 
 - 2026-09-28 (UTC) · opencode/gpt-6-astra + E017 durability review · Reclassified Appendix A choices into durable versus provisional-with-evolution-plan and added lane separation, two-tier limits, and the ordered C1/v2/host evolution queue so a narrow first proof cannot silently become permanent debt.
 - 2026-09-28 (UTC) · opencode/gpt-6-astra + approval receipt and Part 2 contracts · Recorded user approval of Appendix B with recommended defaults (200-tick host-policy bound, D4a now with D4b as release blocker, cooperative tree) and wrote ordered single-crate T018/T018a/b/c contracts without approving E017 itself or authorizing implementation.
+
+## Resolution — 2026-09-30 (T033, D01, T018/T021)
+
+The option calls were settled in POST-T018 D01 and by the as-built T018/T021
+wire. T033 reconciled spec §5.2 (action registry → T029a declarations plus
+T029b trusted bindings; continuations → world-owned IR state, D17), §6.2
+(`legal_actions` as built by T028), §7.2–7.3 (lane byte, per-lane sequence as
+command identity with advisory tick, wire caps versus policy values, versioned
+projections instead of raw `SimEvent`), §7.4 (whole-area presence plus explicit
+per-field grants, D14), §7.5 (movement after its spec, D13/D24) and §7.6
+(30-second same-process grace and snapshot resync, D11/D12). Residual work is
+the named evolution queue (T019–T029b), not this task.
+
+- 2026-09-30 (UTC) · claude-code + T033 · Recorded how the already-selected decision closes this item and where the spec now says it, per D25.

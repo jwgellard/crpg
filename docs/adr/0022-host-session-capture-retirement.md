@@ -75,3 +75,9 @@ this slice's in-memory contract.
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/muse-spark + T022 review corrections · Filed the superseding session/disclosure/retirement rationale, keeping the normative contract in tasks/T022.md and naming the persist/auth/exhaustion residuals as open gates rather than silent choices.
+
+## Status update — 2026-09-30 (UTC)
+
+**Accepted** as the T022 contract — approved by the user on 2026-09-30 ("Approved.", decision D19) after review of its eight corrections over ADR-0021. T022's implementation acceptance remains its own native gates. See [tasks/DECISIONS-2026-09-30.md](../../tasks/DECISIONS-2026-09-30.md).
+
+- 2026-09-30 (UTC) · claude-code + D19 status update · Appended the user-approved status change as a dated section instead of editing the original status line, per the E007 append-only policy.

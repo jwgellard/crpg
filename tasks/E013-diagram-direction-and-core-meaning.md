@@ -56,3 +56,12 @@ diagram) is outside T032's allowed files and still needs the same caption or
 redraw. This task stays open until that README edit lands.
 
 - 2026-09-30 (UTC) · claude-code + T032 E013 spec resolution · Recorded the spec's corrected diagram direction and core/simulation-stack vocabulary, keeping the task open for the README diagram outside T032's scope.
+
+## Resolution — 2026-09-30 (T033, T033)
+
+README part: `README.md`'s architecture diagram is redrawn to match the
+`ALLOWED` table and D02 placement, with the `A -> B` import caption and the
+"core" versus "simulation stack" definition. With T032's spec changes, E013 is
+closed.
+
+- 2026-09-30 (UTC) · claude-code + T033 · Recorded how the already-selected decision closes this item and where the spec now says it, per D25.

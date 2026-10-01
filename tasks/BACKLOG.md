@@ -98,30 +98,31 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 |---|---|---|---|
 | T018 | done | 2026-09-28 | `crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance (T018a/b/c; PR #16, implementation `2fc54b7`, merge `bc54896`; 75 net tests per native target). Phase 4 host/QUIC/movement/reconnect remains open; follow-on queue: POST-T018.md. |
 | T019 | done | 2026-09-29 | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native green (PR #17, implementation `56931eb`, merge `f3d1560`); see [T019](T019.md) |
-| T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Open: the record's independent review of the two golden artifacts, and ADR-0017 still reads "Selected", not Accepted; see [T020](T020.md) |
-| T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). `tasks/T021.md` carries no completion record; its suite is reported green on both natives only in T020's review-fix log. ADR-0019 still reads "Selected"; see [T021](T021.md) |
-| T022 | blocked | — | `crpg-server` C4 capture/checkpoint slice; D02/D03/D10 selected, exact API + T020/T021 required |
-| T023 | blocked | — | `crpg-net` N-QUIC; carry-patch selected in D04, source/patch/dependency evidence and exact contract required |
+| T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Golden review closed and ADR-0017 accepted (D19); see [T020](T020.md) |
+| T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). Retrospective completion record added from PR #18 dual-OS CI; ADR-0019 accepted (D19); see [T021](T021.md) |
+| T022 | open | — | `crpg-server` host capture/checkpoint slice (ADR-0022 accepted, D19); dependency edges approved (D20). Ready to implement; see [T022](T022.md) |
+| T023 | blocked | — | `crpg-net` N-QUIC lane-0 reliable streams; pins and the `windows-sys` skip approved (D22/D23, ADR-0023), no vendored patch; needs its exact endpoint/stream contract and T022 |
 | T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
 | T024 | blocked | — | `crpg-net` versioned bounded snapshot transfer; T021/T023b + D11 |
 | T025a | blocked | — | `crpg-net` reconnect/resync mechanisms; T024 + D12 |
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
-| T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13 |
+| T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13; movement spec scheduled after T024 (D24); first datagram lane applies the T030 patch (D23) |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
-| T027a | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T027a](T027a.md) |
+| T027a | done | 2026-09-30 | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T027a](T027a.md) |
 | T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
-| T028 | on branch | `claude/blissful-rubin-59repd` | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T028](T028.md) |
-| T029a | on branch | `claude/blissful-rubin-59repd` | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite, schemas/fixtures unchanged; Linux/GNU gates green, Windows/MSVC gate and review/merge outstanding; see [T029a](T029a.md) |
-| T029b | blocked | — | Specified: synchronous trusted bindings and transactional combat proposals; implementation requires T029a/T028 plus dependency approval |
+| T028 | done | 2026-09-30 | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T028](T028.md) |
+| T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
+| T029b | open | — | `crpg-script` synchronous trusted bindings; T029a/T028 merged, dependency edges approved (D21). Ready to implement; see [T029b](T029b.md) |
 
 ## Independent preparation and tooling
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T030 | on branch | `claude/blissful-rubin-59repd` | quinn 0.11.12 / quinn-proto 0.11.19 dossier in `docs/reviews/T030-quinn/`: verified sources, 2049-packet dedup patch with independent-model reproduction (Linux), end-to-end symptom not reproduced; blockers: native Windows, `cargo deny` bans (`windows-sys` split), approval pending — T023 stays blocked; see [T030](T030.md) |
-| T031 | on branch | `claude/blissful-rubin-59repd` | `tools/preflight.sh` / `tools/preflight.ps1` fail-fast native gate runners with exact membership validation; 22 subprocess tests (Bash + PowerShell-on-Linux) and real Linux runs green; native Windows run and review/merge outstanding; see [T031](T031.md) |
-| T032 | on branch | `claude/blissful-rubin-59repd` | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md`; docs-only gates green; see [T032](T032.md) |
+| T030 | done | 2026-09-30 | quinn 0.11.12 / quinn-proto 0.11.19 investigation dossier in `docs/reviews/T030-quinn/` (PR #20, merge `c1bc6ab`): verified sources, 2049-packet dedup patch with independent-model reproduction, end-to-end symptom not reproduced. T023 stays blocked on its open decisions (windows-sys bans, dependency approval) and its Windows probe run; see [T030](T030.md) |
+| T031 | done | 2026-09-30 | `tools/preflight.sh` / `tools/preflight.ps1` gate runners (PR #20, merge `c1bc6ab`). Native Windows run of `tools/tests` still outstanding (CI does not run it); see [T031](T031.md) |
+| T032 | done | 2026-09-30 | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md` (PR #20, merge `c1bc6ab`); see [T032](T032.md) |
+| T033 | on branch | `claude/blissful-rubin-59repd` | Documentation: remaining E-task wording (E010, E013 README, E017, E018, E019, E022) reconciled with D01–D18 and the as-built code; E023 deferred; see [T033](T033.md) |
 
 ---
 
@@ -140,7 +141,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
   `BTreeMap`, interned ids runtime-only) govern T006a–e, T007, T008a/b and T014.
   No longer a blocker.
 - **Deferred decision tasks (E-series).** Human-decision, doc-only; detail
-  lives in `tasks/ENNN.md`. Status: `done` · `open`.
+  lives in `tasks/ENNN.md`. Status: `done` · `open` · `deferred` (a recorded decision to postpone, not pending).
 
 | Task | Status | Blocks | Summary |
 |---|---|---|---|
@@ -153,20 +154,47 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | E007 | done | — | ADR policy: Decision never rewritten; supersede by new ADR or dated appended note; exact status vocabulary (T032, 2026-09-30; template `docs/adr/0000-template.md`). Architecture README pointer is a follow-up |
 | E008 | done | — | Instruction (not wall-clock) event budget |
 | E009 | done | — | ADR-0008 residue (sketch, diagrams, §24 text) |
-| E010 | open | script | Script budgets + sandbox-strip alignment |
+| E010 | done | — | Budgets selected in D17 (1024 nodes, 100,000 units per slice, depth 32, 2 MiB Lua state, no wall clock); loader strip list corrected; spec reconciled by T033 (2026-09-30) |
 | E011 | done | — | Determinism-scope ADR-0009 (replay, not lockstep) |
 | E012 | done | — | Naming/placement: `crpg-server` host library + dedicated binary, client/editor Godot projects over `crpg-godot` (D02; spec reconciled by T032, 2026-09-30). E022 interfaces and capability-gated smoke obligations stay open |
-| E013 | open | — | Spec diagram/`core` wording reconciled by T032 (2026-09-30); README diagram still pending (outside T032 scope) |
+| E013 | done | — | Spec (T032) and README (T033) diagrams match `ALLOWED`; "core" vs "simulation stack" defined (2026-09-30) |
 | E014 | done | — | `World: Serialize` vs interned-handle caveat (skeleton-only serde) |
 | E015 | done | — | Replica/prediction model + `Timeline` owner (buffer outside sim) |
 | E016 | done | — | Entity/aggregate documents, lock authorities, package ids, tick waits |
-| E017 | open | post-T018 reconciliation | T018 interface debt (intents, registry, caps; direction decided under delegation in POST-T018-DECISIONS.md, ADR/spec reconciliation still pending) |
-| E018 | open | server | Privileged-channel capability model |
-| E019 | open | CI | Perf measurability + `crpgc bench` task |
+| E017 | done | — | Direction decided in D01 and the T018/T021 as-built wire; spec §§5.2, 6.2, 7.2–7.6 reconciled by T033 (2026-09-30). The named evolution queue (T019–T029b) carries the residual work |
+| E018 | done | — | Capability model selected in D03 (invitation credentials, pinned certificates, explicit grants, separate fail-closed control protocol, allowlisted client manifest); spec reconciled by T033 (2026-09-30). Implementation belongs to the owning tasks |
+| E019 | done | — | D06: measure before enforcing ceilings; perf rows marked aspirations, 1000-entity/60 fps/no-LOD combination dropped; bench row added below (T033, 2026-09-30) |
 | E020 | done | — | Gates 7–13 activate with capabilities; T009c supersedes its Linux-only T009a gate assignment |
 | E021 | done | — | §15.1 example labelled illustrative-only; retrospective `tasks/T004.md` backfilled from git evidence (T032, 2026-09-30) |
-| E022 | open | post-T018 | Server/editor/bridge API-shape ledger; one authoritative host for Windows embedded/dedicated and Linux dedicated adapters with E012 |
-| E023 | open | native extensions | T0 target-specific artifacts, ABI/loading and packaging decisions for Windows/MSVC and Linux/GNU; reconcile unsafe governance before implementation |
+| E022 | done | — | API-shape ledger added below (owner, prerequisite, phase per shape) with a spec §11.3 pointer (T033, 2026-09-30). The shapes themselves stay unspecified until their tasks |
+| E023 | deferred | native extensions | Native loading/ABI and signing/packaging deferred by D07; portable data and sandboxed scripting are the extension path for current milestones |
+
+## API-shape ledger (E022)
+
+Owners, prerequisites and phases for the server/editor/bridge shapes named in
+spec §§9–11. A row is a place in the queue, not a design; each shape is pinned
+by its owning task's contract. Added 2026-09-30 by T033 from D01–D18.
+
+| Shape | Owning crate(s) | Prerequisite | Phase |
+|---|---|---|---|
+| Host sessions, epochs, grants, capture/checkpoint | `crpg-server` | T022 (ADR-0022) | 4 |
+| Network handshake: pinned certificate + invitation credential | `crpg-net` (T023), `crpg-server` (T023b) | T022, T030 evidence, D03 | 4 |
+| Intent rate/queue policy and rejection codes | `crpg-net` (wire), `crpg-server` (policy) | T018 as built; T022 | 4 |
+| Replica storage, delta application, engine-neutral read queries | `crpg-net` | T024, T027b | 5 |
+| Engine-facing replica/presentation objects, `net_id`↔`EntityId` view | `crpg-godot` | replica queries above | 5 |
+| Interpolation buffer and own-movement prediction | `crpg-godot` | T026p, movement spec (D24) | 5 |
+| `EditCommand`, receipts, diagnostics, undo (headless first) | `crpg-edit` | data APIs (T010–T013, T029a) | 6 |
+| Privileged control protocol (GM/admin), live-edit conflicts | `crpg-net` + `crpg-server` | T022, T023, D03 | 6 |
+| Optional `crpgc apply` over the edit command API | `crpg-cli` | `EditCommand` above | 6 |
+| FFI surface (§11.3) object types, errors, threading | `crpg-godot` | edit and replica APIs above | 5–6 |
+| Client presentation-manifest export / import, strip leak test | `crpg-data` export, host distribution, client import | D03 | 7 |
+| Native extension signing, trust root, loading | — | deferred (D07, E023) | later |
+
+Measured performance work (E019/D06): subsystem-owned deterministic workload
+APIs (minimal-d6 combat, srd-lite combat, eight-peer filtered replication,
+snapshot assembly) first, then a thin `crpgc bench` wrapper in `crpg-cli`;
+controlled-runner baselines per target/toolchain/profile/hardware before any
+threshold becomes a gate.
 
 ## Not yet numbered
 
@@ -256,6 +284,7 @@ Record it here, one line per week.
 | 2026-09-28 | 31 | T018 (`crpg-net` lane-0 combat protocol, bounded postcard codec, simulated transport and conformance: T018a/b/c, PR #16, `bc54896`) merged. Cost per merged task not tracked yet. T019 `crpg-sim` same-pool repair is implemented and dual-native verified in the working tree, unmerged, so it is not counted here. |
 | 2026-09-29 | 32 | T019 (`crpg-sim` same-pool affordability repair, PR #17, `f3d1560`) merged. Cost per merged task not tracked yet. T020 history (specification review) is next. |
 | 2026-09-30 | 34 | T020 (`crpg-sim` opt-in history) and T021 (`crpg-net` v2 event protocol) merged in PR #18 (`a991fe9`) together with the post-T018 specification frontier (ADRs 0018–0022, T022–T032 contracts). Cost per merged task not tracked yet. T022 host needs specification inputs; T027a, T028, T029a and T030–T032 are specified and implementable. |
+| 2026-09-30 | 40 | T027a, T028, T029a (sim/data), T030 (quinn dossier), T031 (preflight runners) and T032 (documentation reconciliation) merged in PR #20 (`c1bc6ab`), CI green on Windows/MSVC and Linux/GNU. Cost per merged task not tracked yet. Next: T022 host and T029b bindings, both waiting on dependency approval. |
 
 ---
 
@@ -303,3 +332,6 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Closed E003/E007/E012/E021 with scope notes and kept E013 open for its README diagram, so the backlog does not claim debt outside T032's allowed files is resolved.
 - 2026-09-30 (UTC) · claude-code + T031 implementation · Moved T031 to `on branch` and annotated the scaffolding checklist for the preflight runners and ADR template, keeping the native Windows run open.
 - 2026-09-30 (UTC) · claude-code + T030 dossier · Moved T030 to `on branch` with its evidence location and the three blockers that keep T023 blocked.
+- 2026-09-30 (UTC) · claude-code + PR #20 landed · Marked T027a/T028/T029a/T030/T031/T032 done (merged `c1bc6ab`, dual-OS CI green) and moved throughput to 40, keeping T031's missing native Windows test run and T023's open decisions explicit.
+- 2026-09-30 (UTC) · claude-code + D19–D24 · Opened T022 and T029b, narrowed T023 to its own contract, noted D24/D23 on T026p, and closed the T020/T021 review items per the user-approved decisions.
+- 2026-09-30 (UTC) · claude-code + T033 E-task reconciliation · Closed E010/E013/E017/E018/E019/E022 against D01–D18 and the as-built code, marked E023 deferred (with a new `deferred` status meaning), added the E022 API-shape ledger and the D06 bench row, and added the T033 row.
