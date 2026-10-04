@@ -190,6 +190,13 @@ dependencies = [
 [[package]]
 name = "crpg-server"
 version = "0.1.0"
+dependencies = [
+ "crpg-core",
+ "crpg-net",
+ "crpg-sim",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "crpg-sim"

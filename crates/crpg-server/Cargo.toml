@@ -4,4 +4,21 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+# T022 (D02/D20): the authoritative host slice is a library; the dedicated
+# binary stays a thin wiring shell over it.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "crpg-server"
+path = "src/main.rs"
+
 [dependencies]
+# T022, approved by D20 (tasks/DECISIONS-2026-09-30.md): path edges only, plus
+# the workspace serde/serde_json already in Cargo.lock. No crates.io crate is
+# added by this crate; see the T018a-style audit in tasks/T022.md.
+crpg-core = { path = "../crpg-core" }
+crpg-net = { path = "../crpg-net" }
+crpg-sim = { path = "../crpg-sim" }
+serde = { workspace = true }
+serde_json = { workspace = true }
