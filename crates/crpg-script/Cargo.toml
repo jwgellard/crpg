@@ -4,4 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+# Edges approved by D21 (tasks/DECISIONS-2026-09-30.md) for T029b: internal
+# path crates only, default features, no third-party runtime and no Lua.
 [dependencies]
+crpg-core = { path = "../crpg-core" }
+crpg-data = { path = "../crpg-data" }
+crpg-sim = { path = "../crpg-sim" }
+
+# Dev-only (D21): complete-World byte assertions and fixture documents.
+[dev-dependencies]
+serde_json = { workspace = true }

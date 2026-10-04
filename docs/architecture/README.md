@@ -45,7 +45,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-rules` | [crpg-rules.md](crpg-rules.md) | spec §3, §15.1 |
 | `crpg-sim` | [crpg-sim.md](crpg-sim.md) | spec §2.4 |
 | `crpg-nav` | due with its first task | spec §6.3 |
-| `crpg-script` | due with its first task | spec §5, ADR-0005 |
+| `crpg-script` | [crpg-script.md](crpg-script.md) | spec §5, D17, ADR-0005 |
 | `crpg-ai` | due with its first task | spec §6 |
 | `crpg-net` | [crpg-net.md](crpg-net.md) | spec §7, ADR-0004 |
 | `crpg-persist` | due with its first task | spec §8 |
@@ -77,3 +77,4 @@ superseded by appending, never rewritten.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 crate opening · Linked the new crpg-rules doc; the stat/modifier kernel is the crate's first real code, so the §15.6 gate is satisfied and the "due with T014" place-holder is retired.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018a crate opening · Linked the new crpg-net doc; the lane-0 protocol v1 plus bounded codec plus local Transport is the crate's first real code, so the §15.6 gate is satisfied and the "due with T018" place-holder is retired.
 - 2026-09-30 (UTC) · claude-code + T033 E007 follow-up · Pointed the ADR row at the E007 append-only supersession policy and the ADR template, replacing the stricter "never edited" wording that dated status/evidence appendices already contradicted.
+- 2026-10-04 (UTC) · claude-code + T029b · Linked the new crpg-script doc and added D17 to its governing column; the trusted-binding slice is the crate's first real code, so the §15.6 gate is satisfied and the "due with its first task" place-holder is retired.
