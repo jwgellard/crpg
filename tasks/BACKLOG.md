@@ -114,6 +114,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T028 | done | 2026-09-30 | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T028](T028.md) |
 | T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
 | T029b | open | — | `crpg-script` synchronous trusted bindings; T029a/T028 merged, dependency edges approved (D21). Ready to implement; see [T029b](T029b.md) |
+| T038 | open | — | `crpg-persist` versioned save envelope (zstd, S001 input and decompressed caps) and atomic file store: contract draft awaiting approval (H-contract, H-dep); see [T038](T038.md) |
 
 ## Independent preparation and tooling
 
@@ -341,3 +342,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + D19–D24 · Opened T022 and T029b, narrowed T023 to its own contract, noted D24/D23 on T026p, and closed the T020/T021 review items per the user-approved decisions.
 - 2026-09-30 (UTC) · claude-code + T033 E-task reconciliation · Closed E010/E013/E017/E018/E019/E022 against D01–D18 and the as-built code, marked E023 deferred (with a new `deferred` status meaning), added the E022 API-shape ledger and the D06 bench row, and added the T033 row.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed / implementation plan · Marked T033 done and T031's Windows test evidence supplied (PR #21, `ac137ac`), moved throughput to 41, and linked the new delegation plan without filing its reserved T034+ ids as tasks.
+- 2026-10-04 (UTC) · claude-code + T038 contract · Added the T038 row as `open` with its contract draft awaiting approval, so the first Wave 1 spec output is indexed without implying readiness or approval.
