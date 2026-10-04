@@ -100,7 +100,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T019 | done | 2026-09-29 | `crpg-sim` same-pool affordability repair; 11-test public regression, unchanged replay/goldens, dual-native green (PR #17, implementation `56931eb`, merge `f3d1560`); see [T019](T019.md) |
 | T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Golden review closed and ADR-0017 accepted (D19); see [T020](T020.md) |
 | T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). Retrospective completion record added from PR #18 dual-OS CI; ADR-0019 accepted (D19); see [T021](T021.md) |
-| T022 | open | — | `crpg-server` host capture/checkpoint slice (ADR-0022 accepted, D19); dependency edges approved (D20). Ready to implement; see [T022](T022.md) |
+| T022 | on branch | `claude/blissful-rubin-59repd` | `crpg-server` host capture/checkpoint slice (ADR-0022, D20): 31-case `host_capture` suite; four contract readings (view health bound 3, oldest-first retry eviction, outcome text from the journaled event, no staged reply for unreserved rejections) flagged for review in the completion record; Linux/GNU verified, Windows/MSVC pending CI; see [T022](T022.md) |
 | T023 | blocked | — | `crpg-net` N-QUIC lane-0 reliable streams; pins and the `windows-sys` skip approved (D22/D23, ADR-0023), no vendored patch; needs its exact endpoint/stream contract and T022 |
 | T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
 | T024 | blocked | — | `crpg-net` versioned bounded snapshot transfer; T021/T023b + D11 |
@@ -113,7 +113,14 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
 | T028 | done | 2026-09-30 | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T028](T028.md) |
 | T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
-| T029b | open | — | `crpg-script` synchronous trusted bindings; T029a/T028 merged, dependency edges approved (D21). Ready to implement; see [T029b](T029b.md) |
+| T029b | on branch | `claude/blissful-rubin-59repd` | `crpg-script` synchronous trusted bindings (D17, D21): startup validation, staged all-or-nothing dispatch, 18-test suite plus 4 doctests; Linux/GNU verified, Windows/MSVC pending CI; see [T029b](T029b.md) |
+| T038 | on branch | — | `crpg-persist` versioned save envelope (zstd, S001 input and decompressed caps) and atomic file store: contract and `zstd =0.14.0` approved by the user 2026-10-04 with all recommendations. Implemented on branch `claude/blissful-rubin-59repd` (34 tests in three suites); verified on Linux/GNU only, native Windows/MSVC pending CI; review/merge outstanding; see [T038](T038.md) |
+
+## Phase 6 — Editor
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract draft awaiting approval; blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, specified in T058 §9, no task file yet); see [T058](T058.md) |
 
 ## Independent preparation and tooling
 
@@ -341,3 +348,8 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + D19–D24 · Opened T022 and T029b, narrowed T023 to its own contract, noted D24/D23 on T026p, and closed the T020/T021 review items per the user-approved decisions.
 - 2026-09-30 (UTC) · claude-code + T033 E-task reconciliation · Closed E010/E013/E017/E018/E019/E022 against D01–D18 and the as-built code, marked E023 deferred (with a new `deferred` status meaning), added the E022 API-shape ledger and the D06 bench row, and added the T033 row.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed / implementation plan · Marked T033 done and T031's Windows test evidence supplied (PR #21, `ac137ac`), moved throughput to 41, and linked the new delegation plan without filing its reserved T034+ ids as tasks.
+- 2026-10-04 (UTC) · claude-code + T038 contract · Added the T038 row as `open` with its contract draft awaiting approval, so the first Wave 1 spec output is indexed without implying readiness or approval.
+- 2026-10-04 (UTC) · claude-code + T038 approval · Marked T038 ready after the user approved its contract and dependency request.
+- 2026-10-04 (UTC) · claude-code + T058 contract · Added a Phase 6 — Editor table with the T058 row as `open`, its contract draft awaiting approval and blocked on the `crpg-data` prerequisite T058a, so the second Wave 1 spec output is indexed without implying readiness or approval.
+- 2026-10-04 (UTC) · claude-code + T038 implementation · Moved T038 to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
+- 2026-10-04 (UTC) · claude-code + T022/T029b implementation · Moved T022 and T029b to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, T022's flagged contract readings and review/merge explicit.
