@@ -116,6 +116,12 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T029b | open | — | `crpg-script` synchronous trusted bindings; T029a/T028 merged, dependency edges approved (D21). Ready to implement; see [T029b](T029b.md) |
 | T038 | open (ready) | — | `crpg-persist` versioned save envelope (zstd, S001 input and decompressed caps) and atomic file store: contract and `zstd =0.14.0` approved by the user 2026-10-04 with all recommendations; ready; see [T038](T038.md) |
 
+## Phase 6 — Editor
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract draft awaiting approval; blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, specified in T058 §9, no task file yet); see [T058](T058.md) |
+
 ## Independent preparation and tooling
 
 | Task | Status | Merged | Summary |
@@ -344,3 +350,4 @@ Record it here, one line per week.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed / implementation plan · Marked T033 done and T031's Windows test evidence supplied (PR #21, `ac137ac`), moved throughput to 41, and linked the new delegation plan without filing its reserved T034+ ids as tasks.
 - 2026-10-04 (UTC) · claude-code + T038 contract · Added the T038 row as `open` with its contract draft awaiting approval, so the first Wave 1 spec output is indexed without implying readiness or approval.
 - 2026-10-04 (UTC) · claude-code + T038 approval · Marked T038 ready after the user approved its contract and dependency request.
+- 2026-10-04 (UTC) · claude-code + T058 contract · Added a Phase 6 — Editor table with the T058 row as `open`, its contract draft awaiting approval and blocked on the `crpg-data` prerequisite T058a, so the second Wave 1 spec output is indexed without implying readiness or approval.
