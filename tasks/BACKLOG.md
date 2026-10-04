@@ -120,7 +120,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken); blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, specified in T058 §9, no task file yet); see [T058](T058.md) |
+| T058a | open | — | `crpg-data` public RFC 6901 pointer edit (`edit_document`, `pointer_tokens`) and in-memory structural index rebuild (`campaign_index`) for T058: contract draft awaiting approval; blocks T058; see [T058a](T058a.md) |
+| T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken); blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, contract draft in [T058a](T058a.md)); see [T058](T058.md) |
 
 ## Independent preparation and tooling
 
@@ -356,3 +357,5 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + T022/T029b implementation · Moved T022 and T029b to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, T022's flagged contract readings and review/merge explicit.
 - 2026-10-04 (UTC) · claude-code + T058 decisions · Recorded T058's contract approval while keeping it blocked on T058a.
 - 2026-10-04 (UTC) · claude-code + PR #23 landed · Marked T022, T029b and T038 done (merge `9157250`, dual-OS CI green) and moved throughput to 44.
+- 2026-10-04 (UTC) · claude-code + T058a contract · Added the T058a row above T058 in the Phase 6 — Editor table as `open`, its contract draft awaiting approval and blocking T058, so the prerequisite is indexed without implying approval.
+- 2026-10-04 (UTC) · claude-code + T058a link · Pointed the T058 row's prerequisite note at the new T058a contract instead of the stale "no task file yet".
