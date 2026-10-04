@@ -103,6 +103,7 @@ class TreeCase(unittest.TestCase):
         internal, external = deps.build_graph(tmp)
         return (
             deps.check_godot(external)
+            + deps.check_io_free(external)
             + deps.check_cycles(deps.runtime_edges(internal))
             + deps.check_allowed(internal)
             + deps.check_unsafe(tmp)
@@ -409,6 +410,121 @@ class TestBuildScripts(TreeCase):
             "crpg-data": ["crpg-core"],
         })
         self.assertEqual(deps.check_build_scripts(tmp), [])
+
+
+class TestNetQuicPlacement(TreeCase):
+    """ADR-0024: the QUIC transport sits above crpg-net, never below it."""
+
+    def test_net_quic_may_depend_on_net(self):
+        self.assertEqual(self.all_violations({
+            "crpg-net": [],
+            "crpg-net-quic": ["crpg-net"],
+        }), [])
+
+    def test_net_quic_may_not_depend_on_sim(self):
+        """The transport is a byte pipe; simulation stays out of its graph."""
+        violations = self.all_violations({
+            "crpg-sim": [],
+            "crpg-net-quic": {"dev-dependencies": ["crpg-sim"]},
+        })
+        self.assertTrue(
+            any("crpg-net-quic -> crpg-sim" in v for v in violations), violations
+        )
+
+    def test_net_may_not_depend_on_net_quic(self):
+        """The Q12 guarantee: protocol consumers never inherit the I/O graph."""
+        for section in ("dependencies", "dev-dependencies"):
+            with self.subTest(section=section):
+                violations = self.all_violations({
+                    "crpg-net": {section: ["crpg-net-quic"]},
+                    "crpg-net-quic": [],
+                })
+                self.assertTrue(
+                    any("crpg-net -> crpg-net-quic" in v for v in violations),
+                    violations,
+                )
+
+    def test_server_may_depend_on_net_quic(self):
+        """T023b's edge is already legal through crpg-server's None row."""
+        self.assertEqual(self.all_violations({
+            "crpg-net": [],
+            "crpg-net-quic": ["crpg-net"],
+            "crpg-server": ["crpg-net", "crpg-net-quic"],
+        }), [])
+
+
+# The eight crates ADR-0024 bans, spelled out here rather than read from
+# deps.IO_CRATES, so that dropping one from the lint fails a test.
+IO_CRATE_NAMES = (
+    "tokio", "quinn", "quinn-proto", "quinn-udp", "rustls", "ring", "mio", "socket2",
+)
+
+
+class TestIoFreeCrates(TreeCase):
+    """ADR-0024: the simulation stack and crpg-net never name an I/O crate.
+
+    The ALLOWED table keeps crpg-net-quic's graph away from these crates;
+    this rule stops a direct manifest entry, which the table cannot see.
+    """
+
+    def test_net_with_tokio_dependency_fails(self):
+        violations = self.all_violations({
+            "crpg-net": {"dependencies": ["tokio"]},
+        })
+        self.assertIn(
+            "VIOLATION crpg-net -> tokio (io-free, dependencies)", violations
+        )
+
+    def test_net_with_tokio_dev_dependency_fails(self):
+        """A test-only runtime is still a runtime in the crate's graph."""
+        violations = self.all_violations({
+            "crpg-net": {"dev-dependencies": ["tokio"]},
+        })
+        self.assertIn(
+            "VIOLATION crpg-net -> tokio (io-free, dev-dependencies)", violations
+        )
+
+    def test_net_with_target_rustls_fails(self):
+        violations = self.all_violations({
+            "crpg-net": {"target": {"'cfg(windows)'": {"dependencies": ["rustls"]}}},
+        })
+        self.assertIn(
+            "VIOLATION crpg-net -> rustls (io-free, target.cfg(windows).dependencies)",
+            violations,
+        )
+
+    def test_net_with_renamed_tokio_fails(self):
+        """`rt = { package = "tokio" }` is tokio, whatever the key says."""
+        violations = self.all_violations({
+            "crpg-net": {"dependencies": [("rt", "tokio")]},
+        })
+        self.assertIn(
+            "VIOLATION crpg-net -> tokio (io-free, dependencies)", violations
+        )
+
+    def test_every_io_free_crate_is_banned_every_io_crate(self):
+        """Pins both lists: all five crates, all eight banned names."""
+        for crate in ("crpg-core", "crpg-data", "crpg-rules", "crpg-sim", "crpg-net"):
+            for io in IO_CRATE_NAMES:
+                with self.subTest(crate=crate, io=io):
+                    violations = self.all_violations({
+                        crate: {"dependencies": [io]},
+                    })
+                    self.assertIn(
+                        f"VIOLATION {crate} -> {io} (io-free, dependencies)",
+                        violations,
+                    )
+
+    def test_net_quic_may_name_every_io_crate(self):
+        self.assertEqual(self.all_violations({
+            "crpg-net": [],
+            "crpg-net-quic": {"dependencies": ["crpg-net", *IO_CRATE_NAMES]},
+        }), [])
+
+    def test_server_may_name_tokio(self):
+        self.assertEqual(self.all_violations({
+            "crpg-server": {"dependencies": ["tokio"]},
+        }), [])
 
 
 if __name__ == "__main__":
