@@ -101,9 +101,9 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T020 | done | 2026-09-30 | `crpg-sim` opt-in authoritative history: `HistoryWorld`, bounded read/ack journal, full-wrapper `history_hash`, per-target `history_v1` goldens (ADR-0017; PR #18, implementation `ea681c6`, merge `a991fe9`); dual-native verified per its completion record. Golden review closed and ADR-0017 accepted (D19); see [T020](T020.md) |
 | T021 | done | 2026-09-30 | `crpg-net` explicit v2 event protocol beside frozen v1 (`protocol_v2`/`codec_v2`/`projection_v2`, `events_v2` suite; ADR-0019; PR #18, implementation `e25d0fd`, merge `a991fe9`). Retrospective completion record added from PR #18 dual-OS CI; ADR-0019 accepted (D19); see [T021](T021.md) |
 | T022 | done | 2026-10-04 | `crpg-server` host capture/checkpoint slice (ADR-0022, D20): 31-case `host_capture` suite; four contract readings flagged in the completion record (view health bound 3, oldest-first retry eviction, outcome text from the journaled event, no staged reply for unreserved rejections) (PR #23, merge `9157250`; CI green on Windows/MSVC and Linux/GNU); see [T022](T022.md) |
-| T022 | on branch | `claude/blissful-rubin-59repd` | `crpg-server` host capture/checkpoint slice (ADR-0022, D20): 31-case `host_capture` suite; four contract readings (view health bound 3, oldest-first retry eviction, outcome text from the journaled event, no staged reply for unreserved rejections) flagged for review in the completion record; Linux/GNU verified, Windows/MSVC pending CI; see [T022](T022.md) |
-| T023 | blocked | — | `crpg-net` N-QUIC lane-0 reliable streams; pins and the `windows-sys` skip approved (D22/D23, ADR-0023), no vendored patch; exact contract drafted, awaiting approval (its measured audit finds `rand`/`rand_core` duplicates that fail `cargo deny check` beyond ADR-0023, open question 1); see [T023](T023.md) |
-| T023b | blocked | — | `crpg-server` QUIC adapter; exact API, T022 + completed T023 |
+| T023s | on branch | — | root/tools setup for the Q12 crate split: empty `crpg-net-quic` stub, `ALLOWED` row `{"crpg-net"}` with lint self-tests, ADR-0024, doc-index/spec/README rows, `.gitattributes` for DER fixtures; contract approved by the user 2026-10-04 (incl. the §5 manifest ban). Implemented on branch with the `io-free` manifest ban (lint self-tests 70 → 81); verified on Linux/GNU only, native Windows/MSVC pending CI; serialized, H-review of the `ALLOWED` row before merge; blocks T023; see [T023s](T023s.md) |
+| T023 | blocked | — | `crpg-net-quic` (new crate, Q12/ADR-0024) N-QUIC lane-0 reliable streams; D23 pins (now for `crpg-net-quic` only), ADR-0023 `windows-sys` skip plus the approved `rand`/`rand_core` skips and `getrandom` comment fix (Q1/Q2), committed DER fixtures (Q4); re-contract drafted 2026-10-04, awaiting approval with 14 revised questions; blocked on T023s. No driver-relocation (T023d) or `crpg-net` visibility child needed; see [T023](T023.md); re-contract approved by the user 2026-10-04 (v1 limits 64 connections / 60 s idle); ready after T023s |
+| T023b | blocked | — | `crpg-server` QUIC adapter over a `crpg-net-quic` path edge (no direct QUIC crates); exact API, T022 + completed T023; inherits T023's five QUIC conformance cases (downstream note in [T023b](T023b.md)) |
 | T024 | blocked | — | `crpg-net` versioned bounded snapshot transfer; T021/T023b + D11 |
 | T025a | blocked | — | `crpg-net` reconnect/resync mechanisms; T024 + D12 |
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
@@ -121,8 +121,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T058a | on branch | — | `crpg-data` public RFC 6901 pointer edit (`edit_document`, `pointer_tokens`) and in-memory structural index rebuild (`campaign_index`) for T058: contract approved by the user 2026-10-04. Implemented on branch `claude/blissful-rubin-59repd` (32 tests in two new suites); verified on Linux/GNU only, native Windows/MSVC pending CI; the §6 duplicate-id expectation corrected to lexical order by user-approved erratum; review/merge outstanding; blocks T058; see [T058a](T058a.md) |
-| T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken); blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, contract draft in [T058a](T058a.md)); see [T058](T058.md) |
+| T058a | done | 2026-10-04 | `crpg-data` public RFC 6901 pointer edit (`edit_document`, `pointer_tokens`) and in-memory structural index rebuild (`campaign_index`), 32 tests, fixture equivalence with the loader; §6 erratum approved by the user (PR #24; CI green on Windows/MSVC and Linux/GNU); see [T058a](T058a.md) |
+| T058 | on branch | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken). Implemented on branch `claude/blissful-rubin-59repd` (49 tests in five suites, including two 256-case property tests); verified on Linux/GNU only, native Windows/MSVC pending CI; one §11 expectation (rename onto a lock) contradicts §5.3 precedence and awaits a decision; review/merge outstanding; see [T058](T058.md) |
 
 ## Independent preparation and tooling
 
@@ -191,7 +191,7 @@ by its owning task's contract. Added 2026-09-30 by T033 from D01–D18.
 | Shape | Owning crate(s) | Prerequisite | Phase |
 |---|---|---|---|
 | Host sessions, epochs, grants, capture/checkpoint | `crpg-server` | T022 (ADR-0022) | 4 |
-| Network handshake: pinned certificate + invitation credential | `crpg-net` (T023), `crpg-server` (T023b) | T022, T030 evidence, D03 | 4 |
+| Network handshake: pinned certificate + invitation credential | `crpg-net-quic` (T023; ADR-0024), `crpg-server` (T023b) | T022, T023s, T030 evidence, D03 | 4 |
 | Intent rate/queue policy and rejection codes | `crpg-net` (wire), `crpg-server` (policy) | T018 as built; T022 | 4 |
 | Replica storage, delta application, engine-neutral read queries | `crpg-net` | T024, T027b | 5 |
 | Engine-facing replica/presentation objects, `net_id`↔`EntityId` view | `crpg-godot` | replica queries above | 5 |
@@ -364,3 +364,11 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + T023 contract · Noted on the T023 row that its exact contract is drafted and awaiting approval, and that its measured audit adds a `cargo deny` blocker, so the row no longer reads as waiting only on contract writing.
 - 2026-10-04 (UTC) · claude-code + T058a implementation · Moved T058a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, the open §6 duplicate-id decision and review/merge explicit.
 - 2026-10-04 (UTC) · claude-code + T058a erratum · Replaced the row's open-contradiction note with the user-approved erratum.
+- 2026-10-04 (UTC) · claude-code + PR #24 landed · Marked T058a done (dual-OS CI green) and T058 ready now that its prerequisite is merged.
+- 2026-10-04 (UTC) · claude-code + T023 re-contract · Added the T023s setup row and moved the T023 row to the new `crpg-net-quic` crate with its approved decisions and re-contract status. Also pointed the T023b row and the E022 handshake ledger row at that crate, so the index matches the Q12 split.
+- 2026-10-04 (UTC) · claude-code + backlog tidy · Removed the stale `on branch` T022 row that duplicated its `done` row after the PR #23 bookkeeping.
+- 2026-10-04 (UTC) · claude-code + T023/T023s approval · Marked T023s ready and recorded T023's approved re-contract, gated on T023s.
+- 2026-10-04 (UTC) · claude-code + T058 implementation · Moved T058 to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, the open rename-onto-lock decision and review/merge explicit.
+- 2026-10-04 (UTC) · claude-code + T023s implementation · Moved T023s to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, the H-review of the lint row and review/merge explicit.
+- 2026-10-04 (UTC) · claude-code + T058 erratum · Noted the user-approved rename-onto-lock erratum; status unchanged.
+- 2026-10-04 (UTC) · claude-code + T023s split · T023s lands in two PRs (lint/docs, then the stub crate) because the trusted-lint guard judges with the merge-base lint.

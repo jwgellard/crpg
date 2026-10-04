@@ -87,6 +87,8 @@ core/data/rules and `crpg-nav` only core. "Core" alone means `crpg-core`; the
 2026-09-30, E013, T033:* the previous drawing put net above sim and AI/script/
 persist below it, which read as sim importing them.)
 
+*Note 2026-10-04 (T023s, ADR-0024):* `crpg-net-quic` imports `crpg-net` and sits between it and `crpg-server`; it is not drawn, and the `ALLOWED` table stays normative.
+
 The planned shipped surface is three binaries plus a CLI:
 
 | Binary | Contains | Renders? | Authoritative? |
@@ -131,6 +133,7 @@ audit is complete and T009a/T009c/T009b are merged on `master`.
 | `crpg-ai` | AI logic |
 | `crpg-nav` | Navigation / pathfinding |
 | `crpg-net` | Networking, protocol, transport |
+| `crpg-net-quic` | Real lane-0 QUIC transport (quinn/tokio/rustls) over `crpg-net`'s byte protocol |
 | `crpg-script` | Scripting (Lua event handlers, event IR) |
 | `crpg-server` | Headless authoritative server binary |
 | `crpg-cli` | CLI binary (`crpgc`) |
@@ -248,3 +251,4 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Added the six tasks merged in PR #20 to the status block.
 - 2026-09-30 (UTC) · claude-code + T033 E013 · Redrew the architecture diagram to match the enforced `ALLOWED` edges and D02 placement, with the import-direction caption, closing the README half of E013.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed · Added the PR #21 merge and the implementation-plan link to the status block.
+- 2026-10-04 (UTC) · claude-code + T023s · Added the `crpg-net-quic` layout row and a dated note on where it sits, matching the spec §2.2 note, so the crate split is visible without redrawing the diagram.

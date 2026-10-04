@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dependency-direction lint: enforces the layering rule in AGENTS.md.
 
-Checks five things:
+Checks six things:
 
   - **Layering.** Every workspace edge must appear in the allowed-edges table
     below. A crate missing from the table is itself a violation, so adding a
@@ -10,6 +10,9 @@ Checks five things:
     legal in cargo and does not break the build; an upward dev edge is still
     caught by the layering check.
   - **godot.** Only `crpg-godot` may depend on it, in any section.
+  - **I/O-free crates.** `crpg-core`, `crpg-data`, `crpg-rules`, `crpg-sim`
+    and `crpg-net` may not name tokio, quinn, quinn-proto, quinn-udp, rustls,
+    ring, mio or socket2 in any section (ADR-0024).
   - **unsafe.** Only `crpg-godot` may use it. Every other crate root must carry
     `#![forbid(unsafe_code)]`.
   - **Build scripts.** Any `build.rs` at a crate root, and any non-workspace
@@ -17,8 +20,8 @@ Checks five things:
     `[target.*]`). No allowlist: admitting one is an ADR decision.
 
 `[dependencies]`, `[dev-dependencies]` and `[build-dependencies]` are all
-scanned for the layering and godot rules: a test-only import is still an
-import, and `crpg-core/AGENTS.md` says "no workspace crate, ever".
+scanned for the layering, godot and I/O-free rules: a test-only import is
+still an import, and `crpg-core/AGENTS.md` says "no workspace crate, ever".
 
 Two things a manifest can do that a naive reader misses, and this one does not:
 
@@ -27,8 +30,8 @@ Two things a manifest can do that a naive reader misses, and this one does not:
     violation reports the table it came from.
   - **Renamed dependencies.** An entry whose value carries `package = "godot"`
     depends on godot whatever its table key says. The `package` field wins over
-    the key, so a rename cannot launder an edge past the layering or godot
-    rules.
+    the key, so a rename cannot launder an edge past the layering, godot or
+    I/O-free rules.
 
 Requires Python 3.11+ (`tomllib`).
 """
@@ -49,6 +52,11 @@ ALLOWED: dict[str, tuple[set[str] | None, set[str]]] = {
     "crpg-script":    ({"crpg-core", "crpg-data", "crpg-rules", "crpg-sim"}, set()),
     "crpg-ai":        ({"crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"}, set()),
     "crpg-net":       ({"crpg-core", "crpg-data", "crpg-sim"}, set()),
+    # T023s/ADR-0024: the real QUIC transport. It sees only crpg-net's public
+    # byte protocol, Transport trait and queue caps. No row lists it except
+    # the None-rows above it (server, cli, testkit, godot), so crpg-net and
+    # everything below cannot reach tokio/quinn/rustls through it.
+    "crpg-net-quic":  ({"crpg-net"}, set()),
     "crpg-persist":   ({"crpg-core", "crpg-data", "crpg-sim"}, set()),
     "crpg-edit":      ({"crpg-core", "crpg-data", "crpg-rules"}, set()),
     "crpg-contracts": ({"crpg-core"}, set()),
@@ -65,6 +73,13 @@ ALLOWED: dict[str, tuple[set[str] | None, set[str]]] = {
 
 # The one crate allowed unsafe and the godot dependency (root AGENTS.md).
 GODOT_CRATE = "crpg-godot"
+
+# ADR-0024: crates that must stay free of sockets, async runtimes and TLS.
+# A direct manifest entry for any of these, in any section (target tables
+# included, renamed entries resolved), is a violation. Transitive edges are
+# covered by the ALLOWED table: none of these crates may reach crpg-net-quic.
+IO_FREE_CRATES = {"crpg-core", "crpg-data", "crpg-rules", "crpg-sim", "crpg-net"}
+IO_CRATES = {"tokio", "quinn", "quinn-proto", "quinn-udp", "rustls", "ring", "mio", "socket2"}
 
 # Sections of a Cargo.toml that create an import. A dev-dependency is still an
 # import: it is how test code reaches another crate.
@@ -231,6 +246,24 @@ def check_godot(external: Graph) -> list[str]:
     return violations
 
 
+def check_io_free(external: Graph) -> list[str]:
+    """Return violation lines if an I/O-free crate names an I/O crate.
+
+    ADR-0024: the simulation stack and `crpg-net` stay free of sockets, async
+    runtimes and TLS. Every table counts, target-specific ones included, and a
+    renamed entry is the crate it names: a dev-only or platform-gated tokio is
+    still tokio in that crate's graph.
+    """
+    violations = []
+    for src, labels in sorted(external.items()):
+        if src not in IO_FREE_CRATES:
+            continue
+        for label, (_section, deps) in sorted(labels.items()):
+            for dep in sorted(deps & IO_CRATES):
+                violations.append(f"VIOLATION {src} -> {dep} (io-free, {label})")
+    return violations
+
+
 def check_unsafe(crates_dir: Path) -> list[str]:
     """Return violation lines for a crate root missing the forbid attribute.
 
@@ -299,6 +332,7 @@ def main() -> int:
     internal, external = build_graph(crates_dir)
     violations = (
         check_godot(external)
+        + check_io_free(external)
         + check_cycles(runtime_edges(internal))
         + check_allowed(internal)
         + check_unsafe(crates_dir)
