@@ -370,3 +370,4 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + T023/T023s approval · Marked T023s ready and recorded T023's approved re-contract, gated on T023s.
 - 2026-10-04 (UTC) · claude-code + T058 implementation · Moved T058 to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, the open rename-onto-lock decision and review/merge explicit.
 - 2026-10-04 (UTC) · claude-code + T023s implementation · Moved T023s to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, the H-review of the lint row and review/merge explicit.
+- 2026-10-04 (UTC) · claude-code + T058 erratum · Noted the user-approved rename-onto-lock erratum; status unchanged.
