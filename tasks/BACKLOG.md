@@ -120,9 +120,13 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | Task | Status | Merged | Summary |
 |---|---|---|---|
 | T030 | done | 2026-09-30 | quinn 0.11.12 / quinn-proto 0.11.19 investigation dossier in `docs/reviews/T030-quinn/` (PR #20, merge `c1bc6ab`): verified sources, 2049-packet dedup patch with independent-model reproduction, end-to-end symptom not reproduced. T023 stays blocked on its open decisions (windows-sys bans, dependency approval) and its Windows probe run; see [T030](T030.md) |
-| T031 | done | 2026-09-30 | `tools/preflight.sh` / `tools/preflight.ps1` gate runners (PR #20, merge `c1bc6ab`). Native Windows run of `tools/tests` still outstanding (CI does not run it); see [T031](T031.md) |
+| T031 | done | 2026-09-30 | `tools/preflight.sh` / `tools/preflight.ps1` gate runners (PR #20, merge `c1bc6ab`). Native Windows run of `tools/tests` supplied by the D26 CI step: `lint-selftest (windows-latest)` green on PR #21 (merge `ac137ac`, 2026-10-01); see [T031](T031.md) |
 | T032 | done | 2026-09-30 | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md` (PR #20, merge `c1bc6ab`); see [T032](T032.md) |
-| T033 | on branch | `claude/blissful-rubin-59repd` | Documentation: remaining E-task wording (E010, E013 README, E017, E018, E019, E022) reconciled with D01–D18 and the as-built code; E023 deferred; see [T033](T033.md) |
+| T033 | done | 2026-10-01 | Documentation (PR #21, merge `ac137ac`, all nine checks green): remaining E-task wording (E010, E013 README, E017, E018, E019, E022) reconciled with D01–D18 and the as-built code; E023 deferred; see [T033](T033.md) |
+
+The delegated path from here to spec Phase 12 — work-package kinds, waves,
+concurrency limits and human gates — is [docs/IMPLEMENTATION_PLAN.md](../docs/IMPLEMENTATION_PLAN.md).
+Its T034+ ids are reserved places in that order, not written contracts.
 
 ---
 
@@ -285,6 +289,7 @@ Record it here, one line per week.
 | 2026-09-29 | 32 | T019 (`crpg-sim` same-pool affordability repair, PR #17, `f3d1560`) merged. Cost per merged task not tracked yet. T020 history (specification review) is next. |
 | 2026-09-30 | 34 | T020 (`crpg-sim` opt-in history) and T021 (`crpg-net` v2 event protocol) merged in PR #18 (`a991fe9`) together with the post-T018 specification frontier (ADRs 0018–0022, T022–T032 contracts). Cost per merged task not tracked yet. T022 host needs specification inputs; T027a, T028, T029a and T030–T032 are specified and implementable. |
 | 2026-09-30 | 40 | T027a, T028, T029a (sim/data), T030 (quinn dossier), T031 (preflight runners) and T032 (documentation reconciliation) merged in PR #20 (`c1bc6ab`), CI green on Windows/MSVC and Linux/GNU. Cost per merged task not tracked yet. Next: T022 host and T029b bindings, both waiting on dependency approval. |
+| 2026-10-01 | 41 | T033 (documentation: E-task wording reconciled) merged in PR #21 (`ac137ac`) with decisions D19–D26, ADR-0023 and the D26 preflight CI step; all nine checks green including the first native Windows preflight-test run. Cost per merged task not tracked yet. Next: T022 host and T029b bindings, both ready; plan of record in `docs/IMPLEMENTATION_PLAN.md`. |
 
 ---
 
@@ -335,3 +340,4 @@ Record it here, one line per week.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Marked T027a/T028/T029a/T030/T031/T032 done (merged `c1bc6ab`, dual-OS CI green) and moved throughput to 40, keeping T031's missing native Windows test run and T023's open decisions explicit.
 - 2026-09-30 (UTC) · claude-code + D19–D24 · Opened T022 and T029b, narrowed T023 to its own contract, noted D24/D23 on T026p, and closed the T020/T021 review items per the user-approved decisions.
 - 2026-09-30 (UTC) · claude-code + T033 E-task reconciliation · Closed E010/E013/E017/E018/E019/E022 against D01–D18 and the as-built code, marked E023 deferred (with a new `deferred` status meaning), added the E022 API-shape ledger and the D06 bench row, and added the T033 row.
+- 2026-10-01 (UTC) · claude-code + PR #21 landed / implementation plan · Marked T033 done and T031's Windows test evidence supplied (PR #21, `ac137ac`), moved throughput to 41, and linked the new delegation plan without filing its reserved T034+ ids as tasks.

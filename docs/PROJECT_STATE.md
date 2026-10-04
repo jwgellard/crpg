@@ -413,6 +413,12 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   ADR-0004 symptom not reproduced end-to-end and keeps T023 blocked on native
   Windows evidence, a `cargo deny` bans failure (`windows-sys` split) and
   pending dependency approval. Details: `tasks/BACKLOG.md` rows T027a–T032.
+- *Update 2026-10-01:* PR #21 merged (`ac137ac`) with all nine checks green:
+  decisions D19–D26, ADR-0023, T033, and the D26 preflight CI step, whose
+  `lint-selftest (windows-latest)` run is T031's native Windows evidence. The
+  T030 blockers named in the previous update are resolved by D22/D23; T023 now
+  waits only on its own contract and T022. Next: T022 and T029b (both ready),
+  per the delegation plan in `docs/IMPLEMENTATION_PLAN.md`.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -602,3 +608,4 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-30 (UTC) · claude-code + post-T018 batch on branch · Recorded that T027a, T028, T029a and T030–T032 are implemented on branch with Linux-only verification, keeping the Windows gates, review/merge and T030's T023 blockers explicit.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Recorded the merge of the six post-T018 tasks with dual-OS CI and listed the maintainer decisions that now gate T022, T029b and T023.
 - 2026-09-30 (UTC) · claude-code + D19–D26 recorded · Summarized the user-approved decisions and the resulting next tasks (T022, then T029b).
+- 2026-10-01 (UTC) · claude-code + PR #21 landed / implementation plan · Recorded the PR #21 merge, superseded the stale T023-blocker sentence by appending rather than rewriting it, and pointed at the new delegation plan.
