@@ -4,5 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# T023s (ADR-0024): stub only. T023 adds the crpg-net edge and the D23 pins.
 [dependencies]
+# T023 (Q12, ADR-0024): crpg-net's public byte protocol, Transport trait and
+# queue caps. The only workspace edge (ALLOWED row {"crpg-net"}, T023s).
+crpg-net = { path = "../crpg-net" }
+# T023, approved by D23 (tasks/DECISIONS-2026-09-30.md) for this crate by the
+# Q12 decision: exact pins, default features off; audit in tasks/T023.md R6.
+quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+# Direct edge only to pin quinn's protocol crate to the audited =0.11.19.
+quinn-proto = { version = "=0.11.19", default-features = false, features = ["rustls-ring"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+# rt + net + time + sync only: no rt-multi-thread, no macros (no syn in graph).
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "net", "time", "sync"] }
