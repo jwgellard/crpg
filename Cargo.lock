@@ -165,10 +165,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crpg-net-quic"
-version = "0.1.0"
-
-[[package]]
 name = "crpg-persist"
 version = "0.1.0"
 dependencies = [

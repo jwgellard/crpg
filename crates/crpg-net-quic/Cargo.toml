@@ -1,8 +1,0 @@
-[package]
-name = "crpg-net-quic"
-version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-
-# T023s (ADR-0024): stub only. T023 adds the crpg-net edge and the D23 pins.
-[dependencies]
