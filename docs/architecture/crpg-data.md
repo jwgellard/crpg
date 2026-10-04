@@ -15,6 +15,7 @@ The only internal dependency is `crpg-core`.
 - `canonical` supplies duplicate-rejecting integer JSON parsing and canonical bytes.
 - `package` resolves a supplied flat semver catalog and owns byte-oriented lock APIs.
 - `loader` accepts a logical path-to-bytes map and derives the complete object index.
+- `pointer_edit` applies one RFC 6901 edit to a typed document at its current tag.
 - `schema` generates 17 self-contained draft-2020-12 schemas from Rust shapes.
 - `error` exposes fail-fast structural errors, without collected diagnostics.
 - `migrations` owns the single production registry, pure per-type chains and the
@@ -244,3 +245,53 @@ grants no authority to install one; T029b binds trusted handlers to this
 identity. No schema, document family, migration or fixture changed.
 
 - 2026-09-30 (UTC) · claude-code + T029a implementation · Documented the declaration-only store, content-derived bundle identity, strict bundle/call boundaries and first-failure order, stating that declarations carry no execution authority.
+
+## Pointer edits and in-memory index (T058a)
+
+Public module `pointer_edit` (root re-export) and one `loader` function give
+the future `crpg-edit` its only JSON-level primitives, so the editor needs no
+JSON pointer code, second parser, index builder or `serde_json`/`semver` edge
+of its own. The contract is [T058a](../../tasks/T058a.md).
+
+`edit_document(&Document, &PointerEdit)` is pure: it borrows the input, never
+changes it, reads no clock, environment or randomness, and returns the same
+result for the same inputs. Its flow, first failure wins:
+
+1. `pointer_tokens` decodes the pointer: the 8,192-byte bound
+   (`MAX_EDIT_POINTER_BYTES`), then RFC 6901 syntax with one left-to-right
+   `~0`/`~1` pass.
+2. The empty pointer (`RootPointer`) and a first token of `schema`
+   (`SchemaTag`) are refused, so no edit can replace a whole document or
+   touch its tag.
+3. The new value text, if any, goes through the crate's strict parser
+   (`Value`).
+4. The document is serialized with its existing serde shape and walked on
+   the owned value. Array tokens are checked only when an array is reached:
+   `0` or `[1-9][0-9]*` is an index; `-` and indices too large for `usize`
+   name nothing (`NotFound`); other spellings are `InvalidPointer`. `Set`
+   replaces a member or element, or adds an absent member. `Insert` needs an
+   array parent and an index `0..=len` or `-`. `Remove` needs an existing
+   target.
+5. The edited value is decoded at the tag it already carries, with local
+   invariants, and then written once with the canonical writer (`Document`).
+
+The edit is current-tag only: no migration runs and the variant cannot
+change, so every `Ok` carries the current tag of its family. Every `Ok` is
+also canonical: `write_document` succeeds on it and a strict re-read gives
+it back. Normalisation is the typed round trip that loading and writing
+files already apply (`Set /_note null` drops the note). Identity is not
+policed here; the caller decides which ids may change.
+
+`campaign_index(&BTreeMap<SourcePath, Document>)` is the writer's existing
+private structural check, now returning the index it already built: case
+collisions and required files, layout, local invariants, `build_index`, then
+lock coverage and the assets-lock digest. `serialize_campaign` and
+`explain_object` call the same function and discard the index, so all three
+share one acceptance and one precedence. On success the index equals the one
+`load_campaign` derives for the same documents, which the test suite checks
+over every campaign fixture. It never sees an engine version, never migrates
+and never runs semantic validation. Its precedence is the writer's, which
+reports layout before local invariants where the loader's read phase does
+the reverse; `load_campaign` is unchanged.
+
+- 2026-10-04 (UTC) · claude-code + T058a implementation · Documented the pointer-edit flow and precedence, the current-tag-only, canonical and purity guarantees, and `campaign_index` as the writer's structural check returning its index, so the editor's primitives have one owner here.

@@ -181,23 +181,24 @@ fn build_index(
     Ok(index)
 }
 
-/// Structural acceptance shared by the writer and introspection.
+/// Structural acceptance shared by the writer, introspection and
+/// [`campaign_index`].
 ///
 /// Checks required files and case collisions, layout, document-local
 /// invariants, duplicate identities, and lock consistency in the writer's
-/// relative order. Engine compatibility is not checked because no engine
-/// version is supplied.
+/// relative order, returning the index it builds. Engine compatibility is not
+/// checked because no engine version is supplied.
 pub(crate) fn structural_check(
     documents: &BTreeMap<SourcePath, Document>,
-) -> Result<(), DataError> {
+) -> Result<BTreeMap<Ulid, IndexEntry>, DataError> {
     check_paths(documents.keys())?;
     check_layout(documents)?;
     for document in documents.values() {
         crate::document::validate_local(document)?;
     }
-    build_index(documents)?;
+    let index = build_index(documents)?;
     check_locks(documents)?;
-    Ok(())
+    Ok(index)
 }
 
 fn manifest(documents: &BTreeMap<SourcePath, Document>) -> &crate::Campaign {
@@ -290,4 +291,17 @@ pub fn serialize_campaign(
         .iter()
         .map(|(path, document)| Ok((path.clone(), crate::write_document(document)?)))
         .collect()
+}
+
+/// The writer's structural acceptance plus the derived index, without I/O,
+/// engine check or migration: exactly `serialize_campaign`'s checks and
+/// precedence, returning the index `load_campaign` derives for the same
+/// documents.
+///
+/// Semantic findings (dangling references, missing locale keys, unreachable
+/// nodes) never make it fail; run `validate` for those.
+pub fn campaign_index(
+    documents: &BTreeMap<SourcePath, Document>,
+) -> Result<BTreeMap<Ulid, IndexEntry>, DataError> {
+    structural_check(documents)
 }

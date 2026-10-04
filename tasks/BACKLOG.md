@@ -121,7 +121,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T058a | open (ready) | — | `crpg-data` public RFC 6901 pointer edit (`edit_document`, `pointer_tokens`) and in-memory structural index rebuild (`campaign_index`) for T058: contract approved by the user 2026-10-04; ready; blocks T058; see [T058a](T058a.md) |
+| T058a | on branch | — | `crpg-data` public RFC 6901 pointer edit (`edit_document`, `pointer_tokens`) and in-memory structural index rebuild (`campaign_index`) for T058: contract approved by the user 2026-10-04. Implemented on branch `claude/blissful-rubin-59repd` (32 tests in two new suites); verified on Linux/GNU only, native Windows/MSVC pending CI; the §6 duplicate-id expectation corrected to lexical order by user-approved erratum; review/merge outstanding; blocks T058; see [T058a](T058a.md) |
 | T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken); blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, contract draft in [T058a](T058a.md)); see [T058](T058.md) |
 
 ## Independent preparation and tooling
@@ -362,3 +362,5 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + T058a link · Pointed the T058 row's prerequisite note at the new T058a contract instead of the stale "no task file yet".
 - 2026-10-04 (UTC) · claude-code + T058a approval · Marked T058a ready after the user approved its contract.
 - 2026-10-04 (UTC) · claude-code + T023 contract · Noted on the T023 row that its exact contract is drafted and awaiting approval, and that its measured audit adds a `cargo deny` blocker, so the row no longer reads as waiting only on contract writing.
+- 2026-10-04 (UTC) · claude-code + T058a implementation · Moved T058a to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, the open §6 duplicate-id decision and review/merge explicit.
+- 2026-10-04 (UTC) · claude-code + T058a erratum · Replaced the row's open-contradiction note with the user-approved erratum.
