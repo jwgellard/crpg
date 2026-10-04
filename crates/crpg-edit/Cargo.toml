@@ -5,3 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+crpg-core = { path = "../crpg-core" }
+crpg-data = { path = "../crpg-data" }
+crpg-rules = { path = "../crpg-rules" }
+
+[dev-dependencies]
+proptest = { workspace = true }

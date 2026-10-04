@@ -49,7 +49,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-ai` | due with its first task | spec §6 |
 | `crpg-net` | [crpg-net.md](crpg-net.md) | spec §7, ADR-0004 |
 | `crpg-persist` | [crpg-persist.md](crpg-persist.md) | spec §8, D10, D27b, T038 |
-| `crpg-edit` | due with its first task | spec §11 |
+| `crpg-edit` | [crpg-edit.md](crpg-edit.md) | spec §11, D18, T058 |
 | `crpg-contracts` | due with its first task | spec §15.1 (human-owned) |
 | `crpg-testkit` | [crpg-testkit.md](crpg-testkit.md) | spec §15.3, §16 |
 | `crpg-server` | [crpg-server.md](crpg-server.md) | spec §10, ADR-0022 |
@@ -80,3 +80,4 @@ superseded by appending, never rewritten.
 - 2026-10-04 (UTC) · claude-code + T029b · Linked the new crpg-script doc and added D17 to its governing column; the trusted-binding slice is the crate's first real code, so the §15.6 gate is satisfied and the "due with its first task" place-holder is retired.
 - 2026-10-04 (UTC) · claude-code + T038 · Linked the new crpg-persist doc and added D10/D27b/T038 to its governing column; the save envelope and file store are the crate's first real code, so the §15.6 gate is satisfied and the "due with its first task" place-holder is retired.
 - 2026-10-04 (UTC) · claude-code + T022 · Linked the new crpg-server doc; the T022 host slice is the crate's first real code, so the §15.6 gate is satisfied and the "due with its first task" place-holder is retired.
+- 2026-10-04 (UTC) · claude-code + T058 · Linked the new crpg-edit doc and added D18/T058 to its governing column; the headless document, command and undo API is the crate's first real code, so the §15.6 gate is satisfied and the "due with its first task" place-holder is retired.

@@ -122,7 +122,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | Task | Status | Merged | Summary |
 |---|---|---|---|
 | T058a | done | 2026-10-04 | `crpg-data` public RFC 6901 pointer edit (`edit_document`, `pointer_tokens`) and in-memory structural index rebuild (`campaign_index`), 32 tests, fixture equivalence with the loader; §6 erratum approved by the user (PR #24; CI green on Windows/MSVC and Linux/GNU); see [T058a](T058a.md) |
-| T058 | open (ready) | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken); T058a merged (PR #24), ready; see [T058](T058.md) |
+| T058 | on branch | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken). Implemented on branch `claude/blissful-rubin-59repd` (49 tests in five suites, including two 256-case property tests); verified on Linux/GNU only, native Windows/MSVC pending CI; one §11 expectation (rename onto a lock) contradicts §5.3 precedence and awaits a decision; review/merge outstanding; see [T058](T058.md) |
 
 ## Independent preparation and tooling
 
@@ -368,3 +368,4 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + T023 re-contract · Added the T023s setup row and moved the T023 row to the new `crpg-net-quic` crate with its approved decisions and re-contract status. Also pointed the T023b row and the E022 handshake ledger row at that crate, so the index matches the Q12 split.
 - 2026-10-04 (UTC) · claude-code + backlog tidy · Removed the stale `on branch` T022 row that duplicated its `done` row after the PR #23 bookkeeping.
 - 2026-10-04 (UTC) · claude-code + T023/T023s approval · Marked T023s ready and recorded T023's approved re-contract, gated on T023s.
+- 2026-10-04 (UTC) · claude-code + T058 implementation · Moved T058 to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, the open rename-onto-lock decision and review/merge explicit.

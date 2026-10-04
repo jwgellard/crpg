@@ -137,6 +137,12 @@ dependencies = [
 [[package]]
 name = "crpg-edit"
 version = "0.1.0"
+dependencies = [
+ "crpg-core",
+ "crpg-data",
+ "crpg-rules",
+ "proptest",
+]
 
 [[package]]
 name = "crpg-godot"
