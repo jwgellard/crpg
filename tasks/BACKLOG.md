@@ -114,7 +114,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T028 | done | 2026-09-30 | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T028](T028.md) |
 | T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
 | T029b | open | — | `crpg-script` synchronous trusted bindings; T029a/T028 merged, dependency edges approved (D21). Ready to implement; see [T029b](T029b.md) |
-| T038 | open (ready) | — | `crpg-persist` versioned save envelope (zstd, S001 input and decompressed caps) and atomic file store: contract and `zstd =0.14.0` approved by the user 2026-10-04 with all recommendations; ready; see [T038](T038.md) |
+| T038 | on branch | — | `crpg-persist` versioned save envelope (zstd, S001 input and decompressed caps) and atomic file store: contract and `zstd =0.14.0` approved by the user 2026-10-04 with all recommendations. Implemented on branch `claude/blissful-rubin-59repd` (34 tests in three suites); verified on Linux/GNU only, native Windows/MSVC pending CI; review/merge outstanding; see [T038](T038.md) |
 
 ## Phase 6 — Editor
 
@@ -351,3 +351,4 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + T038 contract · Added the T038 row as `open` with its contract draft awaiting approval, so the first Wave 1 spec output is indexed without implying readiness or approval.
 - 2026-10-04 (UTC) · claude-code + T038 approval · Marked T038 ready after the user approved its contract and dependency request.
 - 2026-10-04 (UTC) · claude-code + T058 contract · Added a Phase 6 — Editor table with the T058 row as `open`, its contract draft awaiting approval and blocked on the `crpg-data` prerequisite T058a, so the second Wave 1 spec output is indexed without implying readiness or approval.
+- 2026-10-04 (UTC) · claude-code + T038 implementation · Moved T038 to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
