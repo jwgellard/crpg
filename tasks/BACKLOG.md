@@ -120,7 +120,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract draft awaiting approval; blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, specified in T058 §9, no task file yet); see [T058](T058.md) |
+| T058 | open | — | `crpg-edit` headless document/command/undo/validation API (spec §11.2, D18, §19.2 #15 property test): contract approved by the user 2026-10-04 (with the `crpg-rules` edge taken); blocked on prerequisite T058a (`crpg-data` pointer edit and in-memory index, specified in T058 §9, no task file yet); see [T058](T058.md) |
 
 ## Independent preparation and tooling
 
@@ -353,3 +353,4 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + T058 contract · Added a Phase 6 — Editor table with the T058 row as `open`, its contract draft awaiting approval and blocked on the `crpg-data` prerequisite T058a, so the second Wave 1 spec output is indexed without implying readiness or approval.
 - 2026-10-04 (UTC) · claude-code + T038 implementation · Moved T038 to `on branch` with Linux-only verification, keeping the Windows/MSVC gate and review/merge explicit.
 - 2026-10-04 (UTC) · claude-code + T022/T029b implementation · Moved T022 and T029b to `on branch` with Linux-only verification, keeping the Windows/MSVC gate, T022's flagged contract readings and review/merge explicit.
+- 2026-10-04 (UTC) · claude-code + T058 decisions · Recorded T058's contract approval while keeping it blocked on T058a.
