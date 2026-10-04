@@ -501,13 +501,36 @@ impl Direction {
         }
     }
 
-    /// Liveness only: a read timeout releases a partial block in order.
+    /// Whether a partial reorder block is being held.
+    fn holding(&self) -> bool {
+        !self.block.is_empty()
+    }
+
+    /// A partial block is released in order as soon as no further packet is
+    /// already queued (or on the idle read timeout), so reordering happens
+    /// within a burst and never waits on the OS timer.
     fn release(&mut self, send: &mut dyn FnMut(&[u8])) {
         for packet in self.block.drain(..) {
             send(&packet);
             self.counters.forwarded.fetch_add(1, Ordering::SeqCst);
         }
     }
+}
+
+/// Receive one datagram. While a partial reorder block is held, only a
+/// packet that is already queued is accepted (a non-blocking read), so the
+/// block's release never depends on read-timeout granularity: Windows rounds
+/// the 2 ms timeout up to its ~15.6 ms timer tick, which inflated the relayed
+/// RTT roughly eightfold and starved the impaired transfer of its deadline.
+/// With nothing held, the read blocks for the short idle timeout only so the
+/// thread can observe `stop`.
+fn recv_burst(
+    socket: &UdpSocket,
+    buf: &mut [u8],
+    holding: bool,
+) -> std::io::Result<(usize, SocketAddr)> {
+    socket.set_nonblocking(holding)?;
+    socket.recv_from(buf)
 }
 
 impl UdpRelay {
@@ -543,7 +566,7 @@ impl UdpRelay {
                     let _ = back.send_to(packet, server);
                 };
                 while !stop.load(Ordering::SeqCst) {
-                    match front.recv_from(&mut buf) {
+                    match recv_burst(&front, &mut buf, direction.holding()) {
                         Ok((n, from)) => {
                             if let Ok(mut known) = client.lock() {
                                 *known = Some(from);
@@ -574,7 +597,7 @@ impl UdpRelay {
                     }
                 };
                 while !stop.load(Ordering::SeqCst) {
-                    match back.recv_from(&mut buf) {
+                    match recv_burst(&back, &mut buf, direction.holding()) {
                         Ok((n, _)) => direction.offer(buf[..n].to_vec(), &mut send),
                         Err(_) => direction.release(&mut send),
                     }
