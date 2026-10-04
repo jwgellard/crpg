@@ -141,6 +141,15 @@ batch (proposed **D27**) before the wave that needs them. Each is an H gate.
 | e | `mlua` with vendored Lua 5.4 | T055 | Adopt per ADR-0005; `crpg-script` only; Lua not needed for the MVP (it uses an IR hook) |
 | f | MVP scope confirmations: IR quest hook instead of Lua; minimal AI in `crpg-ai` | T052–T056 | Confirm as written in spec §17.3 |
 
+*Update 2026-10-04:* D27 decided by the user and recorded in
+[tasks/DECISIONS-2026-10-04.md](../tasks/DECISIONS-2026-10-04.md). In short:
+- **a — declined.** Agents open PRs and never merge; §1.6 does not apply.
+- **b — `zstd`,** with both S001 caps.
+- **c — custom, deterministic navigation in `crpg-nav`.** `pathfinding` may be proposed for search; a separate repository is a later option.
+- **d — current versions:** the `godot` crate at its latest stable and the installed Godot 4.
+- **e — `mlua`** with vendored Lua 5.4 approved for M8.
+- **f — confirmed.**
+
 ---
 
 ## 3. Milestones and work packages
@@ -376,3 +385,4 @@ estimates slip.
 ## Agent log
 
 - 2026-10-01 (UTC) · claude-code + implementation plan · Laid out the delegated path from the post-PR #21 frontier to Phase 12, with work-package kinds, waves, concurrency limits and the human gates the workflow plan keeps human; merge delegation is a proposal pending the user's decision, not an approval.
+- 2026-10-04 (UTC) · claude-code + D27 recorded · Appended the user's D27 answers under §2 so delegated agents see that merge delegation was declined and which dependencies are pre-approved.
