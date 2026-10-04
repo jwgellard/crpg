@@ -27,6 +27,11 @@ evolution queue (richer event history behind a version bump, lane-1
 movement, QUIC, reconnect, prediction, host slice). Real network I/O, host
 auth/perception, and movement wire are named follow-ons, not here.
 
+*2026-10-04 (UTC), T023:* real QUIC lives in `crpg-net-quic`
+([ADR-0024](../adr/0024-separate-crpg-net-quic-crate.md),
+[crpg-net-quic.md](crpg-net-quic.md)); never add I/O, threads, clocks or
+QUIC crates here.
+
 ## Module flow
 
 - `protocol` holds the frozen v1 contract: `PROTOCOL_VERSION`/`LANE_COMBAT`/
@@ -160,3 +165,4 @@ queue). Working contract:
 - 2026-09-28 (UTC) · opencode/muse-spark + T018c conformance · Extended the scope with the sim-backed driver, replica oracle, and four suites (rejection-without-mutation, filtered convergence with negative controls, 5,000-tick exercise, receipt liveness), closing the T018 proof with the evolution queue still planned.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 review fixes · Recorded enforced failure-response budgets with wire drops, egress staging under v1_egress depths, reachable SeqExhausted precedence, and the bound driver peer table.
 - 2026-09-29 (UTC) · opencode/muse-spark + T021 v2 event wire · Recorded the as-built explicit v2 modules (tagged history events beside frozen v1, bounded-before-allocation codec, host-fed ordered projection) and the six-case acceptance suite, so T022 consumes version-selected codecs plus ordered conformance evidence.
+- 2026-10-04 (UTC) · claude-code + T023 · Appended a dated Scope pointer to `crpg-net-quic` for real QUIC, so this crate's no-I/O boundary names where the transport went; doc-only, no source or manifest change.

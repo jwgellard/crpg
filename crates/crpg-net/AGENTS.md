@@ -242,6 +242,8 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   the authoritative queue from a driver (detached clone plus cursor only).
 - **No replay-format, hash-exclusion, golden, or target-selection change.**
   Rejected inputs leave complete `World`/RNG/event state byte-identical.
+- *2026-10-04 (UTC), T023:* **Real QUIC lives in `crpg-net-quic`**
+  (ADR-0024); never add I/O, threads, clocks or QUIC crates here.
 
 ## Agent log
 
@@ -252,3 +254,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018c conformance · Extended the contract with the test-only driver/oracle vocabulary, the admission and disclosure rules, and the dev-only fixture edges, closing the T018 proof without claiming host completion.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 review fixes · Enforced the specified failure-response budgets on the wire path (drops retain outcomes for retry), pinned egress enforcement to fabric staging with v1_egress depths, made SeqExhausted reachable with cache-first precedence, and bound driver peer binding to the 8-peer proof population.
 - 2026-09-29 (UTC) · opencode/muse-spark + T021 v2 event protocol · Added the explicit protocol_v2/codec_v2/projection_v2 surface with the version/tag/disclosure rules above (bounded-before-allocation strings, full-u64 delta event_seq, ordered host-fed projection) and the six-case events_v2 suite against real T020 history, keeping v1 frozen and adding no dependency.
+- 2026-10-04 (UTC) · claude-code + T023 · Added a dated Known-traps pointer to `crpg-net-quic` so no one adds QUIC, I/O, threads or clocks to this crate; doc-only.
