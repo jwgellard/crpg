@@ -10,7 +10,7 @@ T010, [T011a](../../tasks/T011a.md) and [T012](../../tasks/T012.md).
 
 Public modules `types`, `ir`, `document`, `canonical`, `package`, `loader`,
 `schema`, `error`, `validation`, `migrations`, `introspection`,
-`action_signatures` (T029a) re-export their
+`action_signatures` (T029a), `pointer_edit` (T058a) re-export their
 public items at the root. T010 lists every required model, field and variant.
 Operations are `read_document`, `write_document`, `canonical_json`,
 `generated_schemas`, `resolve_packages`, `assets_lock_digest`,
@@ -19,7 +19,9 @@ Operations are `read_document`, `write_document`, `canonical_json`,
 `diagnostic_for_data_error`, and `campaign_document_path` with the `Diagnostic`,
 `DiagnosticCode`, and `Severity` model, plus T012a's `SchemaVersion` with
 `schema_versions` and `migrate_document`, plus T013a's `explain_object` returning
-canonical report bytes. Primitive newtypes expose validated parsing plus their
+canonical report bytes, plus T058a's `PointerEdit`, `PointerEditError`,
+`MAX_EDIT_POINTER_BYTES`, `pointer_tokens`, `edit_document` and
+`campaign_index`. Primitive newtypes expose validated parsing plus their
 prescribed accessors. Do not extend the surface casually.
 
 ## Wire and validation traps
@@ -122,6 +124,8 @@ cargo test -p crpg-data --test validation --locked
 cargo test -p crpg-data --test introspection --locked
 cargo test -p crpg-data --test combat_content --locked
 cargo test -p crpg-data --test schema_drift --locked
+cargo test -p crpg-data --test pointer_edit --locked
+cargo test -p crpg-data --test campaign_index --locked
 cargo test -p crpg-cli --test validate --locked
 cargo test -p crpg-cli --test migrate --locked
 cargo test -p crpg-data --locked
@@ -326,3 +330,41 @@ constants. The existing `ActionCall`, `ActionSignature`, `ActionParameter`,
 - Rejections are read-only for the store and the caller's call.
 
 - 2026-09-30 (UTC) · claude-code + T029a implementation · Added the declaration-only surface and its working rules (byte-length identifiers, pinned failure orders, exact content-derived identity, bounded traversal) so later edits cannot quietly add execution authority or loosen compatibility.
+
+## Pointer edits and in-memory index (T058a)
+
+`pointer_edit` holds `PointerEdit` (`Set`, `Insert`, `Remove`),
+`PointerEditError` (seven closed variants with pinned lowercase `Display`),
+`MAX_EDIT_POINTER_BYTES` (8,192), `pointer_tokens` and `edit_document`.
+`loader` adds `campaign_index`. The contract, with its precedence table and
+the named tests, is [T058a](../../tasks/T058a.md).
+
+- One implementation each. `pointer_tokens` is the only RFC 6901 decoder;
+  `structural_check` is the only structural check and `build_index` the only
+  index builder (`campaign_index` just returns what `structural_check`
+  already builds). Never add a second decoder, check or index builder, and
+  never reorder `structural_check`: `serialize_campaign`, `explain_object`
+  and `campaign_index` share its precedence.
+- Never migrate or retag in an edit. `edit_document` decodes with
+  `decode_current` at the tag the value already carries and refuses a first
+  token of `schema`; it must never call `migrate_to_current` or
+  `read_document` on the edited value.
+- `campaign_index` never takes an engine version and never runs semantic
+  validation. Dangling references and other `validate` findings must not
+  make it fail. Its precedence is the writer's (layout before local
+  invariants), not the loader's; `load_campaign` stays as it is.
+- Array tokens are checked only when the traversal reaches an array,
+  because `01` is a valid object member name. On an array, `0` or
+  `[1-9][0-9]*` is an index; `-` (except as `Insert`'s final token) and
+  indices that overflow `usize` are `NotFound`; any other spelling is
+  `InvalidPointer`. `Insert` into an object is `NotFound`; `Set` adds
+  members.
+- Every `Ok` must pass the canonical writer: the last step runs
+  `write_document` because a value the strict parser accepts can still
+  exceed the 128-level limit once placed. Keep that step.
+- Pure and panic-free: no I/O, clock, environment, thread or float; index
+  arithmetic is checked and nothing on a caller-controlled path is
+  unwrapped. Error messages for `Value` and `Document` are the underlying
+  `DataError` text and may quote input; callers truncate when logging.
+
+- 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
