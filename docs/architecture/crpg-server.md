@@ -17,24 +17,29 @@ What exists today is the in-memory host slice: one serial `Host` privately
 owning one T020 `HistoryWorld`, authenticated-peer bindings with per-session
 epochs, per-entity disclosure and control grants, byte-level ingest, a FIFO
 admission pump, per-peer delivery logs in the T021 version-selected wire,
-the bounded capture journal, and in-memory checkpoint bytes with fresh
-sessions on restart. What is planned and **not** here: QUIC endpoints and the
-invitation/pinned-certificate handshake (T023/T023b, with T030 evidence),
-production interest facts (T027a–c supply values for these grant shapes),
-a persistence backend with compressed and decompressed caps (`crpg-persist`
-plus a server adapter), OS service integration, reconnect grace, and the GM
-endpoint.
+the bounded capture journal, in-memory checkpoint bytes with fresh
+sessions on restart, and (T039) host save files: the checkpoint behind a
+campaign/engine identity header, written and read through `crpg-persist`'s
+compressed, capped envelope and atomic-replace file store. What is planned
+and **not** here: QUIC endpoints and the invitation/pinned-certificate
+handshake (T023/T023b, with T030 evidence), production interest facts
+(T027a–c supply values for these grant shapes), save slot/autosave policy,
+the save directory and the incarnation source (product tasks, T040), OS
+service integration, reconnect grace, and the GM endpoint.
 
 ## Where it sits
 
 ```text
-crpg-core ─┐
-crpg-sim  ─┼─> crpg-server (lib) ─> crpg-server (bin, thin)
-crpg-net  ─┘     + serde/serde_json (checkpoint JSON)
+crpg-core    ─┐
+crpg-sim     ─┤
+crpg-net     ─┼─> crpg-server (lib) ─> crpg-server (bin, thin)
+crpg-persist ─┘     + serde/serde_json (checkpoint JSON)
 ```
 
 Edges are D20's: normal path dependencies on `crpg-core`, `crpg-sim` and
-`crpg-net` plus workspace `serde`/`serde_json`, nothing else. The host
+`crpg-net` plus workspace `serde`/`serde_json`, and T039's path edge to
+`crpg-persist` (approved in [T039](../../tasks/T039.md) §8/Decisions; its
+`zstd` tree was already locked through T038). Nothing else. The host
 consumes T020's public `HistoryWorld` (`perform_action`, `read_after`,
 `acknowledge`, `history_hash`), T028's `validate_action`, and T021's
 `codec`/`codec_v2`/`projection_v2` plus the T018b policy shapes
@@ -70,6 +75,27 @@ retention and checkpoint policy lives here.
   capture journal plus watermark, protocol and incarnation; input capped
   before parsing; loading validates everything into a temporary host and
   restarts every session under a strictly greater incarnation.
+- `save` — the persistence adapter (T039) and the crate's only filesystem
+  I/O, all of it through `crpg_persist::save_file`/`load_file` under the
+  payload kind `HOSTCKPT`. The payload is a fixed-order binary header —
+  host save version (u32 LE, offsets 0..4 frozen), campaign id (16 bytes,
+  big-endian ULID), campaign version text and engine version text (each a
+  length byte plus 1–64 bytes of `0-9 A-Z a-z . + -`) — followed by
+  `save_checkpoint` output verbatim, so `CHECKPOINT_VERSION` and `host`,
+  `capture`, `checkpoint` are unchanged. Identity policy: campaign id and
+  version are trusted caller facts (`SaveIdentity`; the crate has no
+  `crpg-data` edge) and must match exactly on load; the engine version
+  (`ENGINE_VERSION`, this crate's package version) is recorded and returned
+  in `LoadedSave`, never enforced; compatibility is the three format
+  versions (envelope, host save, checkpoint). Load precedence, first failure
+  wins: caller identity, then the envelope (`crpg-persist`), then the header
+  structure, then campaign id and version, and only then T022's
+  `load_checkpoint` — a wrong-campaign save is refused without parsing its
+  JSON. The header (at most 150 bytes) shares T038's unchanged 16 MiB
+  payload cap, so a file save accepts a checkpoint of at most
+  16 MiB minus the header length. The pure `encode_host_save`/
+  `decode_host_save` expose the same format without a file. Exact contract:
+  [T039](../../tasks/T039.md) §2–§4.
 
 ## Identity and delivery shape
 
@@ -83,6 +109,24 @@ to the originator only; permitted events (V2) and state ops fan out per
 peer. V1 hosts deliver receipts plus legacy state ops only; V2 hosts add the
 ordered event ops. Narrowing grants restart a peer's delivery at 1 with a
 fresh filtered state; widening continues it.
+
+## Gate 10 (save/load equivalence)
+
+Spec §15.4 step 10 is active as **file-backed host save/load continuation
+equivalence** (`tests/host_save.rs`, run by the existing
+`cargo test --workspace --locked` job on Windows/MSVC and Linux/GNU). A host
+driven through `ingest → pump` is saved with `save_host_file`, dropped, and
+reloaded with `load_host_file` under a strictly greater incarnation; after
+the same operator rebinding, the same later commands give the same
+authority (`authority_hash`, the full-wrapper `history_hash`), capture
+journal and watermarks, and decoded delivery, apart from session identity,
+as an uninterrupted run in the same process.
+
+Not claimed: crash durability or exactly-once (D10); Windows
+directory-entry durability (T038); cross-target byte equality or loading a
+save made on the other target (ADR-0012); and the spec §8 breadth "every
+fixture campaign", which needs a host built from campaign data and comes
+with T040/T041.
 
 ## Authorities and consumers
 
@@ -100,7 +144,14 @@ fresh filtered state; widening continues it.
   T025b inherits the fresh-session restart rule — a world save does not
   deduplicate commands across restarts. T027b/c supply production grant
   values for the existing shapes.
+- T040 (dedicated server) and the client single-player embedding get
+  `save_host_file`/`load_host_file`, `SaveIdentity`, `LoadedSave` and the
+  pinned error precedence; they own slot/autosave policy, the save
+  directory, a never-decreasing incarnation source and gate 10's
+  campaign-wide breadth. T041 drives restarts through the same two
+  functions.
 
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the doc with the as-built host slice (modules, identity and delivery shape, edges, consumers) so later host, transport and persistence tasks extend one description rather than restating the T022 contract.
+- 2026-10-05 (UTC) · claude-code + T039 · Added the `save` module, the `crpg-persist` edge, the payload/identity/precedence summary and the gate-10 claim with its non-claims, so the doc describes the persistence the crate now has rather than calling it planned.

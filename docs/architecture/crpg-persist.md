@@ -120,6 +120,12 @@ not goldens, and both targets assert them.
   `save_file`/`load_file` under a `PayloadKind` it chooses (for example
   `HOSTCKPT`), decide the checkpoint identity fields and slot policy, and
   turn on capability gate 10. T038 makes no gate-10 claim.
+  *Note 2026-10-05 (UTC):* T039 is implemented on its branch as this
+  crate's first consumer, with no change here: kind `HOSTCKPT`, a binary
+  campaign/engine identity header inside the payload in front of the
+  verbatim checkpoint, and gate 10 as file-backed host continuation
+  equivalence. Slot policy was deferred to the product tasks. See
+  [T039](../../tasks/T039.md) and [crpg-server](crpg-server.md).
 - A `PersistenceBackend` trait in `crpg-contracts`, only once a second backend
   exists (§12 Q6). That is a human-owned change.
 - A later `SqliteBackend` and the testkit `assert_persistence_backend` suite
@@ -139,3 +145,4 @@ with honest durability claims. The envelope's crate-level contract is
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T038 · Wrote the crate's first architecture doc with its first code. It covers the envelope, the caps, the file store, the payload-neutral boundary and the spec §8 `postcard` deviation, and lists what T039 and later backends inherit.
+- 2026-10-05 (UTC) · claude-code + T039 · Appended a dated note under "Planned" recording T039 as the first consumer and what it chose, without rewriting the original plan text.

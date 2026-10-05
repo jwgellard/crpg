@@ -53,7 +53,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-edit` | [crpg-edit.md](crpg-edit.md) | spec §11, D18, T058 |
 | `crpg-contracts` | due with its first task | spec §15.1 (human-owned) |
 | `crpg-testkit` | [crpg-testkit.md](crpg-testkit.md) | spec §15.3, §16 |
-| `crpg-server` | [crpg-server.md](crpg-server.md) | spec §10, ADR-0022 |
+| `crpg-server` | [crpg-server.md](crpg-server.md) | spec §10, ADR-0022, T039 |
 | `crpg-cli` | [crpg-cli.md](crpg-cli.md) | spec §24 |
 | `crpg-godot` | due with its first task | spec §9, ADR-0001, ADR-0003 |
 
@@ -84,3 +84,4 @@ superseded by appending, never rewritten.
 - 2026-10-04 (UTC) · claude-code + T058 · Linked the new crpg-edit doc and added D18/T058 to its governing column; the headless document, command and undo API is the crate's first real code, so the §15.6 gate is satisfied and the "due with its first task" place-holder is retired.
 - 2026-10-04 (UTC) · claude-code + T023s · Added the `crpg-net-quic` index row as due with T023; the T023s stub carries no real code, so the crate's doc and `AGENTS.md` arrive with the first transport source.
 - 2026-10-04 (UTC) · claude-code + T023 · Linked the new crpg-net-quic doc; the lane-0 QUIC transport is the crate's first real code, so the §15.6 gate is satisfied and the "due with T023" place-holder is retired.
+- 2026-10-05 (UTC) · claude-code + T039 · Added T039 to the `crpg-server` row's governing column, since its contract now governs the crate's save adapter and gate-10 claim.
