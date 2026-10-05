@@ -1,9 +1,16 @@
 //! Endpoint limits and configs (E§7, E§8.3, as amended by the 2026-10-04
-//! decisions: 64 connections, 60 s idle, 15 s keep-alive).
+//! decisions: 64 connections, 60 s idle, 15 s keep-alive; and by T023c:
+//! the QUIC flow-control windows are limits too).
 //!
 //! Every limit defaults to its v1 value and may only be tightened: a value
 //! looser than v1 is [`ConfigError::LoosensPolicy`], a value below a floor
 //! or inconsistent with another field is [`ConfigError::InvalidLimits`].
+//!
+//! The window limits are each endpoint's QUIC stream receive window,
+//! connection receive window and send window. Each holds at least one
+//! maximal frame of the direction it carries plus its 4-byte header
+//! (4,100 bytes for intents, 65,540 for deltas), and a connection window is
+//! at least its stream window.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -14,6 +21,7 @@ use crpg_net::protocol::{
 };
 use crpg_net::sim::QueueCaps;
 
+use crate::handshake::FRAME_HEADER_BYTES;
 use crate::identity::{CertificatePin, ServerIdentity};
 
 const V1_IDLE_TIMEOUT_MS: u32 = 60_000;
@@ -26,6 +34,19 @@ const V1_CONNECT_TIMEOUT_MS: u32 = 10_000;
 const MIN_PHASE_TIMEOUT_MS: u32 = 100;
 const V1_CLOSE_FLUSH_TIMEOUT_MS: u32 = 2_000;
 const V1_MAX_CONNECTIONS: usize = 64;
+const V1_SERVER_STREAM_WINDOW: u32 = 65_536;
+const V1_SERVER_CONNECTION_WINDOW: u32 = 131_072;
+const V1_SERVER_SEND_WINDOW: u32 = 1_048_576;
+const V1_CLIENT_STREAM_WINDOW: u32 = 1_048_576;
+const V1_CLIENT_CONNECTION_WINDOW: u32 = 2_097_152;
+const V1_CLIENT_SEND_WINDOW: u32 = 262_144;
+/// One maximal intent frame plus its header.
+const MIN_INTENT_WINDOW: u32 = 4_100;
+/// One maximal delta frame plus its header.
+const MIN_DELTA_WINDOW: u32 = 65_540;
+
+const _: () = assert!(MIN_INTENT_WINDOW as usize == MAX_INTENT_FRAME_BYTES + FRAME_HEADER_BYTES);
+const _: () = assert!(MIN_DELTA_WINDOW as usize == MAX_DELTA_FRAME_BYTES + FRAME_HEADER_BYTES);
 
 /// Server endpoint limits. Defaults are [`ServerLimits::v1`]; tightening-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,12 +67,23 @@ pub struct ServerLimits {
     pub inbound: QueueCaps,
     /// Server → client queue (per connection + host-wide).
     pub outbound: QueueCaps,
+    /// QUIC stream receive window of the lane stream: intent bytes the
+    /// client may send beyond what the server has read
+    /// (`4_100..=65_536`).
+    pub stream_window_bytes: u32,
+    /// QUIC connection receive window
+    /// (`stream_window_bytes..=131_072`).
+    pub connection_window_bytes: u32,
+    /// Bytes quinn may hold from this connection's writes until they are
+    /// acknowledged, sent or not (`65_540..=1_048_576`).
+    pub send_window_bytes: u32,
 }
 
 impl ServerLimits {
     /// The v1 envelope: 60 s idle, 15 s keep-alive, 5 s hello, 5 s decision,
-    /// 2 s close flush, 64 connections, `QueueCaps::v1()` inbound and
-    /// `QueueCaps::v1_egress()` outbound.
+    /// 2 s close flush, 64 connections, `QueueCaps::v1()` inbound,
+    /// `QueueCaps::v1_egress()` outbound, windows 64 KiB / 128 KiB receive,
+    /// 1 MiB send.
     pub fn v1() -> ServerLimits {
         ServerLimits {
             idle_timeout_ms: V1_IDLE_TIMEOUT_MS,
@@ -62,6 +94,9 @@ impl ServerLimits {
             max_connections: V1_MAX_CONNECTIONS,
             inbound: QueueCaps::v1(),
             outbound: QueueCaps::v1_egress(),
+            stream_window_bytes: V1_SERVER_STREAM_WINDOW,
+            connection_window_bytes: V1_SERVER_CONNECTION_WINDOW,
+            send_window_bytes: V1_SERVER_SEND_WINDOW,
         }
     }
 
@@ -112,6 +147,24 @@ impl ServerLimits {
             &v1.outbound,
             MAX_DELTA_FRAME_BYTES,
         )?;
+        bounded(
+            "stream_window_bytes",
+            self.stream_window_bytes,
+            MIN_INTENT_WINDOW,
+            v1.stream_window_bytes,
+        )?;
+        bounded(
+            "connection_window_bytes",
+            self.connection_window_bytes,
+            self.stream_window_bytes,
+            v1.connection_window_bytes,
+        )?;
+        bounded(
+            "send_window_bytes",
+            self.send_window_bytes,
+            MIN_DELTA_WINDOW,
+            v1.send_window_bytes,
+        )?;
         Ok(())
     }
 }
@@ -135,11 +188,22 @@ pub struct ClientLimits {
     pub outbound_frames: usize,
     /// Queued client → server bytes (`4_096..=262_144`).
     pub outbound_bytes: usize,
+    /// QUIC stream receive window of the lane stream: delta bytes the
+    /// server may send beyond what the client has read
+    /// (`65_540..=1_048_576`).
+    pub stream_window_bytes: u32,
+    /// QUIC connection receive window
+    /// (`stream_window_bytes..=2_097_152`).
+    pub connection_window_bytes: u32,
+    /// Bytes quinn may hold from this connection's writes until they are
+    /// acknowledged, sent or not (`4_100..=262_144`).
+    pub send_window_bytes: u32,
 }
 
 impl ClientLimits {
     /// The v1 envelope: 60 s idle, 15 s keep-alive, 10 s connect, 2 s close
-    /// flush, inbound 128 frames / 2 MiB, outbound 128 frames / 256 KiB.
+    /// flush, inbound 128 frames / 2 MiB, outbound 128 frames / 256 KiB,
+    /// windows 1 MiB / 2 MiB receive, 256 KiB send.
     pub fn v1() -> ClientLimits {
         ClientLimits {
             idle_timeout_ms: V1_IDLE_TIMEOUT_MS,
@@ -150,6 +214,9 @@ impl ClientLimits {
             inbound_bytes: POLICY_EGRESS_BYTES_PER_PEER,
             outbound_frames: POLICY_INGRESS_FRAMES_PER_PEER,
             outbound_bytes: POLICY_INGRESS_BYTES_PER_PEER,
+            stream_window_bytes: V1_CLIENT_STREAM_WINDOW,
+            connection_window_bytes: V1_CLIENT_CONNECTION_WINDOW,
+            send_window_bytes: V1_CLIENT_SEND_WINDOW,
         }
     }
 
@@ -194,6 +261,24 @@ impl ClientLimits {
             self.outbound_bytes,
             MAX_INTENT_FRAME_BYTES,
             v1.outbound_bytes,
+        )?;
+        bounded(
+            "stream_window_bytes",
+            self.stream_window_bytes,
+            MIN_DELTA_WINDOW,
+            v1.stream_window_bytes,
+        )?;
+        bounded(
+            "connection_window_bytes",
+            self.connection_window_bytes,
+            self.stream_window_bytes,
+            v1.connection_window_bytes,
+        )?;
+        bounded(
+            "send_window_bytes",
+            self.send_window_bytes,
+            MIN_INTENT_WINDOW,
+            v1.send_window_bytes,
         )?;
         Ok(())
     }

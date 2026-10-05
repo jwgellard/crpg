@@ -5,3 +5,7 @@ crates/crpg-sim/tests/goldens/*.txt text eol=lf
 docs/reviews/T030-quinn/*.patch -whitespace
 # T023 (Q4) committed DER test certificates: byte-exact, so autocrlf never touches their pins.
 crates/crpg-net-quic/tests/fixtures/*.der binary
+# T023v: vendored crates.io sources and their patches stay byte-exact on every
+# OS (VENDOR.md hashes must hold on Windows checkouts); patch context lines may
+# be whitespace-only.
+third_party/** -text -whitespace

@@ -19,6 +19,9 @@ path = "src/main.rs"
 # added by this crate; see the T018a-style audit in tasks/T022.md.
 crpg-core = { path = "../crpg-core" }
 crpg-net = { path = "../crpg-net" }
+# T039 (H-dep approval in tasks/T039.md): the save envelope and atomic file
+# store. Path edge only; zstd and its tree are already locked through T038.
+crpg-persist = { path = "../crpg-persist" }
 crpg-sim = { path = "../crpg-sim" }
 serde = { workspace = true }
 serde_json = { workspace = true }

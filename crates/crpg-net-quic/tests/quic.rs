@@ -1,6 +1,15 @@
 //! T023 endpoint suite (R8.2): E§13.2 cases 1–22 plus case 23, all through
 //! the public `crpg_net_quic` API over real QUIC on IPv4 loopback.
 //!
+//! T023c (C§8) adds cases 24–27 for the flow-control window limits: their
+//! validation (24), the exact stall bound a stalled client's windows put on
+//! the server's queue (25) and a stalled server's windows on the client's
+//! (26), and maximal frames at the floor windows (27).
+//!
+//! T023v adds case 28: a `Discard` close reaches the peer as its close code
+//! while the server is congestion blocked (vendored quinn-proto fix,
+//! `third_party/quinn-proto/VENDOR.md`).
+//!
 //! Every rejection has a positive control on the same server. Waits are
 //! 30 s failure guards from `support/quic_rig.rs`, never oracles.
 
@@ -1810,4 +1819,452 @@ fn lane0_codec_frames_decode_after_impaired_delivery() {
     );
     let clean_relay = codec_frames_through(RelayConfig::clean());
     assert_eq!(clean_relay.dropped(), 0, "positive control");
+}
+
+// ---------------------------------------------------------------------------
+// 24–27: flow-control window limits (T023c).
+// ---------------------------------------------------------------------------
+
+/// Sends `pattern(10, 1..=n, size)`, retrying `QueueFull` after a 1 ms park,
+/// until exactly `n` are accepted (30 s guard); then 50 more attempts, each
+/// after a 2 ms park, must all be `QueueFull`. Parks are pacing; the counts
+/// are the oracle.
+fn fill_to_window_bound(mut send: impl FnMut(&[u8]) -> Result<(), SendError>, n: u32, size: usize) {
+    let start = std::time::Instant::now();
+    let mut accepted = 0u32;
+    while accepted < n {
+        assert!(
+            start.elapsed() < DEADLINE,
+            "deadline: {accepted} of {n} accepted"
+        );
+        match send(&pattern(10, accepted + 1, size)) {
+            Ok(()) => accepted += 1,
+            Err(SendError::QueueFull) => std::thread::park_timeout(Duration::from_millis(1)),
+            Err(error) => panic!("send {}: {error:?}", accepted + 1),
+        }
+    }
+    // Negative control: with no reads there is no window update, so a
+    // correct endpoint can never accept one of these.
+    for attempt in 1..=50 {
+        std::thread::park_timeout(Duration::from_millis(2));
+        assert_eq!(
+            send(&pattern(10, n + 1, size)),
+            Err(SendError::QueueFull),
+            "trailing attempt {attempt} past the bound {n}"
+        );
+    }
+}
+
+#[test]
+fn window_limits_validate_and_refuse_loosening() {
+    let server_v1 = ServerLimits::v1();
+    let client_v1 = ClientLimits::v1();
+    assert_eq!(
+        (
+            server_v1.stream_window_bytes,
+            server_v1.connection_window_bytes,
+            server_v1.send_window_bytes
+        ),
+        (65_536, 131_072, 1_048_576)
+    );
+    assert_eq!(
+        (
+            client_v1.stream_window_bytes,
+            client_v1.connection_window_bytes,
+            client_v1.send_window_bytes
+        ),
+        (1_048_576, 2_097_152, 262_144)
+    );
+    assert_eq!(server_v1.validate(), Ok(()));
+    assert_eq!(client_v1.validate(), Ok(()));
+
+    let loosens = |field| Err(ConfigError::LoosensPolicy { field });
+    let invalid = |field| Err(ConfigError::InvalidLimits { field });
+
+    // Loosening: each window one byte past v1, the rest v1.
+    let server_loosen: Vec<Case<ServerLimits>> = vec![
+        (
+            "stream_window_bytes",
+            Box::new(|l| l.stream_window_bytes += 1),
+        ),
+        (
+            "connection_window_bytes",
+            Box::new(|l| l.connection_window_bytes += 1),
+        ),
+        ("send_window_bytes", Box::new(|l| l.send_window_bytes += 1)),
+    ];
+    for (field, change) in &server_loosen {
+        let mut limits = ServerLimits::v1();
+        change(&mut limits);
+        assert_eq!(limits.validate(), loosens(*field), "server {field}");
+    }
+    let client_loosen: Vec<Case<ClientLimits>> = vec![
+        (
+            "stream_window_bytes",
+            Box::new(|l| l.stream_window_bytes += 1),
+        ),
+        (
+            "connection_window_bytes",
+            Box::new(|l| l.connection_window_bytes += 1),
+        ),
+        ("send_window_bytes", Box::new(|l| l.send_window_bytes += 1)),
+    ];
+    for (field, change) in &client_loosen {
+        let mut limits = ClientLimits::v1();
+        change(&mut limits);
+        assert_eq!(limits.validate(), loosens(*field), "client {field}");
+    }
+
+    // Below the floors, and a connection window below its stream window.
+    let server_invalid: Vec<Case<ServerLimits>> = vec![
+        (
+            "stream_window_bytes",
+            Box::new(|l| l.stream_window_bytes = 4_099),
+        ),
+        (
+            "stream_window_bytes",
+            Box::new(|l| l.stream_window_bytes = 0),
+        ),
+        (
+            "send_window_bytes",
+            Box::new(|l| l.send_window_bytes = 65_539),
+        ),
+        (
+            "connection_window_bytes",
+            Box::new(|l| {
+                l.stream_window_bytes = 65_536;
+                l.connection_window_bytes = 65_535;
+            }),
+        ),
+    ];
+    for (field, change) in &server_invalid {
+        let mut limits = ServerLimits::v1();
+        change(&mut limits);
+        assert_eq!(limits.validate(), invalid(*field), "server {field}");
+    }
+    let client_invalid: Vec<Case<ClientLimits>> = vec![
+        (
+            "stream_window_bytes",
+            Box::new(|l| l.stream_window_bytes = 65_539),
+        ),
+        (
+            "stream_window_bytes",
+            Box::new(|l| l.stream_window_bytes = 0),
+        ),
+        (
+            "send_window_bytes",
+            Box::new(|l| l.send_window_bytes = 4_099),
+        ),
+        (
+            "connection_window_bytes",
+            Box::new(|l| {
+                l.stream_window_bytes = 1_048_576;
+                l.connection_window_bytes = 1_048_575;
+            }),
+        ),
+        (
+            "connection_window_bytes",
+            Box::new(|l| {
+                l.stream_window_bytes = 100_000;
+                l.connection_window_bytes = 99_999;
+            }),
+        ),
+    ];
+    for (field, change) in &client_invalid {
+        let mut limits = ClientLimits::v1();
+        change(&mut limits);
+        assert_eq!(limits.validate(), invalid(*field), "client {field}");
+    }
+
+    // Exactly at the floors: positive controls.
+    let mut server_floor = ServerLimits::v1();
+    server_floor.stream_window_bytes = 4_100;
+    server_floor.connection_window_bytes = 4_100;
+    server_floor.send_window_bytes = 65_540;
+    assert_eq!(server_floor.validate(), Ok(()));
+    let mut client_floor = ClientLimits::v1();
+    client_floor.stream_window_bytes = 65_540;
+    client_floor.connection_window_bytes = 65_540;
+    client_floor.send_window_bytes = 4_100;
+    assert_eq!(client_floor.validate(), Ok(()));
+    let mut client_stream_only = ClientLimits::v1();
+    client_stream_only.stream_window_bytes = 65_540;
+    assert_eq!(client_stream_only.validate(), Ok(()));
+    let mut server_equal = ServerLimits::v1();
+    server_equal.stream_window_bytes = 65_536;
+    server_equal.connection_window_bytes = 65_536;
+    assert_eq!(server_equal.validate(), Ok(()));
+
+    // Declaration order: queue fields come first; the first failing field
+    // wins.
+    let mut server_order = ServerLimits::v1();
+    server_order.outbound.per_peer_bytes = DELTA_CAP - 1;
+    server_order.stream_window_bytes = 65_537;
+    assert_eq!(server_order.validate(), invalid("outbound.per_peer_bytes"));
+    let mut client_order = ClientLimits::v1();
+    client_order.stream_window_bytes = 1_048_577;
+    client_order.connection_window_bytes = 1;
+    assert_eq!(client_order.validate(), loosens("stream_window_bytes"));
+
+    // bind/connect surface the config error before any I/O.
+    let mut bad_server = ServerLimits::v1();
+    bad_server.send_window_bytes = 1_048_577;
+    let bound = QuicServer::bind(ServerConfig {
+        bind: loopback(),
+        identity: identity_a(),
+        limits: bad_server,
+    });
+    assert_eq!(
+        bound.err(),
+        Some(BindError::Config(ConfigError::LoosensPolicy {
+            field: "send_window_bytes"
+        }))
+    );
+    let mut bad_client = ClientLimits::v1();
+    bad_client.stream_window_bytes = 65_539;
+    let connected = QuicClient::connect(client_config(bad_client), loopback(), &hello(1));
+    assert_eq!(
+        connected.err(),
+        Some(ConnectError::Config(ConfigError::InvalidLimits {
+            field: "stream_window_bytes"
+        }))
+    );
+
+    assert_eq!(
+        ConfigError::InvalidLimits {
+            field: "stream_window_bytes"
+        }
+        .to_string(),
+        "InvalidLimits at quic/config"
+    );
+}
+
+#[test]
+fn stalled_client_window_bounds_server_queue() {
+    let welcome = FRAME_HEADER_BYTES + WELCOME_BYTES;
+    // (client stream window W, connection window C, payload p, N)
+    let rows: [(u32, u32, usize, u32); 3] = [
+        (65_540, 65_540, 1_000, 67),
+        (262_144, 262_144, 1_000, 263),
+        (1_048_576, 2_097_152, 4_000, 263),
+    ];
+    for (w, c, p, n) in rows {
+        let framed = p + FRAME_HEADER_BYTES;
+        let window = w as usize;
+        assert!(welcome + 2 * framed < window / 8, "no window update");
+        assert_eq!((window - welcome) / framed + 2, n as usize, "formula");
+
+        let mut limits = ServerLimits::v1();
+        limits.outbound.per_peer_frames = 1;
+        limits.outbound.per_peer_bytes = DELTA_CAP;
+        let mut server = bind_server(limits);
+        let mut client_limits = ClientLimits::v1();
+        client_limits.inbound_frames = 1;
+        client_limits.inbound_bytes = DELTA_CAP;
+        client_limits.stream_window_bytes = w;
+        client_limits.connection_window_bytes = c;
+        let (mut client, conn) = connect_accepted(&mut server, client_limits, 1, epoch(25));
+
+        fill_to_window_bound(|frame| server.try_send(conn, frame), n, p);
+        let stats = server.stats(conn).expect("stats");
+        assert_eq!(
+            (stats.outbound_frames, stats.outbound_bytes),
+            (1, p),
+            "W {w}"
+        );
+        // Guard only: the client's reader parks asynchronously.
+        until("client parked", || client.stats().reader_parked);
+        let stats = client.stats();
+        assert_eq!(
+            (
+                stats.inbound_frames,
+                stats.inbound_bytes,
+                stats.reader_parked
+            ),
+            (1, p, true),
+            "W {w}"
+        );
+
+        for k in 1..=n {
+            assert_eq!(client_recv(&mut client), Ok(pattern(10, k, p)), "W {w}");
+        }
+        // Positive control: room again once the client has read.
+        server
+            .try_send(conn, &pattern(10, n + 1, p))
+            .expect("send after reads");
+        assert_eq!(client_recv(&mut client), Ok(pattern(10, n + 1, p)));
+        assert_eq!(client.try_recv(), Ok(None));
+    }
+}
+
+#[test]
+fn stalled_server_window_bounds_client_queue() {
+    // The rig's hello carries a 16-byte credential.
+    let hello_framed = FRAME_HEADER_BYTES + 2 + 16;
+    assert_eq!(hello_framed, 22);
+    // (server stream window W, connection window C, payload p, N)
+    let rows: [(u32, u32, usize, u32); 2] = [(4_100, 4_100, 100, 41), (65_536, 131_072, 1_000, 67)];
+    for (w, c, p, n) in rows {
+        let framed = p + FRAME_HEADER_BYTES;
+        let window = w as usize;
+        assert!(hello_framed + 2 * framed < window / 8, "no window update");
+        assert_eq!((window - hello_framed) / framed + 2, n as usize, "formula");
+
+        let mut limits = ServerLimits::v1();
+        limits.inbound.per_peer_frames = 1;
+        limits.inbound.per_peer_bytes = INTENT_CAP;
+        limits.stream_window_bytes = w;
+        limits.connection_window_bytes = c;
+        let mut server = bind_server(limits);
+        let mut client_limits = ClientLimits::v1();
+        client_limits.outbound_frames = 1;
+        client_limits.outbound_bytes = INTENT_CAP;
+        let (mut client, conn) = connect_accepted(&mut server, client_limits, 1, epoch(26));
+
+        fill_to_window_bound(|frame| client.try_send(frame), n, p);
+        let stats = client.stats();
+        assert_eq!(
+            (stats.outbound_frames, stats.outbound_bytes),
+            (1, p),
+            "W {w}"
+        );
+        // Guard only: the server's reader parks asynchronously.
+        until("server parked", || {
+            server.stats(conn).expect("stats").reader_parked
+        });
+        let stats = server.stats(conn).expect("stats");
+        assert_eq!(
+            (
+                stats.inbound_frames,
+                stats.inbound_bytes,
+                stats.reader_parked
+            ),
+            (1, p, true),
+            "W {w}"
+        );
+
+        for k in 1..=n {
+            assert_eq!(
+                server_recv(&mut server, conn),
+                Ok(pattern(10, k, p)),
+                "W {w}"
+            );
+        }
+        // Positive control: room again once the server has read.
+        client
+            .try_send(&pattern(10, n + 1, p))
+            .expect("send after reads");
+        assert_eq!(server_recv(&mut server, conn), Ok(pattern(10, n + 1, p)));
+        assert_eq!(server.try_recv(conn), Ok(None));
+    }
+}
+
+#[test]
+fn floor_windows_carry_maximal_frames_in_order() {
+    let mut limits = ServerLimits::v1();
+    limits.stream_window_bytes = 4_100;
+    limits.connection_window_bytes = 4_100;
+    limits.send_window_bytes = 65_540;
+    let mut server = bind_server(limits);
+    let mut client_limits = ClientLimits::v1();
+    client_limits.stream_window_bytes = 65_540;
+    client_limits.connection_window_bytes = 65_540;
+    client_limits.send_window_bytes = 4_100;
+    let (mut client, conn) = connect_accepted(&mut server, client_limits, 1, epoch(27));
+
+    // One maximal frame each way at the smallest allowed windows.
+    server
+        .try_send(conn, &pattern(11, 1, DELTA_CAP))
+        .expect("server send");
+    client
+        .try_send(&pattern(12, 1, INTENT_CAP))
+        .expect("client send");
+    assert_eq!(client_recv(&mut client), Ok(pattern(11, 1, DELTA_CAP)));
+    assert_eq!(
+        server_recv(&mut server, conn),
+        Ok(pattern(12, 1, INTENT_CAP))
+    );
+
+    exchange_exactly_once(&mut server, conn, &mut client, 200, INTENT_CAP, DELTA_CAP);
+
+    let report = client.close(CloseCode::Normal, CloseMode::Flush);
+    assert_eq!(report.outbound_frames_discarded, 0);
+    assert_eq!(report.inbound_frames_discarded, 0);
+    assert_eq!(
+        server_recv(&mut server, conn),
+        Err(ServerError::Closed(CloseReason::Peer { code: 0 }))
+    );
+    assert_eq!(
+        next_closed(&mut server),
+        (conn, CloseReason::Peer { code: 0 })
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 28: a Discard close reaches the peer while congestion blocked (T023v).
+// ---------------------------------------------------------------------------
+
+/// Server → client datagrams that must have left the server after the
+/// client → server path is cut, before the close is issued. With no ACK
+/// arriving, bytes in flight never fall, so the server sends one burst up
+/// to its congestion window (7–9 datagrams measured) and then only PTO
+/// probes, two per probe timeout. 14 therefore means the window was full
+/// for at least one probe timeout before the close.
+const CONGESTION_BLOCKED_DATAGRAMS: u64 = 14;
+
+#[test]
+fn discard_close_reaches_peer_when_congestion_blocked() {
+    let mut server = bind_server(ServerLimits::v1());
+    let relay = UdpRelay::start(server.local_addr(), RelayConfig::clean());
+    let welcome = Welcome {
+        wire_version: 1,
+        epoch: epoch(28),
+    };
+    let (mut client, conn) = connect_via_relay(&mut server, &relay, ClientLimits::v1(), welcome);
+
+    // Positive control: the relay forwards a frame.
+    server.try_send(conn, &pattern(28, 0, 1_000)).expect("send");
+    assert_eq!(client_recv(&mut client), Ok(pattern(28, 0, 1_000)));
+
+    // Cut client → server: from here on no ACK reaches the server.
+    relay.set_blackhole_to_server(true);
+    let before = relay.forwarded_to_client();
+    let n_frames = 16u32;
+    for n in 1..=n_frames {
+        server
+            .try_send(conn, &pattern(28, n, DELTA_CAP))
+            .expect("send");
+    }
+    until("server congestion blocked", || {
+        relay.forwarded_to_client() >= before + CONGESTION_BLOCKED_DATAGRAMS
+    });
+    let report = server
+        .close(conn, CloseCode::SessionFenced, CloseMode::Discard)
+        .expect("close");
+    relay.set_blackhole_to_server(false);
+    assert!(relay.dropped() >= 1, "the client's ACKs were cut");
+
+    let mut k = 0u32;
+    loop {
+        match client_recv(&mut client) {
+            Ok(frame) => {
+                k += 1;
+                assert_eq!(frame, pattern(28, k, DELTA_CAP), "in-order prefix");
+            }
+            Err(reason) => {
+                // quinn-proto 0.11.19 unpatched: `Reset` (T023c C§1.4).
+                assert_eq!(reason, CloseReason::Peer { code: 9 });
+                break;
+            }
+        }
+    }
+    assert!(
+        k as usize + report.outbound_frames_discarded <= n_frames as usize,
+        "k = {k}, discarded = {}",
+        report.outbound_frames_discarded
+    );
+    assert_eq!(
+        next_closed(&mut server),
+        (conn, CloseReason::Local(CloseCode::SessionFenced))
+    );
 }

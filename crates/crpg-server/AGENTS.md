@@ -6,15 +6,16 @@ the normative "Specification revision — 2026-09-29" appendix of
 caps, §7 checkpoint) before editing. Reasoning:
 [ADR-0022](../../docs/adr/0022-host-session-capture-retirement.md).
 Architecture: [crpg-server](../../docs/architecture/crpg-server.md). This
-document describes the T022 in-memory host slice.
+document describes the T022 in-memory host slice and the T039 save adapter;
+for `save`, [T039](../../tasks/T039.md) §2–§4 is the exact contract.
 
 ## Public surface
 
-The library exposes three modules, `host`, `capture`, `checkpoint`, with no
-glob re-export; changing any public type, field, variant, signature, cap or
-`Display` text needs an ADR. Inventory: T022 §1. Beyond that list the
-as-built crate adds only `Copy` on `ProtocolSelection` (required by
-`as_u8(self)`). The binary (`src/main.rs`) is a wiring shell: no host
+The library exposes four modules, `host`, `capture`, `checkpoint`, `save`,
+with no glob re-export; changing any public type, field, variant, signature,
+cap or `Display` text needs an ADR. Inventory: T022 §1 and T039 §2. Beyond
+those lists the as-built crate adds only `Copy` on `ProtocolSelection`
+(required by `as_u8(self)`). The binary (`src/main.rs`) is a wiring shell: no host
 policy lives there.
 
 ## Invariants
@@ -45,15 +46,20 @@ policy lives there.
 6. **Every ledger is bounded in entries and bytes** (T022 §2). New state
    needs a cap, an accounting unit and a retirement path, or it does not go
    in.
-7. **Time is injected.** `now_ms` only; no `SystemTime`, threads, sleeps or
-   I/O beyond the generic checkpoint reader. No `HashMap`/`HashSet`.
+7. **Time is injected; I/O is fenced.** `now_ms` only; no `SystemTime`,
+   threads or sleeps. Filesystem I/O exists **only** in `save.rs`, and only
+   through `crpg_persist::save_file`/`load_file`; `host`, `capture` and
+   `checkpoint` stay I/O-free apart from T022's generic checkpoint reader.
+   No `HashMap`/`HashSet`.
 8. `#![forbid(unsafe_code)]` and `#![warn(missing_docs)]` on both crate
    roots (`src/lib.rs`, `src/main.rs`).
 
 ## Allowed dependencies
 
 Normal: `crpg-core`, `crpg-sim`, `crpg-net` (path) and workspace `serde`,
-`serde_json` — approved by D20 with the audit in T022's completion record.
+`serde_json` — approved by D20 with the audit in T022's completion record —
+plus `crpg-persist` (path, no features), approved for T039 (H-dep, T039 §8
+and its Decisions); its `zstd` tree was already locked through T038.
 No dev-dependencies. In particular there is no `crpg-data` edge, so tests
 build authorities from the checked-in `HistoryWorld` fixture (below), and no
 `crpg-rules` edge, so the captured outcome text is taken from T020's own
@@ -68,6 +74,7 @@ approval; never widen `deny.toml`.
 cargo fmt --all
 cargo clippy -p crpg-server --all-targets --locked -- -D warnings
 cargo test -p crpg-server --test host_capture --locked
+cargo test -p crpg-server --test host_save --locked
 cargo test -p crpg-server --locked
 python tools/lint/deps.py
 python tools/lint/determinism.py
@@ -112,7 +119,26 @@ git diff --check
 - **No replay-format, hash-exclusion or golden change.** `authority_hash` is
   `history_hash`; the host's acknowledgement schedule is part of the
   deterministic input.
+- **Save identity never goes into the checkpoint JSON** without a
+  `CHECKPOINT_VERSION` bump (which reopens T022). It lives in the `save`
+  header in front of the verbatim checkpoint.
+- **The header narrows the file-save checkpoint ceiling.** The header (22
+  bytes plus both version texts, at most 150) shares `crpg-persist`'s
+  16 MiB payload cap, so a file save accepts at most
+  `MAX_PAYLOAD_BYTES − header_len` checkpoint bytes and refuses more as
+  `TooLarge` before touching the filesystem.
+- **Never compare save bytes, digests or hashes across targets.** Saves are
+  deterministic per build and per target (ADR-0012); gate 10 compares runs
+  inside one process and adds no golden.
+- **`Persist(Io { op: SyncDir, .. })` means the save landed.** The rename
+  already replaced the file; only the directory entry's durability is
+  unconfirmed (Unix only). Treat it as written-but-unconfirmed, not as a
+  failed save.
+- **The incarnation on load is a caller fact.** The header records none; a
+  product must pass one greater than every incarnation ever used for that
+  authority, not only the saved one, or an older save would reuse epochs.
 
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the crate contract with the host invariants, the D20 dependency boundary, the gate list and the traps found while implementing T022, so later transport and persistence tasks start from the as-built rules.
+- 2026-10-05 (UTC) · claude-code + T039 · Added the `save` module to the surface, fenced filesystem I/O to `save.rs` through `crpg-persist` (invariant 7 amended, not weakened), recorded the approved `crpg-persist` edge and the `host_save` gate, and listed the save-adapter traps.

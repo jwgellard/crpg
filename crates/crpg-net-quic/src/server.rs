@@ -174,13 +174,8 @@ impl QuicServer {
     pub fn bind(config: ServerConfig) -> Result<QuicServer, BindError> {
         let limits = config.limits;
         limits.validate().map_err(BindError::Config)?;
-        let quinn_config = tls::server_config(
-            &config.identity,
-            limits.idle_timeout_ms,
-            limits.keep_alive_ms,
-            limits.max_connections,
-        )
-        .ok_or(BindError::Identity)?;
+        let quinn_config =
+            tls::server_config(&config.identity, &limits).ok_or(BindError::Identity)?;
         let socket = UdpSocket::bind(config.bind).map_err(|e| BindError::Io(e.kind()))?;
         let local_addr = socket.local_addr().map_err(|e| BindError::Io(e.kind()))?;
         let shared = Arc::new(Shared::new(State::new(

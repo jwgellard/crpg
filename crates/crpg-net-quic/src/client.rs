@@ -118,13 +118,8 @@ impl QuicClient {
             .ok_or(ConnectError::Handshake)?;
         let wire_version = hello.wire_version;
         let mismatch = Arc::new(AtomicBool::new(false));
-        let quinn_config = tls::client_config(
-            config.pin,
-            mismatch.clone(),
-            limits.idle_timeout_ms,
-            limits.keep_alive_ms,
-        )
-        .ok_or(ConnectError::Handshake)?;
+        let quinn_config = tls::client_config(config.pin, mismatch.clone(), &limits)
+            .ok_or(ConnectError::Handshake)?;
         let socket = UdpSocket::bind(config.bind).map_err(|e| ConnectError::Io(e.kind()))?;
         let local_addr = socket
             .local_addr()

@@ -1221,6 +1221,8 @@ crpg/
 
 *Note 2026-10-04 (T023s, ADR-0024):* the `crpg-net/` line's "quinn transport" now means the `Transport` trait and its in-memory fabric. Real QUIC I/O lives in `crpg-net-quic`, so `crpg-net` itself links no socket, async runtime or TLS crate.
 
+*Note 2026-10-05 (T023v, ADR-0027):* `third_party/` also holds vendored crates.io patches. `third_party/quinn-proto/` is the checksum-pinned quinn-proto 0.11.19 archive plus numbered patches, used through `[patch.crates-io]`; see its `VENDOR.md`.
+
 Why each part exists, briefly: `crpg-contracts` is the human-owned choke point that keeps agents from redefining interfaces unilaterally; it holds trait definitions only, never cross-crate implementations, and protocol-specific traits such as `Transport` stay in their owning crate (*resolved 2026-09-30, E003 option B / POST-T018 D01, T032*). `crpg-testkit` exists so that test infrastructure is a dependency rather than copy-pasted into every crate. `schemas/` is checked in so external tools and agents can read it without building. `third_party/godot/` holds a pinned tag and a patch queue whose size is a tracked metric. `rulesets/pf2e/` is physically separate so its licence obligations never contaminate the engine.
 
 ---
@@ -2102,3 +2104,4 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-09-30 (UTC) · claude-code + T032 documentation reconciliation · Applied the settled E003 (definitions-only contracts, net-local Transport), E012 (crpg-server library + dedicated binary, Godot projects over crpg-godot), E013 (dependency diagram redrawn to match ALLOWED, "simulation stack" vs `crpg-core`, flow arrows labelled) and E021 (illustrative-only contract example) wording with dated notes; E022 interfaces and all hosting remain unimplemented and open.
 - 2026-09-30 (UTC) · claude-code + T033 E-task reconciliation · Applied the already-decided E010 (budgets, loader strip list, no wall-clock), E017 (as-built wire, legality, interest, movement, reconnect), E018 (auth, grants, privileged channel, T0/T2 enforcement), E019 (aspirational perf rows, D06 measurement) and E022 (ledger pointer) wording with dated notes; history text kept.
 - 2026-10-04 (UTC) · claude-code + T023s · Added `crpg-net-quic` to the §14 tree with dated notes in §14, §2.2 and §2.3, so the spec says where real QUIC I/O lives without rewriting the decision text; §7.2, §9/§10 and §17 are left to a later bookkeeping pass.
+- 2026-10-05 (UTC) · claude-code + T023v · Added a dated §14 note that `third_party/` also holds vendored crates.io patches (quinn-proto, VENDOR.md), so the layout tree does not read as Godot-only once T023v vendors quinn-proto.

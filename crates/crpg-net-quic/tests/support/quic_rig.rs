@@ -441,6 +441,7 @@ impl RelayConfig {
 #[derive(Default)]
 struct Counters {
     forwarded: AtomicU64,
+    forwarded_to_client: AtomicU64,
     dropped: AtomicU64,
     reordered: AtomicU64,
 }
@@ -450,6 +451,7 @@ pub struct UdpRelay {
     addr: SocketAddr,
     counters: Arc<Counters>,
     blackhole: Arc<AtomicBool>,
+    blackhole_to_server: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -470,13 +472,17 @@ struct Direction {
     config: RelayConfig,
     rng: SplitMix64,
     block: Vec<Vec<u8>>,
+    /// When the oldest packet of the partial block arrived.
+    held_since: Option<Instant>,
     counters: Arc<Counters>,
     blackhole: Arc<AtomicBool>,
+    /// Blackholes this direction only.
+    one_way: Arc<AtomicBool>,
 }
 
 impl Direction {
     fn offer(&mut self, packet: Vec<u8>, send: &mut dyn FnMut(&[u8])) {
-        if self.blackhole.load(Ordering::SeqCst) {
+        if self.blackhole.load(Ordering::SeqCst) || self.one_way.load(Ordering::SeqCst) {
             self.counters.dropped.fetch_add(1, Ordering::SeqCst);
             return;
         }
@@ -489,8 +495,12 @@ impl Direction {
             self.counters.forwarded.fetch_add(1, Ordering::SeqCst);
             return;
         }
+        if self.block.is_empty() {
+            self.held_since = Some(Instant::now());
+        }
         self.block.push(packet);
         if self.block.len() == self.config.reorder_depth {
+            self.held_since = None;
             // Block rotation: the first packet goes out last.
             self.block.rotate_left(1);
             for packet in self.block.drain(..) {
@@ -501,15 +511,16 @@ impl Direction {
         }
     }
 
-    /// Whether a partial reorder block is being held.
-    fn holding(&self) -> bool {
-        !self.block.is_empty()
+    /// When the partial reorder block started being held, if one is.
+    fn holding(&self) -> Option<Instant> {
+        self.held_since
     }
 
-    /// A partial block is released in order as soon as no further packet is
-    /// already queued (or on the idle read timeout), so reordering happens
-    /// within a burst and never waits on the OS timer.
+    /// A partial block is released in order once it has been held for
+    /// `HOLD` (measured on the monotonic clock, see `recv_burst`), or on the
+    /// idle read timeout.
     fn release(&mut self, send: &mut dyn FnMut(&[u8])) {
+        self.held_since = None;
         for packet in self.block.drain(..) {
             send(&packet);
             self.counters.forwarded.fetch_add(1, Ordering::SeqCst);
@@ -517,20 +528,38 @@ impl Direction {
     }
 }
 
-/// Receive one datagram. While a partial reorder block is held, only a
-/// packet that is already queued is accepted (a non-blocking read), so the
-/// block's release never depends on read-timeout granularity: Windows rounds
-/// the 2 ms timeout up to its ~15.6 ms timer tick, which inflated the relayed
-/// RTT roughly eightfold and starved the impaired transfer of its deadline.
-/// With nothing held, the read blocks for the short idle timeout only so the
-/// thread can observe `stop`.
+/// How long a partial reorder block may wait for the rest of its block.
+const HOLD: Duration = Duration::from_millis(2);
+
+/// Receive one datagram. While a partial reorder block is held, the socket is
+/// polled non-blocking until a packet arrives or the block has been held for
+/// `HOLD` on the monotonic clock. The hold therefore never depends on
+/// read-timeout or sleep granularity: Windows rounds a 2 ms timeout up to its
+/// ~15.6 ms tick, which inflated the relayed RTT about eightfold, while
+/// releasing as soon as nothing was queued left small transfers on Windows
+/// with no reordering at all. With nothing held, the read blocks for the
+/// short idle timeout only so the thread can observe `stop`.
 fn recv_burst(
     socket: &UdpSocket,
     buf: &mut [u8],
-    holding: bool,
+    held_since: Option<Instant>,
 ) -> std::io::Result<(usize, SocketAddr)> {
-    socket.set_nonblocking(holding)?;
-    socket.recv_from(buf)
+    let Some(since) = held_since else {
+        socket.set_nonblocking(false)?;
+        return socket.recv_from(buf);
+    };
+    socket.set_nonblocking(true)?;
+    loop {
+        match socket.recv_from(buf) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if since.elapsed() >= HOLD {
+                    return Err(error);
+                }
+                std::thread::yield_now();
+            }
+            other => return other,
+        }
+    }
 }
 
 impl UdpRelay {
@@ -543,6 +572,7 @@ impl UdpRelay {
         let addr = front.local_addr().expect("relay addr");
         let counters = Arc::new(Counters::default());
         let blackhole = Arc::new(AtomicBool::new(false));
+        let blackhole_to_server = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let client: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
 
@@ -557,8 +587,10 @@ impl UdpRelay {
                 config,
                 rng: SplitMix64(config.seed ^ 0x0C11_E47A),
                 block: Vec::new(),
+                held_since: None,
                 counters: counters.clone(),
                 blackhole: blackhole.clone(),
+                one_way: blackhole_to_server.clone(),
             };
             threads.push(std::thread::spawn(move || {
                 let mut buf = vec![0u8; 65_536];
@@ -585,15 +617,19 @@ impl UdpRelay {
                 config,
                 rng: SplitMix64(config.seed ^ 0x5E4F_E4D0),
                 block: Vec::new(),
+                held_since: None,
                 counters: counters.clone(),
                 blackhole: blackhole.clone(),
+                one_way: Arc::new(AtomicBool::new(false)),
             };
+            let to_client = counters.clone();
             threads.push(std::thread::spawn(move || {
                 let mut buf = vec![0u8; 65_536];
                 let mut send = |packet: &[u8]| {
                     let target = client.lock().ok().and_then(|known| *known);
                     if let Some(target) = target {
                         let _ = front.send_to(packet, target);
+                        to_client.forwarded_to_client.fetch_add(1, Ordering::SeqCst);
                     }
                 };
                 while !stop.load(Ordering::SeqCst) {
@@ -608,9 +644,20 @@ impl UdpRelay {
             addr,
             counters,
             blackhole,
+            blackhole_to_server,
             stop,
             threads,
         }
+    }
+
+    /// Server → client datagrams forwarded.
+    pub fn forwarded_to_client(&self) -> u64 {
+        self.counters.forwarded_to_client.load(Ordering::SeqCst)
+    }
+
+    /// Drops client → server datagrams only, so the server receives no ACKs.
+    pub fn set_blackhole_to_server(&self, on: bool) {
+        self.blackhole_to_server.store(on, Ordering::SeqCst);
     }
 
     pub fn addr(&self) -> SocketAddr {

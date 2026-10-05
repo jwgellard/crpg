@@ -20,7 +20,11 @@ items:
 - the handshake constants and functions, `Credential`, `Hello`, `Welcome`,
   and their errors;
 - `CertificatePin`, `ServerIdentity`;
-- the limits, the configs and `ConfigError`;
+- the limits, the configs and `ConfigError`. Since
+  [T023c](../../tasks/T023c.md), `ServerLimits` and `ClientLimits` each
+  carry the three QUIC window fields `stream_window_bytes`,
+  `connection_window_bytes` and `send_window_bytes` (`u32`, v1 = T023's
+  fixed values, floors 4,100 / 65,540 by direction, connection ≥ stream);
 - `CloseCode`, `CloseMode`, `CloseReason`, `SendError`, `ConnectionStats`.
 
 The submodules are private. Changing a public item, a wire byte, a cap, a
@@ -58,7 +62,8 @@ needs an ADR. A wire change also needs a new ALPN.
   `{"crpg-net"}`, ADR-0024).
 - The four D23 pins, with default features off:
   - `quinn` =0.11.12 (`runtime-tokio`, `rustls-ring`);
-  - `quinn-proto` =0.11.19 (`rustls-ring`);
+  - `quinn-proto` =0.11.19 (`rustls-ring`) (vendored with patches,
+    `third_party/quinn-proto/VENDOR.md`);
   - `rustls` =0.23.45 (`ring`, `std`);
   - `tokio` =1.53.1 (`rt`, `net`, `time`, `sync`).
 
@@ -71,7 +76,7 @@ record and approval. `deny.toml` changes follow ADR-0023 and its addendum.
 ```text
 cargo fmt --all -- --check
 cargo clippy -p crpg-net-quic --all-targets --locked -- -D warnings
-cargo test -p crpg-net-quic --test quic --locked
+cargo test -p crpg-net-quic --test quic --locked   # 28 cases (T023: 1–23, T023c: 24–27, T023v: 28)
 cargo test -p crpg-net --locked
 cargo tree -p crpg-net -e normal,build --target all   # must name no tokio/quinn/rustls/ring/mio/socket2
 cargo test --workspace --locked
@@ -113,7 +118,21 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
   Otherwise the monitor sees `LocallyClosed` with no code.
 - Test waits are 30 s failure guards, never oracles. The relay paces with
   read timeouts, not sleeps.
+- An exact stall frame count needs the stalled side to send no window
+  update: `21 + 2F < W / 8` toward a client (22 toward a server), with `F`
+  the framed size and `W` the smaller of its stream and connection windows
+  (T023c C§1.3). Otherwise the count depends on read chunking; assert only
+  `≥` and the stall.
+- A server cannot bound what a stalled client absorbs. Only the client's
+  own receive windows do; the server's `send_window_bytes` bounds its own
+  memory and bytes in flight, not the peer.
+- quinn-proto is vendored with upstream's close fix (T023v). A `Reset` in
+  case 17 or 28 now means the vendoring regressed: check
+  `[patch.crates-io]`, `Cargo.lock` and VENDOR.md. Never loosen the
+  assertion.
 
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T023 · Opened the crate contract with the transport's surface, the crate-wide I/O permission against `crpg-net`'s ban, the four D23 pins and no dev-deps, and the E§14 traps plus the no-sim-edge and no-re-export rules, so later lane tasks work inside the same bounds.
+- 2026-10-05 (UTC) · claude-code + T023c · Listed the six window fields in the public surface, the 27-case suite count and three traps (the exact-count no-update condition, only a client bounds what it absorbs, quinn's close gating), so later work tightens windows knowingly and never answers a `Reset` by loosening an assertion.
+- 2026-10-05 (UTC) · claude-code + T023v-b · Marked the quinn-proto pin as vendored, raised the suite count to 28 and replaced the close-gating trap with the regression check, so a future `Reset` in case 17 or 28 is traced to the vendoring instead of answered by loosening an assertion.
