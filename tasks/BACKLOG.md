@@ -116,7 +116,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
 | T029b | done | 2026-10-04 | `crpg-script` synchronous trusted bindings (D17, D21): startup validation, staged all-or-nothing dispatch, 18 tests plus 4 doctests (PR #23, merge `9157250`; CI green on Windows/MSVC and Linux/GNU); see [T029b](T029b.md) |
 | T038 | done | 2026-10-04 | `crpg-persist` versioned zstd save envelope with S001 input and decompressed caps, and atomic file store (D27b): 34 tests, both format vectors reproduced (PR #23, merge `9157250`; CI green on Windows/MSVC and Linux/GNU); see [T038](T038.md) |
-| T039 | open | — | `crpg-server` host checkpoint save adapter over `crpg-persist`: `HOSTCKPT` payload with a binary campaign/engine identity header over T022's verbatim checkpoint, load refusal precedence, and gate 10 file-backed save/load continuation equivalence; contract draft awaiting approval (H-contract, plus H-dep for the path edge); implementation serialized with T023b; see [T039](T039.md) |
+| T039 | open (ready) | — | `crpg-server` host checkpoint save adapter over `crpg-persist`: `HOSTCKPT` payload with a binary campaign/engine identity header over T022's verbatim checkpoint, load refusal precedence, and gate 10 file-backed save/load continuation equivalence; contract approved by the user 2026-10-05; implemented before T023b (H-contract, plus H-dep for the path edge); implementation serialized with T023b; see [T039](T039.md) |
 
 ## Phase 6 — Editor
 
@@ -219,6 +219,8 @@ order they become available: canonical JSON writer (§19.1 #11, part of T010),
 round-trip (#19, T018), simulated transport (#20, T018), Recast bake (#21),
 Godot proxy spawning (#22), interpolation buffer (#23), editor tree (#24),
 generated property form (#25), problems panel (#26).
+
+Follow-up to review (user, 2026-10-05, T039 Q4): T039 loads a save only into the exact campaign version that produced it. Revisit whether saves should load into newer compatible campaign versions; that needs a save-migration rule, which is its own task.
 
 Deferred input-hardening requirements (S001; land with the tasks that own
 them, not here): T010 `crpg-data` loader caps — campaign JSON file size and
@@ -380,3 +382,4 @@ Record it here, one line per week.
 - 2026-10-04 (UTC) · claude-code + PR #26 landed · Marked T023 and T023s done (PRs #25/#26, dual-OS CI green) and moved throughput to 48.
 - 2026-10-05 (UTC) · claude-code + T039 contract · Added the T039 row as `open` with its contract draft awaiting approval, so the Wave 3 persistence adapter is indexed without implying readiness, approval or gate-10 activation.
 - 2026-10-05 (UTC) · claude-code + T023b contract · Moved the T023b row to `open` with its exact contract drafted and awaiting approval, since T022 and T023 are done, so the index shows the remaining gate is contract approval, not a prerequisite.
+- 2026-10-05 (UTC) · claude-code + T039 decisions · Marked T039 ready and recorded the user's review-later follow-up on cross-version save loading.
