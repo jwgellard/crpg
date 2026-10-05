@@ -14,6 +14,7 @@ use rustls::{CertificateError, DigitallySignedStruct, PeerIncompatible, Signatur
 
 use crate::handshake::ALPN_LANE0_V1;
 use crate::identity::{CertificatePin, ServerIdentity};
+use crate::limits::{ClientLimits, ServerLimits};
 
 /// The ring crypto provider, built fresh (no process-wide default).
 fn provider() -> Arc<CryptoProvider> {
@@ -32,27 +33,14 @@ pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     digest
 }
 
-/// The transport parameters fixed by E§8.3.
+/// One endpoint's stream count (fixed by E§8.3) and flow-control windows
+/// (its limits, T023c).
 struct Windows {
     bidi_streams: u32,
     stream_receive_window: u32,
     receive_window: u32,
-    send_window: u64,
+    send_window: u32,
 }
-
-const SERVER_WINDOWS: Windows = Windows {
-    bidi_streams: 1,
-    stream_receive_window: 65_536,
-    receive_window: 131_072,
-    send_window: 1_048_576,
-};
-
-const CLIENT_WINDOWS: Windows = Windows {
-    bidi_streams: 0,
-    stream_receive_window: 1_048_576,
-    receive_window: 2_097_152,
-    send_window: 262_144,
-};
 
 fn transport(windows: &Windows, idle_timeout_ms: u32, keep_alive_ms: u32) -> TransportConfig {
     let mut config = TransportConfig::default();
@@ -63,7 +51,7 @@ fn transport(windows: &Windows, idle_timeout_ms: u32, keep_alive_ms: u32) -> Tra
         .datagram_send_buffer_size(0)
         .stream_receive_window(VarInt::from_u32(windows.stream_receive_window))
         .receive_window(VarInt::from_u32(windows.receive_window))
-        .send_window(windows.send_window)
+        .send_window(u64::from(windows.send_window))
         .max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(idle_timeout_ms))))
         .keep_alive_interval(if keep_alive_ms == 0 {
             None
@@ -75,13 +63,12 @@ fn transport(windows: &Windows, idle_timeout_ms: u32, keep_alive_ms: u32) -> Tra
 
 /// The server's quinn config: TLS 1.3 only, ring, no client auth, the
 /// single identity certificate, ALPN `crpg-lane0/1`, no 0-RTT, no
-/// migration, `max_incoming = max_connections`. `None` when the identity
-/// does not load (bad DER, key not matching the certificate).
+/// migration, `max_incoming = max_connections`, and the windows from
+/// `limits`. `None` when the identity does not load (bad DER, key not
+/// matching the certificate).
 pub(crate) fn server_config(
     identity: &ServerIdentity,
-    idle_timeout_ms: u32,
-    keep_alive_ms: u32,
-    max_connections: usize,
+    limits: &ServerLimits,
 ) -> Option<quinn::ServerConfig> {
     let cert = CertificateDer::from(identity.cert_der().to_vec());
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key_pkcs8_der().to_vec()));
@@ -95,24 +82,30 @@ pub(crate) fn server_config(
     tls.max_early_data_size = 0;
     let crypto = QuicServerConfig::try_from(tls).ok()?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let windows = Windows {
+        bidi_streams: 1,
+        stream_receive_window: limits.stream_window_bytes,
+        receive_window: limits.connection_window_bytes,
+        send_window: limits.send_window_bytes,
+    };
     config
         .transport_config(Arc::new(transport(
-            &SERVER_WINDOWS,
-            idle_timeout_ms,
-            keep_alive_ms,
+            &windows,
+            limits.idle_timeout_ms,
+            limits.keep_alive_ms,
         )))
         .migration(false)
-        .max_incoming(max_connections);
+        .max_incoming(limits.max_connections);
     Some(config)
 }
 
 /// The client's quinn config: TLS 1.3 only, ring, the pinned verifier, no
-/// client auth, ALPN `crpg-lane0/1`, no 0-RTT and no session resumption.
+/// client auth, ALPN `crpg-lane0/1`, no 0-RTT and no session resumption,
+/// and the windows from `limits`.
 pub(crate) fn client_config(
     pin: CertificatePin,
     mismatch: Arc<AtomicBool>,
-    idle_timeout_ms: u32,
-    keep_alive_ms: u32,
+    limits: &ClientLimits,
 ) -> Option<quinn::ClientConfig> {
     let provider = provider();
     let verifier = PinnedServerVerifier {
@@ -131,10 +124,16 @@ pub(crate) fn client_config(
     tls.resumption = rustls::client::Resumption::disabled();
     let crypto = QuicClientConfig::try_from(tls).ok()?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
+    let windows = Windows {
+        bidi_streams: 0,
+        stream_receive_window: limits.stream_window_bytes,
+        receive_window: limits.connection_window_bytes,
+        send_window: limits.send_window_bytes,
+    };
     config.transport_config(Arc::new(transport(
-        &CLIENT_WINDOWS,
-        idle_timeout_ms,
-        keep_alive_ms,
+        &windows,
+        limits.idle_timeout_ms,
+        limits.keep_alive_ms,
     )));
     Some(config)
 }

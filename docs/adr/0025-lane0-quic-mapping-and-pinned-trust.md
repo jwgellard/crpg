@@ -150,6 +150,48 @@ the native Windows/MSVC run is CI's and is pending at filing.
 
 ## Supersession and corrections
 
+## Addendum — 2026-10-05 (UTC): flow-control windows are tightening-only limits (T023c)
+
+Accepted with the approval of [T023c](../../tasks/T023c.md).
+
+1. The QUIC stream receive window, connection receive window and send
+   window of each endpoint are no longer fixed in `tls.rs`. They are the
+   `ServerLimits` and `ClientLimits` fields `stream_window_bytes`,
+   `connection_window_bytes` and `send_window_bytes`, under the same
+   tightening-only rule as every other limit. Their v1 values are the
+   values T023 fixed: server 65,536 / 131,072 / 1,048,576, client
+   1,048,576 / 2,097,152 / 262,144. An endpoint built from `v1()`
+   advertises and enforces exactly what it did before.
+2. Each window holds at least one maximal frame of the direction it
+   carries, plus the 4-byte header: 4,100 bytes for intents (client
+   send, server receive) and 65,540 for deltas (server send, client
+   receive). A connection receive window is at least its stream receive
+   window.
+3. This is not a wire change. Transport parameters are exchanged in the
+   QUIC handshake, and every QUIC peer must honour whatever the other side
+   advertises. The stream mapping, framing, hello and welcome, close codes
+   and ALPN `crpg-lane0/1` are unchanged, so no new ALPN is needed.
+4. Every other E§8.3 parameter stays fixed: one client-initiated bidi
+   stream, no uni streams, no DATAGRAM extension, no migration,
+   `max_incoming = max_connections`, no 0-RTT.
+5. Why: a peer that stops reading is bounded by its **own** receive
+   windows, not by the sender's send window, because quinn releases
+   acknowledged data and a stalled reader still acknowledges. Tests and
+   hosts that need a stalled client to push back within a few frames must
+   be able to tighten the client's receive windows. Operators can tighten
+   the per-connection buffer memory quinn may hold (up to
+   64 × (65,536 + 1,048,576) bytes on a v1 server).
+6. Recorded transport behaviour, not changed here: quinn-proto 0.11.19
+   congestion-controls the `CONNECTION_CLOSE` packet of a locally closed
+   connection that still holds unsent stream data, and it processes no
+   ACKs once closed. If `bytes_in_flight + one datagram ≥ cwnd` when the
+   close happens, the close is never sent. The peer then learns of it
+   only from a stateless reset after the 3 × PTO drain
+   (`CloseReason::Reset`), or from its own idle timeout. Smaller windows
+   lower the bytes in flight and so the exposure, but do not remove it.
+   Evidence: T023c C§1.4.
+
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T023 · Filed the lane-0 QUIC wire and trust decisions (single bidi stream, ALPN `crpg-lane0/1`, capped length-prefix framing, SHA-256 DER pinning, format-only credential, close codes 0–9, fail-closed control) as Accepted on the user's recorded approval of T023's re-contract (R13), so the durable wire choices have their own record apart from ADR-0024's placement.
+- 2026-10-05 (UTC) · claude-code + T023c · Appended the approved T023c addendum making the three QUIC flow-control windows per endpoint tightening-only limits with v1 equal to the T023 values, and recording quinn-proto's congestion-gated `CONNECTION_CLOSE`, so the wire record says which transport parameters are still fixed and why a `Reset` can replace a close code.

@@ -26,6 +26,9 @@ pinning, bounded queues with backpressure, close codes and modes, and a
 public endpoint suite (`tests/quic.rs`, 23 cases). The suite runs over IPv4
 loopback, including a UDP relay that drops and reorders packets.
 
+T023c made the QUIC flow-control windows tightening-only limits (v1 equal
+to T023's fixed values) and added cases 24–27, so the suite has 27 cases.
+
 Planned, each as its own `crpg-net-quic` child task paired with a `crpg-net`
 wire task where needed:
 
@@ -105,10 +108,13 @@ order.
 | Idle / keep-alive | 60 s / 15 s | 60 s / 15 s |
 | Hello / decision / connect | 5 s / 5 s / — | — / — / 10 s |
 | Close flush | 2 s | 2 s |
+| QUIC stream receive window (`stream_window_bytes`) | 65,536 (floor 4,100) | 1,048,576 (floor 65,540) |
+| QUIC connection receive window (`connection_window_bytes`) | 131,072 (≥ stream window) | 2,097,152 (≥ stream window) |
+| QUIC send window (`send_window_bytes`) | 1,048,576 (floor 65,540) | 262,144 (floor 4,100) |
 
 - **Outbound full** → `SendError::QueueFull`. It is retryable and nothing is
   queued. A frame leaves the accounting when it is handed to QUIC, and
-  quinn's own buffer is bounded by `send_window`.
+  quinn's own buffer is bounded by `send_window_bytes`.
 - **Inbound full** → the reader parks one complete frame and stops reading,
   so QUIC flow control stalls the peer. Parked frames are let in, in
   ascending connection order, as `try_recv` frees room.
@@ -117,9 +123,25 @@ order.
   event and `try_recv`'s error, only once the reader has nothing more. A
   host that stops draining a closed connection therefore holds back that
   connection's `Closed` event.
-- The transport parameters are fixed (E§8.3): server 1 bidi / 0 uni
-  streams, client 0 / 0, no DATAGRAM extension, no migration, fixed
-  windows.
+- The transport parameters other than the windows are fixed (E§8.3):
+  server 1 bidi / 0 uni streams, client 0 / 0, no DATAGRAM extension, no
+  migration. The windows are limits (T023c, ADR-0025 addendum): each
+  endpoint advertises its own receive windows to the peer and enforces its
+  own send window locally, and `v1()` reproduces T023's fixed values
+  exactly. A window floor is one maximal frame of its direction plus the
+  4-byte header.
+- **What bounds a stalled peer** is its own receive windows, not the
+  sender's send window: quinn releases acknowledged data, and a peer that
+  stops reading still acknowledges. With one-frame queues on both ends and
+  no window update (the stalled side has read fewer than `W / 8` bytes),
+  a server's `try_send` to a stalled client accepts exactly
+  `⌊(min(W, C) − 21) / F⌋ + 2` frames of framed size `F` before a lasting
+  `QueueFull`: about 1 MiB of frames at the client's v1 windows (40,331
+  frames of 22 bytes), 2,521 at its floor. Toward a stalled server the 21
+  welcome bytes become the 22-byte hello. A server cannot impose a client's
+  windows, so against a slow production client it relies on its outbound
+  queue caps, its send window (memory) and T023b's slow-consumer fence
+  (T023c C§1.2–C§1.3).
 
 ## Handshake
 
@@ -147,6 +169,11 @@ The handshake follows E§5 / ADR-0025.
 - The record-lifetime rule: a connection is forgotten once its `Closed`
   event is polled **and**, if it held frames, `try_recv` has returned
   `Closed`.
+- The window limits (T023c): a test client with tightened
+  `stream_window_bytes` / `connection_window_bytes` stalls the server's
+  `try_send` within a computable number of frames. The resulting
+  amendments to T023b's cases 10, 12, 14 and 16 are in
+  [T023c C§10](../../tasks/T023c.md#c10-downstream-amending-t023b-after-t023c-lands).
 
 Credential policy, the `now_ms` clock, and the hold-or-drop choice on
 ingest `QueueFull` belong to T023b. T023b's decisions are R4 (close with
@@ -156,3 +183,4 @@ stop draining).
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T023 · Opened the doc with the crate's position between `crpg-net` and `crpg-server`, the module flow, thread model, bounds and handshake as built, and the T023b/T024/T025a/T026p split, so later transport children extend it rather than restating the contract.
+- 2026-10-05 (UTC) · claude-code + T023c · Added the three window limits per side to the bounds, narrowed the fixed-parameters sentence to what is still fixed, explained what bounds a stalled peer and passed the window limits and the T023b amendments on to T023b, so the doc matches the code after the windows stopped being constants.
