@@ -191,7 +191,24 @@ Accepted with the approval of [T023c](../../tasks/T023c.md).
    lower the bytes in flight and so the exposure, but do not remove it.
    Evidence: T023c C§1.4.
 
+## Addendum — 2026-10-05 (UTC): quinn-proto's close gating fixed by vendoring (T023v)
+
+Accepted with the approval of [T023v](../../tasks/T023v.md).
+
+1. The workspace builds quinn-proto 0.11.19 from `third_party/quinn-proto/`
+   with upstream commit `e556fde` applied (quinn-rs/quinn#2787, which fixes
+   #2785). A close packet is no longer held by congestion control or
+   pacing. The anti-amplification limit still applies.
+2. A locally closed connection's close code therefore reaches the peer even
+   with a full congestion window. Case 28
+   (`discard_close_reaches_peer_when_congestion_blocked`) shows it end to
+   end. Case 17 runs on v1 limits again, because T023c C§8.5 is withdrawn.
+3. No wire, ALPN, transport-parameter or limit change. Item 6 of the T023c
+   addendum stays as the record of unpatched quinn-proto. It applies again
+   only if the vendoring is retired without an upstream fix.
+
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T023 · Filed the lane-0 QUIC wire and trust decisions (single bidi stream, ALPN `crpg-lane0/1`, capped length-prefix framing, SHA-256 DER pinning, format-only credential, close codes 0–9, fail-closed control) as Accepted on the user's recorded approval of T023's re-contract (R13), so the durable wire choices have their own record apart from ADR-0024's placement.
 - 2026-10-05 (UTC) · claude-code + T023c · Appended the approved T023c addendum making the three QUIC flow-control windows per endpoint tightening-only limits with v1 equal to the T023 values, and recording quinn-proto's congestion-gated `CONNECTION_CLOSE`, so the wire record says which transport parameters are still fixed and why a `Reset` can replace a close code.
+- 2026-10-05 (UTC) · claude-code + T023v-b · Appended the approved T023v addendum: quinn-proto is vendored with upstream's close fix, case 28 proves the close code reaches a congestion-blocked peer and case 17 is back on v1 limits. The wire record now says the `Reset` exposure of the T023c addendum is closed while the vendoring stands.

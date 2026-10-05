@@ -6,6 +6,10 @@
 //! the server's queue (25) and a stalled server's windows on the client's
 //! (26), and maximal frames at the floor windows (27).
 //!
+//! T023v adds case 28: a `Discard` close reaches the peer as its close code
+//! while the server is congestion blocked (vendored quinn-proto fix,
+//! `third_party/quinn-proto/VENDOR.md`).
+//!
 //! Every rejection has a positive control on the same server. Waits are
 //! 30 s failure guards from `support/quic_rig.rs`, never oracles.
 
@@ -1470,26 +1474,18 @@ fn graceful_close_flushes_and_reports_codes() {
     );
 
     // Server Discard with N queued: an in-order prefix, then code 9.
-    // This part runs on its own server with a tightened send window, which
-    // keeps the bytes in flight at the close small: quinn-proto 0.11.19
-    // congestion-controls a Discard close packet and processes no ACKs once
-    // closed, so with a full congestion window the close is never sent and
-    // the client sees a stateless reset instead (T023c C§1.4).
-    let mut fenced_limits = ServerLimits::v1();
-    fenced_limits.send_window_bytes = 65_540;
-    let mut fenced = bind_server(fenced_limits);
-    let (mut client, conn) = connect_accepted(&mut fenced, ClientLimits::v1(), 1, epoch(2));
+    let (mut client, conn) = connect_accepted(&mut server, ClientLimits::v1(), 1, epoch(2));
     let n_frames = 64u32;
     for n in 1..=n_frames {
-        fenced
+        server
             .try_send(conn, &pattern(6, n, DELTA_CAP))
             .expect("send");
     }
-    let report = fenced
+    let report = server
         .close(conn, CloseCode::SessionFenced, CloseMode::Discard)
         .expect("close");
     assert_eq!(
-        fenced.try_send(conn, b"late"),
+        server.try_send(conn, b"late"),
         Err(SendError::Closed(CloseReason::Local(
             CloseCode::SessionFenced
         )))
@@ -1513,7 +1509,7 @@ fn graceful_close_flushes_and_reports_codes() {
         report.outbound_frames_discarded
     );
     assert_eq!(
-        next_closed(&mut fenced),
+        next_closed(&mut server),
         (conn, CloseReason::Local(CloseCode::SessionFenced))
     );
 
@@ -2201,5 +2197,74 @@ fn floor_windows_carry_maximal_frames_in_order() {
     assert_eq!(
         next_closed(&mut server),
         (conn, CloseReason::Peer { code: 0 })
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 28: a Discard close reaches the peer while congestion blocked (T023v).
+// ---------------------------------------------------------------------------
+
+/// Server → client datagrams that must have left the server after the
+/// client → server path is cut, before the close is issued. With no ACK
+/// arriving, bytes in flight never fall, so the server sends one burst up
+/// to its congestion window (7–9 datagrams measured) and then only PTO
+/// probes, two per probe timeout. 14 therefore means the window was full
+/// for at least one probe timeout before the close.
+const CONGESTION_BLOCKED_DATAGRAMS: u64 = 14;
+
+#[test]
+fn discard_close_reaches_peer_when_congestion_blocked() {
+    let mut server = bind_server(ServerLimits::v1());
+    let relay = UdpRelay::start(server.local_addr(), RelayConfig::clean());
+    let welcome = Welcome {
+        wire_version: 1,
+        epoch: epoch(28),
+    };
+    let (mut client, conn) = connect_via_relay(&mut server, &relay, ClientLimits::v1(), welcome);
+
+    // Positive control: the relay forwards a frame.
+    server.try_send(conn, &pattern(28, 0, 1_000)).expect("send");
+    assert_eq!(client_recv(&mut client), Ok(pattern(28, 0, 1_000)));
+
+    // Cut client → server: from here on no ACK reaches the server.
+    relay.set_blackhole_to_server(true);
+    let before = relay.forwarded_to_client();
+    let n_frames = 16u32;
+    for n in 1..=n_frames {
+        server
+            .try_send(conn, &pattern(28, n, DELTA_CAP))
+            .expect("send");
+    }
+    until("server congestion blocked", || {
+        relay.forwarded_to_client() >= before + CONGESTION_BLOCKED_DATAGRAMS
+    });
+    let report = server
+        .close(conn, CloseCode::SessionFenced, CloseMode::Discard)
+        .expect("close");
+    relay.set_blackhole_to_server(false);
+    assert!(relay.dropped() >= 1, "the client's ACKs were cut");
+
+    let mut k = 0u32;
+    loop {
+        match client_recv(&mut client) {
+            Ok(frame) => {
+                k += 1;
+                assert_eq!(frame, pattern(28, k, DELTA_CAP), "in-order prefix");
+            }
+            Err(reason) => {
+                // quinn-proto 0.11.19 unpatched: `Reset` (T023c C§1.4).
+                assert_eq!(reason, CloseReason::Peer { code: 9 });
+                break;
+            }
+        }
+    }
+    assert!(
+        k as usize + report.outbound_frames_discarded <= n_frames as usize,
+        "k = {k}, discarded = {}",
+        report.outbound_frames_discarded
+    );
+    assert_eq!(
+        next_closed(&mut server),
+        (conn, CloseReason::Local(CloseCode::SessionFenced))
     );
 }

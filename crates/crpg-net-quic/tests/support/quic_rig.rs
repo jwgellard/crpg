@@ -441,6 +441,7 @@ impl RelayConfig {
 #[derive(Default)]
 struct Counters {
     forwarded: AtomicU64,
+    forwarded_to_client: AtomicU64,
     dropped: AtomicU64,
     reordered: AtomicU64,
 }
@@ -450,6 +451,7 @@ pub struct UdpRelay {
     addr: SocketAddr,
     counters: Arc<Counters>,
     blackhole: Arc<AtomicBool>,
+    blackhole_to_server: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -474,11 +476,13 @@ struct Direction {
     held_since: Option<Instant>,
     counters: Arc<Counters>,
     blackhole: Arc<AtomicBool>,
+    /// Blackholes this direction only.
+    one_way: Arc<AtomicBool>,
 }
 
 impl Direction {
     fn offer(&mut self, packet: Vec<u8>, send: &mut dyn FnMut(&[u8])) {
-        if self.blackhole.load(Ordering::SeqCst) {
+        if self.blackhole.load(Ordering::SeqCst) || self.one_way.load(Ordering::SeqCst) {
             self.counters.dropped.fetch_add(1, Ordering::SeqCst);
             return;
         }
@@ -568,6 +572,7 @@ impl UdpRelay {
         let addr = front.local_addr().expect("relay addr");
         let counters = Arc::new(Counters::default());
         let blackhole = Arc::new(AtomicBool::new(false));
+        let blackhole_to_server = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let client: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
 
@@ -585,6 +590,7 @@ impl UdpRelay {
                 held_since: None,
                 counters: counters.clone(),
                 blackhole: blackhole.clone(),
+                one_way: blackhole_to_server.clone(),
             };
             threads.push(std::thread::spawn(move || {
                 let mut buf = vec![0u8; 65_536];
@@ -614,13 +620,16 @@ impl UdpRelay {
                 held_since: None,
                 counters: counters.clone(),
                 blackhole: blackhole.clone(),
+                one_way: Arc::new(AtomicBool::new(false)),
             };
+            let to_client = counters.clone();
             threads.push(std::thread::spawn(move || {
                 let mut buf = vec![0u8; 65_536];
                 let mut send = |packet: &[u8]| {
                     let target = client.lock().ok().and_then(|known| *known);
                     if let Some(target) = target {
                         let _ = front.send_to(packet, target);
+                        to_client.forwarded_to_client.fetch_add(1, Ordering::SeqCst);
                     }
                 };
                 while !stop.load(Ordering::SeqCst) {
@@ -635,9 +644,20 @@ impl UdpRelay {
             addr,
             counters,
             blackhole,
+            blackhole_to_server,
             stop,
             threads,
         }
+    }
+
+    /// Server → client datagrams forwarded.
+    pub fn forwarded_to_client(&self) -> u64 {
+        self.counters.forwarded_to_client.load(Ordering::SeqCst)
+    }
+
+    /// Drops client → server datagrams only, so the server receives no ACKs.
+    pub fn set_blackhole_to_server(&self, on: bool) {
+        self.blackhole_to_server.store(on, Ordering::SeqCst);
     }
 
     pub fn addr(&self) -> SocketAddr {

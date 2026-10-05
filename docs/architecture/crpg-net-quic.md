@@ -28,6 +28,9 @@ loopback, including a UDP relay that drops and reorders packets.
 
 T023c made the QUIC flow-control windows tightening-only limits (v1 equal
 to T023's fixed values) and added cases 24–27, so the suite has 27 cases.
+T023v vendors quinn-proto with upstream's `CONNECTION_CLOSE` fix
+(`third_party/quinn-proto/VENDOR.md`) and adds case 28, so the suite has
+28 cases.
 
 Planned, each as its own `crpg-net-quic` child task paired with a `crpg-net`
 wire task where needed:
@@ -174,6 +177,10 @@ The handshake follows E§5 / ADR-0025.
   `try_send` within a computable number of frames. The resulting
   amendments to T023b's cases 10, 12, 14 and 16 are in
   [T023c C§10](../../tasks/T023c.md#c10-downstream-amending-t023b-after-t023c-lands).
+- Close codes reach the peer under a full congestion window (T023v): a
+  `SessionFenced`/`Discard` close arrives as `Peer { code: 9 }`, not as a
+  `Reset`, even when the server's congestion window is full (case 28,
+  ADR-0025's T023v addendum).
 
 Credential policy, the `now_ms` clock, and the hold-or-drop choice on
 ingest `QueueFull` belong to T023b. T023b's decisions are R4 (close with
@@ -184,3 +191,4 @@ stop draining).
 
 - 2026-10-04 (UTC) · claude-code + T023 · Opened the doc with the crate's position between `crpg-net` and `crpg-server`, the module flow, thread model, bounds and handshake as built, and the T023b/T024/T025a/T026p split, so later transport children extend it rather than restating the contract.
 - 2026-10-05 (UTC) · claude-code + T023c · Added the three window limits per side to the bounds, narrowed the fixed-parameters sentence to what is still fixed, explained what bounds a stalled peer and passed the window limits and the T023b amendments on to T023b, so the doc matches the code after the windows stopped being constants.
+- 2026-10-05 (UTC) · claude-code + T023v-b · Recorded the vendored quinn-proto close fix and case 28 (28 cases) and told T023b that close codes now reach the peer under a full congestion window, so T023b's fencing cases can rely on the code instead of tolerating a `Reset`.
