@@ -168,6 +168,22 @@ learning that code: under a full congestion window the peer sees a
 stateless reset instead. The window for this is exactly the case where
 closing is most likely: a sender with a lot of queued data.
 
+## Status — superseded upstream (2026-10-05 (UTC))
+
+Do not file this draft. Upstream already fixed the issue it describes:
+quinn-rs/quinn commit `e556fde4b5287842e60b26b10bb225ea6174385b`, "Send
+CONNECTION_CLOSE even when congestion blocked (#2787)", which fixes #2785.
+It was merged to `main` on 2026-08-27, after quinn-proto 0.11.19 was cut,
+and is not in 0.11.19 or on the `0.11.x` branch. Filing this draft would
+duplicate #2785 ([T023v](../../tasks/T023v.md) V§1.1, Q3).
+
+The workspace now vendors quinn-proto 0.11.19 with that commit as patch 0001
+(`third_party/quinn-proto/VENDOR.md`,
+[ADR-0027](../adr/0027-vendored-crates-io-patches.md)). The text above stays
+as the record of the T023c evidence. Asking upstream for a `0.11.x`
+backport release, on #2785 or #2787, is an optional action for the user.
+
 ## Agent log
 
 - 2026-10-05 (UTC) · claude-code + T023c · Drafted the upstream quinn issue from the T023c C§1.4 evidence (reproduction shape, measurements, the code path and the one-line evidence patch) for the user to file, as the user decided in T023c Q6; nothing was filed.
+- 2026-10-05 (UTC) · claude-code + T023v-a · Appended a dated superseded-upstream status note, because upstream already fixed this issue (e556fde, #2787 fixing #2785) and T023v vendors that commit, so the draft must not be filed as a duplicate.

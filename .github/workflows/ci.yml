@@ -127,6 +127,15 @@ jobs:
       # the action is what chooses the cargo-deny version. A floating pin here
       # would break the config, not just change a runner detail.
       - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+      # T023v: cargo-deny cannot see advisories against a crate replaced by a
+      # [patch.crates-io] path (measured, tasks/T023v.md V§1.4), so advisories
+      # are checked again on the graph with that table removed. Only this
+      # job's throwaway checkout is edited.
+      - name: Strip [patch.crates-io] for the advisories re-check
+        run: python3 -c "import pathlib; p = pathlib.Path('Cargo.toml'); s = p.read_text(); i = s.index('\n[patch.crates-io]'); p.write_text(s[:i] + '\n')"
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command-arguments: advisories
 
   lint-architecture:
     runs-on: ubuntu-latest

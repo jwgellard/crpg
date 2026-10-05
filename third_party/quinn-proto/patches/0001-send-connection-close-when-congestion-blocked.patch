@@ -1,0 +1,85 @@
+Backport of quinn-rs/quinn commit e556fde4b5287842e60b26b10bb225ea6174385b
+("Send CONNECTION_CLOSE even when congestion blocked (#2787)", fixes #2785,
+merged to main 2026-08-27, not in quinn-proto 0.11.19) onto the
+quinn-proto 0.11.19 crates.io archive. Apply at the archive root with
+`patch -p1 --no-backup-if-mismatch`. Code and test hunks are the upstream
+commit's, re-based by line offset only (+8 and +201 lines).
+
+--- a/src/connection/mod.rs
++++ b/src/connection/mod.rs
+@@ -602,8 +602,13 @@
+                 }
+ 
+                 // Congestion control and pacing checks
+-                // Tail loss probes must not be blocked by congestion, or a deadlock could arise
+-                if ack_eliciting && self.spaces[space_id].loss_probes == 0 {
++                // Tail loss probes must not be blocked by congestion, or a deadlock could arise.
++                // Close packets contain only ACKs and CONNECTION_CLOSE, neither of which is
++                // congestion controlled, and must not be blocked either: `ack_eliciting` reflects
++                // pending frames that will never be sent once closing, and a closed connection no
++                // longer processes ACKs, so the window could never drain
++                // (see https://github.com/quinn-rs/quinn/issues/2785)
++                if ack_eliciting && self.spaces[space_id].loss_probes == 0 && !close {
+                     // Assume the current packet will get padded to fill the segment
+                     let untracked_bytes = if let Some(builder) = &builder_storage {
+                         buf_capacity - builder.partial_encode.start
+--- a/src/tests/mod.rs
++++ b/src/tests/mod.rs
+@@ -1634,6 +1634,57 @@
+     );
+ }
+ 
++/// A connection closed while its congestion window is saturated must still deliver
++/// CONNECTION_CLOSE to the peer promptly, rather than leaving the peer to discover the close via
++/// its idle timeout (see https://github.com/quinn-rs/quinn/issues/2785)
++#[test]
++fn connection_close_while_congestion_blocked() {
++    let _guard = subscribe();
++    let mut pair = Pair::default();
++    let (client_ch, server_ch) = pair.connect();
++
++    // Saturate the congestion window with unacknowledged stream data by transmitting from the
++    // client without driving the server, so no ACKs come back and in-flight bytes stay pinned at
++    // the window
++    let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
++    pair.client_send(client_ch, s)
++        .write(&[42; 1024 * 1024])
++        .unwrap();
++    pair.drive_client();
++
++    // Close while the window is full and stream data is still pending
++    const REASON: &[u8] = b"whee";
++    let close_time = pair.time;
++    pair.client.connections.get_mut(&client_ch).unwrap().close(
++        pair.time,
++        VarInt(42),
++        REASON.into(),
++    );
++
++    // Step the simulation by hand so we can catch the exact moment the server hears about the
++    // close: check for the event after each packet exchange, before the clock jumps ahead
++    let mut result = None;
++    loop {
++        pair.drive_client();
++        pair.drive_server();
++        while let Some(event) = pair.server_conn_mut(server_ch).poll() {
++            if let Event::ConnectionLost { reason } = event {
++                result = Some((reason, pair.time));
++            }
++        }
++        if result.is_some() || !pair.step() {
++            break;
++        }
++    }
++    let (reason, delivered_at) = result.expect("server never learned of the close");
++    assert_matches!(reason, ConnectionError::ApplicationClosed(
++        ApplicationClose { error_code: VarInt(42), ref reason }
++    ) if reason == REASON);
++    // Close packets aren't congestion controlled and the test link has no latency, so the close
++    // should arrive the moment it was issued — any delay means a timer had to rescue it
++    assert_eq!(delivered_at, close_time);
++}
++
+ #[test]
+ fn server_hs_retransmit() {
+     let _guard = subscribe();
