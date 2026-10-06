@@ -10,6 +10,9 @@
 //! while the server is congestion blocked (vendored quinn-proto fix,
 //! `third_party/quinn-proto/VENDOR.md`).
 //!
+//! T023d adds cases 29–30: a refusal (29) or a pending `Discard` close (30)
+//! still reaches the client as its code when the host polls `Closed` at once.
+//!
 //! Every rejection has a positive control on the same server. Waits are
 //! 30 s failure guards from `support/quic_rig.rs`, never oracles.
 
@@ -2267,4 +2270,81 @@ fn discard_close_reaches_peer_when_congestion_blocked() {
         next_closed(&mut server),
         (conn, CloseReason::Local(CloseCode::SessionFenced))
     );
+}
+
+// ---------------------------------------------------------------------------
+// 29–30: a pending close is delivered even when `Closed` is polled at once
+// (T023d).
+// ---------------------------------------------------------------------------
+
+/// The three host decision codes a pending connection is closed with.
+const PENDING_CLOSE_CODES: [CloseCode; 3] = [
+    CloseCode::AuthRefused,
+    CloseCode::VersionRefused,
+    CloseCode::ServerBusy,
+];
+
+/// After `Closed` is polled the connection is unknown to the API at once,
+/// and the client still receives `code`.
+fn assert_forgotten_then_refused(
+    server: &mut QuicServer,
+    conn: ConnectionId,
+    code: CloseCode,
+    pending: std::thread::JoinHandle<Result<QuicClient, ConnectError>>,
+) {
+    assert_eq!(next_closed(server), (conn, CloseReason::Local(code)));
+    assert_eq!(server.try_recv(conn), Err(ServerError::UnknownConnection));
+    assert_eq!(
+        server.stats(conn).err(),
+        Some(ServerError::UnknownConnection)
+    );
+    let refused = pending.join().expect("thread");
+    assert_eq!(
+        refused.err(),
+        Some(ConnectError::Refused {
+            code: u64::from(code.as_u32())
+        })
+    );
+}
+
+#[test]
+fn refusal_reaches_client_when_closed_is_polled_at_once() {
+    let mut server = bind_server(ServerLimits::v1());
+    for code in PENDING_CLOSE_CODES {
+        let pending = connect_async(
+            client_config(ClientLimits::v1()),
+            server.local_addr(),
+            hello(1),
+        );
+        let (conn, _, _) = next_hello(&mut server);
+        server.refuse(conn, code).expect("refuse");
+        assert_forgotten_then_refused(&mut server, conn, code, pending);
+    }
+
+    // Positive control: the same server accepts a fourth client, and one
+    // frame crosses each way.
+    let (mut client, conn) = connect_accepted(&mut server, ClientLimits::v1(), 1, epoch(29));
+    client.try_send(&pattern(29, 1, 64)).expect("client send");
+    assert_eq!(server_recv(&mut server, conn), Ok(pattern(29, 1, 64)));
+    server
+        .try_send(conn, &pattern(29, 2, 64))
+        .expect("server send");
+    assert_eq!(client_recv(&mut client), Ok(pattern(29, 2, 64)));
+}
+
+#[test]
+fn pending_discard_close_reaches_client_when_polled_at_once() {
+    let mut server = bind_server(ServerLimits::v1());
+    for code in PENDING_CLOSE_CODES {
+        let pending = connect_async(
+            client_config(ClientLimits::v1()),
+            server.local_addr(),
+            hello(1),
+        );
+        let (conn, _, _) = next_hello(&mut server);
+        let report = server.close(conn, code, CloseMode::Discard).expect("close");
+        assert_eq!(report.outbound_frames_discarded, 0);
+        assert_eq!(report.inbound_frames_discarded, 0);
+        assert_forgotten_then_refused(&mut server, conn, code, pending);
+    }
 }

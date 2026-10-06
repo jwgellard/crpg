@@ -247,7 +247,7 @@ impl QuicServer {
                 record.closed_reported || record.drained()
             });
             if forget {
-                state.conns.remove(&id);
+                state.release(id);
             }
         }
         Some(event)
@@ -329,7 +329,7 @@ impl QuicServer {
             let reason = record.reason.unwrap_or(CloseReason::EndpointFailed);
             record.closed_reported = true;
             if record.event_polled {
-                state.conns.remove(&id);
+                state.release(id);
             }
             return Err(ServerError::Closed(reason));
         }
@@ -587,7 +587,7 @@ impl Transport for ServerLane<'_> {
 /// The record of a connection the API may name (hello stage excluded).
 fn visible(state: &mut State, conn: ConnectionId) -> Result<&mut Conn, ServerError> {
     match state.conns.get_mut(&conn.get()) {
-        Some(record) if record.phase != Phase::Hello => Ok(record),
+        Some(record) if record.phase != Phase::Hello && !record.released => Ok(record),
         _ => Err(ServerError::UnknownConnection),
     }
 }

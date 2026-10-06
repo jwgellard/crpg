@@ -142,6 +142,9 @@ pub(crate) struct Conn {
     pub(crate) published: bool,
     pub(crate) event_polled: bool,
     pub(crate) closed_reported: bool,
+    /// Its `Closed` was polled and reported: the API no longer sees it. The
+    /// record stays only until the control task has taken `quinn_close`.
+    pub(crate) released: bool,
     /// The control task must send this application close.
     pub(crate) quinn_close: Option<CloseCode>,
     pub(crate) flush: Option<FlushRequest>,
@@ -170,6 +173,7 @@ impl Conn {
             published: false,
             event_polled: false,
             closed_reported: false,
+            released: false,
             quinn_close: None,
             flush: None,
             writer_finished: false,
@@ -418,6 +422,19 @@ impl State {
         }
     }
 
+    /// Forgets a connection for the API. The record itself is removed at
+    /// once unless the control task still has to send its close, in which
+    /// case the control task removes it after taking `quinn_close`.
+    pub(crate) fn release(&mut self, id: u64) {
+        let Some(conn) = self.conns.get_mut(&id) else {
+            return;
+        };
+        conn.released = true;
+        if conn.quinn_close.is_none() {
+            self.conns.remove(&id);
+        }
+    }
+
     /// Ends the reader's claim on the connection and publishes if closed.
     pub(crate) fn reader_finished(&mut self, id: u64) {
         if let Some(conn) = self.conns.get_mut(&id) {
@@ -541,6 +558,11 @@ impl Drop for FailGuard {
                 state.record_close(id, CloseReason::EndpointFailed);
                 state.reader_finished(id);
             }
+            // No task is left to send a close, so no record waits for one.
+            for conn in state.conns.values_mut() {
+                conn.quinn_close = None;
+            }
+            state.conns.retain(|_, conn| !conn.released);
         }
         self.shared.failed.store(true, Ordering::SeqCst);
         self.shared.notify_sync();
@@ -758,6 +780,10 @@ pub(crate) async fn lane_control(
             Some(mut state) => match state.conns.get_mut(&id) {
                 Some(conn) => {
                     if let Some(code) = conn.quinn_close.take() {
+                        // A released record waited only for this close.
+                        if conn.released {
+                            state.conns.remove(&id);
+                        }
                         Act::Close(code)
                     } else {
                         match conn.flush.as_mut() {
@@ -791,6 +817,11 @@ pub(crate) async fn lane_control(
     if let Some(mut state) = shared.lock_any() {
         if let Some(conn) = state.conns.get_mut(&id) {
             conn.control_done = true;
+            // A close requested after the last check is never sent now.
+            conn.quinn_close = None;
+            if conn.released {
+                state.conns.remove(&id);
+            }
         }
     }
     shared.notify_sync();

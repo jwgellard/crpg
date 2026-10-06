@@ -19,6 +19,9 @@ path = "src/main.rs"
 # added by this crate; see the T018a-style audit in tasks/T022.md.
 crpg-core = { path = "../crpg-core" }
 crpg-net = { path = "../crpg-net" }
+# T023b (ADR-0024, T023 R12): the lane-0 QUIC transport, as a path edge only.
+# No direct quinn, quinn-proto, rustls or tokio edge.
+crpg-net-quic = { path = "../crpg-net-quic" }
 # T039 (H-dep approval in tasks/T039.md): the save envelope and atomic file
 # store. Path edge only; zstd and its tree are already locked through T038.
 crpg-persist = { path = "../crpg-persist" }
