@@ -559,6 +559,16 @@ impl Host {
         !self.ingress.is_empty()
     }
 
+    /// Live bindings (T023b `start`'s `HostInUse` check).
+    pub(crate) fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// The last accepted `now_ms` (T023b `start`'s `TimeRegression` check).
+    pub(crate) fn last_now_ms(&self) -> u64 {
+        self.last_now_ms
+    }
+
     pub(crate) fn retained_captures(&self) -> &VecDeque<CapturedRecord> {
         &self.captures
     }
@@ -1703,7 +1713,7 @@ fn cache_insert(session: &mut Session, entry: CacheEntry) {
     session.cache.push_back(entry);
 }
 
-fn normalize_control(control: ControlGrant) -> Result<Vec<EntityId>, HostError> {
+pub(crate) fn normalize_control(control: ControlGrant) -> Result<Vec<EntityId>, HostError> {
     if control.actors.len() > MAX_CONTROLLED_PER_PEER {
         return Err(HostError::InvalidControl);
     }
@@ -1713,7 +1723,7 @@ fn normalize_control(control: ControlGrant) -> Result<Vec<EntityId>, HostError> 
     Ok(actors)
 }
 
-fn normalize_grants(grants: DisclosureGrants) -> Result<DisclosureGrants, HostError> {
+pub(crate) fn normalize_grants(grants: DisclosureGrants) -> Result<DisclosureGrants, HostError> {
     if grants.entities.len() > MAX_GRANT_IDENTITIES
         || grants.abilities.len() > MAX_GRANT_IDENTITIES
         || grants.encounters.len() > MAX_GRANT_IDENTITIES
@@ -1760,7 +1770,7 @@ fn lookup(grants: &DisclosureGrants, entity: EntityId) -> Option<&EntityDisclosu
 }
 
 /// Whether `new` removes anything `old` permitted.
-fn is_narrowing(old: &DisclosureGrants, new: &DisclosureGrants) -> bool {
+pub(crate) fn is_narrowing(old: &DisclosureGrants, new: &DisclosureGrants) -> bool {
     for entry in &old.entities {
         let before = disclosure_flags(entry);
         let after = lookup(new, entry.entity).map_or([false; 10], disclosure_flags);

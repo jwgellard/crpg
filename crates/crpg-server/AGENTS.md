@@ -6,14 +6,20 @@ the normative "Specification revision — 2026-09-29" appendix of
 caps, §7 checkpoint) before editing. Reasoning:
 [ADR-0022](../../docs/adr/0022-host-session-capture-retirement.md).
 Architecture: [crpg-server](../../docs/architecture/crpg-server.md). This
-document describes the T022 in-memory host slice and the T039 save adapter;
-for `save`, [T039](../../tasks/T039.md) §2–§4 is the exact contract.
+document describes the T022 in-memory host slice, the T039 save adapter
+and the T023b QUIC adapter; for `save`, [T039](../../tasks/T039.md) §2–§4
+is the exact contract, and for `quic`, [T023b](../../tasks/T023b.md) B§1–B§18
+as amended by A§0–A§7, with the reasoning in
+[ADR-0026](../../docs/adr/0026-quic-host-adapter.md).
 
 ## Public surface
 
-The library exposes four modules, `host`, `capture`, `checkpoint`, `save`,
-with no glob re-export; changing any public type, field, variant, signature,
-cap or `Display` text needs an ADR. Inventory: T022 §1 and T039 §2. Beyond
+The library exposes five modules, `host`, `capture`, `checkpoint`, `save`,
+`quic`, with no glob re-export; changing any public type, field, variant,
+signature, cap or `Display` text needs an ADR. Inventory: T022 §1, T039 §2
+and T023b B§3. `quic` re-exports nothing from `crpg_net_quic` or
+`crpg_net`; callers name `crpg_net_quic::{QuicServer, Credential, ...}`
+themselves. Beyond
 those lists the as-built crate adds only `Copy` on `ProtocolSelection`
 (required by `as_u8(self)`). The binary (`src/main.rs`) is a wiring shell: no host
 policy lives there.
@@ -46,9 +52,11 @@ policy lives there.
 6. **Every ledger is bounded in entries and bytes** (T022 §2). New state
    needs a cap, an accounting unit and a retirement path, or it does not go
    in.
-7. **Time is injected; I/O is fenced.** `now_ms` only; no `SystemTime`,
-   threads or sleeps. Filesystem I/O exists **only** in `save.rs`, and only
-   through `crpg_persist::save_file`/`load_file`; `host`, `capture` and
+7. **Time is injected; I/O is fenced.** `now_ms` only; no clock, thread,
+   sleep or socket in `crpg-server` source. Filesystem I/O exists **only**
+   in `save.rs`, only through `crpg_persist::save_file`/`load_file`; network
+   I/O exists **only** in `quic.rs`, only through `crpg-net-quic`'s API,
+   which owns the socket, runtime and thread. `host`, `capture` and
    `checkpoint` stay I/O-free apart from T022's generic checkpoint reader.
    No `HashMap`/`HashSet`.
 8. `#![forbid(unsafe_code)]` and `#![warn(missing_docs)]` on both crate
@@ -64,9 +72,11 @@ No dev-dependencies. In particular there is no `crpg-data` edge, so tests
 build authorities from the checked-in `HistoryWorld` fixture (below), and no
 `crpg-rules` edge, so the captured outcome text is taken from T020's own
 `ActionResolved` envelope for the same operation, cross-checked field by
-field against the returned `ActionOutcome`. Anything else (including QUIC
-crates, which D23 approves only for T023b with its own record) needs its own
-approval; never widen `deny.toml`.
+field against the returned `ActionOutcome`. T023b adds the
+`crpg-net-quic` path edge (ADR-0024, T023 R12) and nothing else: there is no
+direct quinn, quinn-proto, rustls or tokio edge, because `crpg-net-quic`
+exposes none of their types. Anything else needs its own approval; never
+widen `deny.toml`.
 
 ## Definition of done for any change
 
@@ -75,6 +85,7 @@ cargo fmt --all
 cargo clippy -p crpg-server --all-targets --locked -- -D warnings
 cargo test -p crpg-server --test host_capture --locked
 cargo test -p crpg-server --test host_save --locked
+cargo test -p crpg-server --test host_quic --locked
 cargo test -p crpg-server --locked
 python tools/lint/deps.py
 python tools/lint/determinism.py
@@ -138,7 +149,48 @@ git diff --check
   product must pass one greater than every incarnation ever used for that
   authority, not only the saved one, or an older save would reuse epochs.
 
+- **QUIC adapter (T023b): acknowledge on hand-off.** A delivery frame is
+  acknowledged to the host once `try_send` accepts it, and `acked` must
+  stay equal to the host's watermark. Never acknowledge frames the
+  transport refused.
+- **Narrowing fences; it never calls `set_grants`.** A narrowing
+  `set_invitation_grants` closes the connection with `SessionFenced`, so no
+  resync generation ever reaches `take_delivery`. Seamless narrowing is
+  T024/T025a.
+- **Never read a held connection further.** After an `ingest` `QueueFull`,
+  the one held frame is retried first and nothing behind it is taken, or
+  per-connection order breaks.
+- **Held frames delay `Closed`.** An undrained connection's reader stays
+  parked, so its `Closed` event is held back. A closed peer is detected
+  through `try_send` → `Closed` instead, and its delivery is discarded and
+  acknowledged so it cannot block admission for the rest.
+- **"Nothing is lost" under backpressure is not true in general.** A held
+  frame's retry spends a rate token on every pump: at a cadence under
+  25 ms while a frame is held, the bucket drains and the held frame is
+  dropped as `RateLimited`. A backlog behind a hold that is larger than the
+  remaining 80-frame burst is partly dropped on resume. Recovery is a
+  client retry by seq. Revisit with T040 if its cadence makes this likely
+  (T023b Amendment decisions, answer 6).
+- **A 1-frame transport outbound queue fences peers that are reading.**
+  Phase 5 clears `stalled_since` only when a whole log was accepted. Keep
+  `ServerLimits.outbound` at the T022 per-peer log cap (128 frames) unless
+  a slow-consumer fence is wanted.
+- **Captures cap admission at 4,096 unacknowledged records.** Long runs
+  need the trusted consumer to call `acknowledge_captures`, or admission
+  stops with `backpressured: 1`.
+- **Out-of-pump calls are not in the trace.** `disconnect`,
+  `revoke_invitation`, `set_invitation_grants`, `set_invitation_control`,
+  `tick` and `acknowledge_captures` make host calls that no
+  `QuicPumpReport.calls` records. A replay must mirror them itself.
+- **The pump cadence must beat `decision_timeout_ms` (5 s).** Hellos are
+  decided only inside `pump`. A slower cadence closes them with
+  `AuthTimeout`. Pump at most every 50 ms, or after `wait` returns.
+- **Never print a credential.** `Invitation`'s `Debug` relies on
+  `Credential`'s redaction; `QuicHost`'s `Debug` is hand-written. No error
+  variant or report carries credential bytes.
+
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the crate contract with the host invariants, the D20 dependency boundary, the gate list and the traps found while implementing T022, so later transport and persistence tasks start from the as-built rules.
 - 2026-10-05 (UTC) · claude-code + T039 · Added the `save` module to the surface, fenced filesystem I/O to `save.rs` through `crpg-persist` (invariant 7 amended, not weakened), recorded the approved `crpg-persist` edge and the `host_save` gate, and listed the save-adapter traps.
+- 2026-10-06 (UTC) · claude-code + T023b · Added the `quic` module to the surface, amended invariant 7 to fence network I/O to `quic.rs` through `crpg-net-quic`, replaced the QUIC-crates sentence with the path edge, added the `host_quic` gate, and listed the adapter traps, including the approved correction that a hold can lose frames to the rate budget.
