@@ -406,3 +406,4 @@ Record it here, one line per week.
 - 2026-10-06 (UTC) · claude-code + T023d decisions · Marked T023d ready after the user approved its contract.
 - 2026-10-06 (UTC) · claude-code + T023d implementation · Moved T023d to on branch with its Linux/GNU results and negative control, so the index shows the Windows check at the PR tip and the merge with T023b as the remaining steps.
 - 2026-10-06 (UTC) · claude-code + T023b · Moved T023b to on branch (done, unmerged) with its Linux/GNU results, ADR-0026 and T023d as the case-9 fix, so the index shows the Windows check at the PR tip and the merge with T023d as the remaining steps.
+- 2026-10-06 (UTC) · claude-code + PR #28 Windows · PR #28 (T023d + T023b) is green on both OSes; Windows ran `quic` 30/30 and `host_quic` 25/25, the fourth Windows run for T023v.
