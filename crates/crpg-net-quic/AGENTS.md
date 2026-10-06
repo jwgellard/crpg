@@ -76,7 +76,7 @@ record and approval. `deny.toml` changes follow ADR-0023 and its addendum.
 ```text
 cargo fmt --all -- --check
 cargo clippy -p crpg-net-quic --all-targets --locked -- -D warnings
-cargo test -p crpg-net-quic --test quic --locked   # 28 cases (T023: 1–23, T023c: 24–27, T023v: 28)
+cargo test -p crpg-net-quic --test quic --locked   # 30 cases (T023: 1–23, T023c: 24–27, T023v: 28, T023d: 29–30)
 cargo test -p crpg-net --locked
 cargo tree -p crpg-net -e normal,build --target all   # must name no tokio/quinn/rustls/ring/mio/socket2
 cargo test --workspace --locked
@@ -116,6 +116,9 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
   already acknowledged, and a peer's `Flush` close would then lose data.
 - Record a local close (`record_close`) before calling quinn's `close`.
   Otherwise the monitor sees `LocallyClosed` with no code.
+- Never remove a record directly once the API has named it; call
+  `State::release`, because the control task may still need the record to
+  send a close (T023d).
 - Test waits are 30 s failure guards, never oracles. The relay paces with
   read timeouts, not sleeps.
 - An exact stall frame count needs the stalled side to send no window
@@ -136,3 +139,4 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - 2026-10-04 (UTC) · claude-code + T023 · Opened the crate contract with the transport's surface, the crate-wide I/O permission against `crpg-net`'s ban, the four D23 pins and no dev-deps, and the E§14 traps plus the no-sim-edge and no-re-export rules, so later lane tasks work inside the same bounds.
 - 2026-10-05 (UTC) · claude-code + T023c · Listed the six window fields in the public surface, the 27-case suite count and three traps (the exact-count no-update condition, only a client bounds what it absorbs, quinn's close gating), so later work tightens windows knowingly and never answers a `Reset` by loosening an assertion.
 - 2026-10-05 (UTC) · claude-code + T023v-b · Marked the quinn-proto pin as vendored, raised the suite count to 28 and replaced the close-gating trap with the regression check, so a future `Reset` in case 17 or 28 is traced to the vendoring instead of answered by loosening an assertion.
+- 2026-10-06 (UTC) · claude-code + T023d · Added the release-not-remove trap and raised the suite count to 30, so later work never deletes a record its control task still needs to send a close.
