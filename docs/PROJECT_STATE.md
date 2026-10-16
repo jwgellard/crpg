@@ -12,7 +12,7 @@ Running at handover (2026-10-16; worktrees in `C:\crpg\dev\crpg-slots`):
 | ID | Work | Model | Worktree · branch | Log |
 |---|---|---|---|---|
 | A0-3 | `oc.py`: **stopped** after 19 steps by the free tier's `Rate limit exceeded` (quota, not the model's fault); its partial, uncommitted work is kept in the slot, so the next attempt continues it (Muse Spark Free once its limit clears, or DeepSeek V4.1 Flash Free) | `opencode/muse-spark-1.3-contributor-free` | `slot-1` · `setup/A0-3-oc-py` | `.agents/runs/A0-3/1-opencode_muse-spark-1.3-contributor-free.jsonl` |
-| A0-4 | attempt 2, review fixes | `opencode/deepseek-v4.1-flash-free` | `slot-2` · `setup/A0-4-verify-task` | `.agents/runs/A0-4/2-…jsonl` |
+| A0-4 | attempt 2, review fixes: **not run** (rate limit, 0 steps); rerun it with the same notes, which are already at the end of `slot-2/BRIEF.md`. `317a04f` (attempt 1) is intact | `opencode/deepseek-v4.1-flash-free` | `slot-2` · `setup/A0-4-verify-task` | `.agents/runs/A0-4/2-…jsonl` |
 | A0-6 | attempt 2, review fixes: **not run** (rate limit, 0 steps); rerun it with the same notes, which are already at the end of `alt-2/BRIEF.md`. `42a7ebb` (attempt 1) is intact | `opencode/deepseek-v4.1-flash-free` | `alt-2` · `setup/A0-6-hooks` | `.agents/runs/A0-6/2-…jsonl` |
 | R1–R4 | benchmark, model-source and token-saving research: **none produced output** (R1 stopped at step 6; R2, R3 and R4 at step 0, all on the rate limit). Rerun them, at most three free runs at once; the briefs are in place | DeepSeek Free, GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r1,r2,R3,R4}` | `.agents/runs/R1`…`R4` |
 | V1 | citation check of R5 and R7 | `opencode/longcat-2.5-preview-free` | `research/V1` | `.agents/runs/V1` |
