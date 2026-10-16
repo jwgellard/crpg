@@ -122,8 +122,30 @@ rather than code; the user: "I like all the suggestions you make."
 - T106 (hosting friction, before M10) and T107 (module distribution, before
   T093) are research placeholders.
 
+## D28l — audience, rule-defining as a pillar, and both time modes
+
+The user, answering D29c: "Module authors is the primary goal, yes with
+agents being equal. The idea is that this should be a CRPG engine, thats
+where the rules later comes in. Anyone should be able to make any CRPG by
+defining rules. Thats a core pillar." On time modes: "It should be capable
+of RTWP and Turn based. Pathfinder CRPGs and Deadfire do both in the same
+game, so the engine should be able to." Approving the manager's proposal:
+"Yep, amazing work."
+
+- Personas: module authors first, agents equal. Your own game comes after them.
+- Defining a ruleset is an authoring task in its own right: T099 gains a
+  ruleset-authoring angle, T100 a rule-system brief, T101 the ruleset flows,
+  T071 a ruleset guide, and the rules editor (T110, after M6) creates a
+  ruleset from a template as well as overriding one. This changes spec
+  Phase 6's "do not build the rules editor" from never to after M6.
+- T108 (Opus `architect`) tests the kernel against CRPG system families and
+  fixes the time model for real-time-with-pause and turn-based in one game,
+  including multiplayer pause authority. T034 waits on it. T109 is a third
+  throwaway ruleset from another family.
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + D28 · Recorded the user's answers to the agent-team plan's questions and the same-day rustls advisory decision, with what each answer changes, so the manager's first session starts from a settled record.
 - 2026-10-16 (UTC) · claude-code + D28j · Recorded the user's same-day answers on the authoring UX research stage, so that M6-R and its gate on the editor contracts rest on a quoted decision.
 - 2026-10-16 (UTC) · claude-code + D28k · Recorded the user's approval of the further human-facing stages, so T053's new prerequisite and T104–T107 rest on a quoted decision.
+- 2026-10-16 (UTC) · claude-code + D28l · Recorded the user's audience order, rule-defining pillar and both-time-modes requirement, with the plan changes each one drives.

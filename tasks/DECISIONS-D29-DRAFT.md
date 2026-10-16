@@ -31,6 +31,9 @@ file.
 
 ## D29c — who comes first: primary authors and players
 
+**Answered 2026-10-16: module authors first, agents equal. Recorded as D28l
+in `tasks/DECISIONS-2026-10-16.md`; the question stays here for the record.**
+
 M6-R's personas, and every usability trade-off after them, need an order of
 priority among: you or a small team making your own game (experts; speed and
 power first), a community of module authors (hobbyists; onboarding,
@@ -46,3 +49,4 @@ campaign, or people finding and installing community modules.
 
 - 2026-10-16 (UTC) · claude-code + manager session · Started the D29 draft with two non-blocking questions found during setup wave A0, stacked PRs and the reviewer's write access, so that they wait for a batch instead of interrupting the wave.
 - 2026-10-16 (UTC) · claude-code + manager session · Added D29c, the order of priority among authors and players, which the T101 ADR needs before it fixes personas; it is a product choice, so it carries no recommendation.
+- 2026-10-16 (UTC) · claude-code + manager session · Marked D29c answered and pointed to D28l.
