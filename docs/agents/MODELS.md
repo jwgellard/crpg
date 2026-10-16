@@ -198,19 +198,13 @@ to break ties, never to overrule a bake-off failure.
 
 ## 4. Routing table
 
-**Preference order (the user, 2026-10-16): free, then Go, then Claude.**
-Claude tokens are kept for higher-level thinking: A and C packages, the
-S-set, which `docs/AGENT_TEAM_PLAN.md` §4.2 keeps Claude-only, judgment
-review, and escalations a Go model failed. For every OpenCode row below,
-start with a free model that passed that bake-off task, before the Go first
-choice:
-- implementation and tests: `opencode/cat-jam-free`,
-  `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
-  `opencode/longcat-2.5-preview-free`;
-- review: any of those, all 5/5 with no false positives.
-
-The Go columns become the first escalation, Claude the last (§4.4 of the
-plan). §4.1's record decides which free models stay first.
+**Preference (the user, 2026-10-16): the strongest suitable OpenCode model
+for the job, then Claude.** OpenCode usage is plentiful, so free versus Go is
+only a tiebreak, never a reason to take a weaker model. Claude tokens are
+kept for higher-level thinking: A and C packages, the S-set, which
+`docs/AGENT_TEAM_PLAN.md` §4.2 keeps Claude-only, judgment review, and
+escalations an O1 model failed. "Strongest" means the tier below and the §4.1
+field record. Composite scores only break ties.
 
 The principle: **plentiful models implement, scarce strong models review.**
 A bake-off implementation run took 5–42 requests (median 10); a review took
@@ -239,10 +233,8 @@ Tier membership:
 - **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview
   Free, Muse Spark 1.3 Contributor Free, Big Pickle, Space Bunny Free (correct
   but slow and token-hungry), Qwen3.8 Max and Hy4 preview (correct but slow;
-  Qwen3.8 Max is also scarce). Under the preference order above, the free
-  models that passed the bake-off (and Cat Jam Free in O2) are tried first
-  for non-S-set work. A core-crate package still gets the "two keys" test
-  writer and the Claude reviewer.
+  Qwen3.8 Max is also scarce). O3 is a fallback when O1 and O2 are unavailable,
+  not a first choice.
 - **Not routed:** Nemotron 3.5 Lightning and Nemotron 3 Ultra (timeouts),
   Nemotron 3.5 Super VL and MiMo-V2.6-Flash Free (scouting at most), MiniMax
   M3 (stalled and missed a bug), Step 5 Preview for implementation (gate
@@ -277,6 +269,12 @@ narrowing routing to the best.
   at each gate. Every change is recorded here with its date and numbers. A
   change that moves work between Claude and OpenCode is still a plan change
   (§6).
+- **Head-to-head runs build the evidence.** When the same brief can go to
+  two O1 models from different labs without a build-slot conflict, run both.
+  Both results enter the record, and the better one (verify first, then
+  review) goes to the PR. The first was A0-3, Cat Jam Free against Gemini 4
+  Argon, on 2026-10-16. A0-7's harder fixtures, run several times per model,
+  are the systematic version.
 - Claude subagents keep the same record. On Pro (D28b), when Sonnet 5.5 keeps
   failing one kind of package, that kind goes back to the manager to split,
   not up to Opus.
@@ -318,3 +316,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + D28b · Narrowed the Opus 5.5 and Sonnet 5.5 roles to the Pro routing the user chose: Opus for A and C packages only, Sonnet as the top implementer rung.
 - 2026-10-16 (UTC) · claude-code + user request on model pruning · Added §4.1, a demote-and-promote rule driven by `oc.py`'s per-run result records, so that routing narrows to the models that keep passing on real tasks, as the user asked.
 - 2026-10-16 (UTC) · claude-code + user model preference · Recorded the user's order (free, then Go, then Claude, with Claude kept for higher-level thinking) and named the free models each OpenCode row tries first, so that routing spends Claude only where judgment is the deliverable.
+- 2026-10-16 (UTC) · claude-code + user correction on model choice · Replaced "free first" with the strongest suitable OpenCode model for the job, since the user said OpenCode usage is plentiful and some free models are weaker. Added head-to-head runs as evidence for the field record.
