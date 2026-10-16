@@ -26,11 +26,17 @@ refusal, and filed-brief/placeholder/same-crate handling, plus the
 attempt-4 OpenCode 2.x support: version detection, the 2.x argv
 (``--standalone``, model ``#variant``, no ``--dir``) against the kept 1.x
 argv, the stall retry in both generations, top-level ``error`` events, the
-removed Cat Jam IDs, and dry-run output per version.
+removed Cat Jam IDs, and dry-run output per version, plus the attempt-5
+second-review fixes: tool errors are never classified as infra (only
+top-level error events, the process's own output and the OpenCode log),
+exact fake-mode matching so the ``error-quota`` event branch is live,
+``ask`` recording a ``no-exe`` exit, and the Windows liveness probe
+counting a PID alive when in doubt.
 """
 
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import json
 import os
@@ -542,13 +548,61 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(self.read_record(task)["cause"], "model")
 
     def test_error_event_message_uses_cause_table(self) -> None:
-        # The error event's message also goes through the cause table:
-        # a quota message inside it classifies as quota, not model.
+        # The top-level error event's message goes through the cause table:
+        # a rate-limit message classifies as quota, not model, and the mode
+        # is matched exactly so this really is the error-event branch (not
+        # the plain stdout-quota branch).
         task = self.tid()
         result = self.oc_run(task, env={"FAKE_OC_MODE": "error-quota"})
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn("quota", result.stdout + result.stderr)
         self.assertEqual(self.read_record(task)["cause"], "quota")
+        events = [
+            json.loads(line)
+            for line in self.log_path(task).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertTrue(events, "the fake wrote no events")
+        self.assertEqual(events[0].get("type"), "error")
+        self.assertEqual(events[0]["error"]["type"], "provider.apiError")
+
+    def test_tool_error_is_never_classified(self) -> None:
+        # A tool_use state.error echoes command output, so it must not
+        # classify as infra: this run ends on `tool-calls` and exits 1 but
+        # keeps its normal verdict instead of exiting 2 quota.
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_OC_MODE": "tool-error-quota"})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
+        record = self.read_record(task)
+        self.assertEqual(record["verdict"], "PASS")
+        self.assertIsNone(record["cause"])
+
+    def test_stall_retry_after_tool_error(self) -> None:
+        # A stalled run (reason `length`, no edit) whose earlier tool error
+        # says "rate limit" must still get its variant-low retry: the tool
+        # error is not infra text, so it cannot pre-empt the stall check.
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        state = self.fresh_dir("state")
+        result = self.oc_run(
+            task,
+            env={
+                "FAKE_OC_MODE": "stall-tool-error",
+                "FAKE_OC_STATE": str(state),
+                "FAKE_OC_LOG": str(call_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        calls = self.fake_calls(call_log)
+        self.assertEqual(len(calls), 2)
+        second = calls[1]["argv"]
+        self.assertEqual(second[second.index("-m") + 1], f"{MODEL}#low")
+        self.assertIn(STALL_SENTENCE, second[-1])
+        record = self.read_record(task)
+        self.assertEqual(
+            record["retries"], [{"cause": "stall", "variant": "low"}]
+        )
 
     # -- verifier plumbing -------------------------------------------------
 
@@ -834,6 +888,27 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn("no-exe", result.stdout + result.stderr)
         record = self.read_record(task)
+        self.assertEqual(record["verdict"], "INFRA")
+        self.assertTrue(str(record["cause"]).startswith("no-exe"))
+
+    def test_ask_no_exe_writes_record(self) -> None:
+        # ask resolves the executable inside its try block, so a missing
+        # OpenCode still leaves a result record (attempt-5 finding 3).
+        bare = self.fresh_dir("bare-path")
+        result = self.oc(
+            "ask", "--role", "scout", "--model", MODEL,
+            "--timeout", "60", "--idle", "10", "who are you?",
+            env={"CRPG_OPENCODE": None, "PATH": str(bare),
+                 "APPDATA": str(bare)},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-exe", result.stdout + result.stderr)
+        # Other ask tests share this repo, so take the newest ask record
+        # rather than assuming attempt 1.
+        runs = list((self.repo / ".agents" / "runs" / "ask").glob("*.result.json"))
+        self.assertTrue(runs)
+        path = max(runs, key=lambda p: int(p.name.split("-", 1)[0]))
+        record = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(record["verdict"], "INFRA")
         self.assertTrue(str(record["cause"]).startswith("no-exe"))
 
@@ -1264,6 +1339,56 @@ class HarnessUnitCase(unittest.TestCase):
             sleeper.kill()
             sleeper.wait(timeout=30)
         self.assertFalse(OCMOD._pid_alive(sleeper.pid))
+
+    def test_windows_liveness_probe_counts_alive_when_in_doubt(self) -> None:
+        # The Windows probe reads only; a kernel32 shim proves the doubt
+        # rule on any OS (attempt-5 finding 4).
+        class Kernel32Shim:
+            def __init__(self, handle, last_error=0, exit_ok=True,
+                         exit_code=259):
+                self.handle = handle
+                self.error = last_error
+                self.exit_ok = exit_ok
+                self.exit_code = exit_code
+                self.closed: list[int] = []
+
+            def OpenProcess(self, access, inherit, pid):
+                return self.handle
+
+            def GetLastError(self):
+                return self.error
+
+            def GetExitCodeProcess(self, handle, out):
+                if not self.exit_ok:
+                    return 0
+                ctypes.cast(
+                    out, ctypes.POINTER(ctypes.c_uint32)
+                )[0] = self.exit_code
+                return 1
+
+            def CloseHandle(self, handle):
+                self.closed.append(handle)
+                return 1
+
+        # ERROR_ACCESS_DENIED (5): a live process we may not open is alive.
+        denied = Kernel32Shim(0, last_error=5)
+        self.assertTrue(OCMOD._win_pid_alive(4242, denied))
+        # ERROR_INVALID_PARAMETER (87): no such process, the only dead case.
+        invalid = Kernel32Shim(0, last_error=87)
+        self.assertFalse(OCMOD._win_pid_alive(4242, invalid))
+        # Any other error code is uncertain: alive.
+        unknown = Kernel32Shim(0, last_error=1008)
+        self.assertTrue(OCMOD._win_pid_alive(4242, unknown))
+        # A failed GetExitCodeProcess is uncertain: alive.
+        blink = Kernel32Shim(1, exit_ok=False)
+        self.assertTrue(OCMOD._win_pid_alive(4242, blink))
+        # A still-active process is alive, and its handle is closed.
+        live = Kernel32Shim(1, exit_code=259)
+        self.assertTrue(OCMOD._win_pid_alive(4242, live))
+        self.assertEqual(live.closed, [1])
+        # An already-exited process (exit code 0) is dead.
+        gone = Kernel32Shim(1, exit_code=0)
+        self.assertFalse(OCMOD._win_pid_alive(4242, gone))
 
     def lock_path(self, repo: Path, number: int) -> Path:
         directory = repo / ".agents" / "slots"

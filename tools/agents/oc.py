@@ -249,6 +249,64 @@ def model_flag(model: str, variant: str | None, major: int) -> list[str]:
 # -- slot locks ------------------------------------------------------------
 
 
+def _win_kernel32():
+    """kernel32 with declared prototypes, so 64-bit handles are not cut down.
+
+    HANDLE is c_void_p and a DWORD is c_uint32: without these declarations
+    ctypes guesses c_int and truncates a 64-bit handle on the way out.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)
+    ]
+    kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _win_pid_alive(pid: int, kernel32) -> bool:
+    """Windows liveness from a kernel32-shaped object; alive when in doubt.
+
+    A NULL OpenProcess means dead only for ERROR_INVALID_PARAMETER (87, no
+    such process). ERROR_ACCESS_DENIED (5) is a live process we may not
+    open, and any other code is uncertain, so both count as alive. A failed
+    GetExitCodeProcess is uncertain too. Never signals or kills.
+    """
+    import ctypes
+
+    SYNCHRONIZE = 0x00100000
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_INVALID_PARAMETER = 87
+
+    handle = kernel32.OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        try:
+            error = int(kernel32.GetLastError())
+        except Exception:  # noqa: BLE001 - no error code at all: assume alive
+            return True
+        return error != ERROR_INVALID_PARAMETER
+    try:
+        code = ctypes.c_uint32()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == STILL_ACTIVE
+    finally:
+        try:
+            kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - a handle we cannot close still probed
+            pass
+
+
 def _pid_alive(pid: int) -> bool:
     """True when a process with this PID exists. Never signals or kills.
 
@@ -262,25 +320,7 @@ def _pid_alive(pid: int) -> bool:
         return False
     if os.name == "nt":
         try:
-            import ctypes
-            from ctypes import wintypes
-
-            SYNCHRONIZE = 0x00100000
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            STILL_ACTIVE = 259
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(
-                SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-            )
-            if not handle:
-                return False
-            try:
-                code = wintypes.DWORD()
-                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                    return False
-                return code.value == STILL_ACTIVE
-            finally:
-                kernel32.CloseHandle(handle)
+            return _win_pid_alive(pid, _win_kernel32())
         except Exception:  # noqa: BLE001 - fall back to tasklist below
             pass
         try:
@@ -828,14 +868,13 @@ def parse_events(log_path: Path) -> dict:
         elif kind == "error":
             infra_chunks.append(line)
         if kind == "tool_use":
-            state = part.get("state") or {}
-            # Only tool *errors* count as provider/process failures. Tool
-            # outputs stay out: a clean run that read a file containing an
-            # infra marker (e.g. "insufficient funds") is not an infra exit.
-            error = state.get("error")
-            if isinstance(error, str) and error.strip():
-                infra_chunks.append(error)
-            output = state.get("output")
+            # A tool error echoes command output, so it is never a
+            # provider/process failure and must never be classified as
+            # infra (attempt-5 finding 1): only top-level `error` events,
+            # the process's own output and the OpenCode log lines carry
+            # those. The output is still scanned for the lock marker via
+            # `raw`; the error is read by nobody.
+            output = (part.get("state") or {}).get("output")
             if isinstance(output, str) and output.strip():
                 raw_chunks.append(output)
     return {
@@ -848,8 +887,8 @@ def parse_events(log_path: Path) -> dict:
         "last_reason": last_reason,
         "saw_step": saw_step,
         "raw": blob + "\n" + "\n".join(raw_chunks),
-        # Provider/process errors only: error events, tool errors, and raw
-        # process output. Never tool outputs or the worker's own text.
+        # Provider/process errors only: error events and raw process output.
+        # Never tool outputs or tool errors, and never the worker's text.
         "infra_text": "\n".join(infra_chunks),
     }
 
@@ -1369,28 +1408,31 @@ def do_ask(args: argparse.Namespace) -> int:
                 print(line)
         return code
 
-    prefix = opencode_prefix()
-    major = opencode_major(prefix)
-    if major >= 2:
-        # 2.x: no --dir; the repo root is the process cwd plus PWD.
-        cmd = prefix + [
-            "run",
-            "--standalone",
-            "--agent", agent,
-            "-m", args.model,
-            "--format", "json",
-            question,
-        ]
-    else:
-        cmd = prefix + [
-            "run",
-            "--agent", agent,
-            "-m", args.model,
-            "--dir", str(repo),
-            "--format", "json",
-            question,
-        ]
     try:
+        # Resolution and version probing happen inside the try: a missing
+        # executable (no-exe) must still write its result record, exactly
+        # as `run` does (attempt-5 finding 3).
+        prefix = opencode_prefix()
+        major = opencode_major(prefix)
+        if major >= 2:
+            # 2.x: no --dir; the repo root is the process cwd plus PWD.
+            cmd = prefix + [
+                "run",
+                "--standalone",
+                "--agent", agent,
+                "-m", args.model,
+                "--format", "json",
+                question,
+            ]
+        else:
+            cmd = prefix + [
+                "run",
+                "--agent", agent,
+                "-m", args.model,
+                "--dir", str(repo),
+                "--format", "json",
+                question,
+            ]
         wait_start_gap(repo)
         idle_or_timeout, rc = run_worker(cmd, repo, log_path, timeout_s, idle_s, agent, args.model)
         events = parse_events(log_path)
@@ -1415,6 +1457,8 @@ def do_ask(args: argparse.Namespace) -> int:
         return finish(1)
     except Exit as stop:
         info["cause"] = stop.cause or info.get("cause")
+        if stop.cause:
+            eprint(f"oc: {stop.cause}")
         return finish(stop.code)
 
 

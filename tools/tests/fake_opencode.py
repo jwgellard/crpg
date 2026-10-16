@@ -11,7 +11,9 @@ failure mode without the network or the real OpenCode:
                      `--variant` (usage text, exit 1) and expects
                      `--standalone`.
   FAKE_OC_LOG      JSON-lines file recording every invocation (argv, cwd, PWD).
-  FAKE_OC_MODE     comma-separated behaviours, applied in order:
+  FAKE_OC_MODE     comma-separated behaviours, applied in order and matched
+                     as whole tokens (never substrings, so `error-quota`
+                     cannot fall into the `quota` branch):
                      ok            normal run: step_start, step_finish
                                    (tokens/cost), text, step_finish stop.
                      no-text       normal run with no text event (review/scout
@@ -23,6 +25,11 @@ failure mode without the network or the real OpenCode:
                       stall         every step_finish has reason "length".
                       stall-once    first call stalls, later calls behave as ok
                                     (counter in FAKE_OC_STATE).
+                      stall-tool-error
+                                    first call stalls (reason "length") with a
+                                    tool error reading "rate limit", later
+                                    calls behave as ok: the tool error must not
+                                    classify, so the stall retry still happens.
                       silent        write nothing, sleep until killed.
                       hang-forever  alias for silent.
                       slow          sleep FAKE_OC_SLOW seconds, then behave as ok
@@ -30,6 +37,12 @@ failure mode without the network or the real OpenCode:
                       markers       clean run ending in stop whose tool output
                                     and report text contain every infra-table
                                     marker; must keep its normal verdict.
+                      tool-error-quota
+                                    a tool_use whose state.error carries a
+                                    quota marker, last step_finish reason
+                                    "tool-calls", text, exit 1: a tool error
+                                    echoes command output and must never
+                                    classify as infra.
                      fail402       print "ERROR 402 ... insufficient funds".
                      quota         print "AI_APICallError: Go usage limit exceeded".
                      sig-model     print "model not found: <model>".
@@ -38,8 +51,9 @@ failure mode without the network or the real OpenCode:
                                    (provider.no-route, "Model unavailable")
                                    with exit 1 and no steps, like 2.x.
                      error-quota   emit a top-level error event whose message
-                                   carries a quota marker ("Go usage limit
-                                   exceeded"), exit 1, no steps.
+                                   says "Rate limit exceeded", exit 1, no
+                                   steps: the message goes through the cause
+                                   table (quota), not the plain-quota branch.
                      rc1           exit 1 with no output at all.
                      spawn-child   start a heartbeating child, then sleep.
                      error-log     append a matching level=ERROR line to
@@ -67,13 +81,27 @@ import time
 STEP_COST = 0.0
 
 
+def mode_tokens(raw: str) -> list[str]:
+    """Split FAKE_OC_MODE into whole tokens on commas."""
+    return [chunk.strip() for chunk in raw.split(",") if chunk.strip()]
+
+
+def has_token(tokens: list[str], name: str) -> bool:
+    """Exact token match, with an optional `:param` suffix (`locked:2`).
+
+    Substring matching made `error-quota` fall into the `quota` branch and
+    left the error-event branch dead, so every mode is matched whole.
+    """
+    return any(token == name or token.startswith(name + ":") for token in tokens)
+
+
 def emit(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
 
-def emit_ok(prompt: str, mode: str) -> None:
-    reason = "length" if "stall" in mode else "stop"
+def emit_ok(prompt: str, tokens: list[str]) -> None:
+    reason = "length" if has_token(tokens, "stall") else "stop"
     emit({"type": "step_start", "timestamp": 1,
           "part": {"type": "step-start", "sessionID": "ses_fake"}})
     emit({"type": "tool_use", "timestamp": 2,
@@ -84,7 +112,7 @@ def emit_ok(prompt: str, mode: str) -> None:
                    "tokens": {"input": 1200, "output": 300, "reasoning": 50,
                               "cache": {"read": 900, "write": 10}},
                    "cost": 0.01}})
-    if "no-text" not in mode:
+    if not has_token(tokens, "no-text"):
         emit({"type": "text", "timestamp": 4,
               "part": {"type": "text", "text": "fake worker report line 1\nline 2"}})
     emit({"type": "step_finish", "timestamp": 5,
@@ -93,6 +121,73 @@ def emit_ok(prompt: str, mode: str) -> None:
                               "cache": {"read": 300, "write": 0}},
                    "cost": 0.02}})
     _ = prompt
+
+
+def emit_stalled_with_tool_error() -> None:
+    """A stalled run whose tool error reads "rate limit".
+
+    The tool error must not classify as infra, so the stall retry still
+    happens on the next (ok) call.
+    """
+    emit({"type": "step_start", "timestamp": 1,
+          "part": {"type": "step-start", "sessionID": "ses_fake"}})
+    emit({"type": "tool_use", "timestamp": 2,
+          "part": {"type": "tool", "tool": "bash",
+                   "state": {"status": "error",
+                             "error": "429 rate limit exceeded"}}})
+    emit({"type": "step_finish", "timestamp": 3,
+          "part": {"type": "step-finish", "reason": "tool-calls",
+                   "tokens": {"input": 1200, "output": 300, "reasoning": 50,
+                              "cache": {"read": 900, "write": 10}},
+                   "cost": 0.01}})
+    emit({"type": "step_finish", "timestamp": 4,
+          "part": {"type": "step-finish", "reason": "length",
+                   "tokens": {"input": 400, "output": 100, "reasoning": 10,
+                              "cache": {"read": 300, "write": 0}},
+                   "cost": 0.02}})
+
+
+def emit_tool_error_run() -> None:
+    """A run whose tool_use carries a quota-looking state.error.
+
+    Last step_finish reason is "tool-calls" and the process exits 1; a tool
+    error echoes command output, so this must keep its normal verdict
+    instead of exiting 2 quota.
+    """
+    emit({"type": "step_start", "timestamp": 1,
+          "part": {"type": "step-start", "sessionID": "ses_fake"}})
+    emit({"type": "tool_use", "timestamp": 2,
+          "part": {"type": "tool", "tool": "bash",
+                   "state": {"status": "error",
+                             "error": "AI_APICallError: Too Many Requests"}}})
+    emit({"type": "step_finish", "timestamp": 3,
+          "part": {"type": "step-finish", "reason": "tool-calls",
+                   "tokens": {"input": 1200, "output": 300, "reasoning": 50,
+                              "cache": {"read": 900, "write": 10}},
+                   "cost": 0.01}})
+    emit({"type": "text", "timestamp": 4,
+          "part": {"type": "text", "text": "fake worker report\n"}})
+    emit({"type": "step_finish", "timestamp": 5,
+          "part": {"type": "step-finish", "reason": "tool-calls",
+                   "tokens": {"input": 400, "output": 100, "reasoning": 10,
+                              "cache": {"read": 300, "write": 0}},
+                   "cost": 0.02}})
+
+
+def counter_was_zero(name: str) -> bool:
+    """Increment $FAKE_OC_STATE/<name>.count; True when it was 0."""
+    state = os.environ.get("FAKE_OC_STATE", "")
+    path = os.path.join(state, name) if state else ""
+    seen = 0
+    if path and os.path.exists(path):
+        try:
+            seen = int(open(path, encoding="utf-8").read().strip())
+        except ValueError:
+            seen = 0
+    if path:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(str(seen + 1))
+    return seen == 0
 
 
 # Every marker in oc.py's infra table, as plain words a worker could read
@@ -228,25 +323,28 @@ def main() -> int:
             }) + "\n")
 
     mode = os.environ.get("FAKE_OC_MODE", "ok")
+    tokens = mode_tokens(mode)
     prompt = argv[-1] if argv else ""
     prompt_file = os.environ.get("FAKE_OC_PROMPT_FILE", "")
-    if prompt_file and ("prompt-file" in mode or "special" in mode):
+    if prompt_file and (has_token(tokens, "prompt-file") or has_token(tokens, "special")):
         with open(prompt_file, "w", encoding="utf-8") as handle:
             handle.write(prompt)
 
     if os.environ.get("FAKE_OC_STDIN", "") == "check":
         return check_stdin()
 
-    if "spawn-child" in mode:
+    if has_token(tokens, "spawn-child"):
         spawn_child()
         return 0
 
-    if "locked" in mode:
-        wanted = 0
-        for chunk in mode.split(","):
-            if chunk.startswith("locked"):
-                _, _, count = chunk.partition(":")
-                wanted = int(count) if count else 10 ** 9
+    if has_token(tokens, "locked"):
+        wanted = 10 ** 9
+        for token in tokens:
+            if token.startswith("locked:"):
+                try:
+                    wanted = int(token.partition(":")[2])
+                except ValueError:
+                    wanted = 10 ** 9
         state = os.environ.get("FAKE_OC_STATE", "")
         counter = os.path.join(state, "locked.count") if state else ""
         seen = 0
@@ -262,10 +360,10 @@ def main() -> int:
             sys.stdout.write("Error: database is locked\n")
             sys.stdout.flush()
             return 1
-        emit_ok(prompt, "ok")
+        emit_ok(prompt, ["ok"])
         return 0
 
-    if "error-log" in mode:
+    if has_token(tokens, "error-log"):
         logpath = os.environ.get("CRPG_OPENCODE_LOG", "")
         agent = "crpg-implement"
         model = "muse-spark"
@@ -286,76 +384,78 @@ def main() -> int:
         time.sleep(60)
         return 0
 
-    if "silent" in mode or "hang-forever" in mode:
+    if has_token(tokens, "silent") or has_token(tokens, "hang-forever"):
         time.sleep(60)
         return 0
 
-    if "stall-once" in mode:
-        state = os.environ.get("FAKE_OC_STATE", "")
-        counter = os.path.join(state, "stall.count") if state else ""
-        seen = 0
-        if counter and os.path.exists(counter):
-            try:
-                seen = int(open(counter, encoding="utf-8").read().strip())
-            except ValueError:
-                seen = 0
-        if counter:
-            with open(counter, "w", encoding="utf-8") as handle:
-                handle.write(str(seen + 1))
-        if seen == 0:
-            emit_ok(prompt, "stall")
+    if has_token(tokens, "stall-tool-error"):
+        if counter_was_zero("stall-tool-error"):
+            emit_stalled_with_tool_error()
         else:
-            emit_ok(prompt, "ok")
+            emit_ok(prompt, ["ok"])
         return 0
 
-    if "fail402" in mode:
+    if has_token(tokens, "stall-once"):
+        if counter_was_zero("stall"):
+            emit_ok(prompt, ["stall"])
+        else:
+            emit_ok(prompt, ["ok"])
+        return 0
+
+    if has_token(tokens, "tool-error-quota"):
+        emit_tool_error_run()
+        return 1
+
+    if has_token(tokens, "fail402"):
         sys.stdout.write("ERROR 402 Payment Required: insufficient funds\n")
         sys.stdout.flush()
         return 1
 
-    if "quota" in mode:
+    if has_token(tokens, "quota"):
         sys.stdout.write("AI_RetryError: Failed after 3 attempts. "
                          "Last error: Go usage limit exceeded\n")
         sys.stdout.flush()
         return 1
 
-    if "sig-model" in mode:
+    if has_token(tokens, "sig-model"):
         sys.stdout.write("model not found: no-such-model\n")
         sys.stdout.flush()
         return 1
 
-    if "headers" in mode:
+    if has_token(tokens, "headers"):
         sys.stdout.write("stream error: headers timed out\n")
         sys.stdout.flush()
         return 1
 
-    if "no-route" in mode:
+    if has_token(tokens, "no-route"):
         emit({"type": "error", "timestamp": 1,
               "error": {"type": "provider.no-route",
                         "message": "Model unavailable: opencode-go/cat-jam-free"}})
         return 1
 
-    if "error-quota" in mode:
+    if has_token(tokens, "error-quota"):
+        # A top-level error event whose message carries the quota marker:
+        # the message goes through the cause table, so the cause is quota.
         emit({"type": "error", "timestamp": 1,
-              "error": {"type": "provider.no-route",
-                        "message": "AI_APICallError: Go usage limit exceeded"}})
+              "error": {"type": "provider.apiError",
+                        "message": "Rate limit exceeded"}})
         return 1
 
-    if "rc1" in mode:
+    if has_token(tokens, "rc1"):
         return 1
 
-    if "markers" in mode:
+    if has_token(tokens, "markers"):
         emit_markers()
         return 0
 
-    if "slow" in mode:
+    if has_token(tokens, "slow"):
         try:
             delay = float(os.environ.get("FAKE_OC_SLOW", "1.0"))
         except ValueError:
             delay = 1.0
         time.sleep(delay)
 
-    emit_ok(prompt, mode)
+    emit_ok(prompt, tokens)
     return 0
 
 
