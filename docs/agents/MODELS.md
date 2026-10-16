@@ -213,25 +213,32 @@ thirty reviews.
 
 | Work | First choice | Second, another lab | When Go limits run out |
 |---|---|---|---|
-| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/mimo-v2.6-pro` | `opencode/cat-jam-free`, then `opencode/deepseek-v4.1-flash-free` |
+| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode/cat-jam-free`, then `opencode/deepseek-v4.1-flash-free` |
 | I outside the S-set, harder or after one failure | `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | Claude `implementer` |
 | Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | `opencode-go/deepseek-v4.1-flash` |
 | First-pass review | `opencode-go/gemini-4-argon-contributor` | `opencode-go/kimi-k3`, or `opencode-go/glm-5.3` | `opencode-go/deepseek-v4-pro` |
 | Scouting | `opencode/cat-jam-free` | `opencode-go/deepseek-v4.1-flash` | Built-in `Explore` |
-| Bookkeeping, commit and PR text | `opencode-go/gpt-6-luna` | `opencode-go/claude-haiku-5-5` | `opencode/cat-jam-free`, then Claude `bookkeeper` |
+| Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | `opencode/cat-jam-free`, then Claude `bookkeeper` |
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
 | S-set, A, C, core review | Claude only (`docs/AGENT_TEAM_PLAN.md` §§4.2–4.3) | — | — |
 
 Tier membership:
 
 - **O1:** DeepSeek V4.1 Flash (Go), Kimi K3, MiMo-V2.6-Pro, Gemini 4 Argon
-  Contributor, DeepSeek V4 Pro. Four labs, so a second opinion can always come
-  from another family.
+  Contributor, DeepSeek V4 Pro, and Muse Spark 1.3 Contributor (Go, and the
+  free variant). Five labs, so a second opinion can always come from another
+  family. Muse Spark was promoted from O3 on 2026-10-16 at the user's prompt.
+  Its O3 place came from its training-use terms, not its results: it
+  scored 21/21 and 5/5 in the bake-off, its signature is on 92 Markdown files in
+  this repository since 2026-09-05 (the E009–E022 spec-gap triage, the
+  ADR-0008/0009 decisions, the `f64` ban, status catch-ups through T019), it is
+  the most-used model here by volume, and its Go variant has the largest request
+  budget of any model.
 - **O2:** GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash,
   Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation
   retry), and Cat Jam Free (fast, but a stealth model whose terms can change).
 - **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview
-  Free, Muse Spark 1.3 Contributor Free, Big Pickle, Space Bunny Free (correct
+  Free, Big Pickle, Space Bunny Free (correct
   but slow and token-hungry), Qwen3.8 Max and Hy4 preview (correct but slow;
   Qwen3.8 Max is also scarce). O3 is a fallback when O1 and O2 are unavailable,
   not a first choice.
@@ -317,3 +324,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user request on model pruning · Added §4.1, a demote-and-promote rule driven by `oc.py`'s per-run result records, so that routing narrows to the models that keep passing on real tasks, as the user asked.
 - 2026-10-16 (UTC) · claude-code + user model preference · Recorded the user's order (free, then Go, then Claude, with Claude kept for higher-level thinking) and named the free models each OpenCode row tries first, so that routing spends Claude only where judgment is the deliverable.
 - 2026-10-16 (UTC) · claude-code + user correction on model choice · Replaced "free first" with the strongest suitable OpenCode model for the job, since the user said OpenCode usage is plentiful and some free models are weaker. Added head-to-head runs as evidence for the field record.
+- 2026-10-16 (UTC) · claude-code + user prompt on Muse Spark 1.3 · Promoted Muse Spark 1.3, both variants, from O3 to O1 and made it the first choice for bookkeeping and a second choice for routine implementation, citing its bake-off results and its record in this repository rather than the privacy terms that had placed it in O3.
