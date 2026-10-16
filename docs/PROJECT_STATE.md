@@ -14,7 +14,7 @@ Running at handover (2026-10-16; worktrees in `C:\crpg\dev\crpg-slots`):
 | A0-3 | `oc.py`: **stopped** after 19 steps by the free tier's `Rate limit exceeded` (quota, not the model's fault); its partial, uncommitted work is kept in the slot, so the next attempt continues it (Muse Spark Free once its limit clears, or DeepSeek V4.1 Flash Free) | `opencode/muse-spark-1.3-contributor-free` | `slot-1` · `setup/A0-3-oc-py` | `.agents/runs/A0-3/1-opencode_muse-spark-1.3-contributor-free.jsonl` |
 | A0-4 | attempt 2, review fixes | `opencode/deepseek-v4.1-flash-free` | `slot-2` · `setup/A0-4-verify-task` | `.agents/runs/A0-4/2-…jsonl` |
 | A0-6 | attempt 2, review fixes | `opencode/deepseek-v4.1-flash-free` | `alt-2` · `setup/A0-6-hooks` | `.agents/runs/A0-6/2-…jsonl` |
-| R2–R4 | benchmark, model-source and token-saving research (R1 is done: `research/r1/R1.jsonl`) | GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r2,R3,R4}` | `.agents/runs/R1`…`R4` |
+| R2–R4 | benchmark, model-source and token-saving research. R1 **stopped** after 6 steps with no output, on `Rate limit exceeded`: three runs were on DeepSeek V4.1 Flash Free at once. Rerun it on a free model with no other run going | GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r2,R3,R4}` | `.agents/runs/R1`…`R4` |
 | V1 | citation check of R5 and R7 | `opencode/longcat-2.5-preview-free` | `research/V1` | `.agents/runs/V1` |
 
 Done and unpicked: R5, R6 and R7 reports (`research/R5/R5.md` and so on); V2 checked R6 (12 confirmed, 1 paraphrase, 1 not found: the merge-queue-on-personal-accounts claim, still to verify).
