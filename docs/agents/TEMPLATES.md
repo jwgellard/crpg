@@ -251,7 +251,11 @@ message is the report in BRIEF.md's format, at most 40 lines.
 ```
 
 `.opencode/agents/crpg-tests.md`: as `crpg-implement`, with `edit` limited to
-test paths and this body:
+test paths and this body. As installed (A0-2) it also keeps `crpg-implement`'s
+full `bash` deny list and adds `read` rules: `"*": allow`, then `"*.env"` and
+`"*.env.*"` denied (a later `"*": allow` would otherwise override OpenCode's
+default `.env` rule, since the last match wins), then `"crates/*/src/**"`
+denied. That enforces "contract alone" instead of only asking for it.
 
 ```markdown
 ---
@@ -355,3 +359,4 @@ In `.claude/settings.json`, beside the permissions A0-1 adds:
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + agent-team plan templates · Added the brief, report and review formats and the proposed Claude, OpenCode and hook definitions that setup wave A0 installs, kept apart from the plan so workers and routine sessions never load them.
+- 2026-10-16 (UTC) · claude-code + A0-2 · Recorded where the installed `crpg-tests` agent departs from the template, a read deny on `crates/*/src/**` with explicit `.env` denies, so the template matches what runs. Checked live on OpenCode 1.18.35.

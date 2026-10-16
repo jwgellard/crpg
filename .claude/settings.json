@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/agents/*)",
+      "Bash(python3 tools/agents/*)",
+      "Bash(python -m unittest discover -s tools/tests *)"
+    ],
+    "additionalDirectories": [
+      "../crpg-slots/"
+    ]
+  }
+}
