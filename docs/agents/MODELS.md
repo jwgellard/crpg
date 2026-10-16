@@ -104,6 +104,14 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    pattern denies a whole compound command when any part matches (for example
    `git branch --show-current` inside a `;` chain), and one worker read that
    single refusal as "shell denied" and stopped: briefs now name the denied
+13. **Beam Free on Go (the user, 2026-10-16: "a BeamFree model that is
+   unlimited on Go").** With Cat Jam gone, the uncapped Go models are
+   `opencode-go/beam-free` (Reflection) and
+   `opencode-go/longcat-2.5-preview-free`; both keep working after the Go
+   5-hour cap. Never route `opencode/beam-free`, which draws on the free Zen
+   pool. First use: the T108 blind ADR draft, 395 lines in 88 s at $0.00
+   (unreviewed); then A0-8 (crpg-cli `AGENTS.md` trim). Unbenchmarked: it
+   earns a routing-table place only by the §4.1 field record.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -452,3 +460,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user routing rule · Recorded the user's rule that free Zen capacity goes only to strong models with a free Zen variant (Muse Spark, DeepSeek V4.1 Flash, GLM-5.3-Flash), while LongCat and Cat Jam always use their unlimited Go IDs.
 - 2026-10-16 (UTC) · claude-code + free-tier reset time · Recorded the user's report that the free Zen limit takes about 12 hours to reset, and the 14:00 UTC repeat, so a manager routes to Go IDs after a hit instead of retrying free models.
 - 2026-10-16 (UTC) · claude-code + manager handover · Recorded OpenCode 2.x as item 12, moved Scouting and the routine and bookkeeping routes off Cat Jam, and added the session field-record rows, so routing matches the versions and runs in use.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + manager session 4 · Added item 13: Beam Free as the second uncapped Go model now that Cat Jam is gone, with its Go-only route and first runs, so a manager can keep slots busy through the Go cap.
