@@ -107,15 +107,57 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # T096: a pull request that changes only documentation skips the Rust
+      # gates below and passes. The job itself always runs and reports: the
+      # master-protection ruleset requires both `check` contexts, and a
+      # workflow-level path filter would leave them pending for ever.
+      # The allowlist is exact: docs/**, tasks/**, Markdown at the repository
+      # root, and crates/*/AGENTS.md. Nothing under those paths is compiled or
+      # read by a build or test (checked 2026-10-16); a change that makes one
+      # of them compiled or read must take it off this list. `--no-renames`
+      # lists both sides of a move, so a file moved out of crates/ still counts
+      # as code. Pushes to master and the weekly schedule always run every
+      # gate. The logic stays inline on purpose: a script in the tree would be
+      # judged by the pull request it is judging.
+      - name: Classify the change (documentation-only pull requests skip the Rust gates)
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "${{ github.event_name }}: every gate runs"
+            exit 0
+          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE_SHA" --depth=1 || true
+          MERGE_BASE="$(git merge-base HEAD "$BASE_SHA")"
+          CHANGED="$(git diff --name-only --no-renames "$MERGE_BASE...HEAD")"
+          CODE="$(printf '%s\n' "$CHANGED" | grep -vE '^(docs|tasks)/|^[^/]+\.md$|^crates/[^/]+/AGENTS\.md$' || true)"
+          if [ -n "$CODE" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "every gate runs; first paths outside the documentation allowlist:"
+            printf '%s\n' "$CODE" | head -20
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            echo "documentation-only change: fmt, clippy and test skipped. Changed paths:"
+            printf '%s\n' "$CHANGED" | head -40
+          fi
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.rust == 'true'
       - run: cargo fmt --all -- --check
+        if: steps.scope.outputs.rust == 'true'
       # `--locked` on both: Cargo.lock is committed, and without this cargo is
       # free to update it in place, so CI could pass against a dependency set
       # that is not the one in the repository. For a project whose thesis is
       # "same binary + same inputs => same result", the tested graph has to be
       # the committed graph.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        if: steps.scope.outputs.rust == 'true'
       - run: cargo test --workspace --locked
+        if: steps.scope.outputs.rust == 'true'
 
   deny:
     runs-on: ubuntu-latest
