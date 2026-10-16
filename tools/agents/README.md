@@ -71,8 +71,24 @@ refused (exit 2 `no-brief`), as is a missing brief or generator.
 (exit 2 `usage`) two members owning paths under the same
 `crates/<name>/`, since each crate takes one task at a time.
 
+`--base REF` (default `origin/master`) is both the ref each slot's task
+branch starts from and the ref handed to `verify_task.py` as `--base`, so a
+run prepared from a non-master base is not reported as a pile of
+out-of-scope base commits. `wave` passes its own `--base` to every member.
+
+Agents: OpenCode reads `opencode.json` and `.opencode/agents/crpg-<role>.md`
+from the slot. When the slot has no `crpg-<role>.md` (a base that predates
+A0-2), `run` copies `opencode.json` and every missing file under
+`.opencode/agents/` from the repository root into the slot — never
+overwriting a file the slot already has — and lists the copies in the slot
+worktree's `info/exclude` (`git rev-parse --git-path info/exclude`), so
+`verify_task.py`'s scope check does not count them as the worker's changes.
+If the repository root has no declaration either, the run exits 2 `no-agent`
+before OpenCode starts; an OpenCode event reading `Agent not found`
+classifies as the same cause.
+
 Exit-2 causes: `fetch`, `no-brief`, `no-verify`, `no-slot`, `slot-busy`,
-`no-exe`, `branch`, `locked`, `402`, `quota`, `timeout`, `hang`,
+`no-exe`, `no-agent`, `branch`, `locked`, `402`, `quota`, `timeout`, `hang`,
 `no-edit`, `model`, `verify-error`, `usage`. Of these, `quota`, `402` and
 `locked` never count against the model; `no-edit`, `timeout` and `hang` do.
 
@@ -101,3 +117,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 · Wrote this usage guide for the new `tools/agents` scripts so the manager can route OpenCode workers without reading `oc.py`; it ends with this signed entry per the root `AGENTS.md` rule.
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 attempt 3 · Documented the review fixes above (wave model caps, refused Zen IDs, brief precedence with placeholder and same-crate checks) so the guide matches `oc.py`'s routing behaviour.
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor + A0-3 attempt 4 · Documented OpenCode 2.x support (version probe, `--standalone` with model `#variant` and no `--dir`, kept 1.x form, removed Cat Jam IDs, top-level error events, versioned fake) so the guide matches `oc.py`'s dual-generation behaviour.
+- 2026-10-17 (UTC) · opencode-go/DeepSeek-Flash-V4.1 + A0-3b · Documented the `--base` pass-through to `verify_task.py` (run and wave) and the agent-declaration fallback with its `info/exclude` entries and `no-agent` cause, so the guide matches the slot preparation defect fixes.

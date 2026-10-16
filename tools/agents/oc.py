@@ -88,6 +88,15 @@ RECORDED_CAUSE = "recorded"
 # placeholder marker; running a worker on it is refused as no-brief.
 BRIEF_PLACEHOLDER = "<MANAGER:"
 
+# A slot prepared from a base that predates A0-2 has no agent declaration,
+# so OpenCode cannot start `crpg-<role>` at all (it fails in seconds with
+# `Agent not found`). oc.py copies the declaration and `opencode.json` from
+# the repository root into such a slot, and lists the copies in the
+# worktree's `info/exclude` so the verifier's scope check never counts them
+# as the worker's changes.
+OPENCODE_JSON = Path("opencode.json")
+AGENTS_DIR = Path(".opencode") / "agents"
+
 
 class Exit(Exception):
     """Raised to stop a command with an exit code and a cause."""
@@ -643,6 +652,79 @@ def check_wave_crates(members: list[tuple[str, str, str]],
             seen[crate] = task
 
 
+def agent_declaration(role: str) -> Path:
+    """The OpenCode agent file a `crpg-<role>` worker needs, repo-relative."""
+    return AGENTS_DIR / f"crpg-{role}.md"
+
+
+def exclude_path(slot: Path) -> Path:
+    """The slot worktree's `info/exclude` file, resolved by git itself."""
+    proc = git(["rev-parse", "--git-path", "info/exclude"], slot)
+    if proc.returncode != 0:
+        raise Exit(2, f"no-agent: cannot locate info/exclude: {proc.stderr.strip()}")
+    path = Path(proc.stdout.strip())
+    return path if path.is_absolute() else (slot / path)
+
+
+def add_to_exclude(slot: Path, paths: list[str]) -> None:
+    """List `paths` (slot-relative) in the worktree's info/exclude, once each."""
+    if not paths:
+        return
+    target = exclude_path(slot)
+    lines: list[str] = []
+    if target.is_file():
+        lines = target.read_text(encoding="utf-8").splitlines()
+    added = False
+    for path in paths:
+        if path not in lines:
+            lines.append(path)
+            added = True
+    if not added:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def ensure_agent_files(repo: Path, slot: Path, role: str) -> list[str]:
+    """Copy the role's agent declaration into a slot that lacks it.
+
+    OpenCode reads `opencode.json` and `.opencode/agents/` from the slot, so
+    a slot prepared from a base that predates A0-2 cannot start a worker at
+    all. Copies come from `repo` (the repository root) and never overwrite a
+    file the slot already has. Returns the slot-relative paths copied, for
+    the exclude file. Exit 2 `no-agent` when the slot lacks the declaration
+    and the repository root cannot supply it either: that is a setup
+    failure, and it must be reported before OpenCode starts, not after.
+    """
+    declaration = agent_declaration(role)
+    if (slot / declaration).is_file():
+        return []
+    if not (repo / declaration).is_file():
+        raise Exit(
+            2,
+            f"no-agent: {declaration.as_posix()} is missing from both the slot "
+            f"and {repo}",
+        )
+    sources = [OPENCODE_JSON, declaration]
+    source_agents = repo / AGENTS_DIR
+    if source_agents.is_dir():
+        for child in sorted(source_agents.rglob("*")):
+            if child.is_file():
+                relative = AGENTS_DIR / child.relative_to(source_agents)
+                if relative not in sources:
+                    sources.append(relative)
+    copied: list[str] = []
+    for relative in sources:
+        source = repo / relative
+        target = slot / relative
+        if not source.is_file() or target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        copied.append(relative.as_posix())
+    return copied
+
+
 def check_model_id(model: str) -> None:
     """Refuse moved or removed model IDs (exit 2 usage).
 
@@ -694,6 +776,8 @@ def classify_infra(text: str) -> str | None:
             return "quota"
     if "headers timed out" in lowered:
         return "timeout"
+    if "agent not found" in lowered:
+        return "no-agent"
     if (
         "model not found" in lowered
         or "unknown model" in lowered
@@ -924,8 +1008,12 @@ def verify_prefix(repo: Path) -> list[str]:
     return [sys.executable, str(candidate)]
 
 
-def run_verify(repo: Path, task: str, slot: Path, role: str) -> dict:
-    cmd = verify_prefix(repo) + [task, "--slot", str(slot), "--json"]
+def run_verify(repo: Path, task: str, slot: Path, role: str, base: str) -> dict:
+    # The changed-set base is the run's base: a slot prepared from
+    # `--base origin/setup/A0-config` must not report that base's own
+    # commits as out-of-scope changes. Without --base the verifier falls
+    # back to `merge-base HEAD origin/master` (verify_task.py:215).
+    cmd = verify_prefix(repo) + [task, "--slot", str(slot), "--base", base, "--json"]
     if role in ("tests", "grunt"):
         cmd += ["--skip", "gates"]
     try:
@@ -1282,6 +1370,11 @@ def do_run(args: argparse.Namespace) -> int:
             if current_branch(slot) != branch:
                 raise Exit(2, f"branch: slot is not on {branch}")
         prepare_brief(repo, slot, args.task, attempt, args.brief, args.notes)
+        # The slot must be able to start `crpg-<role>` before OpenCode does;
+        # a no-agent setup failure is reported here, not as a fake worker
+        # error four seconds in. The copies are excluded so the verifier's
+        # scope check never counts them as the worker's changes.
+        add_to_exclude(slot, ensure_agent_files(repo, slot, args.role))
 
         # -- start the worker ----------------------------------------------
         wait_start_gap(repo)
@@ -1337,7 +1430,7 @@ def do_run(args: argparse.Namespace) -> int:
 
         # -- verify ---------------------------------------------------------
         if args.role in VERIFY_ROLES:
-            verify = run_verify(repo, args.task, slot, args.role)
+            verify = run_verify(repo, args.task, slot, args.role, base)
             verdict = verify.get("verdict")
             if verdict == "PASS":
                 info["verdict"] = "PASS"

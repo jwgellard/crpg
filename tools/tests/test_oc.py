@@ -31,7 +31,10 @@ second-review fixes: tool errors are never classified as infra (only
 top-level error events, the process's own output and the OpenCode log),
 exact fake-mode matching so the ``error-quota`` event branch is live,
 ``ask`` recording a ``no-exe`` exit, and the Windows liveness probe
-counting a PID alive when in doubt.
+counting a PID alive when in doubt, plus A0-3b: the run's base reaching the
+verifier (``run`` and ``wave``), the agent-declaration fallback into a slot
+prepared from a base that predates A0-2 with its ``info/exclude`` entries,
+and ``no-agent`` as both a setup exit and an event classification.
 """
 
 from __future__ import annotations
@@ -112,9 +115,29 @@ class DispatchCase(unittest.TestCase):
             ["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"],
             cls.repo,
         )
+        # `no-agents` pins the commit before OpenCode was configured, so a
+        # slot prepared from it is exactly the pre-A0-2 slot the fallback
+        # targets; `master` does define every agent, so the other tests keep
+        # their ordinary path.
+        cls.old_base = sh(["git", "rev-parse", "HEAD"], cls.repo).stdout.strip()
         agents = cls.repo / "tools" / "agents"
         agents.mkdir(parents=True)
         (agents / "brief.py").write_text(BRIEF_STUB, encoding="utf-8")
+        opencode_agents = cls.repo / ".opencode" / "agents"
+        opencode_agents.mkdir(parents=True)
+        for role in ("implement", "tests", "review", "scout", "grunt"):
+            (opencode_agents / f"crpg-{role}.md").write_text(
+                f"# crpg-{role}\n", encoding="utf-8"
+            )
+        (cls.repo / "opencode.json").write_text(
+            '{"agent": {}}\n', encoding="utf-8"
+        )
+        sh(["git", "add", "tools", ".opencode", "opencode.json"], cls.repo)
+        sh(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "agents"],
+            cls.repo,
+        )
+        sh(["git", "branch", "no-agents", cls.old_base], cls.repo)
         sh(["git", "worktree", "add", str(cls.slots / "slot-1")], cls.repo)
         sh(["git", "worktree", "add", str(cls.slots / "slot-2")], cls.repo)
         cls.slot1 = (cls.slots / "slot-1").resolve()
@@ -173,15 +196,21 @@ class DispatchCase(unittest.TestCase):
         )
 
     def oc_run(self, task, role="implement", model=MODEL, extra=None,
-               env=None, timeout=90, brief=True):
+               env=None, timeout=90, brief=True, base="master"):
         argv = [
             "run", "--task", task, "--role", role, "--model", model,
-            "--base", "master", "--timeout", "60", "--idle", "10",
+            "--base", base, "--timeout", "60", "--idle", "10",
         ]
         if brief:
             argv += ["--brief", self.brief()]
         argv += extra or []
         return self.oc(*argv, env=env, timeout=timeout)
+
+    def exclude_file(self, slot: Path) -> Path:
+        """The worktree's info/exclude file, resolved the way oc.py does."""
+        out = sh(["git", "rev-parse", "--git-path", "info/exclude"], slot).stdout
+        path = Path(out.strip())
+        return path if path.is_absolute() else slot / path
 
     def record_path(self, task, model=MODEL, attempt=1) -> Path:
         safe = model.replace("/", "_")
@@ -659,6 +688,128 @@ class DispatchCase(unittest.TestCase):
             env={"FAKE_OC_MODE": "no-text"},
         )
         self.assertEqual(result.returncode, 1, result.stdout)
+
+    # -- the run's base reaches the verifier (A0-3b) -----------------------
+
+    def test_verify_receives_the_runs_base(self) -> None:
+        # A slot prepared from `--base X` is verified against X. Without this
+        # the verifier falls back to `merge-base HEAD origin/master` and
+        # reports every commit of X as an out-of-scope change.
+        task = self.tid()
+        verify_log = self.fresh_file("verify.jsonl")
+        result = self.oc_run(
+            task, base="no-agents", env={"FAKE_VERIFY_LOG": str(verify_log)}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        logged = [
+            json.loads(line)
+            for line in verify_log.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len(logged), 1)
+        self.assertIn("--base", logged[0])
+        self.assertEqual(logged[0][logged[0].index("--base") + 1], "no-agents")
+
+    def test_wave_passes_its_base_to_the_verifier(self) -> None:
+        task = self.tid()
+        verify_log = self.fresh_file("verify.jsonl")
+        result = self.oc(
+            "wave", f"{task}:implement:{MODEL}", "--base", "no-agents",
+            env={"FAKE_VERIFY_LOG": str(verify_log)}, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        logged = [
+            json.loads(line)
+            for line in verify_log.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len(logged), 1)
+        self.assertEqual(logged[0][logged[0].index("--base") + 1], "no-agents")
+
+    # -- agent declaration fallback (A0-3b) --------------------------------
+
+    def test_agent_fallback_copies_and_excludes(self) -> None:
+        # A slot from a base that predates A0-2 has no agent declaration:
+        # OpenCode cannot start and fails in seconds with `Agent not found`.
+        # oc.py copies the declaration and opencode.json from the repository
+        # root and excludes the copies from the worker's changed set.
+        task = self.tid()
+        result = self.oc_run(task, base="no-agents")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        source = self.repo / ".opencode" / "agents"
+        self.assertEqual(
+            (self.slot1 / ".opencode" / "agents" / "crpg-implement.md").read_text(
+                encoding="utf-8"
+            ),
+            (source / "crpg-implement.md").read_text(encoding="utf-8"),
+        )
+        self.assertTrue((self.slot1 / "opencode.json").is_file())
+        listed = self.exclude_file(self.slot1).read_text(encoding="utf-8").splitlines()
+        self.assertIn(".opencode/agents/crpg-implement.md", listed)
+        self.assertIn("opencode.json", listed)
+        # The verifier's scope check reads untracked files with git's own
+        # exclude rules (verify_task.py collect_changes), so a clean run
+        # reports no scope failure for the copies.
+        status = sh(["git", "status", "--porcelain"], self.slot1).stdout
+        self.assertNotIn(".opencode", status)
+        self.assertNotIn("opencode.json", status)
+        untracked = sh(
+            ["git", "ls-files", "--others", "--exclude-standard"], self.slot1
+        ).stdout
+        self.assertNotIn(".opencode", untracked)
+        self.assertNotIn("opencode.json", untracked)
+        self.assertIn("scope: ok", result.stdout)
+
+    def test_agent_fallback_never_overwrites_an_existing_file(self) -> None:
+        slot = self.fresh_dir("fallback-slot")
+        (slot / ".opencode" / "agents").mkdir(parents=True)
+        sentinel = slot / ".opencode" / "agents" / "crpg-tests.md"
+        sentinel.write_text("# sentinel\n", encoding="utf-8")
+        copied = OCMOD.ensure_agent_files(self.repo, slot, "implement")
+        self.assertIn(".opencode/agents/crpg-implement.md", copied)
+        self.assertIn(".opencode/agents/crpg-grunt.md", copied)
+        self.assertIn("opencode.json", copied)
+        self.assertNotIn(".opencode/agents/crpg-tests.md", copied)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "# sentinel\n")
+
+    def test_agent_fallback_needs_the_declaration_in_the_slot_or_the_root(self) -> None:
+        bare = self.fresh_dir("bare-root")
+        slot = self.fresh_dir("bare-slot")
+        with self.assertRaises(OCMOD.Exit) as caught:
+            OCMOD.ensure_agent_files(bare, slot, "implement")
+        self.assertEqual(caught.exception.code, 2)
+        self.assertTrue(str(caught.exception.cause).startswith("no-agent"))
+
+    def test_missing_agent_declaration_is_no_agent_before_opencode(self) -> None:
+        bare = self.fresh_dir("no-agent-root")
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        result = self.oc_run(
+            task,
+            base="no-agents",
+            env={"CRPG_REPO": str(bare), "FAKE_OC_LOG": str(call_log)},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-agent", result.stdout + result.stderr)
+        record = json.loads(
+            (bare / ".agents" / "runs" / task / f"1-{MODEL.replace('/', '_')}"
+             ".result.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(str(record["cause"]).startswith("no-agent"))
+        # The failure is reported before OpenCode starts, not as a worker
+        # error: the fake was never invoked.
+        self.assertFalse(call_log.exists(), "opencode was started anyway")
+
+    def test_agent_not_found_event_is_no_agent(self) -> None:
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_OC_MODE": "no-agent"})
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-agent", result.stdout + result.stderr)
+        self.assertEqual(self.read_record(task)["cause"], "no-agent")
+        self.assertEqual(
+            OCMOD.classify_infra(
+                '{"type":"error","error":{"message":"Agent not found: \\"x\\""}}'
+            ),
+            "no-agent",
+        )
 
     # -- summary shape -----------------------------------------------
 
