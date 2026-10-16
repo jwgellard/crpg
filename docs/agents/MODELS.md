@@ -237,6 +237,33 @@ for this public repository under `docs/AGENT_TEAM_PLAN.md` §4.2 rule 4 and
 D28-e; if D28-e is refused, drop them and promote Kimi K3 to first-pass
 reviewer.
 
+### 4.1 Field record: demote and promote
+
+The bake-off ranks models once; real tasks rank them continuously. On
+2026-10-16 the user asked that models which keep underperforming be avoided,
+narrowing routing to the best.
+
+- Every `oc.py` run leaves a result record, and the manager adds review and
+  merge outcomes with `oc.py record`, Claude subagent runs included.
+  `oc.py stats` ranks each model per role by first-attempt pass rate: the run
+  passed `verify_task.py` and review did not send it back.
+- **Demote** a model from a role when it fails 2 of its last 4 runs in that
+  role. A failure is a verify failure, a review reject, or an infra exit the
+  model caused (`no-edit`, `timeout`). Quota, `402` and `locked` exits are
+  not the model's fault and do not count. A first choice drops to second, and
+  a second choice drops back to its tier list. A model demoted twice in a
+  role leaves that role's routing.
+- **Promote** a model to first choice for a role once it has at least 5 runs
+  in that role and the best first-attempt pass rate among models with 5 or
+  more. Ties go to the cheaper, then the faster, model.
+- The manager runs `oc.py stats` before routing a wave and applies the rule
+  at each gate. Every change is recorded here with its date and numbers. A
+  change that moves work between Claude and OpenCode is still a plan change
+  (§6).
+- Claude subagents keep the same record. On Pro (D28b), when Sonnet 5.5 keeps
+  failing one kind of package, that kind goes back to the manager to split,
+  not up to Opus.
+
 ## 5. Bake-off method
 
 Run 2026-10-16. The harness, fixtures and scored results are in
@@ -272,3 +299,4 @@ whenever Zen or Go changes its model list:
 
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Recorded the same-day access test and three-task bake-off of 26 OpenCode models with the Claude lineup, limits and privacy terms, and derived the routing table and tiers from them, noting where the tasks were too easy to rank and public composites fill in.
 - 2026-10-16 (UTC) · claude-code + D28b · Narrowed the Opus 5.5 and Sonnet 5.5 roles to the Pro routing the user chose: Opus for A and C packages only, Sonnet as the top implementer rung.
+- 2026-10-16 (UTC) · claude-code + user request on model pruning · Added §4.1, a demote-and-promote rule driven by `oc.py`'s per-run result records, so that routing narrows to the models that keep passing on real tasks, as the user asked.
