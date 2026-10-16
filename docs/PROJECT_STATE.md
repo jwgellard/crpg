@@ -17,7 +17,7 @@ Running at handover (2026-10-16; worktrees in `C:\crpg\dev\crpg-slots`):
 | R1–R4 | benchmark, model-source and token-saving research: **none produced output** (R1 stopped at step 6; R2, R3 and R4 at step 0, all on the rate limit). Rerun them, at most three free runs at once; the briefs are in place | DeepSeek Free, GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r1,r2,R3,R4}` | `.agents/runs/R1`…`R4` |
 | V1 | citation check of R5 and R7 | `opencode/longcat-2.5-preview-free` | `research/V1` | `.agents/runs/V1` |
 
-Done and unpicked: R5, R6 and R7 reports (`research/R5/R5.md` and so on); V2 checked R6 (12 confirmed, 1 paraphrase, 1 not found: the merge-queue-on-personal-accounts claim, still to verify).
+V1 checked R5 and R7: see `research/V1/V1.jsonl` and the run summary. Done and unpicked: R5, R6 and R7 reports (`research/R5/R5.md` and so on); V2 checked R6 (12 confirmed, 1 paraphrase, 1 not found: the merge-queue-on-personal-accounts claim, still to verify).
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
