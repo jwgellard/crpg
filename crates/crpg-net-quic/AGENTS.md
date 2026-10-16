@@ -60,11 +60,12 @@ needs an ADR. A wire change also needs a new ALPN.
 
 - `crpg-net`, a path edge and the only workspace edge (`ALLOWED` row
   `{"crpg-net"}`, ADR-0024).
-- The four D23 pins, with default features off:
+- The four D23 pins (`rustls` moved by D28i), with default features off:
   - `quinn` =0.11.12 (`runtime-tokio`, `rustls-ring`);
   - `quinn-proto` =0.11.19 (`rustls-ring`) (vendored with patches,
     `third_party/quinn-proto/VENDOR.md`);
-  - `rustls` =0.23.45 (`ring`, `std`);
+  - `rustls` =0.23.46 (`ring`, `std`), from 0.23.45 for RUSTSEC-2026-0346 to
+    -0349 (S002);
   - `tokio` =1.53.1 (`rt`, `net`, `time`, `sync`).
 
 There are **no dev-dependencies**. The tests use std, the normal edges above
@@ -140,3 +141,4 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - 2026-10-05 (UTC) · claude-code + T023c · Listed the six window fields in the public surface, the 27-case suite count and three traps (the exact-count no-update condition, only a client bounds what it absorbs, quinn's close gating), so later work tightens windows knowingly and never answers a `Reset` by loosening an assertion.
 - 2026-10-05 (UTC) · claude-code + T023v-b · Marked the quinn-proto pin as vendored, raised the suite count to 28 and replaced the close-gating trap with the regression check, so a future `Reset` in case 17 or 28 is traced to the vendoring instead of answered by loosening an assertion.
 - 2026-10-06 (UTC) · claude-code + T023d · Added the release-not-remove trap and raised the suite count to 30, so later work never deletes a record its control task still needs to send a close.
+- 2026-10-16 (UTC) · claude-code + S002 · Moved the `rustls` pin line to =0.23.46 with the advisories that forced it, so the crate's rules match its manifest.
