@@ -58,11 +58,17 @@ NON_FAULT_CAUSES = frozenset({"quota", "402", "locked"})
 # Infra causes that are the model's fault: they count against it.
 MODEL_FAULT_CAUSES = frozenset({"no-edit", "timeout", "hang"})
 
-# docs/agents/MODELS.md section 4: these Zen IDs now live on the Go
+# docs/agents/MODELS.md section 4: the Zen LongCat ID now lives on the Go
 # subscription, so the Zen form is refused with a pointer at the Go form.
+# Cat Jam is gone from both providers after the OpenCode 2.x upgrade, so
+# both Cat Jam IDs are refused as removed (scout with DeepSeek Flash).
 RENAMED_MODELS = {
-    "opencode/cat-jam-free": "opencode-go/cat-jam-free",
     "opencode/longcat-2.5-preview-free": "opencode-go/longcat-2.5-preview-free",
+}
+
+REMOVED_MODELS = {
+    "opencode/cat-jam-free": "opencode-go/deepseek-v4.1-flash",
+    "opencode-go/cat-jam-free": "opencode-go/deepseek-v4.1-flash",
 }
 
 # Wave concurrency caps from docs/agents/MODELS.md sections 1 and 4
@@ -175,21 +181,69 @@ def opencode_prefix() -> list[str]:
         return [override]
     if os.name == "nt":
         appdata = os.environ.get("APPDATA", "")
-        exe = Path(appdata) / "npm" / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
-        if exe.is_file():
-            return [str(exe)]
+        exe2 = Path(appdata) / "npm" / "node_modules" / "@opencode" / "cli" / "bin" / "opencode.exe"
+        if exe2.is_file():
+            return [str(exe2)]
+        exe1 = Path(appdata) / "npm" / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+        if exe1.is_file():
+            return [str(exe1)]
     found = shutil.which("opencode")
     if found and not found.lower().endswith(".cmd"):
         return [found]
     if found:
         # A .cmd shim would parse < > | & inside the prompt through cmd.exe.
         sibling = Path(found).with_suffix(".exe")
-        alt = Path(found).parent / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
-        for candidate in (sibling, alt):
+        alts = (
+            sibling,
+            Path(found).parent / "node_modules" / "@opencode" / "cli" / "bin" / "opencode.exe",
+            Path(found).parent / "node_modules" / "opencode-ai" / "bin" / "opencode.exe",
+        )
+        for candidate in alts:
             if candidate.is_file():
                 return [str(candidate)]
         raise Exit(2, "no-exe: only an opencode.cmd shim is on PATH")
     raise Exit(2, "no-exe: opencode not found")
+
+
+_VERSION_CACHE: dict[tuple[str, ...], int] = {}
+
+
+def opencode_major(prefix: list[str]) -> int:
+    """Major version of the OpenCode executable (1 or 2), cached per process.
+
+    Probes once with `<exe> --version` (e.g. `opencode v2.0.31`); a `.py`
+    fake answers it too. Unparseable output or a failed probe means 2.x,
+    the version installed on this machine since 2026-10-16.
+    """
+    key = tuple(prefix)
+    if key in _VERSION_CACHE:
+        return _VERSION_CACHE[key]
+    major = 2
+    try:
+        proc = subprocess.run(
+            [*prefix, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        blob = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        match = re.search(r"(\d+)\.", blob)
+        if match:
+            major = int(match.group(1))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        major = 2
+    _VERSION_CACHE[key] = major
+    return major
+
+
+def model_flag(model: str, variant: str | None, major: int) -> list[str]:
+    """The `-m` flag for this executable generation: 2.x carries a variant
+    as `model#variant`; 1.x keeps a separate `--variant` flag."""
+    if major >= 2:
+        return ["-m", f"{model}#{variant}" if variant else model]
+    if variant:
+        return ["-m", model, "--variant", variant]
+    return ["-m", model]
 
 
 # -- slot locks ------------------------------------------------------------
@@ -550,7 +604,18 @@ def check_wave_crates(members: list[tuple[str, str, str]],
 
 
 def check_model_id(model: str) -> None:
-    """Refuse Zen IDs that moved to the Go subscription (exit 2 usage)."""
+    """Refuse moved or removed model IDs (exit 2 usage).
+
+    Zen IDs that moved to the Go subscription name the Go form; Cat Jam
+    IDs removed by the 2.x upgrade name the DeepSeek Flash scout instead
+    (docs/agents/MODELS.md section 4).
+    """
+    if model in REMOVED_MODELS:
+        raise Exit(
+            2,
+            f"usage: model {model} is no longer offered after the 2.x upgrade; "
+            f"scout with {REMOVED_MODELS[model]} instead",
+        )
     if model in RENAMED_MODELS:
         raise Exit(
             2,
@@ -589,7 +654,12 @@ def classify_infra(text: str) -> str | None:
             return "quota"
     if "headers timed out" in lowered:
         return "timeout"
-    if "model not found" in lowered or "unknown model" in lowered:
+    if (
+        "model not found" in lowered
+        or "unknown model" in lowered
+        or "provider.no-route" in lowered
+        or "model unavailable" in lowered
+    ):
         return "model"
     return None
 
@@ -1110,7 +1180,22 @@ def do_run(args: argparse.Namespace) -> int:
 
     variant = args.variant
 
-    def worker_cmd(prefix: list[str], prompt: str, use_variant: str | None) -> list[str]:
+    def worker_cmd(prefix: list[str], prompt: str, use_variant: str | None,
+                   major: int | None = None) -> list[str]:
+        if major is None:
+            major = opencode_major(prefix)
+        if major >= 2:
+            # 2.x has no --dir and no --variant: the workspace is the
+            # process cwd plus PWD, a variant is part of the model, and
+            # each run gets its own server via --standalone.
+            return prefix + [
+                "run",
+                "--standalone",
+                "--agent", f"crpg-{args.role}",
+                *model_flag(args.model, use_variant, major),
+                "--format", "json",
+                prompt,
+            ]
         cmd = prefix + [
             "run",
             "--agent", f"crpg-{args.role}",
@@ -1134,8 +1219,9 @@ def do_run(args: argparse.Namespace) -> int:
         # nothing: no lock, no branch move, no log, no result record.
         resolve_brief_source(repo, args.task, args.brief)
         prefix = opencode_prefix()
+        major = opencode_major(prefix)
         print(f"DRY-RUN {args.task} {args.role} \u00b7 {args.model} \u00b7 slot-{slot_number}")
-        print("command: " + " ".join(worker_cmd(prefix, prompt, variant)))
+        print("command: " + " ".join(worker_cmd(prefix, prompt, variant, major)))
         for line in skeleton:
             print(line)
         return 0
@@ -1143,6 +1229,7 @@ def do_run(args: argparse.Namespace) -> int:
     assert slot is not None and slot_number is not None
     try:
         prefix = opencode_prefix()
+        major = opencode_major(prefix)
         # -- prepare the slot worktree -------------------------------------
         fetch_base(slot, base)
         if attempt == 1 or args.fresh:
@@ -1164,7 +1251,7 @@ def do_run(args: argparse.Namespace) -> int:
         retries = 0
         while True:
             idle_or_timeout, rc = run_worker(
-                worker_cmd(prefix, prompt, variant), slot, log_path, timeout_s,
+                worker_cmd(prefix, prompt, variant, major), slot, log_path, timeout_s,
                 idle_s, f"crpg-{args.role}", args.model,
             )
             events = parse_events(log_path)
@@ -1283,14 +1370,26 @@ def do_ask(args: argparse.Namespace) -> int:
         return code
 
     prefix = opencode_prefix()
-    cmd = prefix + [
-        "run",
-        "--agent", agent,
-        "-m", args.model,
-        "--dir", str(repo),
-        "--format", "json",
-        question,
-    ]
+    major = opencode_major(prefix)
+    if major >= 2:
+        # 2.x: no --dir; the repo root is the process cwd plus PWD.
+        cmd = prefix + [
+            "run",
+            "--standalone",
+            "--agent", agent,
+            "-m", args.model,
+            "--format", "json",
+            question,
+        ]
+    else:
+        cmd = prefix + [
+            "run",
+            "--agent", agent,
+            "-m", args.model,
+            "--dir", str(repo),
+            "--format", "json",
+            question,
+        ]
     try:
         wait_start_gap(repo)
         idle_or_timeout, rc = run_worker(cmd, repo, log_path, timeout_s, idle_s, agent, args.model)

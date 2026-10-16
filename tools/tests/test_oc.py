@@ -22,7 +22,11 @@ on the same slot, ``is_failure`` exactly per MODELS.md section 4.1,
 dry-run brief validation, records for slot-busy/no-exe, the git-clean
 check, ask/grunt record and skip behaviour, overlapping-process stagger,
 UTF-8 summaries, role-aware next lines, wave model caps, renamed-model
-refusal, and filed-brief/placeholder/same-crate handling.
+refusal, and filed-brief/placeholder/same-crate handling, plus the
+attempt-4 OpenCode 2.x support: version detection, the 2.x argv
+(``--standalone``, model ``#variant``, no ``--dir``) against the kept 1.x
+argv, the stall retry in both generations, top-level ``error`` events, the
+removed Cat Jam IDs, and dry-run output per version.
 """
 
 from __future__ import annotations
@@ -246,9 +250,34 @@ class DispatchCase(unittest.TestCase):
         self.assertIn("STDIN-CLOSED", log)
 
     def test_dir_pwd_prompt_and_no_auto(self) -> None:
+        # Default fake is OpenCode 2.x: no --dir, --standalone set, the slot
+        # is the process cwd plus PWD, and the prompt arrives intact.
         task = self.tid()
         call_log = self.fresh_file("calls.jsonl")
         result = self.oc_run(task, env={"FAKE_OC_LOG": str(call_log)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.fake_calls(call_log)
+        self.assertGreaterEqual(len(calls), 1)
+        first = calls[0]
+        self.assertNotIn("--dir", first["argv"])
+        self.assertIn("--standalone", first["argv"])
+        self.assertNotIn("--variant", first["argv"])
+        self.assertEqual(Path(first["cwd"]).resolve(), self.slot1)
+        self.assertEqual(Path(first["pwd"]).resolve(), self.slot1)
+        self.assertIn("--agent", first["argv"])
+        self.assertNotIn("--auto", first["argv"])
+        self.assertEqual(first["argv"][-1], PROMPT)
+
+    def test_1x_argv_keeps_dir_and_variant_flag(self) -> None:
+        # When the executable reports 1.x, oc.py keeps the --dir form.
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        result = self.oc_run(
+            task,
+            extra=["--variant", "high"],
+            env={"FAKE_OC_LOG": str(call_log),
+                 "FAKE_OC_VERSION": "opencode v1.18.35"},
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.fake_calls(call_log)
         self.assertGreaterEqual(len(calls), 1)
@@ -257,10 +286,33 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(
             first["argv"][first["argv"].index("--dir") + 1], str(self.slot1)
         )
+        self.assertNotIn("--standalone", first["argv"])
+        self.assertIn("--variant", first["argv"])
+        self.assertEqual(
+            first["argv"][first["argv"].index("--variant") + 1], "high"
+        )
         self.assertEqual(Path(first["cwd"]).resolve(), self.slot1)
         self.assertEqual(Path(first["pwd"]).resolve(), self.slot1)
         self.assertNotIn("--auto", first["argv"])
         self.assertEqual(first["argv"][-1], PROMPT)
+
+    def test_2x_argv_carries_variant_in_model(self) -> None:
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        result = self.oc_run(
+            task,
+            extra=["--variant", "high"],
+            env={"FAKE_OC_LOG": str(call_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.fake_calls(call_log)
+        self.assertGreaterEqual(len(calls), 1)
+        first = calls[0]
+        self.assertNotIn("--dir", first["argv"])
+        self.assertNotIn("--variant", first["argv"])
+        self.assertIn("--standalone", first["argv"])
+        flag = first["argv"][first["argv"].index("-m") + 1]
+        self.assertEqual(flag, f"{MODEL}#high")
 
     def test_special_chars_reach_worker_intact(self) -> None:
         question = "On which line is <line number> | & > honoured exactly?"
@@ -349,6 +401,7 @@ class DispatchCase(unittest.TestCase):
     # -- reasoning stall ----------------------------------------------
 
     def test_stall_retries_once_with_low_variant_then_succeeds(self) -> None:
+        # Default fake is 2.x: the stall retry carries `low` as model#low.
         task = self.tid()
         call_log = self.fresh_file("calls.jsonl")
         state = self.fresh_dir("state")
@@ -364,15 +417,42 @@ class DispatchCase(unittest.TestCase):
         calls = self.fake_calls(call_log)
         self.assertEqual(len(calls), 2)
         self.assertNotIn("--variant", calls[0]["argv"])
+        self.assertNotIn("--dir", calls[0]["argv"])
         second = calls[1]["argv"]
-        self.assertIn("--variant", second)
-        self.assertEqual(second[second.index("--variant") + 1], "low")
+        self.assertNotIn("--variant", second)
+        self.assertIn("--standalone", second)
+        self.assertEqual(
+            second[second.index("-m") + 1], f"{MODEL}#low"
+        )
         self.assertIn(STALL_SENTENCE, second[-1])
         record = self.read_record(task)
         self.assertEqual(record["attempt"], 1)
         self.assertEqual(
             record["retries"], [{"cause": "stall", "variant": "low"}]
         )
+
+    def test_stall_retry_uses_variant_flag_on_1x(self) -> None:
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        state = self.fresh_dir("state")
+        result = self.oc_run(
+            task,
+            env={
+                "FAKE_OC_MODE": "stall-once",
+                "FAKE_OC_STATE": str(state),
+                "FAKE_OC_LOG": str(call_log),
+                "FAKE_OC_VERSION": "opencode v1.18.35",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        calls = self.fake_calls(call_log)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("--variant", calls[0]["argv"])
+        second = calls[1]["argv"]
+        self.assertIn("--variant", second)
+        self.assertEqual(second[second.index("--variant") + 1], "low")
+        self.assertEqual(second[second.index("-m") + 1], MODEL)
+        self.assertIn(STALL_SENTENCE, second[-1])
 
     def test_stall_twice_is_no_edit(self) -> None:
         task = self.tid()
@@ -443,10 +523,32 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(classify("stream error: HEADERS TIMED OUT"), "timeout")
         self.assertEqual(classify("Model Not Found: x"), "model")
         self.assertEqual(classify("unknown model 'x'"), "model")
+        self.assertEqual(
+            classify('{"type":"provider.no-route","message":"Model unavailable: x"}'),
+            "model",
+        )
         self.assertIsNone(classify("all done, nothing to report"))
         self.assertEqual(OCMOD.DEMOTE_WINDOW, 4)
         self.assertEqual(OCMOD.DEMOTE_FAILURES, 2)
         self.assertEqual(OCMOD.PROMOTE_MIN_RUNS, 5)
+
+    def test_error_event_is_model(self) -> None:
+        # A 2.x top-level error event (provider.no-route, no steps)
+        # exits 2 with cause model.
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_OC_MODE": "no-route"})
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("model", result.stdout + result.stderr)
+        self.assertEqual(self.read_record(task)["cause"], "model")
+
+    def test_error_event_message_uses_cause_table(self) -> None:
+        # The error event's message also goes through the cause table:
+        # a quota message inside it classifies as quota, not model.
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_OC_MODE": "error-quota"})
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("quota", result.stdout + result.stderr)
+        self.assertEqual(self.read_record(task)["cause"], "quota")
 
     # -- verifier plumbing -------------------------------------------------
 
@@ -561,12 +663,41 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("command:", result.stdout)
         self.assertIn("opencode", result.stdout)
+        # Default fake is 2.x: the dry-run command uses --standalone and
+        # no --dir.
+        self.assertIn("--standalone", result.stdout)
+        self.assertNotIn("--dir", result.stdout)
         after = sh(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], self.slot1
         ).stdout.strip()
         self.assertEqual(before, after)
         self.assertFalse(self.log_path(task).exists())
         self.assertFalse(self.record_path(task).exists())
+
+    def test_dry_run_prints_1x_command(self) -> None:
+        task = self.tid()
+        result = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run",
+            env={"FAKE_OC_VERSION": "opencode v1.18.35"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("command:", result.stdout)
+        self.assertIn("--dir", result.stdout)
+        self.assertNotIn("--standalone", result.stdout)
+        self.assertFalse(self.log_path(task).exists())
+        self.assertFalse(self.record_path(task).exists())
+
+    def test_dry_run_prints_2x_hash_variant(self) -> None:
+        task = self.tid()
+        result = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run",
+            "--variant", "low", env={},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"{MODEL}#low", result.stdout)
+        self.assertNotIn("--variant", result.stdout)
 
     def test_attempt_continues_on_its_branch(self) -> None:
         task = self.tid()
@@ -786,11 +917,13 @@ class DispatchCase(unittest.TestCase):
 
     def test_renamed_model_is_refused(self) -> None:
         task = self.tid()
-        result = self.oc_run(task, model="opencode/cat-jam-free")
+        result = self.oc_run(task, model="opencode/longcat-2.5-preview-free")
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn("usage", result.stdout + result.stderr)
-        self.assertIn("opencode-go/cat-jam-free", result.stdout + result.stderr)
-        self.assertFalse(self.record_path(task, model="opencode/cat-jam-free").exists())
+        self.assertIn("opencode-go/longcat-2.5-preview-free",
+                      result.stdout + result.stderr)
+        self.assertFalse(self.record_path(
+            task, model="opencode/longcat-2.5-preview-free").exists())
         asked = self.oc(
             "ask", "--role", "scout", "--model", "opencode/longcat-2.5-preview-free",
             "--timeout", "60", "a question",
@@ -798,6 +931,20 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(asked.returncode, 2, asked.stdout)
         self.assertIn("opencode-go/longcat-2.5-preview-free",
                       asked.stdout + asked.stderr)
+
+    def test_removed_cat_jam_is_refused(self) -> None:
+        # Cat Jam is gone from both providers after the 2.x upgrade.
+        for model in ("opencode/cat-jam-free", "opencode-go/cat-jam-free"):
+            with self.subTest(model=model):
+                self.count += 1
+                task = self.tid()
+                result = self.oc_run(task, model=model)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("usage", result.stdout + result.stderr)
+                self.assertIn("no longer offered", result.stdout + result.stderr)
+                self.assertIn("opencode-go/deepseek-v4.1-flash",
+                              result.stdout + result.stderr)
+                self.assertFalse(self.record_path(task, model=model).exists())
 
     def test_filed_brief_is_used(self) -> None:
         task = self.tid()
@@ -1189,6 +1336,15 @@ class HarnessUnitCase(unittest.TestCase):
         # At most three runs per model of any kind.
         self.assertFalse(fits("go/m", ["go/m", "go/m", "go/m"]))
         self.assertTrue(fits("go/m", ["go/m", "go/m"]))
+
+    def test_model_flag_forms(self) -> None:
+        flag = OCMOD.model_flag
+        self.assertEqual(flag("go/m", None, 2), ["-m", "go/m"])
+        self.assertEqual(flag("go/m", "low", 2), ["-m", "go/m#low"])
+        self.assertEqual(flag("go/m", None, 1), ["-m", "go/m"])
+        self.assertEqual(
+            flag("go/m", "low", 1), ["-m", "go/m", "--variant", "low"]
+        )
 
     def test_brief_owned_crates(self) -> None:
         owned = OCMOD.brief_owned_crates(

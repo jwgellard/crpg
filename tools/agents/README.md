@@ -37,17 +37,30 @@ Environment: `$CRPG_REPO` (repo root, default: the main worktree),
 `sys.executable`), `$CRPG_VERIFY` (verifier path), `$CRPG_OPENCODE_LOG`
 (OpenCode's own log, for the idle watchdog), `$CRPG_OC_START_GAP` (worker
 start spacing, default 4 s) and `$CRPG_OC_LOCK_WAIT` (locked retry wait,
-default 5 s).
+default 5 s). The executable is `$CRPG_OPENCODE`, else the OpenCode 2.x
+path (`%APPDATA%\npm\node_modules\@opencode\cli\bin\opencode.exe`), else
+the 1.x path (`...\opencode-ai\bin\opencode.exe`), else `opencode` on
+`PATH`. The major version is probed once per process with `<exe>
+--version`; 2.x runs as `run --standalone --agent crpg-<role> -m
+<model>[#<variant>] --format json <prompt>` with no `--dir` (the slot is
+the process cwd plus `PWD`), while 1.x keeps `run --agent crpg-<role>
+-m <model> [--variant V] --dir <slot> --format json <prompt>`. The stall
+retry uses variant `low` in whichever form applies, and `--dry-run`
+prints the command for the detected version.
 
 `wave` caps concurrency per the manager's routing rules
 (`docs/agents/MODELS.md` §4): at most one run per free Zen model
 (`opencode/…-free`), at most three free Zen runs in total, and at most
 three runs per model of any other kind. Members over a cap wait for a
-free place in spec order; they are not refused. Two Zen IDs that moved
-to the Go subscription are refused (exit 2 `usage`, naming the Go ID):
-`opencode/cat-jam-free` → `opencode-go/cat-jam-free` and
-`opencode/longcat-2.5-preview-free` →
+free place in spec order; they are not refused. The Zen LongCat ID that
+moved to the Go subscription is refused (exit 2 `usage`, naming the Go
+ID): `opencode/longcat-2.5-preview-free` →
 `opencode-go/longcat-2.5-preview-free` (one constant, `RENAMED_MODELS`).
+Both Cat Jam IDs are gone after the OpenCode 2.x upgrade and are refused
+(exit 2 `usage`) as removed: `opencode/cat-jam-free` and
+`opencode-go/cat-jam-free` suggest scouting with
+`opencode-go/deepseek-v4.1-flash` instead (one constant,
+`REMOVED_MODELS`).
 
 Briefs: `run` takes `--brief`, else `<repo>/.agents/briefs/<ID>.md`
 when filed, else generates one via `brief.py`; `wave` resolves each
@@ -64,7 +77,10 @@ Exit-2 causes: `fetch`, `no-brief`, `no-verify`, `no-slot`, `slot-busy`,
 `locked` never count against the model; `no-edit`, `timeout` and `hang` do.
 
 Tests live in `tools/tests/test_oc.py` and run against
-`tools/tests/fake_opencode.py` (every failure mode above) and
+`tools/tests/fake_opencode.py` (every failure mode above, both OpenCode
+generations: `$FAKE_OC_VERSION` picks the `--version` answer, default
+2.x; in 2.x mode the fake fails on `--dir`/`--variant` like the real
+2.x) and
 `tools/tests/fixtures/oc/fake_verify.py` (a stand-in for A0-4's verifier).
 They use temporary git repositories and worktrees only — never the real
 `opencode`, never the network — and finish in under 60 seconds:
@@ -84,3 +100,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 · Wrote this usage guide for the new `tools/agents` scripts so the manager can route OpenCode workers without reading `oc.py`; it ends with this signed entry per the root `AGENTS.md` rule.
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 attempt 3 · Documented the review fixes above (wave model caps, refused Zen IDs, brief precedence with placeholder and same-crate checks) so the guide matches `oc.py`'s routing behaviour.
+- 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor + A0-3 attempt 4 · Documented OpenCode 2.x support (version probe, `--standalone` with model `#variant` and no `--dir`, kept 1.x form, removed Cat Jam IDs, top-level error events, versioned fake) so the guide matches `oc.py`'s dual-generation behaviour.

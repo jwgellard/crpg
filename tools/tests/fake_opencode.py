@@ -4,6 +4,12 @@
 Reads its behaviour from environment variables so each test can stage one
 failure mode without the network or the real OpenCode:
 
+  FAKE_OC_VERSION  text printed for `--version` (default 2.x,
+                     `opencode v2.0.31`); set to a 1.x string such as
+                     `opencode v1.18.35` to emulate OpenCode 1.x. In 2.x
+                     mode the fake fails like the real 2.x on `--dir` or
+                     `--variant` (usage text, exit 1) and expects
+                     `--standalone`.
   FAKE_OC_LOG      JSON-lines file recording every invocation (argv, cwd, PWD).
   FAKE_OC_MODE     comma-separated behaviours, applied in order:
                      ok            normal run: step_start, step_finish
@@ -28,6 +34,12 @@ failure mode without the network or the real OpenCode:
                      quota         print "AI_APICallError: Go usage limit exceeded".
                      sig-model     print "model not found: <model>".
                      headers       print "headers timed out".
+                     no-route      emit a top-level error event
+                                   (provider.no-route, "Model unavailable")
+                                   with exit 1 and no steps, like 2.x.
+                     error-quota   emit a top-level error event whose message
+                                   carries a quota marker ("Go usage limit
+                                   exceeded"), exit 1, no steps.
                      rc1           exit 1 with no output at all.
                      spawn-child   start a heartbeating child, then sleep.
                      error-log     append a matching level=ERROR line to
@@ -159,13 +171,53 @@ def spawn_child() -> None:
     time.sleep(60)
 
 
+def fake_major() -> int:
+    """Major version this fake emulates, from $FAKE_OC_VERSION (default 2)."""
+    import re
+
+    text = os.environ.get("FAKE_OC_VERSION", "opencode v2.0.31")
+    match = re.search(r"(\d+)\.", text)
+    try:
+        return int(match.group(1)) if match else 2
+    except ValueError:
+        return 2
+
+
 def main() -> int:
+    argv = sys.argv[1:]
+
+    # Answer the version probe before any logging: version checks must not
+    # appear in FAKE_OC_LOG, FAKE_OC_STARTS or FAKE_OC_CONC.
+    if "--version" in argv:
+        sys.stdout.write(os.environ.get("FAKE_OC_VERSION", "opencode v2.0.31") + "\n")
+        sys.stdout.flush()
+        return 0
+
+    # OpenCode 2.x has no --dir and no --variant: fail like the real one so
+    # a dispatcher still building the 1.x argv cannot pass unnoticed.
+    if fake_major() >= 2 and ("--dir" in argv or "--variant" in argv):
+        sys.stdout.write(
+            "error: unknown flag --dir\n"
+            "Usage: opencode run [--standalone] --agent <agent> "
+            "-m <model[#variant]> --format json <prompt>\n"
+        )
+        sys.stdout.flush()
+        # Still record the bad call for debugging, then fail.
+        log = os.environ.get("FAKE_OC_LOG", "")
+        if log:
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "argv": argv,
+                    "cwd": os.getcwd(),
+                    "pwd": os.environ.get("PWD", ""),
+                }) + "\n")
+        return 1
+
     starts = os.environ.get("FAKE_OC_STARTS", "")
     if starts:
         with open(starts, "a", encoding="utf-8") as handle:
             handle.write(f"{time.time()}\n")
 
-    argv = sys.argv[1:]
     log = os.environ.get("FAKE_OC_LOG", "")
     if log:
         with open(log, "a", encoding="utf-8") as handle:
@@ -277,6 +329,18 @@ def main() -> int:
         sys.stdout.flush()
         return 1
 
+    if "no-route" in mode:
+        emit({"type": "error", "timestamp": 1,
+              "error": {"type": "provider.no-route",
+                        "message": "Model unavailable: opencode-go/cat-jam-free"}})
+        return 1
+
+    if "error-quota" in mode:
+        emit({"type": "error", "timestamp": 1,
+              "error": {"type": "provider.no-route",
+                        "message": "AI_APICallError: Go usage limit exceeded"}})
+        return 1
+
     if "rc1" in mode:
         return 1
 
@@ -296,7 +360,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    conc = os.environ.get("FAKE_OC_CONC", "")
+    # The --version probe is not a worker run: it must not appear in the
+    # concurrency log either.
+    conc = "" if "--version" in sys.argv else os.environ.get("FAKE_OC_CONC", "")
     if conc:
         with open(conc, "a", encoding="utf-8") as handle:
             handle.write(f"start {time.time()}\n")
