@@ -251,6 +251,14 @@ class PlantedFaults(VerifyCase):
         self.assert_only_failed(self.verify(), "todo")
 
 
+class Docsig(VerifyCase):
+    def test_deleted_md_file_needs_no_signature(self) -> None:
+        self.clean_change()
+        (self.repo / "docs/notes.md").unlink()
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
 class Grants(VerifyCase):
     def test_protected_grant_lifts_the_check(self) -> None:
         self.write_brief(
@@ -272,6 +280,42 @@ class Grants(VerifyCase):
 
 
 class BriefParsing(VerifyCase):
+    def test_a_bullet_owns_every_backticked_path(self) -> None:
+        # ``- `a`, `b`, and `c` `` must own all three paths, not just the first.
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `tools/tests/test_oc.py`, `tools/tests/fake_opencode.py`, "
+            "and `tools/tests/fixtures/oc/**`\n"
+        )
+        self.add("tools/tests/test_oc.py", "# a\n")
+        self.add("tools/tests/fake_opencode.py", "# b\n")
+        self.add("tools/tests/fixtures/oc/case.txt", "c\n")
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_bullet_with_two_backticked_paths_owns_both(self) -> None:
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `tools/tests/test_verify_task.py` and "
+            "`tools/tests/fixtures/verify/**`\n"
+        )
+        self.add("tools/tests/test_verify_task.py", "# a\n")
+        self.add("tools/tests/fixtures/verify/case.txt", "c\n")
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_an_unbackticked_bullet_keeps_the_first_token_rule(self) -> None:
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- tasks/T024.md: the completion record section only\n"
+        )
+        self.add(
+            "tasks/T024.md",
+            "# T024\n\n- 2026-10-16 (UTC) · test + x · signed now\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_colon_text_after_an_owned_path_is_ignored(self) -> None:
         self.write_brief(
             "# Brief\n## Files you own\n"
@@ -415,6 +459,24 @@ class OutputCap(VerifyCase):
         self.assertGreater(len(full.stdout.splitlines()), 40)
         self.assertIn("gate-line-50", full.stdout)
 
+    def test_per_check_cap_binds_before_the_total_cap(self) -> None:
+        # A single failed check with 30 lines proves the 12-line per-check cap;
+        # with one check the total-cap path cannot be what truncates it.
+        self.clean_change()
+        gate = self.tmp / "gate30.py"
+        gate.write_text(
+            "for i in range(1, 31):\n    print(f'gate-line-{i}')\nraise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+        env = {"CRPG_PREFLIGHT": f'"{sys.executable}" "{gate}"'}
+        result = self.verify(env_extra=env)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        lines = result.stdout.splitlines()
+        self.assertLessEqual(len(lines), 40)
+        self.assertIn("gate-line-12", result.stdout)
+        self.assertNotIn("gate-line-13", result.stdout)
+        self.assertNotIn("gate-line-30", result.stdout)
+
 
 class ErrorCases(VerifyCase):
     def assert_exit_two(self, result: subprocess.CompletedProcess) -> None:
@@ -446,6 +508,16 @@ class ErrorCases(VerifyCase):
     def test_lint_that_cannot_start(self) -> None:
         self.clean_change()
         env = {"CRPG_LINTS": "definitely-not-a-real-command-xyz"}
+        self.assert_exit_two(self.verify(env_extra=env))
+
+    def test_malformed_preflight_override(self) -> None:
+        self.clean_change()
+        env = {"CRPG_PREFLIGHT": '"unbalanced'}
+        self.assert_exit_two(self.verify(env_extra=env))
+
+    def test_malformed_lints_override(self) -> None:
+        self.clean_change()
+        env = {"CRPG_LINTS": '"unbalanced'}
         self.assert_exit_two(self.verify(env_extra=env))
 
 

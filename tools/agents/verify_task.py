@@ -112,8 +112,18 @@ def any_glob(patterns: list[str], path: str) -> bool:
 # brief
 
 
+def _looks_like_path(token: str) -> bool:
+    """A backticked token that reads as a path or glob, not prose or code."""
+    return bool(token) and any(char in token for char in "/*?.")
+
+
 def parse_brief(text: str) -> tuple[list[str], list[str], list[str]]:
-    """Return (owned, protected grants, goldens grants) from a brief."""
+    """Return (owned, protected grants, goldens grants) from a brief.
+
+    A ``## Files you own`` bullet owns every backticked token in it that looks
+    like a path or glob, so a bullet may list several paths. A bullet with no
+    backticks keeps the first-token rule, cut at the first ``: `` or end.
+    """
     owned: list[str] = []
     protected: list[str] = []
     goldens: list[str] = []
@@ -135,12 +145,22 @@ def parse_brief(text: str) -> tuple[list[str], list[str], list[str]]:
         if not content:
             continue
         if section == "own":
-            token = content.split()[0].replace("`", "")
-            cut = re.search(r":(?=\s|$)", token)
-            if cut:
-                token = token[: cut.start()]
-            if token:
-                owned.append(token)
+            spans = re.findall(r"`([^`]*)`", content)
+            if spans:
+                for span in spans:
+                    token = span.strip()
+                    cut = re.search(r":(?=\s|$)", token)
+                    if cut:
+                        token = token[: cut.start()]
+                    if token and not any(ch.isspace() for ch in token) and _looks_like_path(token):
+                        owned.append(token)
+            else:
+                token = content.split()[0].replace("`", "")
+                cut = re.search(r":(?=\s|$)", token)
+                if cut:
+                    token = token[: cut.start()]
+                if token:
+                    owned.append(token)
         else:
             grant = re.match(r"(protected|goldens)\s*:\s*(\S+)", content)
             if grant:
@@ -367,6 +387,14 @@ def _fail(detail: str, output: list[str] | None = None) -> dict:
     return _result("failed", detail, output)
 
 
+def _split_override(value: str) -> list[str]:
+    """Split a CRPG_PREFLIGHT/CRPG_LINTS override; a bad quote is exit 2."""
+    try:
+        return shlex.split(value)
+    except ValueError as error:
+        raise InfraError(f"cannot parse command {value!r}: {error}") from error
+
+
 def _run(cmd: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -405,7 +433,7 @@ def check_gates(ctx: Context) -> dict:
     override = os.environ.get("CRPG_PREFLIGHT", "").strip()
     crates = owned_crates(ctx.owned, ctx.slot)
     if override:
-        commands = [shlex.split(override)]
+        commands = [_split_override(override)]
         labels = [override]
     elif not crates:
         commands = [
@@ -548,7 +576,7 @@ def check_unsafe(ctx: Context) -> dict:
 def check_lints(ctx: Context) -> dict:
     override = os.environ.get("CRPG_LINTS", "").strip()
     if override:
-        commands = [shlex.split(override)]
+        commands = [_split_override(override)]
         labels = [override]
     else:
         commands = [
@@ -570,7 +598,7 @@ def check_docsig(ctx: Context) -> dict:
     signature = re.compile(r"^- " + re.escape(today) + r" \(UTC\) · ")
     offenders: list[str] = []
     for path in sorted(ctx.files):
-        if not path.endswith(".md"):
+        if not path.endswith(".md") or ctx.files[path]["status"] == "D":
             continue
         if path in ("BRIEF.md",) or path.startswith(".claude/agents/"):
             continue
