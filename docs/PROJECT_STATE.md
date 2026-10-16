@@ -3,9 +3,21 @@
 Updated: 2026-10-16
 
 ## Handover
-- In flight: PR #29 (agent-team plan adopted as D28, `docs/AGENT_TEAM_PLAN.md`) and PR #31 (T096, documentation-only PRs skip the Rust gates), awaiting the user's merge; S002 (`rustls` =0.23.46) merged in PR #30. `claude/blissful-rubin-59repd` holds unmerged PR #28 bookkeeping and the T024 contract draft.
-- Next: the manager's first session runs setup wave A0 (`docs/AGENT_TEAM_PLAN.md` §11), opens a PR for the `claude/blissful-rubin-59repd` commits, and routes T097 (`HistoryWorld` copies the whole wrapper per mutation; contract needed). T024 follows its contract approval.
-- Blocked: nothing.
+- In flight: PR #33 (setup wave A0, the session's PR: A0-1/A0-2 agent definitions, routing rules, MODELS.md §4.1 field record, manager effort and handover rules; A0-3, A0-4 and A0-6 join it once reviewed) and PR #34 (PR #28 bookkeeping plus the T024 contract draft, still awaiting approval). T098 (Windows QUIC case-13 flake) merged as a task file in PR #32. Workers still running at handover are listed below; each writes its log under `.agents/runs/<ID>/`.
+- Next: collect the running results below; review, then cherry-pick A0-3, A0-4 and A0-6 onto `setup/A0-config`; dispatch A0-6b (brief: `../crpg-slots/manager/BRIEF-A0-6b.md`) and wire the hooks into `.claude/settings.json`; check the research reports' citations, then fold them into MODELS.md and the plan; run the T097 measurement (brief in `../crpg-slots/scratch-1`), then send the T097 contract to the `architect`; check the four Claude agents spawn (A0-1); A0-5, A0-7, A0-8 and T098 after that. Until `oc.py` lands, dispatch with `python ../crpg-slots/manager/ocrun.py SLOT AGENT MODEL LOG TIMEOUT [PROMPT]`.
+- Blocked: OpenCode Go hit its shared 5-hour cap at 10:17 UTC on 2026-10-16 and should clear about 12:00 UTC. Use free O1 models until then (MODELS.md §4).
+
+Running at handover (2026-10-16; worktrees in `C:\crpg\dev\crpg-slots`):
+
+| ID | Work | Model | Worktree · branch | Log |
+|---|---|---|---|---|
+| A0-3 | `oc.py` | `opencode/muse-spark-1.3-contributor-free` | `slot-1` · `setup/A0-3-oc-py` | `.agents/runs/A0-3/1-opencode_muse-spark-1.3-contributor-free.jsonl` |
+| A0-4 | attempt 2, review fixes | `opencode/deepseek-v4.1-flash-free` | `slot-2` · `setup/A0-4-verify-task` | `.agents/runs/A0-4/2-…jsonl` |
+| A0-6 | attempt 2, review fixes | `opencode/deepseek-v4.1-flash-free` | `alt-2` · `setup/A0-6-hooks` | `.agents/runs/A0-6/2-…jsonl` |
+| R1–R4 | benchmark, model-source and token-saving research | DeepSeek Free, GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r1,r2,R3,R4}` | `.agents/runs/R1`…`R4` |
+| V1 | citation check of R5 and R7 | `opencode/longcat-2.5-preview-free` | `research/V1` | `.agents/runs/V1` |
+
+Done and unpicked: R5, R6 and R7 reports (`research/R5/R5.md` and so on); V2 checked R6 (12 confirmed, 1 paraphrase, 1 not found: the merge-queue-on-personal-accounts claim, still to verify).
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -689,3 +701,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-06 (UTC) · opencode/muse-spark + status-docs housekeeping · Moved Updated/Phase/branch-state past the stale `f3d1560` pin to the merged PR #23–#28 frontier (`16f58c8`) with per-record gate honesty; per-task detail stays in `tasks/BACKLOG.md`, Done history retained as history. No code, dependency, or gate change.
 - 2026-10-16 (UTC) · claude-code + D28 handover · Added the handover block the adopted agent-team plan reads first, corrected the 2026-10-06 update's "Windows run pending" to the green PR #28 Windows run recorded on `claude/blissful-rubin-59repd`, and received the merged-task log moved out of `AGENTS.md` (D28f).
 - 2026-10-16 (UTC) · claude-code + handover after S002 · Moved the handover past the S002 merge, added PR #31 (T096) and T097 for the manager, and cleared the deny blocker.
+- 2026-10-16 (UTC) · claude-code + manager handover · Rewrote the handover for the next manager session, naming every run still going with its worktree, model and log, plus where the interim runner and the A0-6b brief live, because the first manager session's context passed the new 200k limit.
