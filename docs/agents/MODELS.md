@@ -65,8 +65,8 @@ window and 128K maximum output. Thinking is always on; effort is the lever.
 | Model | ID | Input / output / cache read | Default effort | Role in this plan |
 |---|---|---|---|---|
 | Fable 5.1 | `claude-fable-5-1` | $10 / $50 / $0.25 | high | Only on your request: a design you have lost confidence in. Bills to usage credits on some plans |
-| Opus 5.5 | `claude-opus-5-5` | $4 / $20 / $0.20 | **medium** — set it | Manager; `architect` for A and first-of-a-kind or S-set C packages; last rung of escalation |
-| Sonnet 5.5 | `claude-sonnet-5-5` | $2 / $10 / $0.20 | high | Default Claude subagent: `implementer`, `reviewer`, pattern-following contracts |
+| Opus 5.5 | `claude-opus-5-5` | $4 / $20 / $0.20 | **medium** — set it | Manager; `architect` for A and C packages only. On Pro (D28b) it is never an implementer or a review rung |
+| Sonnet 5.5 | `claude-sonnet-5-5` | $2 / $10 / $0.20 | high | Default Claude subagent: `implementer`, `reviewer`, pattern-following contracts; the top implementer rung on Pro |
 | Haiku 5.5 | `claude-haiku-5-5` | $0.10 / $0.50 / $0.01 up to 100K prompt; $0.50 / $2.50 above | **medium** — set it | `bookkeeper`; mechanical Claude-side edits |
 
 Notes for routing:
@@ -271,3 +271,4 @@ whenever Zen or Go changes its model list:
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Recorded the same-day access test and three-task bake-off of 26 OpenCode models with the Claude lineup, limits and privacy terms, and derived the routing table and tiers from them, noting where the tasks were too easy to rank and public composites fill in.
+- 2026-10-16 (UTC) · claude-code + D28b · Narrowed the Opus 5.5 and Sonnet 5.5 roles to the Pro routing the user chose: Opus for A and C packages only, Sonnet as the top implementer rung.

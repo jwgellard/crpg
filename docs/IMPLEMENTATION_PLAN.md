@@ -80,6 +80,9 @@ manager-and-workers team that replaces this prompt with generated briefs
 package by its §4. It is pending the user's D28 answers; until they adopt it,
 §§1.3–1.4 stand. §1.5 and the D27 answers are unchanged either way.
 
+*Update 2026-10-16:* adopted by D28a ([tasks/DECISIONS-2026-10-16.md](../tasks/DECISIONS-2026-10-16.md)).
+§§1.3–1.4 are replaced by `docs/AGENT_TEAM_PLAN.md` §§4–6; the rest of §1 stands.
+
 ### 1.4 Concurrency
 
 Following workflow plan §9, up to **two implementers and one spec/architect
@@ -393,3 +396,4 @@ estimates slip.
 - 2026-10-01 (UTC) · claude-code + implementation plan · Laid out the delegated path from the post-PR #21 frontier to Phase 12, with work-package kinds, waves, concurrency limits and the human gates the workflow plan keeps human; merge delegation is a proposal pending the user's decision, not an approval.
 - 2026-10-04 (UTC) · claude-code + D27 recorded · Appended the user's D27 answers under §2 so delegated agents see that merge delegation was declined and which dependencies are pre-approved.
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Appended a §1.3 pointer to the proposed `docs/AGENT_TEAM_PLAN.md`, so delegated agents see which sections it would replace and that nothing changes until the user answers D28.
+- 2026-10-16 (UTC) · claude-code + D28 adopted · Appended the adoption under §1.3 so delegated agents follow the agent-team plan's routing and dispatch instead of §§1.3–1.4.

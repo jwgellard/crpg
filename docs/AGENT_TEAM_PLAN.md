@@ -1,8 +1,9 @@
 # Agent team plan
 
-Status: **proposed 2026-10-16 (UTC), pending the user's D28 decisions (§13).**
-Once adopted, this is the plan of record for *who does the work and how it is
-dispatched*. It changes no non-negotiable in `AGENTS.md`, no human gate in
+Status: **adopted 2026-10-16 (UTC) by the user's D28 answers
+(`tasks/DECISIONS-2026-10-16.md`).** This is the plan of record for *who does
+the work and how it is dispatched*. The Claude side runs on Pro (D28b), so
+Claude workers stop at Sonnet 5.5 and Opus 5.5 works only on A and C packages. It changes no non-negotiable in `AGENTS.md`, no human gate in
 `docs/IMPLEMENTATION_PLAN.md` §1.5, no D27 answer (agents still open PRs and
 never merge), and no task order in `docs/IMPLEMENTATION_PLAN.md` §§3–4. Where
 it disagrees with `docs/AGENTIC_WORKFLOW_PLAN.md` §3 ("no reviewer agent"), §4
@@ -85,7 +86,7 @@ The levers, largest first:
 4. **Lean context for everyone.** Briefs instead of task files; short
    `AGENTS.md` files; explicit read lists.
 5. **Route Claude work down.** Sonnet 5.5 is the default Claude subagent,
-   Haiku 5.5 takes mechanical Claude-side work, Opus 5.5 takes A, C and S work,
+   Haiku 5.5 takes mechanical Claude-side work, Opus 5.5 takes A and C work,
    and Fable 5.1 is used only when you ask for it.
 6. **First of a kind up, the rest down.** Pay for the strong model once per
    pattern, then brief cheaper workers with that example.
@@ -98,11 +99,11 @@ The levers, largest first:
 |---|---|---|---|
 | **You** | — | Vision, D-batch answers, every H gate in `docs/IMPLEMENTATION_PLAN.md` §1.5, dependency and golden approvals, merges | Routine code review |
 | **Manager** | Main Claude Code session, Opus 5.5 (§9 effort) | Wave plans, briefs, routing, reading summaries, judgment review, PRs, bookkeeping approval, gate reports | Implementation beyond a few lines; reading worker transcripts; merging; re-checking script results |
-| **Architect** | Claude subagent `architect`, Opus 5.5 | A packages (ADR drafts) and C packages (exact contracts) that are first of a kind or in the S-set; hard debugging the tools have narrowed down | Code in `crates/`; approving its own contract |
+| **Architect** | Claude subagent `architect`, Opus 5.5 | A packages (ADR drafts) and C packages (exact contracts) that are first of a kind or in the S-set; hard debugging only when you ask (D28b) | Code in `crates/`; approving its own contract |
 | **Contract drafter** | Claude subagent `implementer` (Sonnet 5.5) | C packages that follow an existing contract's pattern, from an Opus-written outline | First-of-a-kind interfaces |
 | **Implementer, OpenCode** | `oc.py` with an O1 or O2 model (`docs/agents/MODELS.md`) | I packages outside the S-set, tests from a written contract | S-set work; anything the brief does not own |
-| **Implementer, Claude** | Claude subagent `implementer`, Sonnet 5.5 (Opus 5.5 by escalation) | S-set I packages, escalations from OpenCode, tasks that need wide repository judgment | Changing a contract it was not briefed to change |
-| **Reviewer** | First pass: OpenCode O1 reviewer. Core and S-set: Claude subagent `reviewer`, Sonnet 5.5; Opus 5.5 for contracts | A verdict (`ready for PR`, `fix`, `reject`) with findings by severity, correctness and the brief only | Editing the branch; style findings |
+| **Implementer, Claude** | Claude subagent `implementer`, Sonnet 5.5 (no Opus rung on Pro, D28b) | S-set I packages, escalations from OpenCode, tasks that need wide repository judgment | Changing a contract it was not briefed to change |
+| **Reviewer** | First pass: OpenCode O1 reviewer. Core, S-set and contracts: Claude subagent `reviewer`, Sonnet 5.5 | A verdict (`ready for PR`, `fix`, `reject`) with findings by severity, correctness and the brief only | Editing the branch; style findings |
 | **Test writer** ("two keys") | OpenCode O1 model from a different family than the implementer | Extra tests written from the contract alone, before reading the implementation, for core and S-set tasks | Reading the implementation first |
 | **Scout** | Built-in `Explore` subagent, or OpenCode `crpg-scout` on an O2/O3 model | Answers to "where is", "what calls", "summarize this crate", in ≤20 lines | Edits |
 | **Bookkeeper** | OpenCode `crpg-grunt` on an O2/O3 model, or Claude `bookkeeper` on Haiku 5.5 | `tasks/BACKLOG.md` rows, `docs/PROJECT_STATE.md`, throughput lines, agent-log entries, commit and PR text, from facts the manager supplies | Deciding what a status is |
@@ -153,11 +154,11 @@ packages.
 | A — architecture | `architect` (Opus 5.5, high) | Fable 5.1 only on your request |
 | C — contract, first of a kind or S-set | `architect` (Opus 5.5, high) | — |
 | C — contract following a pattern | `implementer` (Sonnet 5.5) from an Opus outline | `architect` |
-| I — outside the S-set | OpenCode O1 implementer | Next O1 model of another family, then Claude `implementer` (Sonnet 5.5), then Opus 5.5 |
-| I — S-set | Claude `implementer` (Sonnet 5.5, high) | Opus 5.5 |
+| I — outside the S-set | OpenCode O1 implementer | Next O1 model of another family, then Claude `implementer` (Sonnet 5.5), then the manager splits it or asks you |
+| I — S-set | Claude `implementer` (Sonnet 5.5, high) | The manager splits it or asks you |
 | Tests from a contract | OpenCode O1 test writer | Claude `implementer` |
 | Review, first pass | OpenCode O1 reviewer | — |
-| Review, core or S-set | Claude `reviewer` (Sonnet 5.5) | Opus 5.5 for contract reviews |
+| Review, core, S-set or contract | Claude `reviewer` (Sonnet 5.5) | You |
 | G — content and data | OpenCode O2 with the `crpgc validate --json` loop | O1 |
 | Bookkeeping, commit and PR text | OpenCode O2/O3 `crpg-grunt` | Claude `bookkeeper` (Haiku 5.5) |
 | Scouting | `Explore` or OpenCode `crpg-scout` | — |
@@ -170,8 +171,9 @@ The O1/O2/O3 membership and the concrete model per row are in
 1. A result that fails `verify_task.py` or review goes back once to the same
    worker with the failing output and the manager's notes.
 2. A second failure moves it up a rung: O3 to O2, O2 to O1, O1 to an O1 model
-   of another family, then to Claude Sonnet 5.5, then Opus 5.5.
-3. If Opus 5.5 fails twice, the manager splits or rewrites the package, or
+   of another family, then to Claude Sonnet 5.5, the top implementer rung on
+   Pro (D28b).
+3. If Sonnet 5.5 fails twice, the manager splits or rewrites the package, or
    asks you.
 4. A worker that reports the brief wrong or ambiguous has not failed. The
    question goes to the contract, not to a stronger model.
@@ -408,6 +410,11 @@ questions for you.
 - **Manager effort.** `high` for wave sessions, `xhigh` for planning and gate
   sessions. Set it at session start and keep it; never switch the manager's
   model mid-session, since that rebuilds the prompt cache.
+- **On Pro (D28b) the manager is the largest Claude cost.** Start a fresh
+  session per wave, keep wave sessions at `high`, send even small edits to
+  the bookkeeper or an OpenCode worker, and never run two Claude workers at
+  once when an OpenCode worker could take one of them. Opus 5.5, Sonnet 5.5
+  and Haiku 5.5 all draw on the same five-hour and weekly limits.
 - **Effort per agent.** In the agent files: `architect` high, `implementer`
   high, `reviewer` high, `bookkeeper` low. A spawn may override.
 - **Turn caps.** `maxTurns` on Claude workers; `--timeout` and the agent's
@@ -459,7 +466,7 @@ decision first.
 | A0-5 | `tools/agents/brief.py` and `recall.py` | OpenCode O1, following A0-3's style | `brief.py T023b` yields the contract sections only and is under a quarter of the file |
 | A0-6 | Hooks: `SubagentStop` runs `verify_task.py` for Claude implementers; `PreToolUse` protects the files in §7.1; `SessionStart` (compact) re-injects the handover | Manager | Each hook blocks its planted case |
 | A0-7 | Promote the 2026-10-16 bake-off harness (`docs/agents/bakeoff-2026-10-16/`) to `tools/agents/bakeoff/`, and add harder fixtures cut from this repository's history: a past task at its pre-implementation commit with its real tests hidden, and the code before a real fix (T019, T023d) as a review case | OpenCode O1 for the harness; the manager picks the fixtures | One command re-scores every configured model, and the new fixtures separate models the 2026-10-16 ones could not |
-| A0-8 **H** | Context diet: move the root `AGENTS.md` note to `PROJECT_STATE.md` (D28-f); trim crate `AGENTS.md` files, crate by crate | Manager drafts, you approve each | No information lost: each moved paragraph has a new home |
+| A0-8 | Context diet: the root `AGENTS.md` note moved to `PROJECT_STATE.md` on 2026-10-16 (D28f, done); next, trim crate `AGENTS.md` files, crate by crate | Manager drafts, you approve each crate | No information lost: each moved paragraph has a new home |
 | A0-9 | Create slots 1 and 2 (disk freed 2026-10-16, D28-c) | Manager | `oc.py` finds both slots and each builds once |
 
 ## 12. Kickoff prompt for a manager session
@@ -490,7 +497,11 @@ This session: <wave N of milestone M | gate review for M>.
 9. Before stopping, update the handover in docs/PROJECT_STATE.md.
 ```
 
-## 13. Decisions for you (proposed D28)
+## 13. Decisions for you (D28)
+
+Answered 2026-10-16: a, c, d, e, f, g and h as recommended, b = Pro, plus D28i
+(the `rustls` pin bump, S002). The record is `tasks/DECISIONS-2026-10-16.md`;
+the table below is kept as asked.
 
 | # | Decision | Recommendation |
 |---|---|---|
@@ -509,3 +520,4 @@ This session: <wave N of milestone M | gate review for M>.
 
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Proposed a manager-and-workers delegation plan adapted from the two plans in `extras/`, routing implementation volume to OpenCode workers behind a verifying script and Claude subagents to A, C, S and core review, grounded in a same-day access test and bake-off; it is pending the user's D28 answers and changes no gate, contract or task order.
 - 2026-10-16 (UTC) · claude-code + disk cleanup · Recorded the same-day cleanup the user asked for (merged worktree, merged branches, stale build caches) and moved §5.3 from one build slot to two, since 43 GB is now free.
+- 2026-10-16 (UTC) · claude-code + D28 adopted · Marked the plan adopted with the user's D28 answers and applied D28b (Pro): Claude workers stop at Sonnet 5.5, Opus 5.5 is kept to A and C packages, escalations past Sonnet go to the manager, and §9 adds the Pro cost rules.
