@@ -278,12 +278,12 @@ thirty reviews.
 
 | Work | First choice | Second, another lab | When Go limits run out |
 |---|---|---|---|
-| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode/cat-jam-free`, then `opencode/deepseek-v4.1-flash-free` |
+| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode-go/cat-jam-free`, then `opencode/deepseek-v4.1-flash-free` |
 | I outside the S-set, harder or after one failure | `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | Claude `implementer` |
 | Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | `opencode-go/deepseek-v4.1-flash` |
 | First-pass review | `opencode-go/gemini-4-argon-contributor` | `opencode-go/kimi-k3`, or `opencode-go/glm-5.3` | `opencode-go/deepseek-v4-pro` |
-| Scouting | `opencode/cat-jam-free` | `opencode-go/deepseek-v4.1-flash` | Built-in `Explore` |
-| Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | `opencode/cat-jam-free`, then Claude `bookkeeper` |
+| Scouting | `opencode-go/cat-jam-free` | `opencode-go/deepseek-v4.1-flash` | Built-in `Explore` |
+| Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | `opencode-go/cat-jam-free`, then Claude `bookkeeper` |
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
 | S-set, A, C, core review | Claude only (`docs/AGENT_TEAM_PLAN.md` §§4.2–4.3) | — | — |
 
@@ -351,6 +351,20 @@ narrowing routing to the best.
   failing one kind of package, that kind goes back to the manager to split,
   not up to Opus.
 
+**Record, 2026-10-16 (hand-run through `ocrun.py`, before `oc.py record`).**
+Infra exits (rate limit, quota) are listed but do not count.
+
+| Model | Role | Runs and outcome |
+|---|---|---|
+| `opencode-go/deepseek-v4.1-flash` | implement | A0-4 attempt 2 and A0-6 attempt 2: both verified and reviewed "ready for PR" first time ($0.026, $0.012) |
+| `opencode-go/deepseek-v4.1-flash` | research | R4 and R10-deep written; **V8 failed**: announced the results file and stopped without writing it (counts) |
+| `opencode-go/muse-spark-1.3-contributor` | implement | A0-3: verified (0/9 checks failed), 32 tests, about twice the size budget; live smoke test still due ($0.057) |
+| `opencode-go/muse-spark-1.3-contributor` | research | V3 and V4 citation checks complete; R14-deep written (30+ sources, $0.071) |
+| `opencode-go/gemini-4-argon-contributor` | review | A0-4 and A0-6 reviews: precise, item by item, $0.39 each |
+| `opencode/cat-jam-free` → use `opencode-go/cat-jam-free` | research | Six first-pass reports: **68 of 70 checkable citations held** (R9 11/11, R11 20/20, R13 11/11, R15 12/12, R8 6/7, R12 8/9). Deep passes R8, R12, R13 written, R9-deep on the Go route; checks pending. Fast: 30–80 s a report |
+| `opencode/cat-jam-free` | implement | A0-3 earlier: 43-minute hang (counts). T097-m: rate limit (infra) |
+| `opencode/longcat-2.5-preview-free` → use the Go ID | research, implement | R10 first pass written; A0-6, R14, R4, V3–V6 lost to the free-tier rate limit (infra) |
+
 ## 5. Bake-off method
 
 Run 2026-10-16. The harness, fixtures and scored results are in
@@ -397,3 +411,5 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user preference on LongCat and Cat Jam · Recorded that OpenCode lists both as unlimited for Go subscribers, the user's wish to use them heavily once proven, the rule that promotes them, and the unbenchmarked models now on the Go page.
 - 2026-10-16 (UTC) · claude-code + rate-limit finding · Corrected item 11 the same afternoon: LongCat and Cat Jam also refuse under burst load (about eight and five concurrent runs), so they get a cap of three runs per model.
 - 2026-10-16 (UTC) · claude-code + user correction on model routes · Replaced the burst-limit finding with its real cause: the refused runs used the free Zen IDs, which share the free tier's limit, while the `opencode-go/` IDs of the same models stayed available.
+- 2026-10-16 (UTC) · claude-code + Go-route fix · Switched the routing table's Cat Jam and LongCat entries to their `opencode-go/` IDs, so the table no longer sends work to the rate-limited free route.
+- 2026-10-16 (UTC) · claude-code + field record · Recorded the day's hand-run results per model and role, including Cat Jam's 68 of 70 held citations and DeepSeek's one stop-without-writing failure, so the next session applies §4.1 from evidence.
