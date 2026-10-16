@@ -1,12 +1,30 @@
 # Project state
 
-Updated: 2026-09-30
+Updated: 2026-10-16
+
+## Handover
+- In flight: PR #29 (agent-team plan adopted as D28, `docs/AGENT_TEAM_PLAN.md`) and S002 (`rustls` =0.23.46, restores `cargo deny`), both awaiting the user's merge; `claude/blissful-rubin-59repd` holds unmerged PR #28 bookkeeping and the T024 contract draft.
+- Next: the manager's first session runs setup wave A0 (`docs/AGENT_TEAM_PLAN.md` §11), then T024 once its contract is approved.
+- Blocked: every PR's `deny` check fails on RUSTSEC-2026-0346 to -0349 until S002 merges.
 
 ## Phase
-Phase 4 — server and networking (T016–T021 landed; T022 host needs specification inputs; T027a/T028/T029a/T030–T032 specified and implementable).
+Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
+T029b bindings, T038/T039 persistence, and T058 headless edit API landed;
+next: T024 snapshots and the reconnect/movement/interest queue per
+`docs/IMPLEMENTATION_PLAN.md`).
 
 ## Branch state
-All merged work is on `master` through `f3d1560`. T010's campaign
+All merged work is on `master` through `16f58c8` (PR #28, 2026-10-06).
+Since `f3d1560`: PR #18 (T020 history, T021 v2 protocol), PR #20 (T027a,
+T028, T029a, T030–T032), PR #21 (D19–D26, ADR-0023, T033), PR #23 (T022
+host, T029b bindings, T038 save envelope), PR #24 (T058a pointer edit),
+PR #25 (T058 headless edit API, T023s lint/ADR step), PR #26 (T023 QUIC
+transport, T023s stub), PR #27 (T039 checkpoint adapter, T023c window
+limits, T023v vendored quinn-proto fix), PR #28 (T023d close-delivery
+fix, T023b QUIC host adapter). Per-task detail lives in
+`tasks/BACKLOG.md`; the Done history below (through T019 plus the Phase
+0–3 spikes) is retained as history.
+The pre-`f3d1560` record follows. T010's campaign
 format, T011a's positioned validation plus its slug/graph coverage follow-up,
 T011b's thin `crpgc validate` wrapper, T012a's data-half migration
 framework (plus the T012/T012b Stage-2 specs), T012b's thin `crpgc migrate`
@@ -419,6 +437,14 @@ introspection prerequisite (PR #7), T013's scaffolding/introspection
   T030 blockers named in the previous update are resolved by D22/D23; T023 now
   waits only on its own contract and T022. Next: T022 and T029b (both ready),
   per the delegation plan in `docs/IMPLEMENTATION_PLAN.md`.
+- *Update 2026-10-06:* PRs #23–#28 merged on `master` through `16f58c8`:
+  T022/T029b/T038, T058a/T058, T023s/T023, T039/T023c/T023v, and T023d/T023b
+  (ADR-0026 host adapter over the `crpg-net-quic` path edge; `host_quic`
+  25/25 ×5 and workspace 1,164 passed on Linux/GNU per its completion
+  record; the PR #28 Windows/MSVC run at `5431bfa` was green, `quic` 30/30
+  and `host_quic` 25/25). Next: T024 snapshot transfer (contract drafted on
+  `claude/blissful-rubin-59repd`, awaiting approval), then T025a/b reconnect,
+  T026p movement acks and T027b/c interest per the plan's Wave 4–6 order.
 
 ## Platform decision and verification
 - [ADR-0012](adr/0012-windows-primary-platform.md) is Accepted, recording the
@@ -574,6 +600,57 @@ now requires real target-scoped comparisons in both existing Windows and
 
 ---
 
+## Merged-task log (moved from `AGENTS.md`, 2026-10-16)
+
+Kept verbatim from the root `AGENTS.md` Note (D28f), with link paths adjusted;
+newer status is in the handover above and in `tasks/BACKLOG.md`.
+
+- T009a (typed replay) and T009c (Windows-primary/Linux-supported native
+  golden policy, ADR-0012) are merged on `master` as of 2026-09-07; native
+  Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04 gates passed and the
+  final audit is complete. T009b's thin `crpgc replay` wrapper (`crpg-cli`)
+  is merged on `master` as of 2026-09-07 with both native gates green; T010
+  campaign data format, T011a positioned validation, T011b's `crpgc validate`
+  wrapper, and T012a migration framework (data half) are merged on `master`;
+  T012b's thin `crpgc migrate` wrapper (`crpg-cli`) is merged on `master`
+  (PR #5) with both native gates green; S001 hardening is merged with branch
+  protection human-done (PRs #2/#4/#6). T013a data-owned introspection
+  prerequisite (`crpg-data`) is merged on `master` (PR #7, `e84b13e`) with
+  both native gates green, reviewed with a stale-index test fix; T013
+  scaffolding/introspection CLI (`crpg-cli`: `new`/`schema`/`explain`/`fmt`/
+  `lock`/`run`) is merged on `master` (PR #9, `9a6304f`) with both native
+   gates green, plus a line-ending follow-up pinning the trial inputs to LF;
+   T014 stat/modifier kernel (`crpg-rules`: typed stats, stacking pipeline,
+   derived validation, symbolic persistence, kernel hooks) is merged on
+   `master` (PR #11, `18145d4`) with both native gates green, plus a
+   test-only review follow-up closing boundary/reversal gaps; T015
+   dice, outcome tables, and resolution (`crpg-rules`) is merged on
+   `master` (PR #13, `76a48da`) with both native gates green; T016
+   headless combat (`rulesets/minimal-d6`, sim adapter/controller,
+   lifecycle/release, replay goldens, CLI proof) and T017 second-ruleset
+   abstraction proof (`rulesets/srd-lite`, multi-pool/effect/defense/turn
+   generalization, replay goldens, CLI proof) are merged on `master`
+   (PR #14, `4686a73`) with both native gates green; T018 `crpg-net`
+   lane-0 combat protocol + simulated transport + conformance is merged on
+   `master` (PR #16, implementation `2fc54b7`, merge `bc54896`,
+   2026-09-28) with both native gates green; T019 `crpg-sim` same-pool
+   affordability repair is merged on `master` (PR #17, implementation
+   `56931eb`, merge `f3d1560`, 2026-09-29) with both native gates green;
+   T020 C1-sim opt-in history (`crpg-sim`, ADR-0017) and T021 v2 event
+   protocol (`crpg-net`, ADR-0019) are merged on `master` (PR #18, merge
+   `a991fe9`, 2026-09-30); T027a, T028, T029a, T030, T031 and T032 are
+   merged on `master` (PR #20, merge `c1bc6ab`, 2026-09-30) with CI green on
+   both OSes; decisions D19–D26, ADR-0023 and T033 are merged on `master`
+   (PR #21, merge `ac137ac`, 2026-10-01) with CI green on both OSes; the
+   delegated plan to completion is `docs/IMPLEMENTATION_PLAN.md`; see
+   `tasks/BACKLOG.md` for open review items and next tasks.
+   See the [completion record](../tasks/T009c.md),
+   [T009b](../tasks/T009b.md), [T010](../tasks/T010.md), [T011a](../tasks/T011a.md),
+   [T011b](../tasks/T011b.md), [T012](../tasks/T012.md), [T012b](../tasks/T012b.md),
+   [T013a](../tasks/T013a.md), [T013](../tasks/T013.md), [T014](../tasks/T014.md),
+   [T015](../tasks/T015.md), [T016](../tasks/T016.md), [T017](../tasks/T017.md),
+   [T018](../tasks/T018.md) and [POST-T018](../tasks/POST-T018.md).
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + hygiene + T007-unblock · Folded T006e into Done (it landed in 8f2e38b; "complete in working tree" was stale) and recorded E006-A/E009/E014/E015 so T007 can be specified.
@@ -609,3 +686,5 @@ now requires real target-scoped comparisons in both existing Windows and
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Recorded the merge of the six post-T018 tasks with dual-OS CI and listed the maintainer decisions that now gate T022, T029b and T023.
 - 2026-09-30 (UTC) · claude-code + D19–D26 recorded · Summarized the user-approved decisions and the resulting next tasks (T022, then T029b).
 - 2026-10-01 (UTC) · claude-code + PR #21 landed / implementation plan · Recorded the PR #21 merge, superseded the stale T023-blocker sentence by appending rather than rewriting it, and pointed at the new delegation plan.
+- 2026-10-06 (UTC) · opencode/muse-spark + status-docs housekeeping · Moved Updated/Phase/branch-state past the stale `f3d1560` pin to the merged PR #23–#28 frontier (`16f58c8`) with per-record gate honesty; per-task detail stays in `tasks/BACKLOG.md`, Done history retained as history. No code, dependency, or gate change.
+- 2026-10-16 (UTC) · claude-code + D28 handover · Added the handover block the adopted agent-team plan reads first, corrected the 2026-10-06 update's "Windows run pending" to the green PR #28 Windows run recorded on `claude/blissful-rubin-59repd`, and received the merged-task log moved out of `AGENTS.md` (D28f).
