@@ -13,6 +13,6 @@ crpg-net = { path = "../crpg-net" }
 quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 # Direct edge only to pin quinn's protocol crate to the audited =0.11.19.
 quinn-proto = { version = "=0.11.19", default-features = false, features = ["rustls-ring"] }
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 # rt + net + time + sync only: no rt-multi-thread, no macros (no syn in graph).
 tokio = { version = "=1.53.1", default-features = false, features = ["rt", "net", "time", "sync"] }
