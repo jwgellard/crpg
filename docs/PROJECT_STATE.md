@@ -3,9 +3,9 @@
 Updated: 2026-10-16
 
 ## Handover
-- In flight: PR #29 (agent-team plan adopted as D28, `docs/AGENT_TEAM_PLAN.md`) and S002 (`rustls` =0.23.46, restores `cargo deny`), both awaiting the user's merge; `claude/blissful-rubin-59repd` holds unmerged PR #28 bookkeeping and the T024 contract draft.
-- Next: the manager's first session runs setup wave A0 (`docs/AGENT_TEAM_PLAN.md` §11), then T024 once its contract is approved.
-- Blocked: every PR's `deny` check fails on RUSTSEC-2026-0346 to -0349 until S002 merges.
+- In flight: PR #29 (agent-team plan adopted as D28, `docs/AGENT_TEAM_PLAN.md`) and PR #31 (T096, documentation-only PRs skip the Rust gates), awaiting the user's merge; S002 (`rustls` =0.23.46) merged in PR #30. `claude/blissful-rubin-59repd` holds unmerged PR #28 bookkeeping and the T024 contract draft.
+- Next: the manager's first session runs setup wave A0 (`docs/AGENT_TEAM_PLAN.md` §11), opens a PR for the `claude/blissful-rubin-59repd` commits, and routes T097 (`HistoryWorld` copies the whole wrapper per mutation; contract needed). T024 follows its contract approval.
+- Blocked: nothing.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -688,3 +688,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed / implementation plan · Recorded the PR #21 merge, superseded the stale T023-blocker sentence by appending rather than rewriting it, and pointed at the new delegation plan.
 - 2026-10-06 (UTC) · opencode/muse-spark + status-docs housekeeping · Moved Updated/Phase/branch-state past the stale `f3d1560` pin to the merged PR #23–#28 frontier (`16f58c8`) with per-record gate honesty; per-task detail stays in `tasks/BACKLOG.md`, Done history retained as history. No code, dependency, or gate change.
 - 2026-10-16 (UTC) · claude-code + D28 handover · Added the handover block the adopted agent-team plan reads first, corrected the 2026-10-06 update's "Windows run pending" to the green PR #28 Windows run recorded on `claude/blissful-rubin-59repd`, and received the merged-task log moved out of `AGENTS.md` (D28f).
+- 2026-10-16 (UTC) · claude-code + handover after S002 · Moved the handover past the S002 merge, added PR #31 (T096) and T097 for the manager, and cleared the deny blocker.
