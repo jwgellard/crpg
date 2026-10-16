@@ -4,6 +4,7 @@ description: Implements one approved task contract in one crate, in the slot the
 model: claude-sonnet-5-5
 effort: high
 maxTurns: 80
+tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write
 disallowedTools: Agent
 ---
 You implement one task from its brief, in the slot directory the brief names.

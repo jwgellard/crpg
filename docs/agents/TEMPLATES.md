@@ -111,6 +111,7 @@ name: architect
 description: Senior engineer for ADR drafts, exact contracts for first-of-a-kind and S-set packages, and hard debugging the tools have narrowed down. Use only when docs/AGENT_TEAM_PLAN.md §4 routes a package to Opus.
 model: claude-opus-5-5
 effort: high
+tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, WebFetch, WebSearch
 disallowedTools: Agent
 ---
 You are the senior engineer on the CRPG engine. Other agents and cheaper models
@@ -129,6 +130,7 @@ description: Implements one approved task contract in one crate, in the slot the
 model: claude-sonnet-5-5
 effort: high
 maxTurns: 80
+tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write
 disallowedTools: Agent
 hooks:
   Stop:
@@ -176,6 +178,7 @@ description: Updates tasks/BACKLOG.md rows, docs/PROJECT_STATE.md, throughput li
 model: claude-haiku-5-5
 effort: low
 maxTurns: 30
+tools: Read, Grep, Glob, Bash, Edit, Write
 disallowedTools: Agent
 ---
 You make the documentation edits the manager lists, using only the facts it
@@ -360,3 +363,4 @@ In `.claude/settings.json`, beside the permissions A0-1 adds:
 
 - 2026-10-16 (UTC) · claude-code + agent-team plan templates · Added the brief, report and review formats and the proposed Claude, OpenCode and hook definitions that setup wave A0 installs, kept apart from the plan so workers and routine sessions never load them.
 - 2026-10-16 (UTC) · claude-code + A0-2 · Recorded where the installed `crpg-tests` agent departs from the template, a read deny on `crates/*/src/**` with explicit `.env` denies, so the template matches what runs. Checked live on OpenCode 1.18.35.
+- 2026-10-16 (UTC) · claude-code + A0-1 spawn check · Gave `architect`, `implementer` and `bookkeeper` a `tools:` allowlist: without one each spawn inherited the session's Artifact, Docs-MCP and worktree tools and cost about 36.6k tokens before its first turn, against 15k for `reviewer`, which already had one. All four spawned on their pinned models.

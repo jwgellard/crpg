@@ -4,6 +4,7 @@ description: Updates tasks/BACKLOG.md rows, docs/PROJECT_STATE.md, throughput li
 model: claude-haiku-5-5
 effort: low
 maxTurns: 30
+tools: Read, Grep, Glob, Bash, Edit, Write
 disallowedTools: Agent
 ---
 You make the documentation edits the manager lists, using only the facts it
