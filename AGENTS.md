@@ -86,51 +86,10 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 
 ## Note
 - "Godot4" is available in PATH CLI
-- T009a (typed replay) and T009c (Windows-primary/Linux-supported native
-  golden policy, ADR-0012) are merged on `master` as of 2026-09-07; native
-  Windows/MSVC and genuine Linux/GNU in WSL Ubuntu 24.04 gates passed and the
-  final audit is complete. T009b's thin `crpgc replay` wrapper (`crpg-cli`)
-  is merged on `master` as of 2026-09-07 with both native gates green; T010
-  campaign data format, T011a positioned validation, T011b's `crpgc validate`
-  wrapper, and T012a migration framework (data half) are merged on `master`;
-  T012b's thin `crpgc migrate` wrapper (`crpg-cli`) is merged on `master`
-  (PR #5) with both native gates green; S001 hardening is merged with branch
-  protection human-done (PRs #2/#4/#6). T013a data-owned introspection
-  prerequisite (`crpg-data`) is merged on `master` (PR #7, `e84b13e`) with
-  both native gates green, reviewed with a stale-index test fix; T013
-  scaffolding/introspection CLI (`crpg-cli`: `new`/`schema`/`explain`/`fmt`/
-  `lock`/`run`) is merged on `master` (PR #9, `9a6304f`) with both native
-   gates green, plus a line-ending follow-up pinning the trial inputs to LF;
-   T014 stat/modifier kernel (`crpg-rules`: typed stats, stacking pipeline,
-   derived validation, symbolic persistence, kernel hooks) is merged on
-   `master` (PR #11, `18145d4`) with both native gates green, plus a
-   test-only review follow-up closing boundary/reversal gaps; T015
-   dice, outcome tables, and resolution (`crpg-rules`) is merged on
-   `master` (PR #13, `76a48da`) with both native gates green; T016
-   headless combat (`rulesets/minimal-d6`, sim adapter/controller,
-   lifecycle/release, replay goldens, CLI proof) and T017 second-ruleset
-   abstraction proof (`rulesets/srd-lite`, multi-pool/effect/defense/turn
-   generalization, replay goldens, CLI proof) are merged on `master`
-   (PR #14, `4686a73`) with both native gates green; T018 `crpg-net`
-   lane-0 combat protocol + simulated transport + conformance is merged on
-   `master` (PR #16, implementation `2fc54b7`, merge `bc54896`,
-   2026-09-28) with both native gates green; T019 `crpg-sim` same-pool
-   affordability repair is merged on `master` (PR #17, implementation
-   `56931eb`, merge `f3d1560`, 2026-09-29) with both native gates green;
-   T020 C1-sim opt-in history (`crpg-sim`, ADR-0017) and T021 v2 event
-   protocol (`crpg-net`, ADR-0019) are merged on `master` (PR #18, merge
-   `a991fe9`, 2026-09-30); T027a, T028, T029a, T030, T031 and T032 are
-   merged on `master` (PR #20, merge `c1bc6ab`, 2026-09-30) with CI green on
-   both OSes; decisions D19–D26, ADR-0023 and T033 are merged on `master`
-   (PR #21, merge `ac137ac`, 2026-10-01) with CI green on both OSes; the
-   delegated plan to completion is `docs/IMPLEMENTATION_PLAN.md`; see
-   `tasks/BACKLOG.md` for open review items and next tasks.
-   See the [completion record](tasks/T009c.md),
-   [T009b](tasks/T009b.md), [T010](tasks/T010.md), [T011a](tasks/T011a.md),
-   [T011b](tasks/T011b.md), [T012](tasks/T012.md), [T012b](tasks/T012b.md),
-   [T013a](tasks/T013a.md), [T013](tasks/T013.md), [T014](tasks/T014.md),
-   [T015](tasks/T015.md), [T016](tasks/T016.md), [T017](tasks/T017.md),
-   [T018](tasks/T018.md) and [POST-T018](tasks/POST-T018.md).
+- Project status (what is merged, what is next) lives in
+  `docs/PROJECT_STATE.md` (handover at the top) and `tasks/BACKLOG.md`.
+  Delegation follows `docs/AGENT_TEAM_PLAN.md` (D28). The merged-task log
+  that used to be here moved to `docs/PROJECT_STATE.md` on 2026-10-16.
 
 ## Agent log
 
@@ -153,3 +112,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-30 (UTC) · claude-code + T020/T021 landed bookkeeping · Updated the note to the PR #18 merge of T020/T021, replacing the stale "T020 next" pointer and deferring open review items to the backlog rather than restating them.
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Updated the note to the PR #20 merge of the six post-T018 tasks, deferring open items to the backlog.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed · Updated the note to the PR #21 merge and linked the implementation plan, deferring task status to the backlog.
+- 2026-10-16 (UTC) · claude-code + D28f · Moved the merged-task status log from the Note to `docs/PROJECT_STATE.md`, leaving a pointer that also names the adopted delegation plan, because this file loads into every agent session and rewriting it at each merge restarted every agent's prompt cache.

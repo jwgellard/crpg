@@ -1,0 +1,274 @@
+# Model catalog and routing table
+
+Companion to `docs/AGENT_TEAM_PLAN.md`; the manager reads it before routing or
+escalating. It is the only file that changes when models, prices or access
+change. **Checked 2026-10-16 (UTC)** on this machine with OpenCode 1.18.35 and
+Claude Code 2.1.301. Re-check monthly (A0-7), and whenever `oc.py` exits 2
+with `quota`, `402` or an unknown model.
+
+Free models on Zen are "free for a limited time"; stealth models (Big Pickle,
+Space Bunny, Cat Jam) do not name their lab. Treat every row as perishable.
+
+---
+
+## 1. Access on this machine
+
+Tested 2026-10-16 with a one-word prompt per model, then the bake-off (§5).
+
+| Route | State | Detail |
+|---|---|---|
+| OpenCode Zen, free models | **Works** | 10 of 11 free models answered. `nemotron-3-ultra-free` timed out twice (overloaded) |
+| OpenCode Zen, paid models | **Blocked: 402 "Insufficient account funds"** | Balance is $0. Topping up is D28-d |
+| OpenCode Go subscription | **Works** | All 17 Go models tried answered. Limits per model in §3.2 |
+| OpenAI through ChatGPT sign-in | **Partial** | `gpt-6-luna`, `gpt-5.6-luna` and `gpt-5.6-terra` work. `gpt-6-sol`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.5` and `gpt-5.4` are refused: "not supported when using Codex with a ChatGPT account". Earlier sessions used Astra and Sol, so the ChatGPT plan has changed |
+| OpenRouter `:free` models | **Works** | `cohere/north-mini-code`, `thinkingmachines/inkling` and `poolside/laguna-s-2.1` answered; `nvidia/nemotron-3-ultra` timed out. About 50 requests a day without credit |
+| DeepSeek direct API | **Blocked: "Insufficient Balance"** | — |
+
+`opencode stats` (all time, every project): 236 sessions, 11,535 messages,
+1.95 B tokens of which 1.88 B were cache reads, **$1.34 total**. The volume
+came from `muse-spark-1.3-contributor-free` (7,458 messages), `big-pickle`
+(1,002), Go `muse-spark-1.3-contributor` (817) and ChatGPT-plan GPT models.
+
+### Running OpenCode from a script
+
+Found while testing; `tools/agents/oc.py` must handle each one.
+
+1. `opencode run` waits for ever on an open stdin. Close it (`< /dev/null`,
+   `stdin=DEVNULL`).
+2. OpenCode takes its working directory from the inherited `PWD`, not the
+   process cwd. Pass `--dir <slot>` **and** set `PWD=<slot>`. With only the
+   cwd set, workers read the parent directory.
+3. A worker that can see a solution will use it. In the first, mis-rooted
+   bake-off run a model found the reference implementation and hidden tests in
+   a sibling directory and copied both into the task template. Deny
+   `external_directory` and keep references out of the slot.
+4. Concurrent starts race on OpenCode's SQLite database: some runs failed at
+   once with `database is locked` at four to six simultaneous starts. Start
+   runs at least 4 s apart and retry on that message.
+5. Permissions set to `ask` are auto-rejected in `opencode run`; write every
+   rule as `allow` or `deny`. Never pass `--auto`.
+6. On Windows, `opencode` resolves to the npm shim `opencode.cmd`, so the
+   prompt passes through `cmd.exe`: a `<`, `>`, `|` or `&` in it is parsed as
+   shell syntax. The review prompt's `<line number>` failed every review run
+   with "The system cannot find the file specified." Call
+   `%APPDATA%\npm\node_modules\opencode-ai\bin\opencode.exe` directly, and
+   put long instructions in `BRIEF.md` rather than on the command line.
+7. Every run carries roughly 9–13k tokens of OpenCode system prompt and tool
+   definitions before the brief.
+
+## 2. Claude models (subagents in Claude Code)
+
+Prices are Anthropic API rates per million tokens; on a subscription they
+indicate relative draw on the plan's limits. All four have a 1M context
+window and 128K maximum output. Thinking is always on; effort is the lever.
+
+| Model | ID | Input / output / cache read | Default effort | Role in this plan |
+|---|---|---|---|---|
+| Fable 5.1 | `claude-fable-5-1` | $10 / $50 / $0.25 | high | Only on your request: a design you have lost confidence in. Bills to usage credits on some plans |
+| Opus 5.5 | `claude-opus-5-5` | $4 / $20 / $0.20 | **medium** — set it | Manager; `architect` for A and C packages only. On Pro (D28b) it is never an implementer or a review rung |
+| Sonnet 5.5 | `claude-sonnet-5-5` | $2 / $10 / $0.20 | high | Default Claude subagent: `implementer`, `reviewer`, pattern-following contracts; the top implementer rung on Pro |
+| Haiku 5.5 | `claude-haiku-5-5` | $0.10 / $0.50 / $0.01 up to 100K prompt; $0.50 / $2.50 above | **medium** — set it | `bookkeeper`; mechanical Claude-side edits |
+
+Notes for routing:
+
+- One aggregator's weighted coding score (BenchLM, 2026-10-15) ranks Sonnet
+  5.5 at 84.1, Opus 5.5 at 82.6, Fable 5.1 at 76.8 and Haiku 5.5 at 53.0. It
+  is a single, unaudited composite, but it supports Sonnet 5.5 as the default
+  Claude implementer, with Opus 5.5 kept for design judgment.
+- Haiku 5.5 costs a fortieth of Opus 5.5 per input token while the prompt
+  stays under 100K; past that its price rises fivefold, so give it small,
+  self-contained jobs.
+- Haiku 5.5 is also on OpenCode Go (`opencode-go/claude-haiku-5-5`), which
+  draws on the Go limits instead of the Claude plan.
+- The advisor tool accepts, for a Sonnet 5.5 main model, Fable or Opus 5 and
+  later, or Sonnet 5.5; for an Opus 5.5 main model only Fable or Opus 5 and
+  later (D28-g).
+
+## 3. OpenCode models
+
+### 3.1 Tiers
+
+| Tier | Meaning | Default use |
+|---|---|---|
+| **O1** | Strong: passed all three bake-off tasks cleanly and has a usable request budget | Implementation from a contract, tests from a contract, first-pass review |
+| **O2** | Workhorse: correct on the scout and review tasks, cheap or plentiful | Bookkeeping, scouting, content loops, second opinions, simple implementation |
+| **O3** | Free fallback | Scouting and bookkeeping when Go limits run out; never S-set or core |
+
+### 3.2 Limits and privacy
+
+Go limits are dollar amounts per model per month, with 20% available per
+5-hour window and 50% per week; the request counts are OpenCode's own
+estimates for the $10 Go tier. A bake-off implementation run took 5–42 model
+requests (median 10), so divide the 5-hour figure by 10 to 20 for
+"implementation runs per window". Privacy is from OpenCode's Zen and Go pages on 2026-10-16.
+
+| Model ID | Lab | Go requests per 5 h / month | Retention and training |
+|---|---|---|---|
+| `opencode-go/kimi-k3` | Moonshot | 110 / 490 | 0-day, no training |
+| `opencode-go/glm-5.3` | Z.ai | 220 / 1,080 | 0-day, no training |
+| `opencode-go/qwen3.8-max` | Alibaba | 160 / 810 | 0-day, no training |
+| `opencode-go/deepseek-v4-pro` | DeepSeek | 1,050 / 5,200 | 0-day under a ZDR agreement to 2026-10-31 |
+| `opencode-go/mimo-v2.6-pro` | Xiaomi | 3,250 / 16,300 | 0-day, no training |
+| `opencode-go/step-5-preview` | StepFun | 1,720 / 8,520 (promotional) | 0-day, no training |
+| `opencode-go/hy4-preview` | Tencent | 1,350 / 6,770 | 0-day, no training |
+| `opencode-go/gemini-4-argon-contributor` | Google | 440 / 2,120 (promotional) | **Training use** |
+| `opencode-go/kimi-k2.7-code` | Moonshot | 1,350 / 6,750 | 0-day, no training |
+| `opencode-go/minimax-m3` | MiniMax | 3,200 / 16,000 | 0-day, no training |
+| `opencode-go/deepseek-v4.1-flash` | DeepSeek | 34,670 / 173,330 | 0-day under a ZDR agreement to 2026-10-31 |
+| `opencode-go/qwen3.8-flash` | Alibaba | 5,400 / 27,000 | 0-day, no training |
+| `opencode-go/glm-5.3-flash` | Z.ai | 6,320 / 31,580 | 0-day, no training |
+| `opencode-go/gpt-6-luna` | OpenAI | 4,230 / 21,130 | 30-day, no training |
+| `opencode-go/claude-haiku-5-5` | Anthropic | 3,850 / 19,230 | 30-day, no training |
+| `opencode-go/muse-spark-1.3-contributor` | Meta | 45,300 / 226,600 | **Training use** (the discount's price) |
+| `opencode/muse-spark-1.3-contributor-free` | Meta | free | **Training use** |
+| `opencode/big-pickle` | undisclosed | free | Data may be used to improve the model |
+| `opencode/mimo-v2.6-flash-free` | Xiaomi | free | Data may be used to improve the model |
+| `opencode/space-bunny-free` | undisclosed | free (also on Go) | 0-day, no training |
+| `opencode/cat-jam-free` | undisclosed | free | 30-day, no training; region-restricted |
+| `opencode/longcat-2.5-preview-free` | Meituan | free | 0-day, no training |
+| `opencode/deepseek-v4.1-flash-free` | DeepSeek | free | 0-day, no training |
+| `opencode/glm-5.3-flash-free` | Z.ai | free | 0-day, no training |
+| `opencode/nemotron-3.5-*-free` | NVIDIA | free | **Trial only; logged** — scouting only |
+| `openai/gpt-5.6-terra` | OpenAI | ChatGPT plan | OpenAI account terms |
+
+### 3.3 Bake-off results (2026-10-16)
+
+Three small tasks, one attempt each, default reasoning variant, run through
+OpenCode in isolated sandboxes; method and caveats in §5. "Cost" is
+OpenCode's notional price, which counts against the Go limits.
+
+| Model ID | Scout | Implement (hidden tests, gates) | Review (planted bugs found, false positives) | Implement: requests, time, tokens, cost |
+|---|---|---|---|---|
+| `opencode-go/deepseek-v4.1-flash` | exact | 21/21, all gates | 5/5, 0 | 8 · 60 s · 125k · $0.007 |
+| `opencode-go/kimi-k3` | exact | 21/21, all gates | 5/5, 0 | 10 · 119 s · 158k · $0.25 |
+| `opencode-go/mimo-v2.6-pro` | exact | 21/21, all gates | 5/5, 0 | 10 · 398 s · 260k · $0.03 |
+| `opencode-go/gemini-4-argon-contributor` | exact | 21/21, all gates | 5/5, 0 | 8 · 297 s · 210k · $0.59 |
+| `opencode-go/deepseek-v4-pro` | exact | 21/21, all gates | 5/5, 0 | 6 · 229 s · 107k · $0.04 |
+| `opencode-go/claude-haiku-5-5` | exact | 21/21, all gates | 5/5, 0 | 5 · 40 s · 82k · $0.007 |
+| `opencode-go/gpt-6-luna` | exact | 21/21, all gates | 5/5, 0 | 13 · 88 s · 165k · $0.007 |
+| `opencode-go/glm-5.3-flash` | exact | 21/21, all gates | 5/5, 0 | 10 · 161 s · 159k · $0.011 |
+| `opencode-go/qwen3.8-flash` | exact | 21/21, all gates | 5/5, 0 | 19 · 453 s · 531k · $0.03 |
+| `opencode-go/qwen3.8-max` | exact | 21/21, all gates | 5/5, 0 | 14 · 728 s · 415k · $0.40 |
+| `opencode-go/kimi-k2.7-code` | exact | 21/21, all gates | 5/5, 0 | 8 · 430 s · 171k · $0.11 |
+| `opencode-go/hy4-preview` | exact | 21/21, all gates | 5/5, 0 | 24 · 577 s · 590k · $0.10 |
+| `opencode-go/glm-5.3` | exact | **stalled**: no code, finish `length` | 5/5, 0 | 4 · 502 s · 48k · $0.18 |
+| `opencode-go/minimax-m3` | exact | **stalled**: no code, finish `length` | 4/5, 0 (missed the cast) | 4 · 325 s · 48k · $0.05 |
+| `opencode-go/step-5-preview` | exact | 21/21 but **timed out** at 900 s looping on fmt and clippy | 5/5, 0 | 35 · 900 s · 1.7M · $0.37 |
+| `opencode/cat-jam-free` | exact | 21/21, all gates | 5/5, 0 | 11 · **34 s** · 173k · free |
+| `opencode/deepseek-v4.1-flash-free` | exact | 21/21, all gates | 5/5, 0 | 8 · 113 s · 141k · free |
+| `opencode/glm-5.3-flash-free` | exact | 21/21, all gates | 5/5, 0 | 5 · 143 s · 74k · free |
+| `opencode/longcat-2.5-preview-free` | exact | 21/21, all gates | 5/5, 0 | 8 · 209 s · 129k · free |
+| `opencode/muse-spark-1.3-contributor-free` | exact | 21/21, all gates | 5/5, 0 | 17 · 127 s · 368k · free |
+| `opencode/big-pickle` | exact | 21/21, all gates | 5/5, 0 | 8 · 342 s · 148k · free |
+| `opencode/space-bunny-free` | exact | 21/21, all gates | 5/5, 0 | 42 · 498 s · 1.5M · free |
+| `opencode/nemotron-3.5-super-vl-free` | exact | 21/21, all gates | 4/5, 0 (missed the cast) | 12 · 208 s · 354k · free |
+| `opencode/mimo-v2.6-flash-free` | exact | **stalled**: no code, finish `length` | 5/5, 0 | 4 · 565 s · 49k · free |
+| `opencode/nemotron-3.5-lightning-free` | timed out | timed out | timed out | — |
+| `openai/gpt-5.6-terra` (ChatGPT plan) | **wrong**: missed the four "any crate" rows | 21/21, all gates | timed out | 12 · 174 s · 166k · plan |
+
+What the results say:
+
+- **Access and rule-following are not the problem.** Every model that
+  produced code kept to the rules: no floats, no edited tests, no new
+  dependencies, no `unsafe`.
+- **"Stalled" is one failure mode, not a weak model.** GLM-5.3, MiniMax M3 and
+  MiMo-V2.6-Flash each spent the whole 32,000-token output allowance reasoning
+  in one step, wrote no code and ended with finish reason `length`. `oc.py`
+  treats `length` with no edits as an infrastructure exit (`no-edit`) and
+  retries once with `--variant low` and the instruction to write the code in
+  small edits. GLM-5.3 stays a reviewer until it passes a retry.
+- **The tasks were too easy to rank the strong models.** An exact contract let
+  free models match paid ones. The ranking for hard work below therefore also
+  leans on public composites, which are weaker evidence, until A0-7 adds
+  harder fixtures from this repository.
+- **Speed and request budget separate models more than correctness did.**
+  DeepSeek V4.1 Flash and Cat Jam finished in about a minute; Qwen3.8 Max,
+  Hy4 and Step 5 took 8–15 minutes for the same result.
+
+### 3.4 Public composite scores
+
+BenchLM's weighted coding composite (verified 2026-10-15) for the models
+above: Gemini 4 Argon 72.3, MiMo-V2.6-Pro 63.3, GPT-5.6 Terra 61.9, DeepSeek
+V4.1 Flash 60.7, Step 5 Preview 60.5, MiMo-V2.6-Flash 60.1, Kimi K3 58.9,
+Hy4 preview 56.7, GLM-5.3 56.4, Qwen3.8 Max 53.6, GPT-6 Luna 53.2, Claude
+Haiku 5.5 53.0, GLM-5.3-Flash 48.3, DeepSeek V4 Pro 47.2, Kimi K2.7 Code
+41.8, MiniMax M3 36.4, Nemotron 3 Ultra 21.8, Nemotron 3.5 Lightning 16.0.
+One aggregator, unaudited, with labs' own harnesses behind many inputs: use it
+to break ties, never to overrule a bake-off failure.
+
+## 4. Routing table
+
+The principle: **plentiful models implement, scarce strong models review.**
+A bake-off implementation run took 5–42 requests (median 10); a review took
+2–5. Kimi K3's 110 requests per 5 hours is about ten implementations but
+thirty reviews.
+
+| Work | First choice | Second, another lab | When Go limits run out |
+|---|---|---|---|
+| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/mimo-v2.6-pro` | `opencode/cat-jam-free`, then `opencode/deepseek-v4.1-flash-free` |
+| I outside the S-set, harder or after one failure | `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | Claude `implementer` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | `opencode-go/deepseek-v4.1-flash` |
+| First-pass review | `opencode-go/gemini-4-argon-contributor` | `opencode-go/kimi-k3`, or `opencode-go/glm-5.3` | `opencode-go/deepseek-v4-pro` |
+| Scouting | `opencode/cat-jam-free` | `opencode-go/deepseek-v4.1-flash` | Built-in `Explore` |
+| Bookkeeping, commit and PR text | `opencode-go/gpt-6-luna` | `opencode-go/claude-haiku-5-5` | `opencode/cat-jam-free`, then Claude `bookkeeper` |
+| G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
+| S-set, A, C, core review | Claude only (`docs/AGENT_TEAM_PLAN.md` §§4.2–4.3) | — | — |
+
+Tier membership:
+
+- **O1:** DeepSeek V4.1 Flash (Go), Kimi K3, MiMo-V2.6-Pro, Gemini 4 Argon
+  Contributor, DeepSeek V4 Pro. Four labs, so a second opinion can always come
+  from another family.
+- **O2:** GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash,
+  Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation
+  retry), and Cat Jam Free (fast, but a stealth model whose terms can change).
+- **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview
+  Free, Muse Spark 1.3 Contributor Free, Big Pickle, Space Bunny Free (correct
+  but slow and token-hungry), Qwen3.8 Max and Hy4 preview (correct but slow;
+  Qwen3.8 Max is also scarce).
+- **Not routed:** Nemotron 3.5 Lightning and Nemotron 3 Ultra (timeouts),
+  Nemotron 3.5 Super VL and MiMo-V2.6-Flash Free (scouting at most), MiniMax
+  M3 (stalled and missed a bug), Step 5 Preview for implementation (gate
+  loop), and GPT-5.6 Terra for scouting or review.
+
+Data handling: Gemini 4 Argon Contributor, the Muse Spark contributor models,
+Big Pickle and MiMo-V2.6-Flash Free may train on prompts. That is acceptable
+for this public repository under `docs/AGENT_TEAM_PLAN.md` §4.2 rule 4 and
+D28-e; if D28-e is refused, drop them and promote Kimi K3 to first-pass
+reviewer.
+
+## 5. Bake-off method
+
+Run 2026-10-16. The harness, fixtures and scored results are in
+`docs/agents/bakeoff-2026-10-16/`; A0-7 promotes the harness to
+`tools/agents/bakeoff/`.
+
+| Task | What the worker got | Scored by |
+|---|---|---|
+| Scout | A copy of `AGENTS.md` and `tools/lint/deps.py`; "which crates may depend directly on `crpg-sim`? Reply with a JSON array" | Exact match with the eight crates the `ALLOWED` table permits, including its four "any crate except" rows |
+| Implement | A one-file Rust crate with three `todo!()` functions (16.16 fixed-point multiply with ties away from zero, truncating divide with saturation, and an 18-digit decimal parser with exact rounding), an `AGENTS.md` with this repository's style of rules, and four visible tests | 21 hidden edge-case tests; `cargo fmt --check`, `cargo clippy -D warnings` and the visible tests; and the rules: no floats, no `unsafe`, no edits to `Cargo.toml` or the visible tests |
+| Review | A 44-line combat module and a five-rule spec, with five planted defects (missing tie-break, `< 0` for "zero or below", unchecked overflow, `HashMap` iteration order, an `as i32` cast that can lower hp) and one decoy (FNV-1a's intended wrapping multiply) | Defects found by line and keyword; false positives; whether the decoy was flagged |
+
+Limits: one attempt per model per task, default reasoning variant, small
+self-contained tasks rather than work in this 16-crate workspace, and OpenCode
+as the only harness. Three harness faults were found and fixed during the run
+(§1, items 2, 3 and 6); only clean reruns are reported.
+
+## 6. Recalibration
+
+Monthly, after any `oc.py` exit 2 for `quota`, `402` or an unknown model, and
+whenever Zen or Go changes its model list:
+
+1. `opencode models opencode`, `opencode models opencode-go` and
+   `opencode models openai`; ping every routed model.
+2. Run the bake-off (A0-7) on the routed models plus any new ones.
+3. Update §§1, 3 and 4 here, with the date, and nothing else. A routing change
+   that moves work between Claude and OpenCode is a plan change and goes to
+   the next gate.
+
+---
+
+## Agent log
+
+- 2026-10-16 (UTC) · claude-code + agent-team plan · Recorded the same-day access test and three-task bake-off of 26 OpenCode models with the Claude lineup, limits and privacy terms, and derived the routing table and tiers from them, noting where the tasks were too easy to rank and public composites fill in.
+- 2026-10-16 (UTC) · claude-code + D28b · Narrowed the Opus 5.5 and Sonnet 5.5 roles to the Pro routing the user chose: Opus for A and C packages only, Sonnet as the top implementer rung.

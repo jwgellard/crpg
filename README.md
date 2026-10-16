@@ -10,7 +10,7 @@ presentation host through GDExtension, and build a fully Godot-free simulation
 core. If Godot ever disappoints, replacing it is a client rewrite — the rules,
 campaign format, netcode, AI, and server are untouched.
 
-> **Status:** early development (Phase 3 — rules kernel).
+> **Status:** early development (Phase 4 — server and networking).
 > `crpg-core` has the planned Phase 1 primitives; `crpg-sim` has the world,
 > component stores, timeline, fixed-step tick loop, events, and deterministic
 > state hashing; and `crpg-testkit` has the hash-sequence and golden-file
@@ -46,7 +46,14 @@ campaign format, netcode, AI, and server are untouched.
 > T029a action-signature declarations, T030 quinn dossier, T031 preflight
 > runners and T032 documentation reconciliation are merged (PR #20, merge
 > `c1bc6ab`, 2026-09-30); decisions D19–D26 and T033 are merged (PR #21,
-> merge `ac137ac`, 2026-10-01), and the path to completion is
+> merge `ac137ac`, 2026-10-01); T022 host, T029b bindings and T038 save
+> envelope are merged (PR #23, merge `9157250`, 2026-10-04); T058a pointer
+> edit, T058 headless edit API, T023s setup and T023 QUIC transport are
+> merged (PRs #24/#25/#26, 2026-10-04); T039 checkpoint adapter, T023c
+> window limits and T023v vendored quinn-proto fix are merged (PR #27,
+> merge `efbfdd8`, 2026-10-05); T023d close-delivery fix and T023b QUIC
+> host adapter are merged (PR #28, merge `16f58c8`, 2026-10-06; green on
+> Windows/MSVC and Linux/GNU), and the path to completion is
 > [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md). See
 > the [T009c completion record](tasks/T009c.md),
 > [T009b](tasks/T009b.md), [T010](tasks/T010.md),
@@ -252,3 +259,5 @@ Full texts: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
 - 2026-09-30 (UTC) · claude-code + T033 E013 · Redrew the architecture diagram to match the enforced `ALLOWED` edges and D02 placement, with the import-direction caption, closing the README half of E013.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed · Added the PR #21 merge and the implementation-plan link to the status block.
 - 2026-10-04 (UTC) · claude-code + T023s · Added the `crpg-net-quic` layout row and a dated note on where it sits, matching the spec §2.2 note, so the crate split is visible without redrawing the diagram.
+- 2026-10-06 (UTC) · opencode/muse-spark + status-docs housekeeping · Moved the status block past the stale Phase 3 pointer to the merged PR #23–#28 frontier (T023b/T023d) with per-record gate honesty; no code, dependency, or gate change.
+- 2026-10-16 (UTC) · claude-code + PR #28 Windows result · Replaced "Windows run pending at the PR tip" with the green Windows/MSVC and Linux/GNU result, since the PR #28 Windows check passed (`quic` 30/30, `host_quic` 25/25).
