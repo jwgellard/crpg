@@ -69,7 +69,11 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    refusing with `Rate limit exceeded`: DeepSeek V4.1 Flash, Muse Spark, GLM-5.3
    Flash, Big Pickle and Space Bunny. Four runs failed before their first
    step. Run **at most three free runs at once in total**, and at most one per
-   model. `oc.py wave` must enforce both caps.
+   model. `oc.py wave` must enforce both caps. **Once hit, the limit takes
+   about 12 hours to reset** (the user, 2026-10-16). It was hit again at about
+   14:00 UTC that day: V8 on GLM-5.3-Flash Free and V10 on Muse Spark Free
+   both failed at step 0. After a hit, route every run to its Go ID until the
+   next day rather than retrying free models.
 11. **Two free models are exempt in practice.** OpenCode's Go page (read
    2026-10-16 12:10 UTC) lists LongCat 2.5 Preview Free and Cat Jam Free as
    **Unlimited** for Go subscribers, both "limited time" and Cat Jam
@@ -425,3 +429,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + Go-route fix · Switched the routing table's Cat Jam and LongCat entries to their `opencode-go/` IDs, so the table no longer sends work to the rate-limited free route.
 - 2026-10-16 (UTC) · claude-code + field record · Recorded the day's hand-run results per model and role, including Cat Jam's 68 of 70 held citations and DeepSeek's one stop-without-writing failure, so the next session applies §4.1 from evidence.
 - 2026-10-16 (UTC) · claude-code + user routing rule · Recorded the user's rule that free Zen capacity goes only to strong models with a free Zen variant (Muse Spark, DeepSeek V4.1 Flash, GLM-5.3-Flash), while LongCat and Cat Jam always use their unlimited Go IDs.
+- 2026-10-16 (UTC) · claude-code + free-tier reset time · Recorded the user's report that the free Zen limit takes about 12 hours to reset, and the 14:00 UTC repeat, so a manager routes to Go IDs after a hit instead of retrying free models.
