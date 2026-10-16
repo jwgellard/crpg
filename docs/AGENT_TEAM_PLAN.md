@@ -396,6 +396,36 @@ little:
   handover (what is in flight, what is next, what is blocked). A
   `SessionStart` hook with the `compact` matcher re-injects it after
   compaction (A0-6).
+- **When to hand over.** A manager hands over at the first of:
+  1. the end of a wave;
+  2. a context of **150k tokens**: finish the package in hand and start no
+     new one;
+  3. a context of **200k tokens**: hand over now.
+
+  Every turn re-reads the whole context, so cost grows with it, and so does
+  the chance of missing something buried early in it. The first manager
+  session (2026-10-16) reached about 346k by mid-afternoon, which is how the
+  limits were set. The manager does not judge its own size: a hook,
+  `tools/agents/context_meter.py` (A0-6b), reads the exact figure from the
+  transcript's `usage` field after each tool call and injects a notice when
+  a threshold is crossed. A notice is a rule, not a suggestion.
+- **How to hand over.**
+  1. Prefer a quiet point, with no worker running. A new session does not
+     receive the old session's background notifications.
+  2. Every run that is still going must be named in the handover with its
+     slot, branch and log path. `oc.py` result records under
+     `.agents/runs/` let the next manager collect it with `oc.py stats` and
+     the logs, without the old session.
+  3. Update the three-line handover, commit, and stop. You start the next
+     session with the §12 prompt.
+- **No manager hierarchy.** Sessions relay; managers do not nest.
+  - Claude Code subagents cannot spawn subagents, so a sub-manager would have
+    to be a separate headless session.
+  - Every extra layer re-reads context and reports upward, at several times
+    the tokens.
+  - The layer between the manager and the workers is already scripts:
+    `oc.py wave` turns a wave into one table, and `verify_task.py` does the
+    checking.
 - **Lessons.** `docs/agents/LESSONS.md`: one line per lesson with an ID, the
   evidence and where it was promoted. Seen twice becomes a line in an
   `AGENTS.md`; checkable by machine becomes a lint or a `verify_task.py`
@@ -415,9 +445,18 @@ questions for you.
 
 ## 9. Cost control
 
-- **Manager effort.** `high` for wave sessions, `xhigh` for planning and gate
-  sessions. Set it at session start and keep it; never switch the manager's
-  model mid-session, since that rebuilds the prompt cache.
+- **Manager model and effort.** Opus 5.5 always. Effort by session type:
+  - `medium` for routine wave sessions: dispatch, read summaries, decide by
+    the written rules, open PRs. Once `oc.py` and `verify_task.py` exist,
+    that is most of a wave.
+  - `high` for planning and first-of-a-kind briefing: new wave plans, briefs
+    for a new kind of work, judging reviews of core code.
+  - `xhigh` for milestone gates and large re-plans.
+
+  Set model and effort at session start (`/model`) and keep them. A change
+  mid-session rebuilds the prompt cache. A Sonnet 5.5 manager for routine
+  waves is a later trial, measured by `/usage` and outcomes against an Opus
+  wave, once `oc.py` lands. The user approved this split on 2026-10-16.
 - **On Pro (D28b) the manager is the largest Claude cost.** Start a fresh
   session per wave, keep wave sessions at `high`, send even small edits to
   the bookkeeper or an OpenCode worker, and never run two Claude workers at
@@ -472,7 +511,7 @@ decision first.
 | A0-3 | `tools/agents/oc.py` (`run`, `wave`, `ask`, plus `record` and `stats` for the model record in `docs/agents/MODELS.md` §4.1) with tests in `tools/tests/` against a fake `opencode` | OpenCode models from an exact brief, head to head: Cat Jam Free and Gemini 4 Argon (rerouted from Claude 2026-10-16 by the user's preference) | Each failure mode in §5.1 has a test; a dry run prints the summary format |
 | A0-4 | `tools/agents/verify_task.py` with planted-fault tests | OpenCode DeepSeek V4.1 Flash, the free endpoint (rerouted as A0-3) | Each §7.1 check fails on its planted fault and passes clean |
 | A0-5 | `tools/agents/brief.py` and `recall.py` | OpenCode O1, following A0-3's style | `brief.py T023b` yields the contract sections only and is under a quarter of the file |
-| A0-6 | Hooks: `SubagentStop` runs `verify_task.py` for Claude implementers; `PreToolUse` protects the files in §7.1; `SessionStart` (compact) re-injects the handover | Manager | Each hook blocks its planted case |
+| A0-6 | Hooks: `SubagentStop` runs `verify_task.py` for Claude implementers; `PreToolUse` protects the files in §7.1; `SessionStart` (compact) re-injects the handover; A0-6b: `PostToolUse` context meter (§8) | Scripts by an OpenCode worker, wiring by the manager | Each hook blocks its planted case |
 | A0-7 | Promote the 2026-10-16 bake-off harness (`docs/agents/bakeoff-2026-10-16/`) to `tools/agents/bakeoff/`, and add harder fixtures cut from this repository's history: a past task at its pre-implementation commit with its real tests hidden, and the code before a real fix (T019, T023d) as a review case | OpenCode O1 for the harness; the manager picks the fixtures | One command re-scores every configured model, and the new fixtures separate models the 2026-10-16 ones could not |
 | A0-8 | Context diet: the root `AGENTS.md` note moved to `PROJECT_STATE.md` on 2026-10-16 (D28f, done); next, trim crate `AGENTS.md` files, crate by crate | Manager drafts, you approve each crate | No information lost: each moved paragraph has a new home |
 | A0-9 | Create slots 1 and 2 (disk freed 2026-10-16, D28-c) | Manager | `oc.py` finds both slots and each builds once |
@@ -502,7 +541,9 @@ This session: <wave N of milestone M | gate review for M>.
    recommendation. Ask me directly only if the whole wave is blocked.
 8. Never add a dependency, accept a golden, change a contract, touch the
    S-set without the gate, or switch your model mid-session.
-9. Before stopping, update the handover in docs/PROJECT_STATE.md.
+9. Hand over at the end of the wave, or when the context meter says so
+   (§8: finish the package at 150k, stop at 200k). Before stopping, update
+   the handover in docs/PROJECT_STATE.md, naming any run still going.
 ```
 
 ## 13. Decisions for you (D28)
@@ -532,3 +573,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + user model preference · Applied the user's free-then-Go-then-Claude order to §4.3's default routes and A0-3/A0-4, and added `record`/`stats` to A0-3 for the model record, so that Claude is spent on design and judgment rather than exact-spec work.
 - 2026-10-16 (UTC) · claude-code + user correction on model choice · Reworded the preference as the strongest suitable OpenCode model, then Claude, with free versus Go only a tiebreak. Restored O1 as the default worker tier in §4.3 and recorded the A0-3 head-to-head.
 - 2026-10-16 (UTC) · claude-code + user preference, third statement · Reworded the preference note: intelligent free models first, then cheap and then expensive Go, with Claude at the manager's discretion, as the user asked once the Go cap was hit.
+- 2026-10-16 (UTC) · claude-code + user question on manager effort and handover · Set the manager's effort by session type (medium, high, xhigh), added handover thresholds at 150k and 200k tokens enforced by a context-meter hook, and recorded why managers relay rather than nest. The first manager session's context reached about 346k tokens, which is what prompted this.
