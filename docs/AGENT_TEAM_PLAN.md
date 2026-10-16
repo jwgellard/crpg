@@ -430,6 +430,15 @@ little:
     hand-fixing, no exploratory reads. Bookkeeping goes to OpenCode
     `crpg-grunt`, not the Claude `bookkeeper`. Start a Claude subagent only
     when the work is Claude-only and cannot wait.
+  - Parallel by default (the user, 2026-10-17): when a slot frees, dispatch
+    the next ready package first. Slots 3–6 are doc-only (no cargo) for
+    design, research, briefs and doc trims.
+  - Design in parallel: a fact pack and two blind drafts by OpenCode models
+    of different labs on doc slots, then one `architect` pass that
+    adjudicates, then you. Claude still writes every final A, C and S-set
+    text (§4.2). Drafts run on the cheap O1 models; Kimi K3 and Gemini 4
+    Argon take only short reviews, one at a time, because on 2026-10-16
+    they were $3.15 of the $3.64 that hit the Go 5-hour cap.
 - **How to hand over.**
   1. Prefer a quiet point, with no worker running. A new session does not
      receive the old session's background notifications.
@@ -611,3 +620,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + research fold-in · Took three rules from the citation-checked R5–R7 reports: `oc.py wave` keeps one package per crate, a known-flake failure is an infrastructure exit, and A0-7 aims at about 20 fixtures that also measure brief ordering. The rest is recorded in `docs/agents/RESEARCH-2026-10-16.md`.
 - 2026-10-16 (UTC) · claude-code + usage report · Added the user-supplied Claude usage breakdown to §9 with the rule each figure drives, so later sessions cost less.
 - 2026-10-17 (UTC) · claude-code + user decision · Recorded the compaction-versus-handover study and the user's instruction to cut Claude usage in §8 (keep 150k/200k, trial a mid-wave `/compact`, fewer manager turns, no Claude bookkeeper) and added A0-10, the manager start-up diet, because the start-up read is the largest remaining lever.
+- 2026-10-16 (UTC) · claude-code + user direction · Added the parallel-by-default and parallel-design rules to §8 with the Go-cap evidence that keeps design drafts off Kimi K3 and Gemini 4 Argon, because the user asked for parallel work and design to be run in parallel.

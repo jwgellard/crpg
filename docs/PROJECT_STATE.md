@@ -1,27 +1,26 @@
 # Project state
 
-Updated: 2026-10-16
+Updated: 2026-10-16 (23:00 UTC)
 
 ## Handover
-- In flight: PR #33 (`setup/A0-config`, tip `c9cfc2b`), the A0 setup wave and the day's planning, one PR per session. This session (the second manager session, 2026-10-16 13:54–22:00 UTC) added:
-  - **A0-6b** context meter (`tools/agents/context_meter.py`): attempt 2 reviewed "ready for PR" on Go Gemini 4 Argon.
-  - **A0-5** `brief.py` and `recall.py`: Go DeepSeek V4.1 Flash, one fix round after Gemini's review (classification of `## Tests`, acceptance extraction, base-section Interface append, recall dedup), then "ready for PR". `brief.py T023b` is 17.3 KB of 124.6 KB.
-  - **A0-3** `oc.py`: five attempts. Go Muse Spark wrote attempts 2–4; Kimi K3 reviewed twice (the first found a Windows liveness probe that could kill the probed process and infra classification reading file contents); attempt 4 added OpenCode 2.x support; attempt 5 was escalated to Go DeepSeek, which fixed the second review's four findings, and the manager accepted it. Live smoke test on OpenCode 2.0.31: `oc.py ask` PASS in 7 s.
-  - **T097** contract (`tasks/T097.md`): the `architect` found the real cost: `finish` re-encodes every retained envelope on every mutation (`crates/crpg-sim/src/history.rs:630–638`), not the clone. The design stays in `src/history.rs` (not S-set). Claude `reviewer`: "ready for approval"; its seven low findings are fixed.
-  - MODELS.md: the free Zen limit takes about 12 hours to reset (the user).
+- In flight: PR #33 (`setup/A0-config`): the A0 wave, the T097 contract, the T099 research fold-in (`docs/research/T099/`) and the plan §8 rule "Cutting Claude usage" (third manager session, 2026-10-16 22:15–23:00 UTC). **Nothing is running.** Every OpenCode run stopped on the Go 5-hour cap at about 22:42 UTC. A quota stop is not an attempt. Partial work is kept in each slot (`C:\CRPG\dev\crpg-slots`). Briefs are in `crpg-slots/manager/briefs/`.
 
-  PR #34 is merged (2026-10-16 11:10 UTC); the earlier line saying it awaits approval was stale.
+  | Slot | Package · branch | State | Rerun |
+  |---|---|---|---|
+  | slot-1 (build) | T097 · `task/T097-journal-cost` | Attempt 2 stopped by quota after 104 steps, uncommitted, mid-way through compacting `src/history/tests.rs` to the line budget | Same model, `--slug journal-cost --base origin/setup/A0-config --brief …/BRIEF-T097-full.md`, no `--fresh`. Based on the A0 branch only for the agent files: cherry-pick the one T097 commit onto `master` for its own PR |
+  | slot-2 (build) | A0-3b · `task/A0-3b-base-and-sections` | Attempt 1 committed: the `--base` pass-through and the agent-file fallback, accepted. Attempt 2 (narrowed `Decision` classifier, UTC signature) stopped by quota after 28 steps | `--slug base-and-sections --base origin/setup/A0-config --brief …/BRIEF-A0-3b.md --notes …/NOTES-A0-3b-2.md` |
+  | slot-3 (doc) | A0-10 · `task/A0-10-manager-brief` | `docs/agents/MANAGER.md` written (about 14 KB), **not committed**: the `grunt` role has no shell. Check it against plan §§1–9, then commit it | Manager check; then the user approves, and §12 and `CLAUDE.md` point to it |
+  | slot-4 (doc) | A0-8 (crpg-cli) · `task/A0-8-cli-agents-trim` | Stopped by quota after 11 steps | MiMo-V2.6-Pro, a role with a shell (not `grunt`) |
+  | slot-5, slot-6 (doc) | T108 blind ADR drafts · `task/T108-draft-{kimi,gemini}` | Stopped by quota within a minute | **On cheap O1 models, not Kimi K3 or Gemini 4 Argon** (DeepSeek V4.1 Flash and MiMo-V2.6-Pro), from `BRIEF-T108-draft.md` with `{MODEL}`, `{SLOT}` and `{LAB}` filled in |
+
 - Next:
-  1. **T097 is approved** (the user, 2026-10-16, with D29d (a), D29e (a) and D29f (a)). Dispatch the I package first: an OpenCode O1 implementer, an O1 test writer from another lab for T2–T3, and the Claude `reviewer`. Write its brief with `tools/agents/brief.py T097` and name the `Decision` and `What must not change` sections by hand (A0-5b below).
-  2. **Done:** the user wired the hooks into `.claude/settings.json` by hand on 2026-10-16 (the classifier refuses the manager's edit as self-modification even with approval). They load in the next session started from a checkout that has them. What was wired: the block in `docs/agents/TEMPLATES.md` §6, plus a `PostToolUse` entry with no matcher running `python "$CLAUDE_PROJECT_DIR/tools/agents/context_meter.py"`. No `SubagentStop` verify script exists yet (plan §6 step 5): that is a new package, A0-6c.
-  3. Dispatch with `tools/agents/oc.py` from now on (pull `setup/A0-config` into the main checkout first; it was left at `66b2f9e`). `../crpg-slots/manager/ocrun.py` is updated for OpenCode 2.x as a fallback.
-  4. T099 research fold-in. Every citation check is done: R4 40/40, R8-deep 19/19, R9-deep 19/19, R15-deep 17/17, R13-deep 18/19, R12-deep 23/27, R11-deep 27/33 (its misses are mostly paywalled ACM and T&F DOIs, so "not found" may mean "could not fetch"); earlier: R10-deep 29/29, R14-deep 44/44, first passes 222 of 225. Copy the reports into the repository with signatures, mark each not-found claim, and write the T099 record (`../crpg-slots/research/V8/V8.jsonl`, `V10/V10.jsonl`; `manager/vsum.py`). R3's OpenRouter $10 question goes into D29; check R4's config keys before applying any.
-  5. A0-5b: `brief.py` should classify `Decision…` and `What must not change` as contract (T097's format). Small; OpenCode O1.
-  6. T100 benchmark contract and T108 brief (`architect`; inputs R13-deep and R14-deep), then T101.
-  7. A0-7 and A0-8.
-- Blocked: the free Zen pool hit its limit at about 14:00 UTC on 2026-10-16 and takes about 12 hours to reset: use Go IDs only until about 02:00 UTC on 2026-10-17. OpenCode is now 2.0.31 (see MODELS.md §1 item 12). Cat Jam is no longer offered.
-
-Running at handover: nothing. Worktrees in `C:\crpg\dev\crpg-slots`: `slot-1` (`setup/A0-3-oc-py`, merged into PR #33), `slot-2` (`setup/A0-5-brief`, merged into PR #33), `alt-2` (`setup/A0-6-hooks`, merged), `doc-1` (`task/T097-contract`, merged into PR #33). All four can be reset for the next tasks.
+  1. From about 02:30 UTC on 2026-10-17 (the Go window clears; the free Zen pool resets about 02:00), rerun all six at once. Slots 3–6 are doc-only (no cargo). Keep every slot busy (the user: "Make sure that parallel work is undertaken as regularly as possible").
+  2. T097 after it verifies: the "two keys" test writer (MiMo-V2.6-Pro); the measurement rerun (harness `crpg-slots/doc-1/T097-measure-harness.rs`); review by Kimi K3 rather than the Claude `reviewer` (proposed to the user; not yet answered).
+  3. **Design pipeline (the user asked that design work run in parallel):** a fact pack plus two blind drafts by OpenCode on doc slots, then one `architect` pass that adjudicates, then the user. T108 is the pilot; then T100, T101/T101b, T034, T043 and T053.
+  4. A0-3c, a Go spend guard in `oc.py`: sum the rolling 5-hour Go spend from the run records (`crpg-slots/manager/briefs/go_spend.py` does it by hand) and refuse a Kimi K3 or Gemini 4 Argon run that could cross the cap.
+  5. A0-5b is folded into A0-3b. A0-7, the rest of A0-8, and R3's OpenRouter question go to D29.
+- Blocked: the Go cap until about 02:30 UTC. Of the $3.64 recorded in the window, $3.15 was Kimi K3 and Gemini 4 Argon reviews and drafts, and $0.49 was all the cheap implementers together. The user's main checkout is still at `66b2f9e`: the session's worktree guard refuses git there. The user should run `git merge --ff-only origin/setup/A0-config` in an ordinary terminal; the hooks load only in sessions started from a checkout that has them.
+- Session rules from the user, 2026-10-17: cut Claude usage (plan §8: fewer manager turns, no Claude bookkeeper, Claude subagents only when unavoidable); keep slots full; design in parallel.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -711,3 +710,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-16 (UTC) · claude-code + manager handover · Replaced the Handover block with the second manager session close-out (PR #33 in flight, the numbered next steps, and the Go-only blocker) so the next session starts from the current state, not the earlier handover.
 - 2026-10-16 (UTC) · claude-code + user approvals · Recorded the user's approval of the T097 contract and D29d–f, making the T097 I package the next dispatch, and noted that the hook wiring must be done by hand because the classifier refuses it even with approval.
 - 2026-10-16 (UTC) · claude-code + hooks wired · Marked next step 2 done after the user applied the four hooks to `.claude/settings.json` by hand, so the next session knows the context meter is live.
+- 2026-10-16 (UTC) · claude-code (manager, Opus 5.5) + third manager session handover · Replaced the handover: six packages stopped by the Go cap with their slots, branches and rerun commands, and the user's new rules (cut Claude usage, keep slots full, design in parallel), so the next session can resume without this one.
