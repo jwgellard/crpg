@@ -5,7 +5,7 @@ Updated: 2026-10-16
 ## Handover
 - In flight: PR #33 (setup wave A0, the session's PR: A0-1/A0-2 agent definitions, routing rules, MODELS.md §4.1 field record, manager effort and handover rules; A0-3, A0-4 and A0-6 join it once reviewed) and PR #34 (PR #28 bookkeeping plus the T024 contract draft, still awaiting approval). T098 (Windows QUIC case-13 flake) merged as a task file in PR #32. Workers still running at handover are listed below; each writes its log under `.agents/runs/<ID>/`.
 - Next: collect the running results below; review, then cherry-pick A0-3, A0-4 and A0-6 onto `setup/A0-config`; dispatch A0-6b (brief: `../crpg-slots/manager/BRIEF-A0-6b.md`) and wire the hooks into `.claude/settings.json`; check the research reports' citations, then fold them into MODELS.md and the plan; run the T097 measurement (brief in `../crpg-slots/scratch-1`), then send the T097 contract to the `architect`; check the four Claude agents spawn (A0-1); A0-5, A0-7, A0-8 and T098 after that. Until `oc.py` lands, dispatch with `python ../crpg-slots/manager/ocrun.py SLOT AGENT MODEL LOG TIMEOUT [PROMPT]`.
-- Blocked: OpenCode Go hit its shared 5-hour cap at 10:17 UTC on 2026-10-16 and should clear about 12:00 UTC. Use free O1 models until then (MODELS.md §4).
+- Blocked: both OpenCode pools are rate-limited. Go hit its shared 5-hour cap at 10:17 UTC on 2026-10-16 and should clear about 12:00 UTC. The free models share an account-wide rate limit, which every free model hit by about 11:30 UTC with 7–8 runs going at once. Once they clear, run at most three free runs at once (MODELS.md §1 item 10).
 
 Running at handover (2026-10-16; worktrees in `C:\crpg\dev\crpg-slots`):
 
@@ -13,8 +13,8 @@ Running at handover (2026-10-16; worktrees in `C:\crpg\dev\crpg-slots`):
 |---|---|---|---|---|
 | A0-3 | `oc.py`: **stopped** after 19 steps by the free tier's `Rate limit exceeded` (quota, not the model's fault); its partial, uncommitted work is kept in the slot, so the next attempt continues it (Muse Spark Free once its limit clears, or DeepSeek V4.1 Flash Free) | `opencode/muse-spark-1.3-contributor-free` | `slot-1` · `setup/A0-3-oc-py` | `.agents/runs/A0-3/1-opencode_muse-spark-1.3-contributor-free.jsonl` |
 | A0-4 | attempt 2, review fixes | `opencode/deepseek-v4.1-flash-free` | `slot-2` · `setup/A0-4-verify-task` | `.agents/runs/A0-4/2-…jsonl` |
-| A0-6 | attempt 2, review fixes | `opencode/deepseek-v4.1-flash-free` | `alt-2` · `setup/A0-6-hooks` | `.agents/runs/A0-6/2-…jsonl` |
-| R2–R4 | benchmark, model-source and token-saving research. R1 **stopped** after 6 steps with no output, on `Rate limit exceeded`: three runs were on DeepSeek V4.1 Flash Free at once. Rerun it on a free model with no other run going | GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r2,R3,R4}` | `.agents/runs/R1`…`R4` |
+| A0-6 | attempt 2, review fixes: **not run** (rate limit, 0 steps); rerun it with the same notes, which are already at the end of `alt-2/BRIEF.md`. `42a7ebb` (attempt 1) is intact | `opencode/deepseek-v4.1-flash-free` | `alt-2` · `setup/A0-6-hooks` | `.agents/runs/A0-6/2-…jsonl` |
+| R1–R4 | benchmark, model-source and token-saving research: **none produced output** (R1 stopped at step 6; R2, R3 and R4 at step 0, all on the rate limit). Rerun them, at most three free runs at once; the briefs are in place | DeepSeek Free, GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r1,r2,R3,R4}` | `.agents/runs/R1`…`R4` |
 | V1 | citation check of R5 and R7 | `opencode/longcat-2.5-preview-free` | `research/V1` | `.agents/runs/V1` |
 
 Done and unpicked: R5, R6 and R7 reports (`research/R5/R5.md` and so on); V2 checked R6 (12 confirmed, 1 paraphrase, 1 not found: the merge-queue-on-personal-accounts claim, still to verify).

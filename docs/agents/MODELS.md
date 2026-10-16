@@ -64,10 +64,12 @@ Found while testing; `tools/agents/oc.py` must handle each one.
 9. Session titles go to a "small model", which defaulted to the paid Zen
    `gpt-5.4-nano` and failed with 402 on every run. `opencode.json` sets
    `small_model` to a free model.
-10. Free models have their own rate limits. With three runs on DeepSeek V4.1
-   Flash Free at once, two stopped with `Rate limit exceeded`, and Muse Spark
-   Free stopped the same way after 19 minutes. Run **at most one at a time per
-   free model**, spreading a wave across models (2026-10-16).
+10. **The free models share one rate limit across the account.** On
+   2026-10-16, with 7–8 OpenCode runs going at once, every free model began
+   refusing with `Rate limit exceeded`: DeepSeek V4.1 Flash, Muse Spark, GLM-5.3
+   Flash, Big Pickle and Space Bunny. Four runs failed before their first
+   step. Run **at most three free runs at once in total**, and at most one per
+   model. `oc.py wave` must enforce both caps.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -357,3 +359,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + Go cap hit · Recorded that the Go cap is shared across the account and was hit after $5.01, mostly from expensive models. Added the cheap-implementer rule and two new run failure modes (a silent hang after a fatal provider error, and the paid title model), so later routing spends Go where it counts.
 - 2026-10-16 (UTC) · claude-code + user preference, third statement · Set the order within the strong models: the intelligent free models' limits first, then cheap Go, then expensive Go for reviews, with Claude at the manager's discretion. The user wants tokens stretched as far as possible.
 - 2026-10-16 (UTC) · claude-code + free-tier rate limits · Added the at-most-one-run-per-free-model rule after three concurrent DeepSeek Free runs and one Muse Spark Free run hit `Rate limit exceeded`.
+- 2026-10-16 (UTC) · claude-code + free-tier rate limit correction · Corrected item 10: the free-tier limit is shared across the account, not set per model. Capped concurrency at three free runs in total, after four runs on four different free models failed at step 0.

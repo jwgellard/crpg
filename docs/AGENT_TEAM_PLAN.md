@@ -518,6 +518,9 @@ decision first.
 
 ## 12. Kickoff prompt for a manager session
 
+You do not paste this: the root `CLAUDE.md` tells a session to follow it when
+you say "start working".
+
 ```text
 You are the manager of the CRPG engine build. You plan, brief, route, judge
 and open PRs. You do not implement, you never read a worker's transcript, and
@@ -528,7 +531,7 @@ docs/PROJECT_STATE.md, and the in-flight rows of tasks/BACKLOG.md. Read
 docs/agents/MODELS.md before routing and docs/agents/TEMPLATES.md before
 briefing.
 
-This session: <wave N of milestone M | gate review for M>.
+This session: the "Next" line of the handover, unless I name something else.
 
 1. Confirm CI on master and resolve anything the handover lists as pending.
 2. List the wave's ready packages with route, model and slot per §4.
@@ -574,3 +577,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + user correction on model choice · Reworded the preference as the strongest suitable OpenCode model, then Claude, with free versus Go only a tiebreak. Restored O1 as the default worker tier in §4.3 and recorded the A0-3 head-to-head.
 - 2026-10-16 (UTC) · claude-code + user preference, third statement · Reworded the preference note: intelligent free models first, then cheap and then expensive Go, with Claude at the manager's discretion, as the user asked once the Go cap was hit.
 - 2026-10-16 (UTC) · claude-code + user question on manager effort and handover · Set the manager's effort by session type (medium, high, xhigh), added handover thresholds at 150k and 200k tokens enforced by a context-meter hook, and recorded why managers relay rather than nest. The first manager session's context reached about 346k tokens, which is what prompted this.
+- 2026-10-16 (UTC) · claude-code + user request · Made §12 the prompt that the root `CLAUDE.md` triggers on "start working", with the session's work taken from the handover, so the user no longer pastes a kickoff prompt.
