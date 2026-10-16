@@ -25,6 +25,7 @@ CONTEXT_METER = AGENTS / "context_meter.py"
 WARN = 150000
 STOP = 200000
 REPEAT_STEP = 25000
+TAIL = 4 * 1024 * 1024
 
 WARN_MESSAGE = (
     "Context meter: about {n}k tokens (warn at {warn}k). Finish the package in "
@@ -181,6 +182,38 @@ class ContextMeterTests(unittest.TestCase):
         self.assertGreater(self.transcript.stat().st_size, 4 * 1024 * 1024)
         self.assertEqual(self.notice(self.invoke(self.session())), self.stop_message(200))
 
+    def test_tail_boundary_keeps_first_whole_line(self) -> None:
+        # Place the usage line's first byte exactly at the start of the 4 MB
+        # window. The byte before it is the newline closing the prefix, so a
+        # whole line begins the window and must be kept; dropping it would
+        # make the hook silent. With three newline-terminated lines the
+        # trailing line must be TAIL - usage - 2 bytes long.
+        usage = self.tokens(WARN)
+        usage_len = len(usage.encode("utf-8"))
+        base = json.dumps({"type": "summary", "pad": ""})
+        want = TAIL - usage_len - 2
+        suffix = json.dumps({"type": "summary", "pad": "x" * (want - len(base))})
+        self.assertEqual(len(suffix.encode("utf-8")), want)
+        prefix = self.no_usage()
+        # Write exact LF bytes, not write_text (which would turn each newline
+        # into CRLF on Windows), so the usage line starts on the boundary.
+        content = (prefix + "\n" + usage + "\n" + suffix + "\n").encode("utf-8")
+        self.transcript.write_bytes(content)
+        offset = len(prefix.encode("utf-8")) + 1
+        self.assertEqual(len(content) - TAIL, offset)
+        self.assertEqual(self.notice(self.invoke(self.session())), self.warn_message(150))
+
+    def test_tail_window_excludes_usage_before_it(self) -> None:
+        # The only usage line sits more than 4 MB before the end, followed by
+        # more than 4 MB of usage-free lines. A tail-only read must print
+        # nothing; reading the whole file would find the usage and notify.
+        filler = json.dumps({"cwd": str(self.root), "type": "summary", "pad": "x" * 2000})
+        self.write([self.tokens(WARN), *[filler] * 3000])
+        self.assertGreater(self.transcript.stat().st_size, 4 * 1024 * 1024)
+        result = self.invoke(self.session())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
     def test_malformed_lines_are_skipped(self) -> None:
         self.write(["not json {", "", self.tokens(WARN)])
         self.assertEqual(self.notice(self.invoke(self.session())), self.warn_message(150))
@@ -210,6 +243,21 @@ class ContextMeterTests(unittest.TestCase):
         self.write([self.tokens(145000)])
         self.assertEqual(
             self.notice(self.invoke(session, env=env)), self.stop_message(145, stop=120000)
+        )
+
+    def test_notice_text_states_configured_thresholds(self) -> None:
+        # The notice must name the thresholds actually in force, not the
+        # 150k/200k defaults: pin both texts under non-default values.
+        env = {"CRPG_CONTEXT_WARN": "130000", "CRPG_CONTEXT_STOP": "175000"}
+        self.write([self.tokens(130000)])
+        self.assertEqual(
+            self.notice(self.invoke(self.session(), env=env)),
+            self.warn_message(130, warn=130000),
+        )
+        self.write([self.tokens(175000)])
+        self.assertEqual(
+            self.notice(self.invoke(self.session(), env=env)),
+            self.stop_message(175, stop=175000),
         )
 
     def test_unusable_env_falls_back_to_defaults(self) -> None:

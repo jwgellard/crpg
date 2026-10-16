@@ -48,15 +48,24 @@ def env_int(name: str, default: int) -> int:
 
 
 def read_tail(path: str) -> str:
-    """Decode the last 4 MB of *path*, dropping any partial leading line."""
+    """Decode the last 4 MB of *path*, dropping any partial leading line.
+
+    The byte just before the window decides it: when it is a newline the
+    window opens exactly on a line boundary, so its first whole line is real
+    data and must be kept; otherwise that line is a truncated fragment and is
+    dropped.
+    """
     size = os.path.getsize(path)
+    start = max(0, size - TAIL_BYTES)
     with open(path, "rb") as handle:
-        start = max(0, size - TAIL_BYTES)
-        handle.seek(start)
+        partial = False
+        if start > 0:
+            handle.seek(start - 1)
+            partial = handle.read(1) != b"\n"
+        else:
+            handle.seek(0)
         data = handle.read()
-    if start > 0:
-        # The first line of the window is cut mid-line unless it starts at a
-        # newline; drop it rather than feed JSON a truncated object.
+    if partial:
         newline = data.find(b"\n")
         data = data[newline + 1 :] if newline != -1 else b""
     return data.decode("utf-8", errors="replace")
