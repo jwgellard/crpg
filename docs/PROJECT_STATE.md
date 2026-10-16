@@ -3,21 +3,51 @@
 Updated: 2026-10-16
 
 ## Handover
-- In flight: PR #33 (setup wave A0, the session's PR: A0-1/A0-2 agent definitions, routing rules, MODELS.md §4.1 field record, manager effort and handover rules; A0-3, A0-4 and A0-6 join it once reviewed) and PR #34 (PR #28 bookkeeping plus the T024 contract draft, still awaiting approval). T098 (Windows QUIC case-13 flake) merged as a task file in PR #32. Workers still running at handover are listed below; each writes its log under `.agents/runs/<ID>/`.
-- Next: collect the running results below; review, then cherry-pick A0-3, A0-4 and A0-6 onto `setup/A0-config`; dispatch A0-6b (brief: `../crpg-slots/manager/BRIEF-A0-6b.md`) and wire the hooks into `.claude/settings.json`; check the research reports' citations, then fold them into MODELS.md and the plan; run the T097 measurement (brief in `../crpg-slots/scratch-1`), then send the T097 contract to the `architect`; check the four Claude agents spawn (A0-1); A0-5, A0-7, A0-8 and T098 after that. Until `oc.py` lands, dispatch with `python ../crpg-slots/manager/ocrun.py SLOT AGENT MODEL LOG TIMEOUT [PROMPT]`.
-- Blocked: both OpenCode pools are rate-limited. Go hit its shared 5-hour cap at 10:17 UTC on 2026-10-16 and should clear about 12:00 UTC. The free models share an account-wide rate limit, which every free model hit by about 11:30 UTC with 7–8 runs going at once. Once they clear, run at most three free runs at once (MODELS.md §1 item 10).
+- In flight: PR #33 (setup wave A0 and the day's planning, one PR per session). Since the last handover it gained:
+  - the A0-1 spawn check and `tools:` allowlists;
+  - the R5–R7 research fold-in (`docs/agents/RESEARCH-2026-10-16.md`);
+  - the plan changes D28j–D28m: the M6-R authoring UX research stage T099–T103, T104–T112, rule-defining as a pillar, and real-time-with-pause plus turn-based;
+  - the MODELS.md Go-route fix and the first field record;
+  - A0-4 (`verify_task.py`) and A0-6 (hooks), each verified and reviewed "ready for PR" on Go Gemini 4 Argon, then cherry-picked.
 
-Running at handover (2026-10-16; worktrees in `C:\crpg\dev\crpg-slots`):
+  PR #34 (T024 contract draft) still awaits your approval. The D29 draft (`tasks/DECISIONS-D29-DRAFT.md`) holds a (stacked PRs) and b (reviewer write access).
+- Next:
+  1. Collect the runs below.
+  2. A0-3 (`oc.py`, commit `0b1550d` on `setup/A0-3-oc-py`, verified 0/9):
+     - Live smoke test on a Go ID: `oc.py ask --role scout --model opencode-go/cat-jam-free ...`. The first try hit the free-route rate limit.
+     - First-pass review on Go Argon. Decide on its size, about twice the budget.
+     - Attempt-2 notes: `wave` caps runs per model, enforces the free-tier caps (MODELS.md §1 items 10–11), and refuses two packages that own one crate (plan §5.1).
+     - Then cherry-pick it.
+  3. A0-6b: verify, review and cherry-pick, then wire the hooks into `.claude/settings.json`.
+  4. T099 research:
+     - When V6, V8 and V9 land, check R4 and the R9, R11 and R15 deep reports the same way (`manager/mkcheck.sh`, `manager/vsum.py`).
+     - Copy the verified reports into the repository with signatures and write the T099 record.
+     - R3's OpenRouter $10 question goes into D29 once V6 holds.
+     - Verify R4's config keys before applying any.
+  5. T097-m numbers go to the T097 contract (`architect`).
+  6. Write the T100 benchmark contract and the T108 brief (`architect`; inputs R13-deep and R14-deep), then T101.
+  7. A0-5, A0-7 and A0-8 come after.
 
-| ID | Work | Model | Worktree · branch | Log |
-|---|---|---|---|---|
-| A0-3 | `oc.py`: **stopped** after 19 steps by the free tier's `Rate limit exceeded` (quota, not the model's fault); its partial, uncommitted work is kept in the slot, so the next attempt continues it (Muse Spark Free once its limit clears, or DeepSeek V4.1 Flash Free) | `opencode/muse-spark-1.3-contributor-free` | `slot-1` · `setup/A0-3-oc-py` | `.agents/runs/A0-3/1-opencode_muse-spark-1.3-contributor-free.jsonl` |
-| A0-4 | attempt 2, review fixes: **not run** (rate limit, 0 steps); rerun it with the same notes, which are already at the end of `slot-2/BRIEF.md`. `317a04f` (attempt 1) is intact | `opencode/deepseek-v4.1-flash-free` | `slot-2` · `setup/A0-4-verify-task` | `.agents/runs/A0-4/2-…jsonl` |
-| A0-6 | attempt 2, review fixes: **not run** (rate limit, 0 steps); rerun it with the same notes, which are already at the end of `alt-2/BRIEF.md`. `42a7ebb` (attempt 1) is intact | `opencode/deepseek-v4.1-flash-free` | `alt-2` · `setup/A0-6-hooks` | `.agents/runs/A0-6/2-…jsonl` |
-| R1–R4 | benchmark, model-source and token-saving research: **none produced output** (R1 stopped at step 6; R2, R3 and R4 at step 0, all on the rate limit). Rerun them, at most three free runs at once; the briefs are in place | DeepSeek Free, GLM-5.3-Flash Free, Big Pickle, Space Bunny | `research/{r1,r2,R3,R4}` | `.agents/runs/R1`…`R4` |
-| V1 | citation check of R5 and R7 | `opencode/longcat-2.5-preview-free` | `research/V1` | `.agents/runs/V1` |
+  Dispatch with `python ../crpg-slots/manager/ocrun.py SLOT AGENT MODEL LOG TIMEOUT [PROMPT]` until `oc.py` lands. Deep research uses `manager/mkdeep.sh` and the `crpg-deep-research` agent.
+- Blocked: nothing. The free Zen route (`opencode/...`) has refused most free models since about 11:00 UTC. **Route Cat Jam and LongCat by their `opencode-go/` IDs**, which stayed available (MODELS.md §1 item 11). Keep at most three runs per model.
 
-V1 checked R5 and R7: see `research/V1/V1.jsonl` and the run summary. Done and unpicked: R5, R6 and R7 reports (`research/R5/R5.md` and so on); V2 checked R6 (12 confirmed, 1 paraphrase, 1 not found: the merge-queue-on-personal-accounts claim, still to verify).
+Running at handover (2026-10-16 ~12:50 UTC; worktrees in `C:\crpg\dev\crpg-slots`; logs under `.agents/runs/<ID>/`):
+
+| ID | Work | Model | Worktree · branch |
+|---|---|---|---|
+| A0-6b | `context_meter.py` (brief in the worktree) | `opencode-go/deepseek-v4.1-flash` | `alt-2` · `setup/A0-6-hooks` |
+| T097-m | attempt 3: `HistoryWorld` cost measurement, finishing a partial scratch file; `CARGO_TARGET_DIR` = `slot-1/target` | `opencode-go/mimo-v2.6-pro` | `scratch-1` · detached |
+| V6 | citation check of R1, R2, R3 | `opencode-go/muse-spark-1.3-contributor` | `research/V6` |
+| V8 | citation check of R8-, R12-, R13-deep | `opencode-go/longcat-2.5-preview-free` | `research/V8` |
+| V9 | citation check of R10-, R14-deep | `opencode-go/cat-jam-free` | `research/V9` |
+| R11-deep | deep pass, usability methods | `opencode-go/longcat-2.5-preview-free` | `research/R11-deep` |
+
+Research outputs live in `../crpg-slots/research/<ID>/`, outside the repository:
+- first passes R1–R4 and R8–R15;
+- deep passes `R8/9/10/12/13/14/15-deep`;
+- checks V1–V5 (`V*.jsonl`).
+
+The checks so far hold for Cat Jam's six first passes: 68 of 70 checkable citations held.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -702,3 +732,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-16 (UTC) · claude-code + D28 handover · Added the handover block the adopted agent-team plan reads first, corrected the 2026-10-06 update's "Windows run pending" to the green PR #28 Windows run recorded on `claude/blissful-rubin-59repd`, and received the merged-task log moved out of `AGENTS.md` (D28f).
 - 2026-10-16 (UTC) · claude-code + handover after S002 · Moved the handover past the S002 merge, added PR #31 (T096) and T097 for the manager, and cleared the deny blocker.
 - 2026-10-16 (UTC) · claude-code + manager handover · Rewrote the handover for the next manager session, naming every run still going with its worktree, model and log, plus where the interim runner and the A0-6b brief live, because the first manager session's context passed the new 200k limit.
+- 2026-10-16 (UTC) · claude-code + manager handover (second session) · Rewrote the handover for the next session: what PR #33 gained, the numbered next steps, the Go-route rule, and every run still going with its model and worktree.
