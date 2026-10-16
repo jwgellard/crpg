@@ -122,13 +122,33 @@ class ProtectTests(unittest.TestCase):
         result = self.protect(lock, allow="Cargo.lock, Cargo.toml")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    @unittest.skipUnless(WINDOWS, "backslash paths only resolve on Windows")
-    def test_backslash_path_is_protected(self) -> None:
-        path = self.write("Cargo.lock")
-        backslash = str(path).replace("/", "\\")
-        result = self.protect(backslash)
+    def test_file_named_goldens_is_not_protected_but_a_goldens_dir_is(self) -> None:
+        # A path segment that is a file named "goldens" must not match the rule;
+        # only a directory segment named "goldens" protects.
+        inside = self.write("assets/goldens/level.bin")
+        result = self.protect(inside)
         self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn("Cargo.lock", result.stderr)
+        self.assertIn("goldens", result.stderr)
+
+        file_named = self.write("named/goldens")
+        result = self.protect(file_named)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    @unittest.skipUnless(WINDOWS, "backslash paths only resolve on Windows")
+    def test_forward_slash_and_backslash_paths_are_protected(self) -> None:
+        self.write("Cargo.lock")
+        # Build the strings explicitly: str(Path) already uses backslashes on
+        # Windows, so a plain backslash test would not differ from the ordinary
+        # cases. Feed one all-forward-slash and one all-backslash path.
+        forward = str(self.root).replace("\\", "/") + "/Cargo.lock"
+        backslash = str(self.root).replace("/", "\\") + "\\Cargo.lock"
+        self.assertNotEqual(forward, backslash)
+        for style, candidate in (("forward", forward), ("backslash", backslash)):
+            with self.subTest(style=style):
+                result = self.protect(candidate)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Cargo.lock", result.stderr)
 
     def test_sibling_worktree_path_is_protected(self) -> None:
         sibling = self.tmp / "slot-1"
@@ -170,13 +190,13 @@ class FmtOneTests(unittest.TestCase):
         self.root = self.tmp / "repo"
         (self.root / ".git").mkdir(parents=True)
 
-    def fmt(self, path) -> subprocess.CompletedProcess:
+    def fmt(self, path, env: dict | None = None) -> subprocess.CompletedProcess:
         payload = {
             "hook_event_name": "PostToolUse",
             "tool_name": "Edit",
             "tool_input": {"file_path": str(path)},
         }
-        return run_hook(FMT_ONE, payload, str(self.root))
+        return run_hook(FMT_ONE, payload, str(self.root), env=env)
 
     @unittest.skipUnless(RUSTFMT, "rustfmt is not on PATH")
     def test_reformats_badly_formatted_rust_file(self) -> None:
@@ -188,6 +208,25 @@ class FmtOneTests(unittest.TestCase):
         after = source.read_text(encoding="utf-8")
         self.assertNotEqual(after, before)
         self.assertIn("fn main() {\n", after)
+
+    @unittest.skipUnless(RUSTFMT, "rustfmt is not on PATH")
+    def test_rustfmt_failure_exits_zero_with_one_stderr_line(self) -> None:
+        broken = self.root / "broken.rs"
+        broken.write_text("fn main( { this is not rust\n", encoding="utf-8")
+        result = self.fmt(broken)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stderr.strip().splitlines()), 1)
+        self.assertIn("rustfmt failed", result.stderr)
+
+    def test_missing_rustfmt_exits_zero_with_one_stderr_line(self) -> None:
+        source = self.root / "clean.rs"
+        source.write_text("fn main() {}\n", encoding="utf-8")
+        env = dict(os.environ)
+        env["PATH"] = ""
+        result = self.fmt(source, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stderr.strip().splitlines()), 1)
+        self.assertIn("rustfmt not found", result.stderr)
 
     def test_ignores_markdown_file(self) -> None:
         notes = self.root / "notes.md"
@@ -237,6 +276,16 @@ class HandoverTests(unittest.TestCase):
         result = self.start()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_non_utf8_state_file_exits_zero(self) -> None:
+        self.state.parent.mkdir(parents=True, exist_ok=True)
+        # A lone \xe9 is invalid UTF-8; reading it must not escape as a
+        # UnicodeDecodeError. Keep the invalid byte outside the handover block
+        # so the printed block (and this assertion) stay deterministic.
+        self.state.write_bytes(b"## Handover\n- alpha\n\n## Phase\n- caf\xe9\n")
+        result = self.start()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, HANDOVER_PREFIX + "\n## Handover\n- alpha\n")
 
     def test_malformed_stdin_falls_back_to_process_cwd(self) -> None:
         self.state.parent.mkdir(parents=True, exist_ok=True)

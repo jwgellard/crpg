@@ -49,28 +49,33 @@ def handover_block(text: str) -> list[str] | None:
 
 
 def main() -> int:
-    cwd: object = None
+    # Any exception, not just OSError: a non-UTF-8 PROJECT_STATE.md must not
+    # escape as a decode error and make the hook exit non-zero.
     try:
-        data = json.loads(sys.stdin.read() or "{}")
-        if isinstance(data, dict):
-            cwd = data.get("cwd")
-    except Exception:  # noqa: BLE001 - fall back to the process cwd.
-        cwd = None
-    start = cwd if isinstance(cwd, str) and cwd else os.getcwd()
-    root = find_root(start)
-    if root is None:
+        cwd: object = None
+        try:
+            data = json.loads(sys.stdin.read() or "{}")
+            if isinstance(data, dict):
+                cwd = data.get("cwd")
+        except Exception:  # noqa: BLE001 - fall back to the process cwd.
+            cwd = None
+        start = cwd if isinstance(cwd, str) and cwd else os.getcwd()
+        root = find_root(start)
+        if root is None:
+            return 0
+        path = os.path.join(root, "docs", "PROJECT_STATE.md")
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            return 0
+        block = handover_block(text)
+        if not block:
+            return 0
+        sys.stdout.write(PREFIX + "\n" + "\n".join(block) + "\n")
         return 0
-    path = os.path.join(root, "docs", "PROJECT_STATE.md")
-    try:
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
-    except OSError:
+    except Exception:  # noqa: BLE001 - a hook bug must not block work.
         return 0
-    block = handover_block(text)
-    if not block:
-        return 0
-    sys.stdout.write(PREFIX + "\n" + "\n".join(block) + "\n")
-    return 0
 
 
 if __name__ == "__main__":

@@ -55,7 +55,9 @@ def rule_for(rel: str) -> str | None:
     for directory in PROTECTED_DIRS:
         if rel == directory or rel.startswith(directory + "/"):
             return directory + "/**"
-    if "goldens" in parts:
+    # Only a *directory* segment named ``goldens`` protects: a file whose own
+    # name is ``goldens`` is not a goldens artefact, so look at the parents.
+    if "goldens" in parts[:-1]:
         return "goldens/"
     if base.endswith(".golden"):
         return "*.golden"
