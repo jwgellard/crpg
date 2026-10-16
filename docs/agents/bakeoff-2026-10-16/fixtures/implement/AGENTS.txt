@@ -1,0 +1,10 @@
+# fx — agent rules
+
+Deterministic signed 16.16 fixed-point arithmetic for a simulation core.
+
+- No `f32` or `f64` anywhere (source, tests, comments in code paths). Integer arithmetic only.
+- No new dependencies. Do not edit `Cargo.toml`.
+- No `unsafe`.
+- Do not modify, weaken or delete anything under `tests/`. You may add new test files.
+- Done means all of these pass: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- If the spec is ambiguous, stop and say so instead of guessing.

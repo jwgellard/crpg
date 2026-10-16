@@ -12,6 +12,13 @@ dedicated server, headless CLI/tooling, server-side extensibility, and tests;
 target-specific failures are defects, not best effort. Linux GUI builds are
 not promised and Linux headless support must not depend on Godot.
 
+> **Update 2026-10-16 (proposed):** [AGENT_TEAM_PLAN.md](AGENT_TEAM_PLAN.md)
+> would replace §3's "no reviewer agent", §4's routing table and §9's
+> two-agent limit with a manager-and-workers team, a measured model catalog
+> ([agents/MODELS.md](agents/MODELS.md)) and slot limits. Pending the user's
+> D28 answers; the rest of this document, including §12, stands.
+> *Adopted 2026-10-16 (D28a, [tasks/DECISIONS-2026-10-16.md](../tasks/DECISIONS-2026-10-16.md)).*
+
 > **Pricing volatility warning.** The AI tooling market moved violently through 2026, and the free agentic tier took most of the damage. Alibaba cut Qwen Code's free OAuth quota tenfold and then closed it entirely on 15 April. GitHub paused Copilot signups in April and switched to usage-based AI Credits on 1 June; the free student tier came back thinner. Google discontinued free Gemini CLI serving on 18 June and replaced it with Antigravity CLI on a far smaller quota. Every number in this document was checked in early September 2026 and some of it will be wrong within a quarter. **Verify against vendor pricing pages before you commit money.** The *workflow* design below is deliberately built so that swapping a provider is a one-line config change, because it will happen more than once.
 
 ---
@@ -490,3 +497,5 @@ in commit `bb9a702`); the next task is T010 campaign data.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009a/T009c merged · Updated the runner paragraph to the merged state; T009b is next.
 - 2026-09-07 (UTC) · opencode/big-pickle + T009b merged · Updated the runner paragraph to the merged `crpgc replay` wrapper; T010 campaign data is next.
 - 2026-09-17 (UTC) · opencode/muse-spark + S001 runner rule · Rewrote the self-hosted restriction as the enforced push-or-dispatch rule with the guard-job CI failure, so a fork PR can never reach self-hosted execution by configuration accident.
+- 2026-10-16 (UTC) · claude-code + agent-team plan · Added a dated note naming the sections the proposed `AGENT_TEAM_PLAN.md` would replace, so a reader of the old routing table knows a measured one is pending.
+- 2026-10-16 (UTC) · claude-code + D28 adopted · Marked the agent-team plan note adopted, so §§3, 4 and 9 read as superseded.

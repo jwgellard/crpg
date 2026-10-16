@@ -1,0 +1,629 @@
+[
+ {
+  "task": "t1",
+  "model": "openai/gpt-5.6-terra",
+  "rc": 0,
+  "secs": 10.4,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 13491,
+   "output": 54,
+   "reasoning": 8,
+   "cache_read": 11776
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": false,
+   "tp": 4,
+   "fp": [],
+   "fn": [
+    "crpg-cli",
+    "crpg-godot",
+    "crpg-server",
+    "crpg-testkit"
+   ],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-net\",\"crpg-persist\",\"crpg-script\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/claude-haiku-5-5",
+  "rc": 0,
+  "secs": 8.6,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 6,
+   "output": 212,
+   "reasoning": 475,
+   "cache_read": 19114
+  },
+  "cost": 0.003750115,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/deepseek-v4-pro",
+  "rc": 0,
+  "secs": 42.4,
+  "steps": 4,
+  "tools": 3,
+  "tok": {
+   "input": 16455,
+   "output": 484,
+   "reasoning": 2001,
+   "cache_read": 44544
+  },
+  "cost": 0.016760568,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "rc": 0,
+  "secs": 15.9,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 16673,
+   "output": 158,
+   "reasoning": 255,
+   "cache_read": 15488
+  },
+  "cost": 0.002795214,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/gemini-4-argon-contributor",
+  "rc": 0,
+  "secs": 27.1,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 21357,
+   "output": 161,
+   "reasoning": 1414,
+   "cache_read": 15592
+  },
+  "cost": 0.1200464,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/glm-5.3-flash",
+  "rc": 0,
+  "secs": 37.6,
+  "steps": 3,
+  "tools": 2,
+  "tok": {
+   "input": 19403,
+   "output": 88,
+   "reasoning": 453,
+   "cache_read": 26112
+  },
+  "cost": 0.00396431,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/glm-5.3",
+  "rc": 0,
+  "secs": 19.2,
+  "steps": 3,
+  "tools": 2,
+  "tok": {
+   "input": 16859,
+   "output": 147,
+   "reasoning": 618,
+   "cache_read": 28287
+  },
+  "cost": 0.03432322,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/gpt-6-luna",
+  "rc": 0,
+  "secs": 9.5,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 6,
+   "output": 140,
+   "reasoning": 165,
+   "cache_read": 11378
+  },
+  "cost": 0.002261755,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/hy4-preview",
+  "rc": 0,
+  "secs": 27.8,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 15339,
+   "output": 145,
+   "reasoning": 323,
+   "cache_read": 27392
+  },
+  "cost": 0.015113657999999999,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/kimi-k2.7-code",
+  "rc": 0,
+  "secs": 33.3,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 16087,
+   "output": 141,
+   "reasoning": 736,
+   "cache_read": 13568
+  },
+  "cost": 0.02136857,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/kimi-k3",
+  "rc": 0,
+  "secs": 25.5,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 30332,
+   "output": 166,
+   "reasoning": 620,
+   "cache_read": 64
+  },
+  "cost": 0.1028052,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/mimo-v2.6-pro",
+  "rc": 0,
+  "secs": 33.1,
+  "steps": 4,
+  "tools": 5,
+  "tok": {
+   "input": 15639,
+   "output": 222,
+   "reasoning": 767,
+   "cache_read": 45440
+  },
+  "cost": 0.007828115,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/minimax-m3",
+  "rc": 0,
+  "secs": 11.9,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 15827,
+   "output": 132,
+   "reasoning": 580,
+   "cache_read": 15326
+  },
+  "cost": 0.00652206,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/qwen3.8-flash",
+  "rc": 0,
+  "secs": 27.1,
+  "steps": 3,
+  "tools": 2,
+  "tok": {
+   "input": 18,
+   "output": 870,
+   "reasoning": 0,
+   "cache_read": 29158
+  },
+  "cost": 0.004905128,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/qwen3.8-max",
+  "rc": 0,
+  "secs": 34.5,
+  "steps": 3,
+  "tools": 2,
+  "tok": {
+   "input": 18,
+   "output": 1139,
+   "reasoning": 0,
+   "cache_read": 29173
+  },
+  "cost": 0.05410575,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode-go/step-5-preview",
+  "rc": 0,
+  "secs": 17.6,
+  "steps": 3,
+  "tools": 2,
+  "tok": {
+   "input": 14120,
+   "output": 283,
+   "reasoning": 383,
+   "cache_read": 29312
+  },
+  "cost": 0.0188494,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/big-pickle",
+  "rc": 0,
+  "secs": 110.1,
+  "steps": 4,
+  "tools": 3,
+  "tok": {
+   "input": 15995,
+   "output": 283,
+   "reasoning": 228,
+   "cache_read": 42752
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/cat-jam-free",
+  "rc": 0,
+  "secs": 7.5,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 16662,
+   "output": 71,
+   "reasoning": 639,
+   "cache_read": 15360
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/deepseek-v4.1-flash-free",
+  "rc": 0,
+  "secs": 23.5,
+  "steps": 3,
+  "tools": 2,
+  "tok": {
+   "input": 16848,
+   "output": 202,
+   "reasoning": 1443,
+   "cache_read": 29312
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/glm-5.3-flash-free",
+  "rc": 0,
+  "secs": 16.8,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 18419,
+   "output": 132,
+   "reasoning": 251,
+   "cache_read": 13056
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/longcat-2.5-preview-free",
+  "rc": 0,
+  "secs": 23.7,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 32858,
+   "output": 143,
+   "reasoning": 338,
+   "cache_read": 0
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/mimo-v2.6-flash-free",
+  "rc": 0,
+  "secs": 94.0,
+  "steps": 5,
+  "tools": 4,
+  "tok": {
+   "input": 16849,
+   "output": 415,
+   "reasoning": 2856,
+   "cache_read": 60160
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/muse-spark-1.3-contributor-free",
+  "rc": 0,
+  "secs": 13.9,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 31463,
+   "output": 200,
+   "reasoning": 908,
+   "cache_read": 226
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\", \"crpg-cli\", \"crpg-godot\", \"crpg-net\", \"crpg-persist\", \"crpg-script\", \"crpg-server\", \"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/nemotron-3.5-lightning-free",
+  "rc": "TIMEOUT",
+  "secs": 240.2,
+  "steps": 1,
+  "tools": 1,
+  "tok": {
+   "input": 14681,
+   "output": 112,
+   "reasoning": 32,
+   "cache_read": 0
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": false,
+   "note": "no array",
+   "unchanged": true
+  },
+  "answer": ""
+ },
+ {
+  "task": "t1",
+  "model": "opencode/nemotron-3.5-super-vl-free",
+  "rc": 0,
+  "secs": 23.4,
+  "steps": 2,
+  "tools": 1,
+  "tok": {
+   "input": 34811,
+   "output": 155,
+   "reasoning": 1185,
+   "cache_read": 0
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ },
+ {
+  "task": "t1",
+  "model": "opencode/space-bunny-free",
+  "rc": 0,
+  "secs": 14.4,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 15175,
+   "output": 234,
+   "reasoning": 266,
+   "cache_read": 27044
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "pass": true,
+   "tp": 8,
+   "fp": [],
+   "fn": [],
+   "unchanged": true
+  },
+  "answer": "[\"crpg-ai\",\"crpg-cli\",\"crpg-godot\",\"crpg-net\",\"crpg-persist\",\"crpg-script\",\"crpg-server\",\"crpg-testkit\"]"
+ }
+]

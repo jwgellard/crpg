@@ -1,0 +1,624 @@
+[
+ {
+  "task": "t3",
+  "model": "openai/gpt-5.6-terra",
+  "rc": "TIMEOUT",
+  "secs": 300.2,
+  "steps": 19,
+  "tools": 21,
+  "tok": {
+   "input": 28985,
+   "output": 1128,
+   "reasoning": 1643,
+   "cache_read": 256000
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 0,
+   "fp": null,
+   "note": "no array",
+   "unchanged": true
+  },
+  "answer": ""
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/claude-haiku-5-5",
+  "rc": 0,
+  "secs": 13.3,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 8,
+   "output": 726,
+   "reasoning": 641,
+   "cache_read": 28166
+  },
+  "cost": 0.0029498349999999996,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "e\": 24, \"spec\": \"S3\", \"summary\": \"`m.into_iter().collect()` returns HashMap iteration order, not the required ascending sort by attacker id.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"`amount as i32` wraps for amounts above `i32::MAX`, turning a large heal into a negative addend that lowers hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/deepseek-v4-pro",
+  "rc": 0,
+  "secs": 29.8,
+  "steps": 2,
+  "tools": 2,
+  "tok": {
+   "input": 10845,
+   "output": 429,
+   "reasoning": 1075,
+   "cache_read": 10112
+  },
+  "cost": 0.010358084,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": " can panic.\"},\n  {\"line\": 24, \"spec\": \"S3\", \"summary\": \"damage_totals returns HashMap iteration order instead of sorting by attacker id ascending.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"heal casts u32 amount to i32, so amounts >= 2^31 become negative and lower hp, violating never-lowers-hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "rc": 0,
+  "secs": 40.6,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 9631,
+   "output": 553,
+   "reasoning": 912,
+   "cache_read": 21504
+  },
+  "cost": 0.002388162,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": " saturating.\"},\n  {\"line\": 24, \"spec\": \"S3\", \"summary\": \"damage_totals collects a HashMap directly, so the result is not sorted by attacker id ascending.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"Casting amount (u32) to i32 can make it negative, so heal can lower hp rather than add the amount.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/gemini-4-argon-contributor",
+  "rc": 0,
+  "secs": 43.0,
+  "steps": 2,
+  "tools": 2,
+  "tok": {
+   "input": 15079,
+   "output": 519,
+   "reasoning": 2778,
+   "cache_read": 9382
+  },
+  "cost": 0.1281324,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "mary\": \"`damage_totals` collects entries from a `HashMap` without sorting the result by attacker `id` ascending.\"\n  },\n  {\n    \"line\": 39,\n    \"spec\": \"S5\",\n    \"summary\": \"`heal` casts `amount` (`u32`) to `i32`, which wraps to a negative value when `amount > i32::MAX as u32` and lowers `hp`.\"\n  }\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/glm-5.3-flash",
+  "rc": 0,
+  "secs": 17.6,
+  "steps": 2,
+  "tools": 2,
+  "tok": {
+   "input": 11575,
+   "output": 1049,
+   "reasoning": 0,
+   "cache_read": 8960
+  },
+  "cost": 0.00252955,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": " \"S3\", \"summary\": \"The result of damage_totals is collected from a HashMap without sorting by attacker id, so output order is nondeterministic.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"Casting amount to i32 wraps values above i32::MAX to negative, so heal can lower hp instead of adding to it.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/glm-5.3",
+  "rc": 0,
+  "secs": 60.1,
+  "steps": 2,
+  "tools": 2,
+  "tok": {
+   "input": 13254,
+   "output": 429,
+   "reasoning": 3321,
+   "cache_read": 7242
+  },
+  "cost": 0.03693852,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "d ascending, so the output order is nondeterministic across runs.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"`amount as i32` wraps to a negative value for amounts above i32::MAX, so healing can lower hp (e.g. heal(0, u32::MAX, 100) returns -1) instead of adding the amount and capping at max_hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/gpt-6-luna",
+  "rc": 0,
+  "secs": 16.4,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 9,
+   "output": 432,
+   "reasoning": 382,
+   "cache_read": 15774
+  },
+  "cost": 0.00170239,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": ":22,\"spec\":\"S3\",\"summary\":\"Adding damage with `+=` can overflow and panic instead of saturating.\"},\n  {\"line\":24,\"spec\":\"S3\",\"summary\":\"The returned totals are not sorted by attacker id.\"},\n  {\"line\":39,\"spec\":\"S5\",\"summary\":\"Casting `amount` to `i32` can wrap large healing amounts and lower hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/hy4-preview",
+  "rc": 0,
+  "secs": 53.8,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 5055,
+   "output": 267,
+   "reasoning": 1213,
+   "cache_read": 25408
+  },
+  "cost": 0.008984486,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "rom HashMap iteration order with no sort, so it is not ordered by attacker id ascending and differs between runs.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"`amount as i32` truncates for amounts above i32::MAX into a negative value, so the saturating_add can reduce hp instead of healing it.\"}\n]\n```"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/kimi-k2.7-code",
+  "rc": 0,
+  "secs": 40.0,
+  "steps": 2,
+  "tools": 2,
+  "tok": {
+   "input": 10158,
+   "output": 382,
+   "reasoning": 1605,
+   "cache_read": 8960
+  },
+  "cost": 0.019300499999999998,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "of saturating at u32::MAX.\"},\n  {\"line\": 24, \"spec\": \"S3\", \"summary\": \"damage_totals collects HashMap entries without sorting by attacker id ascending.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"heal casts amount to i32, so a large amount becomes negative and can lower hp instead of raising it.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/kimi-k3",
+  "rc": 0,
+  "secs": 33.6,
+  "steps": 3,
+  "tools": 4,
+  "tok": {
+   "input": 14700,
+   "output": 541,
+   "reasoning": 1297,
+   "cache_read": 15680
+  },
+  "cost": 0.076374,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": " \"Collecting from a HashMap yields attacker totals in nondeterministic order, not sorted by attacker id ascending as required.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"`amount as i32` wraps negative for amount > i32::MAX, so heal can decrease hp instead of adding amount and capping at max_hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/mimo-v2.6-pro",
+  "rc": 0,
+  "secs": 74.1,
+  "steps": 3,
+  "tools": 4,
+  "tok": {
+   "input": 7396,
+   "output": 500,
+   "reasoning": 2767,
+   "cache_read": 24320
+  },
+  "cost": 0.006147710000000001,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": ", which is nondeterministic and not sorted by attacker id ascending as S3 requires.\"}, {\"line\": 39, \"spec\": \"S5\", \"summary\": \"heal casts amount to i32 with `as`, so an amount greater than i32::MAX wraps to a negative value and can lower hp, violating S5's requirement that healing never lowers hp.\"}]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/minimax-m3",
+  "rc": 0,
+  "secs": 28.2,
+  "steps": 5,
+  "tools": 4,
+  "tok": {
+   "input": 9063,
+   "output": 428,
+   "reasoning": 1673,
+   "cache_read": 42914
+  },
+  "cost": 0.00781494,
+  "err": "",
+  "score": {
+   "found": 4,
+   "which": "ABCD",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": ", \"summary\": \"Using `+=` on the u32 total panics on overflow in debug builds instead of saturating at u32::MAX as S3 requires.\"},\n  {\"line\": 24, \"spec\": \"S3\", \"summary\": \"`m.into_iter().collect()` returns HashMap entries in arbitrary order, not sorted by attacker id ascending as S3 requires.\"}\n]\n```"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/qwen3.8-flash",
+  "rc": 0,
+  "secs": 59.4,
+  "steps": 4,
+  "tools": 4,
+  "tok": {
+   "input": 24,
+   "output": 2469,
+   "reasoning": 0,
+   "cache_read": 31714
+  },
+  "cost": 0.004022054,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": " \"damage_totals collects directly from a HashMap, giving nondeterministic order instead of sorting by attacker id ascending.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"heal casts amount (u32) to i32, so amounts above i32::MAX become negative and lower hp, violating that healing never lowers hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/qwen3.8-max",
+  "rc": 0,
+  "secs": 82.4,
+  "steps": 3,
+  "tools": 4,
+  "tok": {
+   "input": 18,
+   "output": 3161,
+   "reasoning": 0,
+   "cache_read": 20941
+  },
+  "cost": 0.05383475,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": " \"Results are collected from the HashMap without sorting, so output is not ordered by attacker id ascending and varies across runs.\"},\n{\"line\": 39, \"spec\": \"S5\", \"summary\": \"Casting amount: u32 to i32 makes values above i32::MAX negative, so heal can lower hp, violating the never-lowers-hp rule.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode-go/step-5-preview",
+  "rc": 0,
+  "secs": 39.5,
+  "steps": 3,
+  "tools": 4,
+  "tok": {
+   "input": 11154,
+   "output": 491,
+   "reasoning": 2320,
+   "cache_read": 19712
+  },
+  "cost": 0.0207149,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "llected from a HashMap with no sort by attacker id, so the returned order is arbitrary and not identical on every run.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"`amount as i32` wraps to a negative value for u32 values above i32::MAX, so saturating_add can lower hp instead of adding the amount.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/big-pickle",
+  "rc": 0,
+  "secs": 46.4,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 9989,
+   "output": 430,
+   "reasoning": 1366,
+   "cache_read": 21888
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "om HashMap iteration without sorting by attacker id, so the output order is not ascending nor identical on every run\"}, {\"line\": 39, \"spec\": \"S5\", \"summary\": \"casting amount as i32 wraps for amounts above i32::MAX, so heal can add a negative value and lower hp instead of adding amount and capping\"}]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/cat-jam-free",
+  "rc": 0,
+  "secs": 8.7,
+  "steps": 2,
+  "tools": 2,
+  "tok": {
+   "input": 8560,
+   "output": 174,
+   "reasoning": 1406,
+   "cache_read": 11328
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "pec\":\"S3\",\"summary\":\"Damage totals use wrapping addition instead of saturating at u32::MAX.\"},{\"line\":24,\"spec\":\"S3\",\"summary\":\"Damage totals are not sorted by attacker id ascending.\"},{\"line\":39,\"spec\":\"S5\",\"summary\":\"Large amounts are cast to i32, which can wrap and lower hp instead of healing.\"}]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/deepseek-v4.1-flash-free",
+  "rc": 0,
+  "secs": 20.4,
+  "steps": 3,
+  "tools": 3,
+  "tok": {
+   "input": 9556,
+   "output": 455,
+   "reasoning": 846,
+   "cache_read": 21504
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "rating at u32::MAX.\"}, {\"line\": 24, \"spec\": \"S3\", \"summary\": \"Results come from HashMap iteration order and are not sorted by attacker id ascending.\"}, {\"line\": 39, \"spec\": \"S5\", \"summary\": \"Casting amount to i32 can turn large values negative and lower hp, violating that healing never lowers hp.\"}]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/glm-5.3-flash-free",
+  "rc": 0,
+  "secs": 49.2,
+  "steps": 3,
+  "tools": 4,
+  "tok": {
+   "input": 11945,
+   "output": 1783,
+   "reasoning": 0,
+   "cache_read": 18688
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "tion order instead of being sorted by attacker id ascending, so output is not deterministic across runs.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"`amount as i32` maps amounts above i32::MAX to negative values, so saturating_add can decrease hp, violating the rule that healing never lowers hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/longcat-2.5-preview-free",
+  "rc": 0,
+  "secs": 43.2,
+  "steps": 3,
+  "tools": 4,
+  "tok": {
+   "input": 21217,
+   "output": 439,
+   "reasoning": 855,
+   "cache_read": 9984
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "24, \"spec\": \"S3\", \"summary\": \"damage_totals returns HashMap iteration order, not sorted by attacker id ascending, so output differs between runs.\"}, {\"line\": 39, \"spec\": \"S5\", \"summary\": \"Casting amount (u32) to i32 can produce a negative value when amount > i32::MAX, causing healing to lower hp.\"}]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/mimo-v2.6-flash-free",
+  "rc": 0,
+  "secs": 44.5,
+  "steps": 3,
+  "tools": 4,
+  "tok": {
+   "input": 7402,
+   "output": 490,
+   "reasoning": 1157,
+   "cache_read": 24320
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "rectly from HashMap iteration, so the result is not sorted by attacker id ascending and varies between runs.\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"`amount as i32` truncates amounts above i32::MAX (e.g. u32::MAX becomes -1), so heal can lower hp instead of only adding and capping at max_hp.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/muse-spark-1.3-contributor-free",
+  "rc": 0,
+  "secs": 22.8,
+  "steps": 4,
+  "tools": 3,
+  "tok": {
+   "input": 23866,
+   "output": 419,
+   "reasoning": 2155,
+   "cache_read": 21316
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "g.\"}, {\"line\": 24, \"spec\": \"S3\", \"summary\": \"Collects HashMap entries in arbitrary order instead of sorting by attacker id ascending.\"}, {\"line\": 39, \"spec\": \"S5\", \"summary\": \"Casts amount with `as i32` which truncates values above i32::MAX instead of adding the full u32 amount without panicking.\"}]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/nemotron-3.5-lightning-free",
+  "rc": "TIMEOUT",
+  "secs": 300.3,
+  "steps": 9,
+  "tools": 13,
+  "tok": {
+   "input": 44401,
+   "output": 670,
+   "reasoning": 464,
+   "cache_read": 134144
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 0,
+   "fp": null,
+   "note": "no array",
+   "unchanged": true
+  },
+  "answer": ""
+ },
+ {
+  "task": "t3",
+  "model": "opencode/nemotron-3.5-super-vl-free",
+  "rc": 0,
+  "secs": 58.0,
+  "steps": 4,
+  "tools": 7,
+  "tok": {
+   "input": 19451,
+   "output": 541,
+   "reasoning": 2325,
+   "cache_read": 34688
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 4,
+   "which": "ABCD",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "\", \"summary\": \"damage_totals does not saturate totals at u32::MAX, and += panics on overflow in debug builds.\"},\n  {\"line\": 24, \"spec\": \"S3\", \"summary\": \"damage_totals returns results in HashMap iteration order rather than sorted by attacker id ascending, so output is not identical on every run.\"}\n]"
+ },
+ {
+  "task": "t3",
+  "model": "opencode/space-bunny-free",
+  "rc": 0,
+  "secs": 93.5,
+  "steps": 12,
+  "tools": 13,
+  "tok": {
+   "input": 19540,
+   "output": 2793,
+   "reasoning": 3216,
+   "cache_read": 160804
+  },
+  "cost": 0.0,
+  "err": "",
+  "score": {
+   "found": 5,
+   "which": "ABCDE",
+   "fp": 0,
+   "decoy_fp": false,
+   "unchanged": true
+  },
+  "answer": "s hash-seed dependent and not identical across runs (observed [(3,2),(9,4),(1,5),(7,1),(5,3)]).\"},\n  {\"line\": 39, \"spec\": \"S5\", \"summary\": \"heal casts the u32 amount to i32 with `as`, which reinterprets amounts above i32::MAX as negative (heal(10, u32::MAX, 100) returns 9), so healing lowers hp.\"}\n]"
+ }
+]
