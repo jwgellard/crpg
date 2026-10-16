@@ -1007,17 +1007,18 @@ class DispatchCase(unittest.TestCase):
         self.assertIn("opencode-go/longcat-2.5-preview-free",
                       asked.stdout + asked.stderr)
 
-    def test_removed_cat_jam_is_refused(self) -> None:
-        # Cat Jam is gone from both providers after the 2.x upgrade.
-        for model in ("opencode/cat-jam-free", "opencode-go/cat-jam-free"):
+    def test_cat_jam_and_zen_beam_name_go_beam(self) -> None:
+        # Cat Jam is Beam Free after the 2.x upgrade; Beam runs on Go only.
+        for model in ("opencode/cat-jam-free", "opencode-go/cat-jam-free",
+                      "opencode/beam-free"):
             with self.subTest(model=model):
                 self.count += 1
                 task = self.tid()
                 result = self.oc_run(task, model=model)
                 self.assertEqual(result.returncode, 2, result.stdout)
                 self.assertIn("usage", result.stdout + result.stderr)
-                self.assertIn("no longer offered", result.stdout + result.stderr)
-                self.assertIn("opencode-go/deepseek-v4.1-flash",
+                self.assertIn("moved to", result.stdout + result.stderr)
+                self.assertIn("opencode-go/beam-free",
                               result.stdout + result.stderr)
                 self.assertFalse(self.record_path(task, model=model).exists())
 

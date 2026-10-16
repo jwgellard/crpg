@@ -86,10 +86,10 @@ Preference: stretch tokens. Among the OpenCode models strong enough for the job,
 Tier membership:
 
 - O1: DeepSeek V4.1 Flash (Go), Kimi K3, MiMo-V2.6-Pro, Gemini 4 Argon Contributor, DeepSeek V4 Pro, Muse Spark 1.3 Contributor (Go, and the free variant).
-- O2: GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash, Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation retry), Cat Jam Free.
+- O2: GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash, Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation retry), Beam Free (Cat Jam renamed; `MODELS.md` §1 item 13).
 - O3: DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview Free, Big Pickle, Space Bunny Free, Qwen3.8 Max, Hy4 preview. O3 is fallback, not first choice.
 - Not routed: Nemotron 3.5 Lightning, Nemotron 3 Ultra, Nemotron 3.5 Super VL and MiMo-V2.6-Flash Free (scouting at most), MiniMax M3, Step 5 Preview for implementation, GPT-5.6 Terra for scouting or review.
-- Free Zen tier is one account-wide rate limit: at most three free runs at once, at most one per model. LongCat and Cat Jam always use their `opencode-go/` IDs, never the free Zen IDs. After a free-tier hit, route to Go IDs until the next day. Data handling: Gemini 4 Argon Contributor, Muse Spark contributor models, Big Pickle and MiMo-V2.6-Flash Free may train on prompts; acceptable under §3.2 rule 4.
+- Free Zen tier is one account-wide rate limit: at most three free runs at once, at most one per model. LongCat and Beam (formerly Cat Jam) always use their `opencode-go/` IDs, never the free Zen IDs; both stay uncapped after the Go 5-hour cap. After a free-tier hit, route to Go IDs until the next day. Data handling: Gemini 4 Argon Contributor, Muse Spark contributor models, Big Pickle and MiMo-V2.6-Flash Free may train on prompts; acceptable under §3.2 rule 4.
 
 Demote / promote (`MODELS.md` §4.1), in three lines:
 
@@ -120,6 +120,7 @@ python tools/agents/verify_task.py <ID> --slot <path>
 - A retry on the same task passes the same `--slug` (branch is `task/<ID>-<slug>`) and the same `--base`.
 - Slots 1 and 2 build Rust; slots 3–6 are doc-only (no cargo). The `grunt` role skips the gates but has no shell, so it cannot commit: give doc work that must commit or run a lint to the `implement` role with a doc-only owns list.
 - Parallel by default: when a slot frees, dispatch the next ready package first.
+- Free reviews in numbers: run several independent reviews of a package on the uncapped Go models (Beam, LongCat; at most three runs per model) with `oc.py ask --role review`, and collate them into one finding before any paid review (`MODELS.md` §1 item 13).
 - Claude subagents per plan §5.2 (`architect` Opus 5.5 high; `implementer` Sonnet 5.5 high `maxTurns` 80; `reviewer` Sonnet 5.5 high read-only; `bookkeeper` Haiku 5.5 low `maxTurns` 30; all `disallowedTools: Agent`); never `isolation: worktree` for Rust work — use a warm slot.
 - `wave` refuses a wave in which two packages own the same crate, and refuses over-cap free-tier runs per §3.5.
 
@@ -205,3 +206,5 @@ VERDICT: ready-for-pr | fix | reject
 
 - 2026-10-16 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-10 · Condensed the manager-acted rules from the plan, routing table, dispatch README and review template into this start-up brief so a fresh manager reads one file instead of §§1–9 plus MODELS.md and TEMPLATES.md.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + A0-10 manager check · Fixed the garbled merge rule, widened the doc-only slots to 3–6 with the `grunt` no-shell trap, and added the parallel-by-default and design-in-parallel rules from plan §8 that the draft had dropped.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Updated the tier and Go-route lines so Beam takes Cat Jam's place, as the user directed.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: many free reviews · Added the rule to run several collated reviews on the uncapped Go models before any paid review, as the user directed.

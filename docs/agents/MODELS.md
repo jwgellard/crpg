@@ -104,14 +104,24 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    pattern denies a whole compound command when any part matches (for example
    `git branch --show-current` inside a `;` chain), and one worker read that
    single refusal as "shell denied" and stopped: briefs now name the denied
-13. **Beam Free on Go (the user, 2026-10-16: "a BeamFree model that is
-   unlimited on Go").** With Cat Jam gone, the uncapped Go models are
-   `opencode-go/beam-free` (Reflection) and
+13. **Beam Free is Cat Jam renamed (the user, 2026-10-16: "a BeamFree model
+   that is unlimited on Go"; "Beam is just Cat Jam as a new name, so it
+   should take over Cat Jams tasks").** Every rule, tier place and
+   field-record row written for Cat Jam in this file applies to
+   `opencode-go/beam-free`, and the uncapped Go models are Beam and
    `opencode-go/longcat-2.5-preview-free`; both keep working after the Go
    5-hour cap. Never route `opencode/beam-free`, which draws on the free Zen
-   pool. First use: the T108 blind ADR draft, 395 lines in 88 s at $0.00
-   (unreviewed); then A0-8 (crpg-cli `AGENTS.md` trim). Unbenchmarked: it
-   earns a routing-table place only by the §4.1 field record.
+   pool; `oc.py` refuses it and both Cat Jam IDs, naming the Go Beam ID.
+   First runs under the new name: the T108 blind ADR draft, 395 lines in
+   88 s at $0.00 (unreviewed); then A0-8 (crpg-cli `AGENTS.md` trim).
+   **Many free reviews, collated (the user, 2026-10-16):** "Feel free to run
+   multiple reviews through the unlimited models since they are completely
+   free. Happy to have multiple review sessions running with them that
+   collate into an overall finding." Run several independent reviews of one
+   package on Beam and LongCat (within the three-runs-per-model cap) and
+   merge their findings into one verdict before any Kimi K3 or Gemini 4 Argon
+   review. A finding counts once however many reviewers raise it; a finding
+   only one reviewer raises still gets the manager's check.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -339,7 +349,8 @@ Tier membership:
   budget of any model.
 - **O2:** GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash,
   Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation
-  retry), and Cat Jam Free (fast, but a stealth model whose terms can change).
+  retry), and Beam Free, formerly Cat Jam Free (fast, but a stealth model
+  whose terms can change; §1 item 13).
 - **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview
   Free, Big Pickle, Space Bunny Free (correct
   but slow and token-hungry), Qwen3.8 Max and Hy4 preview (correct but slow;
@@ -461,3 +472,5 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + free-tier reset time · Recorded the user's report that the free Zen limit takes about 12 hours to reset, and the 14:00 UTC repeat, so a manager routes to Go IDs after a hit instead of retrying free models.
 - 2026-10-16 (UTC) · claude-code + manager handover · Recorded OpenCode 2.x as item 12, moved Scouting and the routine and bookkeeping routes off Cat Jam, and added the session field-record rows, so routing matches the versions and runs in use.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + manager session 4 · Added item 13: Beam Free as the second uncapped Go model now that Cat Jam is gone, with its Go-only route and first runs, so a manager can keep slots busy through the Go cap.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Rewrote item 13 and the O2 tier entry so that Beam inherits Cat Jam's rules, tier place and field record, as the user directed; the earlier entry's "Cat Jam is gone" reading is superseded.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: many free reviews · Added to item 13 the user's rule to run several independent reviews on Beam and LongCat and collate them before any paid review.
