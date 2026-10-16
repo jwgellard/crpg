@@ -18,6 +18,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent
@@ -82,21 +83,32 @@ class Classification(unittest.TestCase):
         "Task / Crate(s) / Purpose",
         "Crate(s)",
         "Purpose",
+        "Purpose (as recorded in spec §24 and the backlog)",
         "Interface",
         "Interface — exact transfer/version gate",
         "2. Interface (exact public Rust)",
         "Behaviour",
         "Behaviour to preserve in the later executable contract",
+        "Behaviour / suites (`crates/crpg-net/tests/conformance.rs` + support)",
         "Constraints",
+        "Constraints on all children",
         "Test",
         "Test — requirements for the executable contract, not runnable today",
+        "Tests",
+        "Tests (`crates/crpg-data/tests/combat_content.rs`; reserved by T016)",
+        "Tests (reserved by T016: `combat` and `combat_persistence`)",
+        "C§8. Tests (`crates/crpg-net-quic/tests/quic.rs`, public API only)",
         "7. Test",
         "10. Definition of done",
         "Definition of done",
+        "Definition of done — later implementation",
         "11. Out of scope",
+        "Out of scope (later work; do not expand into it)",
         "Read first",
+        "Read first (all children)",
     ]
     HISTORY = [
+        "Agent log",
         "Amendment decisions — 2026-10-06 (UTC)",
         "Decisions — 2026-10-05 (UTC)",
         "Decisions on the revised questions — 2026-10-04 (UTC)",
@@ -116,6 +128,37 @@ class Classification(unittest.TestCase):
         "Whatever unknown heading",
     ]
 
+    # Every `##` section of the fixture, so a wrong kind anywhere fails.
+    FIXTURE_KINDS = {
+        "Task / Crate(s) / Purpose": "contract",
+        "Crate(s)": "contract",
+        "Purpose": "contract",
+        "2. Interface (exact public Rust)": "contract",
+        "4. Behaviour": "contract",
+        "5. Determinism and the gate-10 claim": "history",
+        "7. Test": "contract",
+        "Tests": "contract",
+        "10. Definition of done": "contract",
+        "11. Out of scope": "contract",
+        "12. Open questions for the user": "history",
+        "Agent log": "history",
+        "Exact contract — 2026-10-05 (UTC)": "contract",
+        "Decisions — 2026-10-05 (UTC)": "history",
+        "Re-contract — 2026-10-06 (UTC): the second contract": "contract",
+        "Contract amendment — 2026-10-07 (UTC)": "contract",
+        "Amendment decisions — 2026-10-07 (UTC)": "history",
+        "Reading decisions": "history",
+        "Implementation blocker — 2026-10-07 (UTC)": "history",
+        "Completion record — 2026-10-07 (UTC)": "history",
+        "CI follow-up — 2026-10-07 (UTC): timing": "history",
+        "Open questions (revised) — 2026-10-04": "history",
+        "Next contract needs": "history",
+        "Downstream — 2026-10-04 (UTC): the split": "history",
+        "History": "history",
+        "Dependency record — 2026-10-05 (UTC)": "history",
+        "Whatever unknown heading": "history",
+    }
+
     def test_every_contract_heading(self) -> None:
         for heading in self.CONTRACT:
             self.assertEqual(brief.classify_heading(heading), "contract", heading)
@@ -128,10 +171,17 @@ class Classification(unittest.TestCase):
         text = FIXTURE.read_text(encoding="utf-8")
         _, sections, _ = brief.parse(text)
         kinds = {section["text"]: brief.classify_heading(section["text"]) for section in sections}
-        self.assertEqual(kinds["2. Interface (exact public Rust)"], "contract")
-        self.assertEqual(kinds["12. Open questions for the user"], "history")
-        self.assertEqual(kinds["Re-contract — 2026-10-06 (UTC): the second contract"], "contract")
-        self.assertEqual(kinds["Amendment decisions — 2026-10-07 (UTC)"], "history")
+        self.assertEqual(kinds, self.FIXTURE_KINDS)
+
+    def test_plural_tests_in_the_real_task_files(self) -> None:
+        # `## Tests` became a contract heading in review item 1; these two
+        # real lines are the manager's examples.
+        root = Path(recall.find_repo_root())
+        for name, number in (("T009c.md", 254), ("T016a.md", 379)):
+            lines = (root / "tasks" / name).read_text(encoding="utf-8").splitlines()
+            heading = lines[number - 1]
+            self.assertTrue(heading.startswith("## Tests"), f"{name}:{number}: {heading!r}")
+            self.assertEqual(brief.classify_heading(heading[3:].strip()), "contract", heading)
 
 
 class CurrentContract(unittest.TestCase):
@@ -246,6 +296,51 @@ class InterfaceExtraction(unittest.TestCase):
             "<MANAGER: no Interface section found>",
         )
 
+    def test_only_an_amendment_appends_an_interface(self) -> None:
+        # Base sections are the current contract here, and `## Behaviour`
+        # carries an `Interface` subsection: it must not be appended.
+        text = textwrap.dedent(
+            """\
+            # T900 — append fixture
+
+            ## Interface
+
+            ```rust
+            pub fn base() -> i32 { 0 }
+            ```
+
+            ## Behaviour
+
+            ### Loader integration (V Interface)
+
+            prose
+
+            ## Tests
+
+            ```text
+            cargo test -p crpg-demo --locked
+            ```
+
+            ## Agent log
+
+            history
+            """
+        )
+        headings, sections, _ = brief.parse(text)
+        current = brief.select_current(sections)
+        interface = brief.build_interface(text, headings, current)
+        self.assertIn("pub fn base() -> i32 { 0 }", interface)
+        self.assertNotIn("From ", interface)
+        self.assertNotIn("Loader integration", interface)
+
+    def test_t012_brief_does_not_append_a_base_section(self) -> None:
+        root = recall.find_repo_root()
+        with open(Path(root) / "tasks" / "T012.md", encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        built, _ = brief.build("T012", text, root)
+        self.assertNotIn("From Behaviour:", built)
+        self.assertNotIn("Loader integration and authority", built)
+
 
 class AcceptanceExtraction(unittest.TestCase):
     def test_commands_dedup_and_preflight(self) -> None:
@@ -276,18 +371,68 @@ class AcceptanceExtraction(unittest.TestCase):
         self.assertTrue(body.startswith("- <MANAGER: acceptance commands>\n"), body)
         self.assertIn("bash tools/preflight.sh --crate <crate>", body)
 
+    def test_t023c_nested_tests_subsection(self) -> None:
+        # `#### C§8.7 Commands` sits under `### C§8. Tests` inside the exact
+        # contract; both need a numbered/lettered prefix to be recognised.
+        root = recall.find_repo_root()
+        with open(Path(root) / "tasks" / "T023c.md", encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        built, _ = brief.build("T023c", text, root)
+        self.assertNotIn("<MANAGER: acceptance commands>", built)
+        self.assertIn("- cargo test -p crpg-net-quic --test quic --locked\n", built)
+        self.assertIn("- python tools/lint/deps.py\n", built)
+        self.assertIn("bash tools/preflight.sh --crate crpg-net-quic", built)
+
+    def test_definition_of_done_subsection_with_bash_and_pwsh(self) -> None:
+        text = (HERE / "fixtures" / "brief" / "T901.md").read_text(encoding="utf-8")
+        headings, sections, _ = brief.parse(text)
+        current = brief.select_current(sections)
+        body = brief.extract_acceptance(text, headings, current, "crpg-demo")
+        lines = body.splitlines()
+        self.assertNotIn("- <MANAGER: acceptance commands>", lines)
+        # The lettered-prefix `Definition of done` subsection.
+        self.assertIn("- bash tools/preflight.sh --crate crpg-demo", lines)
+        self.assertIn("- pwsh -File tools/preflight.ps1 -Crate crpg-demo", lines)
+        # A plural `Tests` heading and the commands nested inside it.
+        self.assertIn("- cargo test -p crpg-demo --locked", lines)
+        self.assertIn("- python tools/lint/deps.py", lines)
+        self.assertEqual(lines.count("- cargo test -p crpg-demo --locked"), 1)
+        self.assertNotIn("- git diff --check", lines)
+        self.assertNotIn("- pub fn demo() -> i32 { 9 }", lines)
+
 
 class Placeholders(unittest.TestCase):
+    @staticmethod
+    def section_body(built: str, heading: str) -> str:
+        lines = built.splitlines()
+        body: list[str] = []
+        for line in lines[lines.index(heading) + 1 :]:
+            if line.startswith("## "):
+                break
+            body.append(line)
+        while body and not body[-1].strip():
+            body.pop()
+        return "\n".join(body)
+
     def test_placeholders_present_and_no_invented_goal(self) -> None:
         text = FIXTURE.read_text(encoding="utf-8")
         built, _ = brief.build("T900", text, str(REPO))
         for heading in ("## Goal", "## Files you own", "## Out of scope", "## Size budget"):
             self.assertIn(heading, built)
         self.assertIn("## Example to follow (follow-on tasks)", built)
-        lines = built.splitlines()
-        goal = lines[lines.index("## Goal") + 1]
-        self.assertTrue(goal.startswith("<MANAGER:"), goal)
-        self.assertEqual(goal, "<MANAGER: goal>")
+        self.assertEqual(self.section_body(built, "## Goal"), "<MANAGER: goal>")
+
+    def test_placeholder_bodies_are_exact_and_distinct(self) -> None:
+        text = FIXTURE.read_text(encoding="utf-8")
+        built, _ = brief.build("T900", text, str(REPO))
+        self.assertEqual(self.section_body(built, "## Files you own"), "<MANAGER: files you own>")
+        self.assertEqual(
+            self.section_body(built, "## Example to follow (follow-on tasks)"),
+            "<MANAGER: example to follow>",
+        )
+        self.assertEqual(self.section_body(built, "## Out of scope"), "<MANAGER: out of scope>")
+        self.assertEqual(self.section_body(built, "## Size budget"), "<MANAGER: size budget>")
+        self.assertEqual(self.section_body(built, "## Goal"), "<MANAGER: goal>")
 
     def test_fixed_sections_substitute_the_id(self) -> None:
         text = FIXTURE.read_text(encoding="utf-8")
@@ -295,6 +440,20 @@ class Placeholders(unittest.TestCase):
         self.assertIn("commit once as `T900: <summary>`", built)
         self.assertIn("Reply with the report format in docs/agents/TEMPLATES.md §2", built)
         self.assertIn("crpg-godot · an edit to crpg-contracts or rust-toolchain.toml.", built)
+
+
+class RelatedMemory(unittest.TestCase):
+    def test_title_words_are_deduplicated_case_insensitively(self) -> None:
+        text = "# T900 — Zebra zebra memory\n\n## Task\n\nbase task\n"
+        captured: list[list[str]] = []
+
+        def fake_search(words, root):  # type: ignore[no-untyped-def]
+            captured.append(list(words))
+            return []
+
+        with mock.patch.object(brief.recall, "search", side_effect=fake_search):
+            brief.build("T900", text, str(REPO))
+        self.assertEqual(captured[0], ["Zebra", "memory"])
 
 
 class CliBehaviour(unittest.TestCase):

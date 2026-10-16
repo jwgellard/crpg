@@ -27,7 +27,8 @@ import recall  # noqa: E402  (sibling module, same checkout)
 
 HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*$")
 DATE_RE = re.compile(r"\s*[—–]\s*\d{4}-\d{2}-\d{2}\s*\(UTC\).*$", re.IGNORECASE)
-NUMBER_RE = re.compile(r"^\d+\.\s*(.*)$")
+# A numbered or lettered prefix: `2. `, `B§14. `, `C§8.7 `.
+PREFIX_RE = re.compile(r"^(?:[a-z]?§?[0-9]+(?:\.[0-9]+)*[.)]?\s+)+")
 TITLE_ID_RE_TEMPLATE = r"^{id}\b[ \t]*[—–-][ \t]*(.*)$"
 CRATE_RE = re.compile(r"crpg-[a-z0-9]+(?:-[a-z0-9]+)*")
 
@@ -48,7 +49,6 @@ EXACT_PREFIXES = ("exact contract", "re-contract")
 AMENDMENT_PREFIXES = ("contract amendment", "amendment")
 
 ACCEPT_PREFIXES = ("cargo ", "python ", "bash ", "pwsh ")
-TEST_WORD = re.compile(r"\btest\b")
 
 STOP_TEXT = (
     "the contract is ambiguous · a second crate is needed · a dependency is missing ·\n"
@@ -78,40 +78,52 @@ def normalize_heading(text: str) -> str:
     return norm.strip().lower()
 
 
-def _name_after_number(norm: str) -> str:
-    match = NUMBER_RE.match(norm)
-    return match.group(1).strip() if match else norm
+def _strip_prefix(norm: str) -> str:
+    """Drop a leading `2. `, `B§14. ` or `C§8.7 ` prefix from a normalised name."""
+    return PREFIX_RE.sub("", norm).strip()
+
+
+def _matches_base(name: str, base: str) -> bool:
+    """True when `name` is `base`, or starts with it as a whole word.
+
+    The rest of the name must be empty or start with a non-alphanumeric
+    delimiter (` `, `(`, `—`, `:`, `/`, …), so `Tasks` is not the `Task`
+    base section but `Behaviour / suites` (tasks/T018c.md:37) is the
+    `Behaviour` one. `Test` alone also accepts a plain plural: `Tests`,
+    `Tests (…)`.
+    """
+    if not name.startswith(base):
+        return False
+    rest = name[len(base):]
+    if rest == "" or not rest[0].isalnum():
+        return True
+    return base == "test" and rest.startswith("s")
 
 
 def _starts_with_base(name: str) -> bool:
-    for base in BASE_SECTIONS:
-        if name == base:
-            return True
-        if name.startswith(base) and not name[len(base)].isalnum():
-            return True
-    return False
+    return any(_matches_base(name, base) for base in BASE_SECTIONS)
 
 
 def classify_heading(text: str) -> str:
     """`contract` or `history` for one `##` heading, per the A0-5 rules."""
-    norm = normalize_heading(text)
+    norm = _strip_prefix(normalize_heading(text))
     if norm.startswith("amendment decisions"):
         return "history"
     if norm.startswith(EXACT_PREFIXES) or norm.startswith("contract amendment"):
         return "contract"
     if norm.startswith("amendment"):
         return "contract"
-    if _starts_with_base(_name_after_number(norm)):
+    if _starts_with_base(norm):
         return "contract"
     return "history"
 
 
 def is_exact(text: str) -> bool:
-    return normalize_heading(text).startswith(EXACT_PREFIXES)
+    return _strip_prefix(normalize_heading(text)).startswith(EXACT_PREFIXES)
 
 
 def is_amendment(text: str) -> bool:
-    norm = normalize_heading(text)
+    norm = _strip_prefix(normalize_heading(text))
     if norm.startswith("amendment decisions"):
         return False
     return norm.startswith(AMENDMENT_PREFIXES)
@@ -199,7 +211,7 @@ def extract_title(text: str, task_id: str) -> str:
 def extract_crates(text: str, sections: list[dict]) -> list[str]:
     names: list[str] = []
     for section in sections:
-        name = _name_after_number(normalize_heading(section["text"]))
+        name = _strip_prefix(normalize_heading(section["text"]))
         if not (name.startswith("task") or name.startswith("crate(s)")):
             continue
         for crate in CRATE_RE.findall(text[section["body"] : section["end"]]):
@@ -230,6 +242,10 @@ def build_interface(text: str, headings: list[dict], current: list[dict]) -> str
         return "<MANAGER: no Interface section found>"
     parts = [content]
     for section in current[found_index + 1 :]:
+        # Only an amendment may revise the Interface; a later base section
+        # (e.g. `## Behaviour … (V Interface)`) must not be appended.
+        if not is_amendment(section["text"]):
+            continue
         found = _section_interface(text, headings, section)
         if found is None:
             continue
@@ -241,8 +257,38 @@ def build_interface(text: str, headings: list[dict], current: list[dict]) -> str
 
 
 def _is_test_or_dod(text: str) -> bool:
-    norm = normalize_heading(text)
-    return bool(TEST_WORD.search(norm)) or "definition of done" in norm
+    name = _strip_prefix(normalize_heading(text))
+    return _matches_base(name, "test") or _matches_base(name, "definition of done")
+
+
+def _scope_headings(section: dict, headings: list[dict]) -> list[dict]:
+    """`section` followed by every heading nested inside it, in document order."""
+    return [section] + [
+        heading
+        for heading in headings
+        if heading["level"] > section["level"]
+        and section["start"] <= heading["start"] < section["end"]
+    ]
+
+
+def acceptance_headings(section: dict, headings: list[dict]) -> list[dict]:
+    """The subsections of `section` whose fenced blocks carry its commands.
+
+    A `Test`/`Tests` or `Definition of done` subsection counts at any level
+    and with any numbered/lettered prefix, and so does every heading nested
+    inside one, because the commands sit in the deepest fence:
+    `#### C§8.7 Commands` under `### C§8. Tests (`tasks/T023c.md`).
+    """
+    levels: list[int] = []
+    found: list[dict] = []
+    for heading in _scope_headings(section, headings):
+        while levels and heading["level"] <= levels[-1]:
+            levels.pop()
+        if _is_test_or_dod(heading["text"]):
+            levels.append(heading["level"])
+        if levels:
+            found.append(heading)
+    return found
 
 
 def _fenced_lines(body: str) -> list[str]:
@@ -262,16 +308,7 @@ def _fenced_lines(body: str) -> list[str]:
 def extract_acceptance(text: str, headings: list[dict], current: list[dict], crate: str | None) -> str:
     commands: list[str] = []
     for section in current:
-        candidates = [section]
-        candidates += [
-            heading
-            for heading in headings
-            if heading["level"] in (3, 4)
-            and section["start"] <= heading["start"] < section["end"]
-        ]
-        for heading in candidates:
-            if not _is_test_or_dod(heading["text"]):
-                continue
+        for heading in acceptance_headings(section, headings):
             for line in _fenced_lines(text[heading["body"] : heading["end"]]):
                 if line.startswith(ACCEPT_PREFIXES) and line not in commands:
                     commands.append(line)
@@ -319,10 +356,16 @@ def build(task_id: str, text: str, root: str) -> tuple[str, dict]:
 
     interface = build_interface(text, headings, current)
 
+    # Title words, deduplicated case-insensitively: `Zebra zebra` must score
+    # like `zebra` in recall, not double it.
     title_words: list[str] = []
+    seen: set[str] = set()
     for word in re.findall(r"[0-9A-Za-z_]+", title):
-        if word not in title_words:
-            title_words.append(word)
+        key = word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        title_words.append(word)
     related_lines = [recall.format_hit(hit) for hit in recall.search(title_words, root)[:10]]
     related = "\n".join(related_lines) if related_lines else "None found."
 

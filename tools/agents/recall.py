@@ -85,9 +85,22 @@ def source_files(root: str) -> list[tuple[str, int]]:
     return sorted(entries, key=lambda item: item[0])
 
 
+def dedupe_words(words: list[str]) -> list[str]:
+    """Drop empty words and case-insensitive repeats, keeping the first spelling."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for word in words:
+        key = word.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(word)
+    return unique
+
+
 def search(words: list[str], root: str) -> list[dict]:
     """All hits for ``words`` under ``root``, ranked and deterministic."""
-    patterns = [word_pattern(word) for word in words if word]
+    patterns = [word_pattern(word) for word in dedupe_words(words)]
     hits: list[dict] = []
     for path, weight in source_files(root):
         relative = os.path.relpath(path, root).replace("\\", "/")
@@ -117,9 +130,10 @@ def search(words: list[str], root: str) -> list[dict]:
     log = run_git(root, ["log", "--format=%h %s"])
     if log.returncode == 0:
         for index, raw in enumerate(log.stdout.splitlines()):
-            matched = sum(1 for pattern in patterns if pattern.search(raw))
+            # Match the subject only: the abbreviated hash must never be a hit.
+            digest, _, subject = raw.partition(" ")
+            matched = sum(1 for pattern in patterns if pattern.search(subject))
             if matched:
-                digest, _, subject = raw.partition(" ")
                 hits.append(
                     {
                         "kind": "git",
@@ -193,10 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
-    words: list[str] = []
-    for word in args.words:
-        if word not in words:
-            words.append(word)
+    words = dedupe_words(args.words)
     try:
         root = find_repo_root()
         hits = search(words, root)

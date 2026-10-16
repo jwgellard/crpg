@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 AGENTS = HERE.parent / "agents"
@@ -137,6 +138,62 @@ class Ranking(unittest.TestCase):
     def test_none_is_an_empty_list(self) -> None:
         self.assertEqual(recall.search(["nonexistentword"], str(self.repo.root)), [])
 
+    def test_words_are_deduplicated_case_insensitively(self) -> None:
+        once = recall.search(["zebra"], str(self.repo.root))
+        twice = recall.search(["Zebra", "zebra"], str(self.repo.root))
+        self.assertEqual(len(once), 6)
+        self.assertEqual(len(twice), len(once))
+
+    def test_git_matches_the_subject_only(self) -> None:
+        # A hash is hexadecimal: `abc1234` must not hit the abbreviated hash.
+        log = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="abc1234 a plain subject\n", stderr=""
+        )
+        with mock.patch.object(recall, "run_git", return_value=log):
+            self.assertEqual(recall.search(["abc1234"], str(self.repo.root)), [])
+            hits = recall.search(["plain"], str(self.repo.root))
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["hash"], "abc1234")
+        self.assertEqual(hits[0]["subject"], "a plain subject")
+
+
+class HitLineFormat(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repo = RecallRepo(commits=False)
+        self.addCleanup(self.repo.close)
+
+    def test_file_hit_is_path_line_heading_text(self) -> None:
+        self.repo.add("tasks/T002-demo.md", "# T002\n\n## Task\n\nquokka " + "x" * 300 + "\n")
+        hits = recall.search(["quokka"], str(self.repo.root))
+        self.assertEqual(len(hits), 1)
+        line = recall.format_hit(hits[0])
+        self.assertTrue(line.startswith("tasks/T002-demo.md:5 · Task · quokka "), line)
+        self.assertEqual(len(line.split(" · ")[-1]), 120)
+        self.assertEqual(line, recall.format_hit(hits[0]))
+
+    def test_git_hit_is_hash_then_subject(self) -> None:
+        hit = {
+            "kind": "git",
+            "path": "git",
+            "line": 0,
+            "heading": "",
+            "text": "abc1234 zebra subject",
+            "weight": 1,
+            "score": 1,
+            "hash": "abc1234",
+            "subject": "zebra subject",
+        }
+        self.assertEqual(recall.format_hit(hit), "git abc1234 · zebra subject")
+
+    def test_printed_line_matches_the_hit(self) -> None:
+        self.repo.add("tasks/T002-demo.md", "# T002\n\n## Task\n\nquokka here\n")
+        self.repo.commit("quokka commit")
+        result = self.repo.run("quokka")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hits = recall.search(["quokka"], str(self.repo.root))
+        for hit, line in zip(hits, result.stdout.splitlines()[1:]):
+            self.assertEqual(line, recall.format_hit(hit))
+
 
 class CliBehaviour(unittest.TestCase):
     def setUp(self) -> None:
@@ -152,11 +209,19 @@ class CliBehaviour(unittest.TestCase):
         self.assertEqual(none.returncode, 0, none.stderr)
         self.assertTrue(none.stdout.startswith("NONE for nonexistentword"), none.stdout)
 
+    def test_repeated_words_score_once(self) -> None:
+        result = self.repo.run("Zebra", "zebra")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("FOUND 6 hits for Zebra"), result.stdout)
+        document = json.loads(self.repo.run("Zebra", "zebra", "--json").stdout)
+        self.assertEqual(document["words"], ["Zebra"])
+        self.assertEqual(document["count"], 6)
+
     def test_default_limit_and_json(self) -> None:
         self.repo.add("tasks/T002-demo.md", "# T002\n\n## Task\n\n" + "quokka\n" * 50)
         limited = self.repo.run("quokka")
         self.assertEqual(limited.returncode, 0, limited.stderr)
-        self.assertLessEqual(len(limited.stdout.splitlines()), 40)
+        self.assertEqual(len(limited.stdout.splitlines()), 16)
         document = json.loads(self.repo.run("quokka", "--json").stdout)
         self.assertEqual(document["tool"], "recall")
         self.assertEqual(document["version"], 1)
