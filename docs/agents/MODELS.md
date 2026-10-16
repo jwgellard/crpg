@@ -247,6 +247,17 @@ kept for higher-level thinking: A and C packages, the S-set, which
 escalations an O1 model failed. "Strongest" means the tier below and the §4.1
 field record. Composite scores only break ties.
 
+**Two free lanes, kept apart (the user, 2026-10-16):** "Make sure that, in
+the future, the free Zen tokens go to models like Muse Spark and other good
+models that have a free Zen version." The free Zen tier is one account-wide
+rate limit (§1 item 10), so spend it only on strong models with a free Zen
+variant: `opencode/muse-spark-1.3-contributor-free`,
+`opencode/deepseek-v4.1-flash-free` and `opencode/glm-5.3-flash-free`, at
+most three runs at once. LongCat and Cat Jam never use the Zen route; they
+run on their unlimited `opencode-go/` IDs (§1 item 11). `oc.py` should
+refuse an `opencode/cat-jam-free` or `opencode/longcat-2.5-preview-free`
+model ID and name the Go ID instead.
+
 **LongCat and Cat Jam first, once proven (the user, 2026-10-16):** "Long cat
 and cat jam are free right now. If they can be assessed to be reliable, I
 would like to utilise them heavily." Both scored 21/21 and 5/5 in the
@@ -413,3 +424,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user correction on model routes · Replaced the burst-limit finding with its real cause: the refused runs used the free Zen IDs, which share the free tier's limit, while the `opencode-go/` IDs of the same models stayed available.
 - 2026-10-16 (UTC) · claude-code + Go-route fix · Switched the routing table's Cat Jam and LongCat entries to their `opencode-go/` IDs, so the table no longer sends work to the rate-limited free route.
 - 2026-10-16 (UTC) · claude-code + field record · Recorded the day's hand-run results per model and role, including Cat Jam's 68 of 70 held citations and DeepSeek's one stop-without-writing failure, so the next session applies §4.1 from evidence.
+- 2026-10-16 (UTC) · claude-code + user routing rule · Recorded the user's rule that free Zen capacity goes only to strong models with a free Zen variant (Muse Spark, DeepSeek V4.1 Flash, GLM-5.3-Flash), while LongCat and Cat Jam always use their unlimited Go IDs.
