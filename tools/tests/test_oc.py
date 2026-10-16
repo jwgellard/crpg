@@ -15,7 +15,14 @@ tree-kill, no ``--auto``, the stall retry and ``no-edit``, the infra cause
 table, verify FAIL/ERROR plumbing, the summary shape and 40-line cap,
 dry-run purity, attempt and branch discipline, result records, ``record``,
 ``stats`` demote/promote boundaries, ``wave`` fan-out, and the idle
-watchdog (``hang`` and the OpenCode-log quota path).
+watchdog (``hang`` and the OpenCode-log quota path), plus the attempt-3
+review fixes: a non-signalling PID probe, infra classification scoped to
+provider/process errors with a stop-finish exemption, stale-lock reclaim
+on the same slot, ``is_failure`` exactly per MODELS.md section 4.1,
+dry-run brief validation, records for slot-busy/no-exe, the git-clean
+check, ask/grunt record and skip behaviour, overlapping-process stagger,
+UTF-8 summaries, role-aware next lines, wave model caps, renamed-model
+refusal, and filed-brief/placeholder/same-crate handling.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -269,22 +277,34 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(prompt_file.read_text(encoding="utf-8"), question)
 
     def test_starts_are_staggered(self) -> None:
+        # Two overlapping processes contend on the shared stamp file, so a
+        # per-process sleep (no cross-process coordination) fails this test:
+        # both would sleep side by side and start together.
         stamp = self.repo / ".agents" / "last_start"
         if stamp.exists():
             stamp.unlink()
         starts = self.fresh_file("starts.txt")
         env = {"CRPG_OC_START_GAP": "1.0", "FAKE_OC_STARTS": str(starts)}
-        first = self.oc(
-            "ask", "--role", "scout", "--model", MODEL,
-            "--timeout", "60", "--idle", "10", "first question", env=env,
-        )
-        second = self.oc(
-            "ask", "--role", "scout", "--model", MODEL,
-            "--timeout", "60", "--idle", "10", "second question", env=env,
-        )
-        self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(second.returncode, 0, second.stderr)
-        marks = [float(line) for line in starts.read_text().splitlines()]
+        results: dict[int, subprocess.CompletedProcess] = {}
+
+        def run_ask(key: int, question: str) -> None:
+            results[key] = self.oc(
+                "ask", "--role", "scout", "--model", MODEL,
+                "--timeout", "60", "--idle", "10", question, env=env,
+            )
+
+        threads = [
+            threading.Thread(target=run_ask, args=(0, "first question")),
+            threading.Thread(target=run_ask, args=(1, "second question")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(90)
+        self.assertEqual(set(results), {0, 1})
+        self.assertEqual(results[0].returncode, 0, results[0].stderr)
+        self.assertEqual(results[1].returncode, 0, results[1].stderr)
+        marks = sorted(float(line) for line in starts.read_text().splitlines())
         self.assertEqual(len(marks), 2)
         self.assertGreaterEqual(marks[1] - marks[0], 0.9)
 
@@ -613,6 +633,262 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(self.read_record("T-wave-pass", "go/fake-a")["verdict"], "PASS")
         self.assertEqual(self.read_record("T-wave-fail", "go/fake-b")["verdict"], "FAIL")
 
+    # -- attempt-3 review fixes ----------------------------------------
+
+    def test_markers_in_tool_output_keep_verdict(self) -> None:
+        # A clean run ending in stop whose tool output and report text
+        # contain every infra-table marker keeps its normal verdict.
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_OC_MODE": "markers"})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
+        record = self.read_record(task)
+        self.assertEqual(record["verdict"], "PASS")
+        self.assertIsNone(record["cause"])
+
+    def test_dry_run_validates_brief(self) -> None:
+        task = self.tid()
+        missing = str(self.case_dir / "absent.md")
+        result = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", missing, "--dry-run", env={},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-brief", result.stderr)
+        self.assertFalse(self.record_path(task).exists())
+        empty = self.fresh_dir("empty-repo")
+        generated = self.tid()
+        result = self.oc(
+            "run", "--task", generated, "--role", "implement",
+            "--model", MODEL, "--base", "master", "--dry-run",
+            env={"CRPG_REPO": str(empty)},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-brief", result.stderr)
+
+    def test_slot_busy_writes_record(self) -> None:
+        sleeper = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            lock_dir = self.repo / ".agents" / "slots"
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("slot-1.lock", "slot-2.lock"):
+                (lock_dir / name).write_text(f"{sleeper.pid}\n", encoding="utf-8")
+            self.addCleanup(shutil.rmtree, lock_dir, True)
+            task = self.tid()
+            result = self.oc_run(task)
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("slot-busy", result.stdout + result.stderr)
+            record = self.read_record(task)
+            self.assertEqual(record["verdict"], "INFRA")
+            self.assertTrue(str(record["cause"]).startswith("slot-busy"))
+        finally:
+            try:
+                sleeper.kill()
+            except OSError:
+                pass
+            sleeper.wait(timeout=30)
+
+    def test_no_exe_writes_record(self) -> None:
+        bare = self.fresh_dir("bare-path")
+        task = self.tid()
+        result = self.oc_run(
+            task,
+            env={"CRPG_OPENCODE": None, "PATH": str(bare),
+                 "APPDATA": str(bare)},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-exe", result.stdout + result.stderr)
+        record = self.read_record(task)
+        self.assertEqual(record["verdict"], "INFRA")
+        self.assertTrue(str(record["cause"]).startswith("no-exe"))
+
+    def test_git_clean_failure_is_branch(self) -> None:
+        task = self.tid()
+        held = self.slot1 / "oc-clean-probe.txt"
+        handle = open(held, "w", encoding="utf-8")
+        handle.write("held open so git clean cannot remove it\n")
+        handle.flush()
+
+        def release() -> None:
+            handle.close()
+            if held.exists():
+                held.unlink()
+
+        self.addCleanup(release)
+        result = self.oc_run(task)
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("branch", result.stdout + result.stderr)
+        self.assertTrue(str(self.read_record(task)["cause"]).startswith("branch"))
+
+    def test_ask_writes_result_record(self) -> None:
+        result = self.oc(
+            "ask", "--role", "scout", "--model", MODEL,
+            "--timeout", "60", "--idle", "10", "where is the lint?",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        path = self.repo / ".agents" / "runs" / "ask" / "1-go_fake-a.result.json"
+        self.assertTrue(path.is_file())
+        record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(record["verdict"], "PASS")
+        self.assertEqual(record["task"], "ask")
+
+    def test_ask_next_line_reads_answer(self) -> None:
+        result = self.oc(
+            "ask", "--role", "scout", "--model", MODEL,
+            "--timeout", "60", "--idle", "10", "where is the lint?",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stdout.splitlines()[-1], "next: read the answer")
+
+    def test_review_next_line_acts_on_verdict(self) -> None:
+        task = self.tid()
+        result = self.oc_run(task, role="review", extra=["--json"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["summary"].splitlines()[-1].startswith(
+            "next: act on the verdict"))
+
+    def test_grunt_role_skips_gates(self) -> None:
+        task = self.tid()
+        verify_log = self.fresh_file("verify.jsonl")
+        result = self.oc_run(
+            task, role="grunt", env={"FAKE_VERIFY_LOG": str(verify_log)}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        logged = [
+            json.loads(line)
+            for line in verify_log.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len(logged), 1)
+        self.assertIn("--skip", logged[0])
+        self.assertIn("gates", logged[0])
+
+    def test_summary_uses_utf8_middle_dot(self) -> None:
+        merged = dict(os.environ)
+        merged.update(self.base_env)
+        merged.pop("PYTHONIOENCODING", None)
+        proc = subprocess.run(
+            [sys.executable, str(OC), "ask", "--role", "scout",
+             "--model", MODEL, "--timeout", "60", "--idle", "10",
+             "where is the lint?"],
+            cwd=self.repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=90,
+            env=merged,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout[-500:])
+        self.assertIn("·".encode("utf-8"), proc.stdout)
+
+    def test_renamed_model_is_refused(self) -> None:
+        task = self.tid()
+        result = self.oc_run(task, model="opencode/cat-jam-free")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("usage", result.stdout + result.stderr)
+        self.assertIn("opencode-go/cat-jam-free", result.stdout + result.stderr)
+        self.assertFalse(self.record_path(task, model="opencode/cat-jam-free").exists())
+        asked = self.oc(
+            "ask", "--role", "scout", "--model", "opencode/longcat-2.5-preview-free",
+            "--timeout", "60", "a question",
+        )
+        self.assertEqual(asked.returncode, 2, asked.stdout)
+        self.assertIn("opencode-go/longcat-2.5-preview-free",
+                      asked.stdout + asked.stderr)
+
+    def test_filed_brief_is_used(self) -> None:
+        task = self.tid()
+        filed_dir = self.repo / ".agents" / "briefs"
+        filed_dir.mkdir(parents=True, exist_ok=True)
+        filed = filed_dir / f"{task}.md"
+        filed.write_text("# Filed brief\n\nUse this text.\n", encoding="utf-8")
+        result = self.oc_run(task, brief=False)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(
+            (self.slot1 / "BRIEF.md").read_text(encoding="utf-8"),
+            "# Filed brief\n\nUse this text.\n",
+        )
+
+    def test_placeholder_brief_is_refused(self) -> None:
+        task = self.tid()
+        path = self.case_dir / "placeholder.md"
+        path.write_text("# Brief\n\n<MANAGER: fill in the goal>\n", encoding="utf-8")
+        result = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", str(path), env={},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-brief", result.stdout + result.stderr)
+        self.assertIn("placeholder", result.stdout + result.stderr)
+
+    def test_wave_same_crate_is_refused(self) -> None:
+        filed_dir = self.repo / ".agents" / "briefs"
+        filed_dir.mkdir(parents=True, exist_ok=True)
+        first = self.tid()
+        second = self.tid()
+        for task in (first, second):
+            (filed_dir / f"{task}.md").write_text(
+                "# Brief\n\n## Files you own\n\n"
+                "- `crates/same-crate/src/lib.rs`\n",
+                encoding="utf-8",
+            )
+        result = self.oc(
+            "wave", f"{first}:implement:{MODEL}", f"{second}:implement:{MODEL}",
+            "--base", "master", timeout=120,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("usage", result.stdout + result.stderr)
+        self.assertIn("crates/same-crate", result.stdout + result.stderr)
+
+    def test_wave_distinct_crates_pass(self) -> None:
+        filed_dir = self.repo / ".agents" / "briefs"
+        filed_dir.mkdir(parents=True, exist_ok=True)
+        specs = []
+        for crate in ("wave-crate-a", "wave-crate-b"):
+            task = self.tid()
+            (filed_dir / f"{task}.md").write_text(
+                "# Brief\n\n## Files you own\n\n"
+                f"- `crates/{crate}/src/lib.rs`\n",
+                encoding="utf-8",
+            )
+            specs.append(f"{task}:implement:{MODEL}")
+        result = self.oc("wave", *specs, "--base", "master", timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for spec in specs:
+            task = spec.split(":")[0]
+            self.assertEqual(self.read_record(task)["verdict"], "PASS")
+
+    def test_wave_serializes_one_free_model(self) -> None:
+        conc = self.fresh_file("conc.txt")
+        first = self.tid()
+        second = self.tid()
+        model = "opencode/fake-free"
+        result = self.oc(
+            "wave", f"{first}:implement:{model}", f"{second}:implement:{model}",
+            "--base", "master",
+            env={"FAKE_OC_MODE": "slow", "FAKE_OC_SLOW": "1.0",
+                 "FAKE_OC_CONC": str(conc)},
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.read_record(first, model)["verdict"], "PASS")
+        self.assertEqual(self.read_record(second, model)["verdict"], "PASS")
+        events = []
+        for line in conc.read_text(encoding="utf-8").splitlines():
+            kind, _, stamp = line.partition(" ")
+            events.append((float(stamp), kind))
+        events.sort()
+        live = 0
+        peak = 0
+        for _, kind in events:
+            live += 1 if kind == "start" else -1
+            peak = max(peak, live)
+        self.assertEqual(len(events), 4)
+        self.assertEqual(peak, 1)
+
 
 class RecordStatsCase(unittest.TestCase):
     """record/stats against a bare directory: no git, no worker."""
@@ -696,6 +972,35 @@ class RecordStatsCase(unittest.TestCase):
              / "1-go_m.result.json").read_text(encoding="utf-8")
         )
         self.assertEqual(payload["verdict"], "FAIL")
+
+    def test_recorded_review_fix_is_not_a_failure(self) -> None:
+        # Two synthesized review-fix records alone must not mark DEMOTE?;
+        # two review-reject ones must.
+        for day in (1, 2):
+            self.oc(
+                "record", "--task", f"T-fix-{day}", "--role", "implement",
+                "--model", "go/fix", "--outcome", "review-fix",
+            )
+            self.oc(
+                "record", "--task", f"T-rej-{day}", "--role", "implement",
+                "--model", "go/rej", "--outcome", "review-reject",
+            )
+        rows = self.rows()
+        by_key = {(row["model"], row["role"]): row for row in rows}
+        self.assertFalse(by_key[("go/fix", "implement")]["demote"])
+        self.assertTrue(by_key[("go/rej", "implement")]["demote"])
+
+    def test_recorded_minimal_carries_recorded_cause(self) -> None:
+        self.oc(
+            "record", "--task", "T-min", "--role", "implement",
+            "--model", "go/m", "--outcome", "review-fix",
+        )
+        payload = json.loads(
+            (self.repo / ".agents" / "runs" / "T-min"
+             / "1-go_m.result.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(payload["cause"], "recorded")
+        self.assertFalse(OCMOD.is_failure(payload))
 
     # -- stats -----------------------------------------------------------
 
@@ -793,6 +1098,125 @@ class RecordStatsCase(unittest.TestCase):
         self.assertEqual(best["runs"], 1)
         bad = self.oc("stats", "--since", "October")
         self.assertEqual(bad.returncode, 2)
+
+
+class HarnessUnitCase(unittest.TestCase):
+    """Direct unit tests for oc.py helpers: no git, no worker."""
+
+    def test_pid_probe_never_kills(self) -> None:
+        sleeper = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            self.assertTrue(OCMOD._pid_alive(sleeper.pid))
+            # The probe must not signal: the sleeper is still running.
+            self.assertIsNone(sleeper.poll())
+        finally:
+            sleeper.kill()
+            sleeper.wait(timeout=30)
+        self.assertFalse(OCMOD._pid_alive(sleeper.pid))
+
+    def lock_path(self, repo: Path, number: int) -> Path:
+        directory = repo / ".agents" / "slots"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"slot-{number}.lock"
+
+    def test_stale_lock_is_reclaimed_on_the_same_slot(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="oc lock "))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        placement = tmp / "slot-7"
+        placement.mkdir()
+        lock = self.lock_path(tmp, 7)
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait(timeout=30)
+        lock.write_text(f"{dead.pid}\n", encoding="utf-8")
+        try:
+            number, path = OCMOD.acquire_slot(tmp, [(7, placement)], None, False)
+            self.assertEqual((number, path), (7, placement))
+            self.assertEqual(lock.read_text(encoding="utf-8").split()[0],
+                             str(os.getpid()))
+        finally:
+            OCMOD.release_slot(tmp, 7)
+        self.assertFalse(lock.exists())
+
+    def test_garbage_lock_is_stale(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="oc lock "))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        placement = tmp / "slot-7"
+        placement.mkdir()
+        self.lock_path(tmp, 7).write_text("not-a-pid\n", encoding="utf-8")
+        try:
+            number, _ = OCMOD.acquire_slot(tmp, [(7, placement)], None, False)
+            self.assertEqual(number, 7)
+        finally:
+            OCMOD.release_slot(tmp, 7)
+
+    def test_live_lock_is_busy(self) -> None:
+        sleeper = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        tmp = Path(tempfile.mkdtemp(prefix="oc lock "))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        placement = tmp / "slot-7"
+        placement.mkdir()
+        self.lock_path(tmp, 7).write_text(f"{sleeper.pid}\n", encoding="utf-8")
+        try:
+            with self.assertRaises(Exception) as caught:
+                OCMOD.acquire_slot(tmp, [(7, placement)], None, False)
+            self.assertIn("slot-busy", str(caught.exception))
+        finally:
+            sleeper.kill()
+            sleeper.wait(timeout=30)
+
+    def test_wave_fit_caps(self) -> None:
+        fits = OCMOD.wave_fits
+        # At most one run per free Zen model.
+        self.assertFalse(fits("opencode/a-free", ["opencode/a-free"]))
+        self.assertTrue(fits("opencode/b-free", ["opencode/a-free"]))
+        # At most three free Zen runs in total; paid models are unaffected.
+        self.assertFalse(fits("opencode/d-free",
+                              ["opencode/a-free", "opencode/b-free",
+                               "opencode/c-free"]))
+        self.assertTrue(fits("opencode/d-free",
+                             ["opencode/a-free", "opencode/b-free"]))
+        self.assertTrue(fits("go/m",
+                             ["opencode/a-free", "opencode/b-free",
+                              "opencode/c-free"]))
+        # At most three runs per model of any kind.
+        self.assertFalse(fits("go/m", ["go/m", "go/m", "go/m"]))
+        self.assertTrue(fits("go/m", ["go/m", "go/m"]))
+
+    def test_brief_owned_crates(self) -> None:
+        owned = OCMOD.brief_owned_crates(
+            "# Goal\n\n- `crates/elsewhere/x.rs`\n\n"
+            "## Files you own\n\n"
+            "- `tools/agents/oc.py`\n"
+            "- crates/alpha/src/lib.rs\n"
+            "- `crates/beta/tests/t.rs`\n\n"
+            "## Out of scope\n\n- `crates/gamma/`\n"
+        )
+        self.assertEqual(owned, {"alpha", "beta"})
+
+    def test_is_failure_follows_models_4_1(self) -> None:
+        base = {"verdict": "PASS", "cause": None, "outcomes": []}
+        verify_fail = dict(base, verdict="FAIL")
+        self.assertTrue(OCMOD.is_failure(verify_fail))
+        rejected = dict(base, outcomes=[{"outcome": "review-reject"}])
+        self.assertTrue(OCMOD.is_failure(rejected))
+        for cause in ("no-edit", "timeout", "hang"):
+            self.assertTrue(OCMOD.is_failure(dict(base, cause=cause)))
+        for cause in ("quota", "402", "locked"):
+            self.assertFalse(OCMOD.is_failure(dict(base, cause=cause)))
+        self.assertFalse(OCMOD.is_failure(dict(base, verdict="FAIL",
+                                              cause="recorded")))
+        self.assertFalse(OCMOD.is_failure(dict(base, verdict="FAIL",
+                                              cause="no-text")))
+        fixed = dict(base, outcomes=[{"outcome": "review-fix"}])
+        self.assertFalse(OCMOD.is_failure(fixed))
 
 
 if __name__ == "__main__":

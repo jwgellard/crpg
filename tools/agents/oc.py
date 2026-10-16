@@ -58,6 +58,30 @@ NON_FAULT_CAUSES = frozenset({"quota", "402", "locked"})
 # Infra causes that are the model's fault: they count against it.
 MODEL_FAULT_CAUSES = frozenset({"no-edit", "timeout", "hang"})
 
+# docs/agents/MODELS.md section 4: these Zen IDs now live on the Go
+# subscription, so the Zen form is refused with a pointer at the Go form.
+RENAMED_MODELS = {
+    "opencode/cat-jam-free": "opencode-go/cat-jam-free",
+    "opencode/longcat-2.5-preview-free": "opencode-go/longcat-2.5-preview-free",
+}
+
+# Wave concurrency caps from docs/agents/MODELS.md sections 1 and 4
+# (manager routing rules): free Zen models serialize per model and run at
+# most three at once; any one model runs at most three at once.
+FREE_ZEN_PREFIX = "opencode/"
+FREE_ZEN_PER_MODEL = 1
+FREE_ZEN_TOTAL = 3
+PER_MODEL_MAX = 3
+
+# A synthesized result record (from `record` with no matching run) carries
+# this cause so stats can tell "the manager wrote this down" apart from a
+# real verifier or infra failure (docs/agents/MODELS.md section 4.1).
+RECORDED_CAUSE = "recorded"
+
+# A brief that was never filled in still carries the manager template's
+# placeholder marker; running a worker on it is refused as no-brief.
+BRIEF_PLACEHOLDER = "<MANAGER:"
+
 
 class Exit(Exception):
     """Raised to stop a command with an exit code and a cause."""
@@ -172,24 +196,54 @@ def opencode_prefix() -> list[str]:
 
 
 def _pid_alive(pid: int) -> bool:
+    """True when a process with this PID exists. Never signals or kills.
+
+    os.kill(pid, 0) is a probe on POSIX but not on Windows, where signal 0
+    is CTRL_C_EVENT and other values terminate, so Windows uses a read-only
+    OpenProcess + GetExitCodeProcess check (stdlib ctypes) with a parsing
+    tasklist as fallback. When in doubt the PID counts as alive, so a lock
+    whose owner cannot be proven dead is never treated as stale.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            SYNCHRONIZE = 0x00100000
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(
+                SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if not handle:
+                return False
+            try:
+                code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return False
+                return code.value == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - fall back to tasklist below
+            pass
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            return re.search(rf"\b{pid}\b", proc.stdout) is not None
+        except (OSError, subprocess.SubprocessError):
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        return True
-    except OSError:
-        if os.name == "nt":
-            try:
-                proc = subprocess.run(
-                    ["taskkill", "/FI", f"PID eq {pid}", "/NH"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                return str(pid) in proc.stdout
-            except (OSError, subprocess.SubprocessError):
-                return True
+    except (PermissionError, OSError):
         return True
     return True
 
@@ -236,18 +290,27 @@ def acquire_slot(
         for number, path in free:
             lock_dir.mkdir(parents=True, exist_ok=True)
             lock = lock_dir / f"slot-{number}.lock"
-            try:
-                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                pid = _read_lock_pid(lock)
-                if pid is not None and not _pid_alive(pid):
+            fd = None
+            for _ in range(2):
+                # One stale retry: a reclaimed lock is taken here, on this
+                # slot, not skipped for the next candidate.
+                try:
+                    fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    break
+                except FileExistsError:
+                    pid = _read_lock_pid(lock)
+                    # A dead owner, or a lock with no parsable PID at all,
+                    # is stale: reclaim it and retry this same slot.
+                    if pid is not None and _pid_alive(pid):
+                        break
                     try:
                         lock.unlink()
                     except OSError:
-                        pass
+                        break
                     continue
-                continue
-            except OSError:
+                except OSError:
+                    break
+            if fd is None:
                 continue
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(f"{os.getpid()}\n")
@@ -382,33 +445,127 @@ def fetch_base(slot: Path, base: str) -> None:
 # -- brief -------------------------------------------------------------------
 
 
-def prepare_brief(repo: Path, slot: Path, task: str, attempt: int,
-                  brief: str | None, notes: str | None) -> None:
-    target = slot / "BRIEF.md"
+def brief_generator(repo: Path) -> Path:
+    generator = repo / "tools" / "agents" / "brief.py"
+    if not generator.is_file():
+        raise Exit(2, "no-brief: no --brief given and tools/agents/brief.py is missing")
+    return generator
+
+
+def check_brief_text(text: str, origin: str) -> None:
+    """Refuse a brief that was never filled in (exit 2 no-brief)."""
+    if BRIEF_PLACEHOLDER in text:
+        raise Exit(2, f"no-brief: {origin} has an unfilled placeholder ({BRIEF_PLACEHOLDER}...)")
+
+
+def resolve_brief_source(repo: Path, task: str,
+                         brief: str | None) -> tuple[str, Path | None]:
+    """Where this run's brief comes from: --brief, else the filed brief for
+    the task, else the brief.py generator. Returns ("file", path) or
+    ("generator", None). File sources are placeholder-checked here; the
+    generator's output is checked after it runs. Raises Exit(2) no-brief
+    when nothing provides a brief, so --dry-run validates like a real run.
+    """
     if brief is not None:
         source = Path(brief)
         if not source.is_file():
             raise Exit(2, f"no-brief: {brief} does not exist")
+        check_brief_text(source.read_text(encoding="utf-8", errors="replace"), str(source))
+        return ("file", source)
+    filed = repo / ".agents" / "briefs" / f"{task}.md"
+    if filed.is_file():
+        check_brief_text(filed.read_text(encoding="utf-8", errors="replace"), str(filed))
+        return ("file", filed)
+    brief_generator(repo)
+    return ("generator", None)
+
+
+def run_brief_generator(repo: Path, task: str, dest: Path) -> None:
+    generator = brief_generator(repo)
+    proc = subprocess.run(
+        [sys.executable, str(generator), task, "--out", str(dest)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or not dest.is_file():
+        raise Exit(2, f"no-brief: brief.py failed: {proc.stderr.strip()}")
+    check_brief_text(dest.read_text(encoding="utf-8", errors="replace"), str(dest))
+
+
+def prepare_brief(repo: Path, slot: Path, task: str, attempt: int,
+                  brief: str | None, notes: str | None) -> None:
+    target = slot / "BRIEF.md"
+    kind, source = resolve_brief_source(repo, task, brief)
+    if kind == "file":
+        assert source is not None
         target.write_bytes(source.read_bytes())
+        check_brief_text(target.read_text(encoding="utf-8", errors="replace"), str(target))
     else:
-        generator = repo / "tools" / "agents" / "brief.py"
-        if not generator.is_file():
-            raise Exit(2, "no-brief: no --brief given and tools/agents/brief.py is missing")
-        proc = subprocess.run(
-            [sys.executable, str(generator), task, "--out", str(target)],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if proc.returncode != 0 or not target.is_file():
-            raise Exit(2, f"no-brief: brief.py failed: {proc.stderr.strip()}")
+        run_brief_generator(repo, task, target)
     if notes is not None:
         text = Path(notes).read_text(encoding="utf-8") if Path(notes).is_file() else notes
         with target.open("a", encoding="utf-8") as handle:
             handle.write(f"\n## Attempt {attempt} notes\n\n{text}")
             if not text.endswith("\n"):
                 handle.write("\n")
+
+
+def brief_owned_crates(text: str) -> set[str]:
+    """Crate names owned by the brief: `crates/<name>/...` paths listed as
+    bullets under its `## Files you own` section."""
+    crates: set[str] = set()
+    in_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("##"):
+            title = stripped.strip("#").strip().lower()
+            in_section = title == "files you own"
+            continue
+        if not in_section:
+            continue
+        match = re.match(r"\s*[-*]\s+`?([^`\s]+)`?", line)
+        if match:
+            parts = match.group(1).strip().split("/")
+            if len(parts) >= 2 and parts[0] == "crates":
+                crates.add(parts[1])
+    return crates
+
+
+def check_wave_crates(members: list[tuple[str, str, str]],
+                      owned: list[set[str]]) -> None:
+    """Refuse two wave members owning paths under the same crates/<name>/:
+    each crate takes one task at a time (AGENT_TEAM_PLAN section 5.1)."""
+    seen: dict[str, str] = {}
+    for (task, _role, _model), crates in zip(members, owned):
+        for crate in sorted(crates):
+            if crate in seen:
+                raise Exit(
+                    2,
+                    f"usage: wave members {seen[crate]} and {task} both own "
+                    f"paths under crates/{crate}/",
+                )
+            seen[crate] = task
+
+
+def check_model_id(model: str) -> None:
+    """Refuse Zen IDs that moved to the Go subscription (exit 2 usage)."""
+    if model in RENAMED_MODELS:
+        raise Exit(
+            2,
+            f"usage: model {model} moved to {RENAMED_MODELS[model]}; "
+            f"use {RENAMED_MODELS[model]} instead",
+        )
+
+
+def wave_fits(model: str, running: list[str]) -> bool:
+    """True when one more run of this model may start alongside `running`."""
+    if model.startswith(FREE_ZEN_PREFIX):
+        if sum(1 for active in running if active == model) >= FREE_ZEN_PER_MODEL:
+            return False
+        return sum(1 for active in running if active.startswith(FREE_ZEN_PREFIX)) < FREE_ZEN_TOTAL
+    return sum(1 for active in running if active == model) < PER_MODEL_MAX
 
 
 # -- worker execution ----------------------------------------------------------
@@ -562,6 +719,7 @@ def parse_events(log_path: Path) -> dict:
     last_reason: str | None = None
     saw_step = False
     raw_chunks: list[str] = []
+    infra_chunks: list[str] = []
     try:
         blob = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -570,6 +728,10 @@ def parse_events(log_path: Path) -> dict:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            # Not an event: raw process output (stdout/stderr), which is
+            # where transport errors such as "database is locked" appear.
+            if line.strip():
+                infra_chunks.append(line)
             continue
         if not isinstance(event, dict):
             continue
@@ -593,12 +755,19 @@ def parse_events(log_path: Path) -> dict:
             text = part.get("text")
             if isinstance(text, str) and text.strip():
                 last_text = text
+        elif kind == "error":
+            infra_chunks.append(line)
         if kind == "tool_use":
             state = part.get("state") or {}
-            for key in ("error", "output"):
-                value = state.get(key)
-                if isinstance(value, str) and value.strip():
-                    raw_chunks.append(value)
+            # Only tool *errors* count as provider/process failures. Tool
+            # outputs stay out: a clean run that read a file containing an
+            # infra marker (e.g. "insufficient funds") is not an infra exit.
+            error = state.get("error")
+            if isinstance(error, str) and error.strip():
+                infra_chunks.append(error)
+            output = state.get("output")
+            if isinstance(output, str) and output.strip():
+                raw_chunks.append(output)
     return {
         "steps": steps,
         "input": in_tokens,
@@ -609,7 +778,21 @@ def parse_events(log_path: Path) -> dict:
         "last_reason": last_reason,
         "saw_step": saw_step,
         "raw": blob + "\n" + "\n".join(raw_chunks),
+        # Provider/process errors only: error events, tool errors, and raw
+        # process output. Never tool outputs or the worker's own text.
+        "infra_text": "\n".join(infra_chunks),
     }
+
+
+def infra_cause(events: dict) -> str | None:
+    """Classify a finished run's infra cause, or None.
+
+    A run that ended with a normal `stop` finish is never an infra exit,
+    whatever words its tool outputs or report contain.
+    """
+    if events.get("last_reason") == "stop":
+        return None
+    return classify_infra(events.get("infra_text", ""))
 
 
 def next_attempt_number(task_dir: Path) -> int:
@@ -688,8 +871,15 @@ def verdict_line(info: dict) -> str:
     )
 
 
-def next_line(task: str, verdict: str, cause: str | None, attempt: int) -> str:
+def next_line(task: str, verdict: str, cause: str | None, attempt: int,
+              role: str | None = None) -> str:
     if verdict == "PASS":
+        # Ask, scout and review runs answer a question or give a verdict;
+        # there is no PR step for them.
+        if task == "ask" or role == "scout":
+            return "next: read the answer"
+        if role == "review":
+            return "next: act on the verdict"
         return "next: open the PR"
     if verdict == "FAIL":
         if attempt < 2:
@@ -731,7 +921,8 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
     if info.get("last_text"):
         lines.append(f"--- worker report (first {WORKER_TAIL_LINES} lines) ---")
         lines.extend(info["last_text"].splitlines()[:WORKER_TAIL_LINES])
-    lines.append(next_line(info["task"], info["verdict"], info.get("cause"), info["attempt"]))
+    lines.append(next_line(info["task"], info["verdict"], info.get("cause"),
+                          info["attempt"], info.get("role")))
     if not full and len(lines) > MAX_SUMMARY_LINES:
         trimmed = lines[: MAX_SUMMARY_LINES - 1]
         trimmed.append(f"... truncated to {MAX_SUMMARY_LINES} lines (--full for all {len(lines)})")
@@ -782,13 +973,23 @@ def load_records(repo: Path) -> list[dict]:
 
 
 def is_failure(record: dict) -> bool:
-    """A run the model is blamed for: verify FAIL, review reject, or a fault infra exit."""
-    if record.get("verdict") == "FAIL":
-        return True
+    """A run the model is blamed for, exactly per MODELS.md section 4.1.
+
+    A failure is a verify FAIL, a review reject, or an infra exit the model
+    caused (no-edit, timeout, hang). Anything else is not: a synthesized
+    record from `record` (cause "recorded") counts only through an explicit
+    review-reject outcome, and a review/scout run that left no text
+    (cause "no-text") never counts.
+    """
     for outcome in record.get("outcomes") or []:
         if outcome.get("outcome") == "review-reject":
             return True
-    return record.get("cause") in MODEL_FAULT_CAUSES
+    if record.get("cause") in MODEL_FAULT_CAUSES:
+        return True
+    return (
+        record.get("verdict") == "FAIL"
+        and record.get("cause") not in (RECORDED_CAUSE, "no-text")
+    )
 
 
 def first_attempt_eligible(record: dict) -> bool:
@@ -804,28 +1005,51 @@ def first_attempt_pass(record: dict) -> bool:
     return True
 
 
+# -- shared result-record helpers -------------------------------------------------
+
+
+def new_info(task: str, role: str, model: str, attempt: int, started: str) -> dict:
+    """The blank result record every run fills in (the model scorecard row)."""
+    return {
+        "task": task, "role": role, "model": model, "attempt": attempt,
+        "started_utc": started, "elapsed_s": 0.0, "verdict": "INFRA",
+        "cause": None, "failed_checks": [], "steps": 0,
+        "tokens": {"input": 0, "cached": 0, "output": 0}, "cost": 0.0,
+        "retries": [], "outcomes": [], "last_text": "",
+    }
+
+
+def absorb_events(info: dict, events: dict) -> None:
+    """Copy a parsed event log's counters into the result record."""
+    info.update(steps=events["steps"],
+                tokens={"input": events["input"], "cached": events["cached"],
+                        "output": events["output"]},
+                cost=events["cost"], last_text=events["last_text"])
+
+
+def result_payload(info: dict, verify: dict | None, summary: str) -> dict:
+    """The --json / wave-capture object for a finished run."""
+    return {
+        "tool": "oc", "version": RESULT_VERSION, "verdict": info["verdict"],
+        "task": info["task"], "role": info["role"], "model": info["model"],
+        "attempt": info["attempt"], "cause": info["cause"],
+        "failed_checks": info["failed_checks"], "steps": info["steps"],
+        "tokens": info["tokens"], "cost": info["cost"],
+        "elapsed_s": round(info["elapsed_s"], 1),
+        "files": (verify or {}).get("files") or [],
+        "checks": (verify or {}).get("checks") or [],
+        "summary": summary,
+    }
+
+
 # -- run -----------------------------------------------------------------------------
 
 
 def do_run(args: argparse.Namespace) -> int:
     repo = repo_root()
+    check_model_id(args.model)
     slots = list_slots(slots_dir(repo))
     dry = bool(args.dry_run)
-
-    slot_number: int | None = None
-    slot: Path | None = None
-    if not dry:
-        slot_number, slot = acquire_slot(repo, slots, args.slot, wait=False)
-    else:
-        if args.slot is not None:
-            wanted = [entry for entry in slots if entry[0] == args.slot]
-            if not wanted:
-                raise Exit(2, f"no-slot: slot-{args.slot} does not exist")
-            slot_number, slot = wanted[0]
-        elif slots:
-            slot_number, slot = slots[0]
-        else:
-            raise Exit(2, "no-slot: no slot worktrees found")
 
     task_dir = runs_dir(repo) / args.task
     attempt = next_attempt_number(task_dir)
@@ -837,45 +1061,12 @@ def do_run(args: argparse.Namespace) -> int:
     timeout_s = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT
     idle_s = args.idle if args.idle is not None else DEFAULT_IDLE
 
-    info: dict = {
-        "task": args.task,
-        "role": args.role,
-        "model": args.model,
-        "attempt": attempt,
-        "started_utc": started,
-        "elapsed_s": 0.0,
-        "verdict": "INFRA",
-        "cause": None,
-        "failed_checks": [],
-        "steps": 0,
-        "tokens": {"input": 0, "cached": 0, "output": 0},
-        "cost": 0.0,
-        "retries": [],
-        "outcomes": [],
-        "last_text": "",
-    }
+    info = new_info(args.task, args.role, args.model, attempt, started)
 
     def finish(code: int, verify: dict | None) -> int:
         info["elapsed_s"] = time.time() - wall_start
         lines = build_summary(info, verify, bool(args.full))
-        payload = {
-            "tool": "oc",
-            "version": RESULT_VERSION,
-            "verdict": info["verdict"],
-            "task": info["task"],
-            "role": info["role"],
-            "model": info["model"],
-            "attempt": info["attempt"],
-            "cause": info["cause"],
-            "failed_checks": info["failed_checks"],
-            "steps": info["steps"],
-            "tokens": info["tokens"],
-            "cost": info["cost"],
-            "elapsed_s": round(info["elapsed_s"], 1),
-            "files": (verify or {}).get("files") or [],
-            "checks": (verify or {}).get("checks") or [],
-            "summary": "\n".join(lines),
-        }
+        payload = result_payload(info, verify, "\n".join(lines))
         if slot_number is not None and not dry:
             release_slot(repo, slot_number)
         if not dry:
@@ -893,10 +1084,33 @@ def do_run(args: argparse.Namespace) -> int:
                 print(line)
         return code
 
-    prefix = opencode_prefix()
+    slot_number: int | None = None
+    slot: Path | None = None
+    if not dry:
+        try:
+            slot_number, slot = acquire_slot(repo, slots, args.slot, wait=False)
+        except Exit as stop:
+            # A run that never got a slot still leaves its result record,
+            # so the model scorecard sees the infra exit.
+            if stop.cause and stop.cause.startswith("slot-busy"):
+                info["cause"] = stop.cause
+                eprint(f"oc: {stop.cause}")
+                return finish(2, None)
+            raise
+    else:
+        if args.slot is not None:
+            wanted = [entry for entry in slots if entry[0] == args.slot]
+            if not wanted:
+                raise Exit(2, f"no-slot: slot-{args.slot} does not exist")
+            slot_number, slot = wanted[0]
+        elif slots:
+            slot_number, slot = slots[0]
+        else:
+            raise Exit(2, "no-slot: no slot worktrees found")
+
     variant = args.variant
 
-    def worker_cmd(prompt: str, use_variant: str | None) -> list[str]:
+    def worker_cmd(prefix: list[str], prompt: str, use_variant: str | None) -> list[str]:
         cmd = prefix + [
             "run",
             "--agent", f"crpg-{args.role}",
@@ -916,21 +1130,28 @@ def do_run(args: argparse.Namespace) -> int:
         "next: ...",
     ]
     if dry:
+        # A dry run validates like a real run (brief included) but changes
+        # nothing: no lock, no branch move, no log, no result record.
+        resolve_brief_source(repo, args.task, args.brief)
+        prefix = opencode_prefix()
         print(f"DRY-RUN {args.task} {args.role} \u00b7 {args.model} \u00b7 slot-{slot_number}")
-        print("command: " + " ".join(worker_cmd(prompt, variant)))
+        print("command: " + " ".join(worker_cmd(prefix, prompt, variant)))
         for line in skeleton:
             print(line)
         return 0
 
     assert slot is not None and slot_number is not None
     try:
+        prefix = opencode_prefix()
         # -- prepare the slot worktree -------------------------------------
         fetch_base(slot, base)
         if attempt == 1 or args.fresh:
             proc = git(["checkout", "-B", branch, base], slot)
             if proc.returncode != 0:
                 raise Exit(2, f"branch: cannot create {branch} from {base}: {proc.stderr.strip()}")
-            git(["clean", "-ffdx", "-e", "target/"], slot)
+            proc = git(["clean", "-ffdx", "-e", "target/"], slot)
+            if proc.returncode != 0:
+                raise Exit(2, f"branch: cannot clean the slot: {proc.stderr.strip()}")
         else:
             if current_branch(slot) != branch:
                 raise Exit(2, f"branch: slot is not on {branch}")
@@ -943,15 +1164,12 @@ def do_run(args: argparse.Namespace) -> int:
         retries = 0
         while True:
             idle_or_timeout, rc = run_worker(
-                worker_cmd(prompt, variant), slot, log_path, timeout_s, idle_s,
-                f"crpg-{args.role}", args.model,
+                worker_cmd(prefix, prompt, variant), slot, log_path, timeout_s,
+                idle_s, f"crpg-{args.role}", args.model,
             )
             events = parse_events(log_path)
             if idle_or_timeout in ("timeout", "hang", "quota", "402", "model"):
-                info.update(steps=events["steps"],
-                            tokens={"input": events["input"], "cached": events["cached"],
-                                    "output": events["output"]},
-                            cost=events["cost"], last_text=events["last_text"])
+                absorb_events(info, events)
                 info["cause"] = idle_or_timeout
                 if idle_or_timeout in MODEL_FAULT_CAUSES:
                     info["failed_checks"] = [idle_or_timeout]
@@ -962,18 +1180,12 @@ def do_run(args: argparse.Namespace) -> int:
                     info["retries"].append({"cause": "locked", "variant": variant})
                     time.sleep(lock_wait())
                     continue
-                info.update(steps=events["steps"],
-                            tokens={"input": events["input"], "cached": events["cached"],
-                                    "output": events["output"]},
-                            cost=events["cost"], last_text=events["last_text"])
+                absorb_events(info, events)
                 info["cause"] = "locked"
                 return finish(2, None)
-            cause = classify_infra(events["raw"])
+            cause = infra_cause(events)
             if cause:
-                info.update(steps=events["steps"],
-                            tokens={"input": events["input"], "cached": events["cached"],
-                                    "output": events["output"]},
-                            cost=events["cost"], last_text=events["last_text"])
+                absorb_events(info, events)
                 info["cause"] = cause
                 if cause in MODEL_FAULT_CAUSES:
                     info["failed_checks"] = [cause]
@@ -985,26 +1197,17 @@ def do_run(args: argparse.Namespace) -> int:
                     variant = STALL_VARIANT
                     wait_start_gap(repo)
                     continue
-                info.update(steps=events["steps"],
-                            tokens={"input": events["input"], "cached": events["cached"],
-                                    "output": events["output"]},
-                            cost=events["cost"], last_text=events["last_text"])
+                absorb_events(info, events)
                 info["cause"] = "no-edit"
                 info["failed_checks"] = ["no-edit"]
                 return finish(2, None)
             if rc != 0 and not events["last_text"]:
-                info.update(steps=events["steps"],
-                            tokens={"input": events["input"], "cached": events["cached"],
-                                    "output": events["output"]},
-                            cost=events["cost"], last_text=events["last_text"])
+                absorb_events(info, events)
                 info["cause"] = "error"
                 return finish(2, None)
             break
 
-        info.update(steps=events["steps"],
-                    tokens={"input": events["input"], "cached": events["cached"],
-                            "output": events["output"]},
-                    cost=events["cost"], last_text=events["last_text"])
+        absorb_events(info, events)
 
         # -- verify ---------------------------------------------------------
         if args.role in VERIFY_ROLES:
@@ -1053,6 +1256,7 @@ def do_run(args: argparse.Namespace) -> int:
 
 def do_ask(args: argparse.Namespace) -> int:
     repo = repo_root()
+    check_model_id(args.model)
     task = "ask"
     task_dir = runs_dir(repo) / task
     attempt = next_attempt_number(task_dir)
@@ -1064,43 +1268,12 @@ def do_ask(args: argparse.Namespace) -> int:
     agent = f"crpg-{args.role}"
     question = " ".join(args.question)
 
-    info: dict = {
-        "task": task,
-        "role": args.role,
-        "model": args.model,
-        "attempt": attempt,
-        "started_utc": started,
-        "elapsed_s": 0.0,
-        "verdict": "INFRA",
-        "cause": None,
-        "failed_checks": [],
-        "steps": 0,
-        "tokens": {"input": 0, "cached": 0, "output": 0},
-        "cost": 0.0,
-        "retries": [],
-        "outcomes": [],
-        "last_text": "",
-    }
+    info = new_info(task, args.role, args.model, attempt, started)
 
     def finish(code: int) -> int:
         info["elapsed_s"] = time.time() - wall_start
         lines = build_summary(info, None, bool(args.full))
-        payload = {
-            "tool": "oc",
-            "version": RESULT_VERSION,
-            "verdict": info["verdict"],
-            "task": task,
-            "role": args.role,
-            "model": args.model,
-            "attempt": attempt,
-            "cause": info["cause"],
-            "failed_checks": info["failed_checks"],
-            "steps": info["steps"],
-            "tokens": info["tokens"],
-            "cost": info["cost"],
-            "elapsed_s": round(info["elapsed_s"], 1),
-            "summary": "\n".join(lines),
-        }
+        payload = result_payload(info, None, "\n".join(lines))
         write_record(record_path(task_dir, attempt, args.model), info)
         if args.json:
             print(json.dumps(payload, indent=2))
@@ -1122,16 +1295,13 @@ def do_ask(args: argparse.Namespace) -> int:
         wait_start_gap(repo)
         idle_or_timeout, rc = run_worker(cmd, repo, log_path, timeout_s, idle_s, agent, args.model)
         events = parse_events(log_path)
-        info.update(steps=events["steps"],
-                    tokens={"input": events["input"], "cached": events["cached"],
-                            "output": events["output"]},
-                    cost=events["cost"], last_text=events["last_text"])
+        absorb_events(info, events)
         if idle_or_timeout is not None:
             info["cause"] = idle_or_timeout
             if idle_or_timeout in MODEL_FAULT_CAUSES:
                 info["failed_checks"] = [idle_or_timeout]
             return finish(2)
-        cause = classify_infra(events["raw"])
+        cause = infra_cause(events)
         if cause:
             info["cause"] = cause
             if cause in MODEL_FAULT_CAUSES:
@@ -1165,19 +1335,37 @@ def parse_spec(text: str) -> tuple[str, str, str]:
 def do_wave(args: argparse.Namespace) -> int:
     repo = repo_root()
     members = [parse_spec(spec) for spec in args.specs]
+    for _task, _role, model in members:
+        check_model_id(model)
     slots = list_slots(slots_dir(repo))
     if not slots:
         raise Exit(2, "no-slot: no slot worktrees found")
     timeout_s = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT
 
+    # Each member's brief, resolved before anything starts: a filed brief or
+    # the generator, placeholder-checked. Two members owning the same crate
+    # are refused here, not after a worker has run.
+    scratch = runs_dir(repo) / "_wave_briefs"
+    brief_files: list[str] = []
+    owned: list[set[str]] = []
+    for task, _role, _model in members:
+        kind, source = resolve_brief_source(repo, task, None)
+        if kind == "generator":
+            scratch.mkdir(parents=True, exist_ok=True)
+            source = scratch / f"{task}.md"
+            run_brief_generator(repo, task, source)
+        assert source is not None
+        brief_files.append(str(source))
+        owned.append(brief_owned_crates(
+            source.read_text(encoding="utf-8", errors="replace")))
+    check_wave_crates(members, owned)
+
     results: list[dict] = [{} for _ in members]
-    held: list[tuple[int, int]] = []
-    held_lock = threading.Lock()
+    gate_lock = threading.Lock()
+    running_models: dict[int, str] = {}
 
     def member_job(index: int, task: str, role: str, model: str) -> None:
         number, _slot = acquire_slot(repo, slots, None, wait=True)
-        with held_lock:
-            held.append((index, number))
         try:
             sub = argparse.Namespace(
                 task=task,
@@ -1187,7 +1375,7 @@ def do_wave(args: argparse.Namespace) -> int:
                 timeout=timeout_s,
                 idle=DEFAULT_IDLE,
                 variant=None,
-                brief=None,
+                brief=brief_files[index],
                 notes=None,
                 slug=None,
                 base=args.base,
@@ -1206,6 +1394,8 @@ def do_wave(args: argparse.Namespace) -> int:
             payload["code"] = code
             results[index] = payload
         finally:
+            with gate_lock:
+                running_models.pop(index, None)
             release_slot(repo, number)
 
     workers = min(len(slots), len(members))
@@ -1213,12 +1403,31 @@ def do_wave(args: argparse.Namespace) -> int:
         threading.Thread(target=member_job, args=(i, *members[i]), daemon=True)
         for i in range(len(members))
     ]
-    running: list[threading.Thread] = []
+    started: list[threading.Thread] = []
     cursor = 0
-    while cursor < len(threads) or any(t.is_alive() for t in running):
-        while cursor < len(threads) and len([t for t in running if t.is_alive()]) < workers:
-            threads[cursor].start()
-            running.append(threads[cursor])
+    # Members start in spec order. A member over a model cap waits for a
+    # free place instead of being refused; nothing behind it starts first.
+    # The model's place is reserved here, in the scheduling thread, before
+    # the worker starts: reserving it in the worker would race the next
+    # fits check and let two capped members run together.
+    while cursor < len(threads) or any(t.is_alive() for t in started):
+        while cursor < len(threads):
+            alive = len([t for t in started if t.is_alive()])
+            if alive >= workers:
+                break
+            with gate_lock:
+                fits = wave_fits(members[cursor][2], list(running_models.values()))
+                if fits:
+                    running_models[cursor] = members[cursor][2]
+            if not fits:
+                break
+            try:
+                threads[cursor].start()
+            except Exception:
+                with gate_lock:
+                    running_models.pop(cursor, None)
+                raise
+            started.append(threads[cursor])
             cursor += 1
         time.sleep(0.1)
     for thread in threads:
@@ -1235,10 +1444,10 @@ def do_wave(args: argparse.Namespace) -> int:
         failing = ", ".join(payload.get("failed_checks") or [])
         tail = cause or failing or "-"
         lines.append(f"{verdict} {task} {role} \u00b7 {model} \u00b7 attempt {attempt} \u00b7 {tail}")
-    for (task, _role, _model), payload in zip(members, results):
+    for (task, role, _model), payload in zip(members, results):
         attempt = payload.get("attempt", 0)
         lines.append(next_line(task, payload.get("verdict", "INFRA"),
-                              payload.get("cause"), attempt) + f" ({task})")
+                               payload.get("cause"), attempt, role) + f" ({task})")
     if args.json:
         print(json.dumps({"tool": "oc", "version": RESULT_VERSION,
                           "members": results, "exit": worst}, indent=2))
@@ -1280,23 +1489,9 @@ def do_record(args: argparse.Namespace) -> int:
         return 0
     attempt = args.attempt or 1
     verdict = "PASS" if args.outcome in PASS_OUTCOMES else "FAIL"
-    payload = {
-        "version": RESULT_VERSION,
-        "task": args.task,
-        "role": args.role,
-        "model": args.model,
-        "attempt": attempt,
-        "started_utc": utcnow(),
-        "elapsed_s": 0.0,
-        "verdict": verdict,
-        "cause": None,
-        "failed_checks": [],
-        "steps": 0,
-        "tokens": {"input": 0, "cached": 0, "output": 0},
-        "cost": 0.0,
-        "retries": [],
-        "outcomes": [entry],
-    }
+    payload = new_info(args.task, args.role, args.model, attempt, utcnow())
+    payload.update(version=RESULT_VERSION, verdict=verdict,
+                   cause=RECORDED_CAUSE, outcomes=[entry])
     task_dir.mkdir(parents=True, exist_ok=True)
     fresh = record_path(task_dir, attempt, args.model)
     fresh.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -1456,6 +1651,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The summary uses U+00B7 MIDDLE DOT; on Windows a piped stdout defaults
+    # to the ANSI code page and the dot comes out as garbage. Force UTF-8
+    # (with replacement, never a crash) before anything prints.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
     args = build_parser().parse_args(argv)
     try:
         if args.command == "run":

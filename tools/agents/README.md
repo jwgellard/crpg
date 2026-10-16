@@ -39,6 +39,25 @@ Environment: `$CRPG_REPO` (repo root, default: the main worktree),
 start spacing, default 4 s) and `$CRPG_OC_LOCK_WAIT` (locked retry wait,
 default 5 s).
 
+`wave` caps concurrency per the manager's routing rules
+(`docs/agents/MODELS.md` §4): at most one run per free Zen model
+(`opencode/…-free`), at most three free Zen runs in total, and at most
+three runs per model of any other kind. Members over a cap wait for a
+free place in spec order; they are not refused. Two Zen IDs that moved
+to the Go subscription are refused (exit 2 `usage`, naming the Go ID):
+`opencode/cat-jam-free` → `opencode-go/cat-jam-free` and
+`opencode/longcat-2.5-preview-free` →
+`opencode-go/longcat-2.5-preview-free` (one constant, `RENAMED_MODELS`).
+
+Briefs: `run` takes `--brief`, else `<repo>/.agents/briefs/<ID>.md`
+when filed, else generates one via `brief.py`; `wave` resolves each
+member the same way (it has no `--brief` of its own). A brief that
+still contains the manager template's `<MANAGER:` placeholder is
+refused (exit 2 `no-brief`), as is a missing brief or generator.
+`wave` reads each member brief's `## Files you own` bullets and refuses
+(exit 2 `usage`) two members owning paths under the same
+`crates/<name>/`, since each crate takes one task at a time.
+
 Exit-2 causes: `fetch`, `no-brief`, `no-verify`, `no-slot`, `slot-busy`,
 `no-exe`, `branch`, `locked`, `402`, `quota`, `timeout`, `hang`,
 `no-edit`, `model`, `verify-error`, `usage`. Of these, `quota`, `402` and
@@ -64,3 +83,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 ## Agent log
 
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 · Wrote this usage guide for the new `tools/agents` scripts so the manager can route OpenCode workers without reading `oc.py`; it ends with this signed entry per the root `AGENTS.md` rule.
+- 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 attempt 3 · Documented the review fixes above (wave model caps, refused Zen IDs, brief precedence with placeholder and same-crate checks) so the guide matches `oc.py`'s routing behaviour.

@@ -17,8 +17,13 @@ failure mode without the network or the real OpenCode:
                       stall         every step_finish has reason "length".
                       stall-once    first call stalls, later calls behave as ok
                                     (counter in FAKE_OC_STATE).
-                     silent        write nothing, sleep until killed.
-                     hang-forever  alias for silent.
+                      silent        write nothing, sleep until killed.
+                      hang-forever  alias for silent.
+                      slow          sleep FAKE_OC_SLOW seconds, then behave as ok
+                                    (for wave concurrency-cap checks).
+                      markers       clean run ending in stop whose tool output
+                                    and report text contain every infra-table
+                                    marker; must keep its normal verdict.
                      fail402       print "ERROR 402 ... insufficient funds".
                      quota         print "AI_APICallError: Go usage limit exceeded".
                      sig-model     print "model not found: <model>".
@@ -29,10 +34,13 @@ failure mode without the network or the real OpenCode:
                                    $CRPG_OPENCODE_LOG (for the idle watchdog).
                      prompt-file   write the received prompt to
                                    $FAKE_OC_PROMPT_FILE for exact-match checks.
-  FAKE_OC_STARTS   file to append time.time() at startup (start-gap checks).
-  FAKE_OC_STDIN    "check": report whether stdin hit EOF at once (closed /
-                   DEVNULL) or blocked (open pipe); used to prove oc.py passes
-                   stdin=DEVNULL.
+   FAKE_OC_STARTS   file to append time.time() at startup (start-gap checks).
+   FAKE_OC_STDIN    "check": report whether stdin hit EOF at once (closed /
+                    DEVNULL) or blocked (open pipe); used to prove oc.py passes
+                    stdin=DEVNULL.
+   FAKE_OC_SLOW     seconds the "slow" mode sleeps before its normal run.
+   FAKE_OC_CONC     file logging "start <ts>" / "end <ts>" per invocation,
+                    for wave concurrency-cap checks.
 """
 
 from __future__ import annotations
@@ -73,6 +81,35 @@ def emit_ok(prompt: str, mode: str) -> None:
                               "cache": {"read": 300, "write": 0}},
                    "cost": 0.02}})
     _ = prompt
+
+
+# Every marker in oc.py's infra table, as plain words a worker could read
+# from a file or quote in its report. A run carrying these must still get
+# its normal verdict: only provider/process errors classify as infra.
+MARKERS = (
+    "402 insufficient funds rate limit quota usage limit too many requests "
+    " 429 headers timed out model not found unknown model database is locked"
+)
+
+
+def emit_markers() -> None:
+    emit({"type": "step_start", "timestamp": 1,
+          "part": {"type": "step-start", "sessionID": "ses_fake"}})
+    emit({"type": "tool_use", "timestamp": 2,
+          "part": {"type": "tool", "tool": "read",
+                   "state": {"status": "completed", "output": MARKERS}}})
+    emit({"type": "step_finish", "timestamp": 3,
+          "part": {"type": "step-finish", "reason": "tool-calls",
+                   "tokens": {"input": 1200, "output": 300, "reasoning": 50,
+                              "cache": {"read": 900, "write": 10}},
+                   "cost": 0.01}})
+    emit({"type": "text", "timestamp": 4,
+          "part": {"type": "text", "text": "fake worker report\n" + MARKERS}})
+    emit({"type": "step_finish", "timestamp": 5,
+          "part": {"type": "step-finish", "reason": "stop",
+                   "tokens": {"input": 400, "output": 100, "reasoning": 10,
+                              "cache": {"read": 300, "write": 0}},
+                   "cost": 0.02}})
 
 
 def check_stdin() -> int:
@@ -243,9 +280,28 @@ def main() -> int:
     if "rc1" in mode:
         return 1
 
+    if "markers" in mode:
+        emit_markers()
+        return 0
+
+    if "slow" in mode:
+        try:
+            delay = float(os.environ.get("FAKE_OC_SLOW", "1.0"))
+        except ValueError:
+            delay = 1.0
+        time.sleep(delay)
+
     emit_ok(prompt, mode)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    conc = os.environ.get("FAKE_OC_CONC", "")
+    if conc:
+        with open(conc, "a", encoding="utf-8") as handle:
+            handle.write(f"start {time.time()}\n")
+    code = main()
+    if conc:
+        with open(conc, "a", encoding="utf-8") as handle:
+            handle.write(f"end {time.time()}\n")
+    sys.exit(code)
