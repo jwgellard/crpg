@@ -109,6 +109,9 @@ exit 2  usage error: missing/unknown subcommand, missing replay path,
 `--golden` is default-through-extension, not default-through-`play`-and-`read`:
 omitting it is a path decision, never a "use any golden" trap.
 
+These exit codes are a public CI-facing contract, stable from the first
+version.
+
 ## CLI contract (T016d combat `replay --campaign`)
 
 ```
@@ -290,11 +293,15 @@ exit 1  I/O, structural load, or semantic Error failure
 exit 2  usage error
 ```
 
-`--json` may appear once either before or after the root. Warnings print
+`--json` may appear once either before or after the root. Duplicate flags,
+extra positionals, unknown flags, and a missing root are usage errors
+(exit 2). Warnings print
 (plain) or are included (JSON) but never fail: exit stays `0` when no `Error`
 is present. The engine version is the compile-time Cargo package version
 parsed as semver; an unparsable version is exit 1 with a fixed internal
-line, never a panic.
+line, never a panic. That is one of two fixed-text internal failures (exit
+1); the other is a canonical serialization failure. These are the same three
+exit buckets as `replay`, extended, not replaced.
 
 ## Validate flow and boundaries (T011b)
 
@@ -829,3 +836,4 @@ network-dependent CI step.
 - 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 fmt alias hardening · Documented fmt's complete regular-file identity preflight, which rejects rewrite targets hard-linked to ignored content or another document before mutation.
 - 2026-09-22 (UTC) · opencode/gpt-5.6-sol + T013 shared-writer alias hardening · Extended the documented identity preflight to migrate so the shared writer preserves ignored hard-linked campaign content for both save commands.
 - 2026-10-16 (UTC) · opencode-go/beam-free + A0-8 · Absorbed the detailed contracts, per-subcommand invariants, second-ruleset proof, and command-specific traps moved out of the trimmed AGENTS.md; no information removed.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + A0-8 review fix · Restored four facts the trim dropped (replay exit codes as a stable CI-facing contract; validate usage errors, its second fixed-text internal failure, and its three exit buckets), found by a Beam review and a keyword check.
