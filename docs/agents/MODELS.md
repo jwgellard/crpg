@@ -70,6 +70,12 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    Flash, Big Pickle and Space Bunny. Four runs failed before their first
    step. Run **at most three free runs at once in total**, and at most one per
    model. `oc.py wave` must enforce both caps.
+11. **Two free models are exempt in practice.** OpenCode's Go page (read
+   2026-10-16 12:10 UTC) lists LongCat 2.5 Preview Free and Cat Jam Free as
+   **Unlimited** for Go subscribers, both "limited time" and Cat Jam
+   "limited regions". At 12:11 UTC both answered while DeepSeek V4.1 Flash
+   Free was still refused, and that morning they had kept working through
+   the shared limit. Item 10's caps apply to the other free models.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -232,6 +238,25 @@ kept for higher-level thinking: A and C packages, the S-set, which
 escalations an O1 model failed. "Strongest" means the tier below and the §4.1
 field record. Composite scores only break ties.
 
+**LongCat and Cat Jam first, once proven (the user, 2026-10-16):** "Long cat
+and cat jam are free right now. If they can be assessed to be reliable, I
+would like to utilise them heavily." Both scored 21/21 and 5/5 in the
+bake-off, but that fixture was too easy to rank strong models (§3.3). Their
+assessment is the §4.1 field record, run on real work from 2026-10-16:
+research reports citation-checked by the other model, and implementation
+(A0-6 on LongCat, T097-m on Cat Jam) through verify and review. Promote
+either to first choice in a role once it has 5 runs there and a
+first-attempt pass rate at least the incumbent's. Against Cat Jam so far:
+one model-caused 43-minute hang (A0-3); a 10-minute idle watchdog now bounds
+that cost. Higher-allowance Go models come next for implementation: Muse
+Spark 1.3 Contributor (45,300 requests per 5 h), DeepSeek V4.1 Flash
+(34,670), MiMo-V2.6-Flash and MiMo-V2.5 (30,100 each).
+
+Not yet benchmarked, from the same Go page: LongCat-2.0 (11,400 per 5 h),
+MiMo-V2.5 and V2.5-Pro, Qwen3.7 Plus, GLM-5.2, Hy3, Grok 4.7, GPT 5.6 Luna
+and Muse Spark 1.2 Contributor on Go; Exo, MiMo-V2.5, LL Alpha and Jev 1.13
+on the free list. They wait for A0-7's fixtures.
+
 The principle: **plentiful models implement, scarce strong models review.**
 On Go that also means **cheap**: implement on Muse Spark Contributor,
 DeepSeek V4.1 Flash or MiMo-V2.6-Pro, which cost fractions of a cent per
@@ -360,3 +385,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user preference, third statement · Set the order within the strong models: the intelligent free models' limits first, then cheap Go, then expensive Go for reviews, with Claude at the manager's discretion. The user wants tokens stretched as far as possible.
 - 2026-10-16 (UTC) · claude-code + free-tier rate limits · Added the at-most-one-run-per-free-model rule after three concurrent DeepSeek Free runs and one Muse Spark Free run hit `Rate limit exceeded`.
 - 2026-10-16 (UTC) · claude-code + free-tier rate limit correction · Corrected item 10: the free-tier limit is shared across the account, not set per model. Capped concurrency at three free runs in total, after four runs on four different free models failed at step 0.
+- 2026-10-16 (UTC) · claude-code + user preference on LongCat and Cat Jam · Recorded that OpenCode lists both as unlimited for Go subscribers, the user's wish to use them heavily once proven, the rule that promotes them, and the unbenchmarked models now on the Go page.
