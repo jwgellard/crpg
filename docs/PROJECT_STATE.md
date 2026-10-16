@@ -3,51 +3,25 @@
 Updated: 2026-10-16
 
 ## Handover
-- In flight: PR #33 (setup wave A0 and the day's planning, one PR per session). Since the last handover it gained:
-  - the A0-1 spawn check and `tools:` allowlists;
-  - the R5–R7 research fold-in (`docs/agents/RESEARCH-2026-10-16.md`);
-  - the plan changes D28j–D28m: the M6-R authoring UX research stage T099–T103, T104–T112, rule-defining as a pillar, and real-time-with-pause plus turn-based;
-  - the MODELS.md Go-route fix and the first field record;
-  - A0-4 (`verify_task.py`) and A0-6 (hooks), each verified and reviewed "ready for PR" on Go Gemini 4 Argon, then cherry-picked.
+- In flight: PR #33 (`setup/A0-config`, tip `c9cfc2b`), the A0 setup wave and the day's planning, one PR per session. This session (the second manager session, 2026-10-16 13:54–22:00 UTC) added:
+  - **A0-6b** context meter (`tools/agents/context_meter.py`): attempt 2 reviewed "ready for PR" on Go Gemini 4 Argon.
+  - **A0-5** `brief.py` and `recall.py`: Go DeepSeek V4.1 Flash, one fix round after Gemini's review (classification of `## Tests`, acceptance extraction, base-section Interface append, recall dedup), then "ready for PR". `brief.py T023b` is 17.3 KB of 124.6 KB.
+  - **A0-3** `oc.py`: five attempts. Go Muse Spark wrote attempts 2–4; Kimi K3 reviewed twice (the first found a Windows liveness probe that could kill the probed process and infra classification reading file contents); attempt 4 added OpenCode 2.x support; attempt 5 was escalated to Go DeepSeek, which fixed the second review's four findings, and the manager accepted it. Live smoke test on OpenCode 2.0.31: `oc.py ask` PASS in 7 s.
+  - **T097** contract (`tasks/T097.md`): the `architect` found the real cost: `finish` re-encodes every retained envelope on every mutation (`crates/crpg-sim/src/history.rs:630–638`), not the clone. The design stays in `src/history.rs` (not S-set). Claude `reviewer`: "ready for approval"; its seven low findings are fixed.
+  - MODELS.md: the free Zen limit takes about 12 hours to reset (the user).
 
-  PR #34 (T024 contract draft) still awaits your approval. The D29 draft (`tasks/DECISIONS-D29-DRAFT.md`) holds a (stacked PRs) and b (reviewer write access).
+  PR #34 is merged (2026-10-16 11:10 UTC); the earlier line saying it awaits approval was stale.
 - Next:
-  1. **First, wire the hooks into `.claude/settings.json`**, the context meter included, so §8's 150k/200k rule is enforced. The 2026-10-16 manager session ran far past it: Claude's usage report showed 88% of usage at over 150k context.
-     - A0-6b attempt 2 is running; after it, verify, review on Go Argon and cherry-pick.
-     - A0-6 is already on PR #33.
-  2. A0-3 (`oc.py`, `0b1550d` on `setup/A0-3-oc-py`, verified 0/9):
-     - Live smoke test on a Go ID: `oc.py ask --role scout --model opencode-go/cat-jam-free ...`.
-     - First-pass review on Go Argon, and a decision on its size (about twice the budget).
-     - Attempt-2 notes:
-       - `wave` caps runs per model and the free Zen tier (MODELS.md §1 items 10–11);
-       - it refuses two packages that own one crate (plan §5.1);
-       - it refuses `opencode/cat-jam-free` and `opencode/longcat-2.5-preview-free` and names their Go IDs (MODELS.md §4).
-     - Then cherry-pick it.
-  3. T099 research. Checked and holding:
-     - first passes R1–R3, R8, R9, R11–R13 and R15 (Cat Jam: 222 of 225 checkable citations held);
-     - deep reports R10-deep 29/29 and R14-deep 44/44.
+  1. **You:** approve the T097 contract and answer D29d and D29e (`tasks/DECISIONS-D29-DRAFT.md`). Then the I package: an OpenCode O1 implementer, an O1 test writer from another lab for T2–T3, and the Claude `reviewer`. Write its brief with `tools/agents/brief.py T097` and name the `Decision` and `What must not change` sections by hand (A0-5b below).
+  2. **You:** wire the hooks into `.claude/settings.json`. The manager's edit was refused by the auto-mode classifier, so it needs your approval or your hand: the block in `docs/agents/TEMPLATES.md` §6, plus a `PostToolUse` entry with no matcher running `python "$CLAUDE_PROJECT_DIR/tools/agents/context_meter.py"`. No `SubagentStop` verify script exists yet (plan §6 step 5): that is a new package, A0-6c.
+  3. Dispatch with `tools/agents/oc.py` from now on (pull `setup/A0-config` into the main checkout first; it was left at `66b2f9e`). `../crpg-slots/manager/ocrun.py` is updated for OpenCode 2.x as a fallback.
+  4. T099 research fold-in. Every citation check is done: R4 40/40, R8-deep 19/19, R9-deep 19/19, R15-deep 17/17, R13-deep 18/19, R12-deep 23/27, R11-deep 27/33 (its misses are mostly paywalled ACM and T&F DOIs, so "not found" may mean "could not fetch"); earlier: R10-deep 29/29, R14-deep 44/44, first passes 222 of 225. Copy the reports into the repository with signatures, mark each not-found claim, and write the T099 record (`../crpg-slots/research/V8/V8.jsonl`, `V10/V10.jsonl`; `manager/vsum.py`). R3's OpenRouter $10 question goes into D29; check R4's config keys before applying any.
+  5. A0-5b: `brief.py` should classify `Decision…` and `What must not change` as contract (T097's format). Small; OpenCode O1.
+  6. T100 benchmark contract and T108 brief (`architect`; inputs R13-deep and R14-deep), then T101.
+  7. A0-7 and A0-8.
+- Blocked: the free Zen pool hit its limit at about 14:00 UTC on 2026-10-16 and takes about 12 hours to reset: use Go IDs only until about 02:00 UTC on 2026-10-17. OpenCode is now 2.0.31 (see MODELS.md §1 item 12). Cat Jam is no longer offered.
 
-     Still to check: R8-, R12- and R13-deep (V8 failed twice on Go LongCat with an upstream 429, so rerun it on Go Cat Jam), and R9-, R11- and R15-deep and R4 (a new V10). Tools: `manager/mkcheck.sh` and `manager/vsum.py`.
-
-     Then copy the verified reports into the repository with signatures and write the T099 record. R3's OpenRouter $10 question goes into D29; verify R4's config keys before applying any.
-  4. T097-m numbers go to the T097 contract (`architect`).
-  5. Write the T100 benchmark contract and the T108 brief (`architect`; inputs R13-deep and R14-deep), then T101.
-  6. A0-5, A0-7 and A0-8 come after.
-
-  Dispatch with `python ../crpg-slots/manager/ocrun.py SLOT AGENT MODEL LOG TIMEOUT [PROMPT]` until `oc.py` lands. Deep research uses `manager/mkdeep.sh` and the `crpg-deep-research` agent.
-- Blocked: nothing. Free Zen capacity goes only to Muse Spark, DeepSeek V4.1 Flash and GLM-5.3-Flash free variants. LongCat and Cat Jam always use their `opencode-go/` IDs (MODELS.md §4). Keep at most three runs per model.
-
-Running at handover (2026-10-16 ~13:10 UTC; worktrees in `C:\crpg\dev\crpg-slots`; logs under `.agents/runs/<ID>/`):
-
-| ID | Work | Model | Worktree · branch |
-|---|---|---|---|
-| A0-6b | attempt 2: the two review notes at the end of its `BRIEF.md` | `opencode-go/deepseek-v4.1-flash` | `alt-2` · `setup/A0-6-hooks` |
-| T097-m | attempt 3: `HistoryWorld` cost measurement; `CARGO_TARGET_DIR` = `slot-1/target` | `opencode-go/mimo-v2.6-pro` | `scratch-1` · detached |
-
-Research outputs live in `../crpg-slots/research/<ID>/`, outside the repository:
-- first passes R1–R4 and R8–R15;
-- deep passes `R8/9/10/11/12/13/14/15-deep`;
-- checks V1–V6 and V9 (`V*.jsonl`).
+Running at handover: nothing. Worktrees in `C:\crpg\dev\crpg-slots`: `slot-1` (`setup/A0-3-oc-py`, merged into PR #33), `slot-2` (`setup/A0-5-brief`, merged into PR #33), `alt-2` (`setup/A0-6-hooks`, merged), `doc-1` (`task/T097-contract`, merged into PR #33). All four can be reset for the next tasks.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -734,3 +708,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-16 (UTC) · claude-code + manager handover · Rewrote the handover for the next manager session, naming every run still going with its worktree, model and log, plus where the interim runner and the A0-6b brief live, because the first manager session's context passed the new 200k limit.
 - 2026-10-16 (UTC) · claude-code + manager handover (second session) · Rewrote the handover for the next session: what PR #33 gained, the numbered next steps, the Go-route rule, and every run still going with its model and worktree.
 - 2026-10-16 (UTC) · claude-code + final handover (second session) · Brought the handover to the session's end: wiring the context meter comes first, after Claude's usage report showed 88% of usage above 150k context; two runs are named as still going.
+- 2026-10-16 (UTC) · claude-code + manager handover · Replaced the Handover block with the second manager session close-out (PR #33 in flight, the numbered next steps, and the Go-only blocker) so the next session starts from the current state, not the earlier handover.

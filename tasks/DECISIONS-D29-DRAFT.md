@@ -45,8 +45,30 @@ campaign, or people finding and installing community modules.
 - **Recommend:** no recommendation; this is a product choice. Whatever the
   order, agents stay a first-class audience (D28j).
 
+## D29d — a test-only encoding counter in `crpg-sim` (T097)
+
+May T097's tests use a `thread_local!` counter that exists only under `#[cfg(test)]`, against `crates/crpg-sim/AGENTS.md` rule 8 ("no clock, no threads")? It starts no thread, and `tools/lint/determinism.py` matches only `std::thread`. Source: the T097 architect and the Claude reviewer.
+
+- **Recommend:** (a) yes, and the I package records the exception in rule 8.
+- Alternative: (b) no, count encodings another way.
+
+## D29e — cross-area transfer staging (T097)
+
+Should `crates/crpg-sim/src/area.rs` `transfer_history_entity` also move to world-only staging?
+
+- **Recommend:** (a) no: it is rare and no longer re-encodes once D1 lands.
+- Alternative: (b) yes, in the same package.
+
+## D29f — OpenCode 2.x
+
+OpenCode was upgraded from 1.18.35 to 2.0.31 on this machine on 2026-10-16 (MODELS.md §1 item 12). Keep 2.0.31 as the pinned version?
+
+- **Recommend:** (a) yes, and the plan and MODELS.md record 2.0.31: `oc.py` supports both, and 2.x's `--standalone` isolates runs.
+- Alternative: (b) go back to 1.18.35.
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + manager session · Started the D29 draft with two non-blocking questions found during setup wave A0, stacked PRs and the reviewer's write access, so that they wait for a batch instead of interrupting the wave.
 - 2026-10-16 (UTC) · claude-code + manager session · Added D29c, the order of priority among authors and players, which the T101 ADR needs before it fixes personas; it is a product choice, so it carries no recommendation.
 - 2026-10-16 (UTC) · claude-code + manager session · Marked D29c answered and pointed to D28l.
+- 2026-10-16 (UTC) · claude-code + manager handover · Added D29d, D29e and D29f from the T097 review and the OpenCode 2.x upgrade, so the user can answer them with the T097 contract.

@@ -89,6 +89,21 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    12:25 UTC (Cat Jam) and were still refusing at 12:41, while the Go IDs
    answered at once. The user spotted the difference. Always route these two
    by their `opencode-go/` IDs.
+12. **OpenCode 2.x (since 2026-10-16 about 14:28 UTC).** OpenCode 1.18.35
+   (`opencode-ai`) was replaced by 2.0.31 (`@opencode/cli`); the executable is
+   now `%APPDATA%\npm\node_modules\@opencode\cli\bin\opencode.exe`. The
+   replacement killed two runs in flight (`database is locked` mid-run, not
+   only at start). `opencode run` in 2.x has no `--dir` and no `--variant`:
+   the workspace is the process cwd plus `PWD`, and a variant is part of the
+   model (`-m provider/model#variant`). Runs share a background service unless
+   `--standalone` is given, so every scripted run passes it. The JSON events
+   are unchanged; a provider failure is a new top-level event
+   `{"type":"error","error":{"type":"provider.no-route",...}}`. Cat Jam is no
+   longer offered under either route. `oc.py` (A0-3) detects the version with
+   `--version` and builds the right command for 1.x or 2.x. A permission
+   pattern denies a whole compound command when any part matches (for example
+   `git branch --show-current` inside a `;` chain), and one worker read that
+   single refusal as "shell denied" and stopped: briefs now name the denied
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -293,12 +308,12 @@ thirty reviews.
 
 | Work | First choice | Second, another lab | When Go limits run out |
 |---|---|---|---|
-| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode-go/cat-jam-free`, then `opencode/deepseek-v4.1-flash-free` |
+| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | I outside the S-set, harder or after one failure | `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | Claude `implementer` |
 | Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | `opencode-go/deepseek-v4.1-flash` |
 | First-pass review | `opencode-go/gemini-4-argon-contributor` | `opencode-go/kimi-k3`, or `opencode-go/glm-5.3` | `opencode-go/deepseek-v4-pro` |
-| Scouting | `opencode-go/cat-jam-free` | `opencode-go/deepseek-v4.1-flash` | Built-in `Explore` |
-| Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | `opencode-go/cat-jam-free`, then Claude `bookkeeper` |
+| Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
+| Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
 | S-set, A, C, core review | Claude only (`docs/AGENT_TEAM_PLAN.md` §§4.2–4.3) | — | — |
 
@@ -379,6 +394,12 @@ Infra exits (rate limit, quota) are listed but do not count.
 | `opencode/cat-jam-free` → use `opencode-go/cat-jam-free` | research | Six first-pass reports: **68 of 70 checkable citations held** (R9 11/11, R11 20/20, R13 11/11, R15 12/12, R8 6/7, R12 8/9). Deep passes R8, R12, R13 written, R9-deep on the Go route; checks pending. Fast: 30–80 s a report |
 | `opencode/cat-jam-free` | implement | A0-3 earlier: 43-minute hang (counts). T097-m: rate limit (infra) |
 | `opencode/longcat-2.5-preview-free` → use the Go ID | research, implement | R10 first pass written; A0-6, R14, R4, V3–V6 lost to the free-tier rate limit (infra) |
+| `opencode-go/muse-spark-1.3-contributor` | implement | A0-3 attempts 3–4 (second session): attempt 3 fixed all 15 notes with tests, but Kimi K3's second review found 4 more (counts as one `review-fix`); attempt 4 stopped after one refused shell call it misread as "shell denied" (counts), then finished on a rerun |
+| `opencode-go/deepseek-v4.1-flash` | implement | A0-5: verified first time; Gemini review "fix" (3 high), then "ready for PR" after one round. A0-6b attempt 2: "ready for PR". A0-3 attempt 5 (escalated): all four findings fixed with tests, accepted by the manager |
+| `opencode-go/kimi-k3` | review | A0-3 twice: found two real high defects (a Windows liveness probe that kills, infra classification of file contents), then four narrow ones; precise file:line findings |
+| `opencode-go/gemini-4-argon-contributor` | review | A0-6b attempt 2 "ready for PR"; A0-5 "fix" with three real high findings in 19 task files, then "ready for PR" |
+| `opencode-go/mimo-v2.6-pro` | research | V8 complete (81 rows over R8/R12/R13-deep) although the process ended rc=1 mid-run (infra) |
+| `opencode/glm-5.3-flash-free`, `opencode/muse-spark-1.3-contributor-free` | research | V8 and V10: rate limit at step 0, about 14:00 UTC (infra) |
 
 ## 5. Bake-off method
 
@@ -430,3 +451,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + field record · Recorded the day's hand-run results per model and role, including Cat Jam's 68 of 70 held citations and DeepSeek's one stop-without-writing failure, so the next session applies §4.1 from evidence.
 - 2026-10-16 (UTC) · claude-code + user routing rule · Recorded the user's rule that free Zen capacity goes only to strong models with a free Zen variant (Muse Spark, DeepSeek V4.1 Flash, GLM-5.3-Flash), while LongCat and Cat Jam always use their unlimited Go IDs.
 - 2026-10-16 (UTC) · claude-code + free-tier reset time · Recorded the user's report that the free Zen limit takes about 12 hours to reset, and the 14:00 UTC repeat, so a manager routes to Go IDs after a hit instead of retrying free models.
+- 2026-10-16 (UTC) · claude-code + manager handover · Recorded OpenCode 2.x as item 12, moved Scouting and the routine and bookkeeping routes off Cat Jam, and added the session field-record rows, so routing matches the versions and runs in use.
