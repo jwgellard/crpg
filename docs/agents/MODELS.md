@@ -55,6 +55,15 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    put long instructions in `BRIEF.md` rather than on the command line.
 7. Every run carries roughly 9–13k tokens of OpenCode system prompt and tool
    definitions before the brief.
+8. After a fatal provider error (`Go usage limit exceeded`, or `Too Many
+   Requests` after three retries), `opencode run` does not exit and prints
+   nothing. The error is only in OpenCode's own log,
+   `~/.local/share/opencode/log/opencode.log`. A free model also went silent
+   for 43 minutes after a completed tool call with no error logged. `oc.py`
+   needs an idle watchdog that reads that log (A0-3).
+9. Session titles go to a "small model", which defaulted to the paid Zen
+   `gpt-5.4-nano` and failed with 402 on every run. `opencode.json` sets
+   `small_model` to a free model.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -98,7 +107,15 @@ Notes for routing:
 
 Go limits are dollar amounts per model per month, with 20% available per
 5-hour window and 50% per week; the request counts are OpenCode's own
-estimates for the $10 Go tier. A bake-off implementation run took 5–42 model
+estimates for the $10 Go tier. **The cap that binds is shared across the account.** On
+2026-10-16 Go refused every model at 10:17 UTC, Muse Spark on its first
+request, after $5.01 of notional cost that day: about 400 requests, most of
+them the 07:00 UTC bake-off. Kimi K3 ($1.26), Gemini 4 Argon ($1.22), GLM-5.3
+($0.67), Qwen3.8 Max ($0.62) and Step 5 ($0.47) made up four fifths of it.
+Price per request varies about 400-fold, from Muse Spark Contributor at
+45,300 requests per 5 hours to Kimi K3 at 110. A reasoning stall on an
+expensive model costs the most: Kimi K3's single 32k-token thinking step cost
+$0.51 and produced nothing. A bake-off implementation run took 5–42 model
 requests (median 10), so divide the 5-hour figure by 10 to 20 for
 "implementation runs per window". Privacy is from OpenCode's Zen and Go pages on 2026-10-16.
 
@@ -207,6 +224,11 @@ escalations an O1 model failed. "Strongest" means the tier below and the §4.1
 field record. Composite scores only break ties.
 
 The principle: **plentiful models implement, scarce strong models review.**
+On Go that also means **cheap**: implement on Muse Spark Contributor,
+DeepSeek V4.1 Flash or MiMo-V2.6-Pro, which cost fractions of a cent per
+request. Keep Kimi K3 and Gemini 4 Argon for reviews (2–5 requests) and
+escalations, and never run them head to head on a long implementation or
+measurement run. The manager learned this on 2026-10-16 by doing it.
 A bake-off implementation run took 5–42 requests (median 10); a review took
 2–5. Kimi K3's 110 requests per 5 hours is about ten implementations but
 thirty reviews.
@@ -325,3 +347,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user model preference · Recorded the user's order (free, then Go, then Claude, with Claude kept for higher-level thinking) and named the free models each OpenCode row tries first, so that routing spends Claude only where judgment is the deliverable.
 - 2026-10-16 (UTC) · claude-code + user correction on model choice · Replaced "free first" with the strongest suitable OpenCode model for the job, since the user said OpenCode usage is plentiful and some free models are weaker. Added head-to-head runs as evidence for the field record.
 - 2026-10-16 (UTC) · claude-code + user prompt on Muse Spark 1.3 · Promoted Muse Spark 1.3, both variants, from O3 to O1 and made it the first choice for bookkeeping and a second choice for routine implementation, citing its bake-off results and its record in this repository rather than the privacy terms that had placed it in O3.
+- 2026-10-16 (UTC) · claude-code + Go cap hit · Recorded that the Go cap is shared across the account and was hit after $5.01, mostly from expensive models. Added the cheap-implementer rule and two new run failure modes (a silent hang after a fatal provider error, and the paid title model), so later routing spends Go where it counts.
