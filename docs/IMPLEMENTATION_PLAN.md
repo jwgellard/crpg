@@ -74,6 +74,12 @@ golden, or would weaken a test: stop and report why.
 The contract (C) and architecture (A) prompts are the same shape. They say
 "write, do not implement", and they give the decision records and ADRs to cite.
 
+*Update 2026-10-16:* [docs/AGENT_TEAM_PLAN.md](AGENT_TEAM_PLAN.md) proposes a
+manager-and-workers team that replaces this prompt with generated briefs
+(its §6) and §1.4's concurrency with slot limits (its §5.3), routing each
+package by its §4. It is pending the user's D28 answers; until they adopt it,
+§§1.3–1.4 stand. §1.5 and the D27 answers are unchanged either way.
+
 ### 1.4 Concurrency
 
 Following workflow plan §9, up to **two implementers and one spec/architect
@@ -386,3 +392,4 @@ estimates slip.
 
 - 2026-10-01 (UTC) · claude-code + implementation plan · Laid out the delegated path from the post-PR #21 frontier to Phase 12, with work-package kinds, waves, concurrency limits and the human gates the workflow plan keeps human; merge delegation is a proposal pending the user's decision, not an approval.
 - 2026-10-04 (UTC) · claude-code + D27 recorded · Appended the user's D27 answers under §2 so delegated agents see that merge delegation was declined and which dependencies are pre-approved.
+- 2026-10-16 (UTC) · claude-code + agent-team plan · Appended a §1.3 pointer to the proposed `docs/AGENT_TEAM_PLAN.md`, so delegated agents see which sections it would replace and that nothing changes until the user answers D28.
