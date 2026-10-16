@@ -120,7 +120,8 @@ python tools/agents/verify_task.py <ID> --slot <path>
 - A retry on the same task passes the same `--slug` (branch is `task/<ID>-<slug>`) and the same `--base`.
 - Slots 1 and 2 build Rust; slots 3–6 are doc-only (no cargo). The `grunt` role skips the gates but has no shell, so it cannot commit: give doc work that must commit or run a lint to the `implement` role with a doc-only owns list.
 - Parallel by default: when a slot frees, dispatch the next ready package first.
-- Free reviews in numbers: run several independent reviews of a package on the uncapped Go models (Beam, LongCat; at most three runs per model) with `oc.py ask --role review`, and collate them into one finding before any paid review (`MODELS.md` §1 item 13).
+- OpenCode's `execute` tool stays denied (`opencode.json`, every agent file; `tools/tests/test_opencode_config.py`). It ran code past every permission rule, and a slot branch older than the fix still allows it (`MODELS.md` §1 item 15).
+- Free reviews in numbers: run several independent reviews of a package on Beam, the uncapped Go model (at most three runs at once; LongCat is out of routing, `MODELS.md` §1 item 14) with `oc.py ask --role review`, and collate them into one finding before any paid review (`MODELS.md` §1 item 13).
 - Claude subagents per plan §5.2 (`architect` Opus 5.5 high; `implementer` Sonnet 5.5 high `maxTurns` 80; `reviewer` Sonnet 5.5 high read-only; `bookkeeper` Haiku 5.5 low `maxTurns` 30; all `disallowedTools: Agent`); never `isolation: worktree` for Rust work — use a warm slot.
 - `wave` refuses a wave in which two packages own the same crate, and refuses over-cap free-tier runs per §3.5.
 
@@ -208,3 +209,5 @@ VERDICT: ready-for-pr | fix | reject
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + A0-10 manager check · Fixed the garbled merge rule, widened the doc-only slots to 3–6 with the `grunt` no-shell trap, and added the parallel-by-default and design-in-parallel rules from plan §8 that the draft had dropped.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Updated the tier and Go-route lines so Beam takes Cat Jam's place, as the user directed.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: many free reviews · Added the rule to run several collated reviews on the uncapped Go models before any paid review, as the user directed.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: stop using LongCat · Moved free multi-reviews to Beam alone, as the user directed.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + execute-tool escape · Added the standing `execute` deny and the stale-slot caveat.

@@ -7,6 +7,7 @@ permission:
   webfetch: deny
   websearch: deny
   task: deny
+  execute: deny
   question: deny
   edit:
     "*": deny

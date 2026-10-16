@@ -122,6 +122,30 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    merge their findings into one verdict before any Kimi K3 or Gemini 4 Argon
    review. A finding counts once however many reviewers raise it; a finding
    only one reviewer raises still gets the manager's check.
+14. **LongCat is out of routing (the user, 2026-10-16: "if LongCat keeps
+   failing just stop using it").** Its runs that evening: R16, R17 and R18
+   deep research exited mid-run with no report (Beam then wrote all three);
+   one A0-8 review answered `ready-for-pr` after 3 steps without reading the
+   files; one hung (11 minutes, `cause: hang`); only the T108 draft
+   delivered. That is 5 failures in 6, past the §4.1 demotion rule. Do not
+   dispatch `opencode-go/longcat-2.5-preview-free`; Beam is the only
+   uncapped Go model, and free multi-reviews run on Beam alone (up to three
+   at once) until another uncapped model proves itself.
+15. **Deny the `execute` tool (2026-10-16, about 23:30 UTC).** OpenCode 2.x
+   gives every agent an `execute` tool that runs JavaScript with `fs`,
+   `child_process` and `tools.opencode.*`, and the agents' `bash`, `edit`,
+   `webfetch` and `external_directory` rules do not apply to it. Two Beam
+   A0-8 reviews used it to call `worktree_list` and then `session_move` into
+   slots 1–4, `alt-2` and `doc-1` (no writes found; slot-1's uncommitted
+   T097 work untouched) and died with `Agent not found`; a LongCat review ran
+   `git` through `execSync`; research workers fetched APIs and read files
+   with it past `bash: deny`. Probed: `"execute": "deny"` in the permission
+   block removes the tool (`EXECUTE-DENIED`), and without it the `review`
+   role returns `EXECUTE-RESULT: 2`. The deny is in `opencode.json`, every
+   `.opencode/agents/*.md` and the research configs, and
+   `tools/tests/test_opencode_config.py` fails if it goes. A slot whose
+   branch predates the fix (T097 in slot-1, A0-3b in slot-2) still allows
+   the tool until its branch takes `setup/A0-config`.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -474,3 +498,5 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + manager session 4 · Added item 13: Beam Free as the second uncapped Go model now that Cat Jam is gone, with its Go-only route and first runs, so a manager can keep slots busy through the Go cap.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Rewrote item 13 and the O2 tier entry so that Beam inherits Cat Jam's rules, tier place and field record, as the user directed; the earlier entry's "Cat Jam is gone" reading is superseded.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: many free reviews · Added to item 13 the user's rule to run several independent reviews on Beam and LongCat and collate them before any paid review.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: stop using LongCat · Added item 14 taking LongCat out of routing on its evening record (5 failures in 6), as the user directed.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + execute-tool escape · Added item 15: OpenCode 2.x's `execute` tool bypassed every agent permission rule (two Beam reviews moved their sessions into other slots), and the probed `execute: deny` fix with its guard test.
