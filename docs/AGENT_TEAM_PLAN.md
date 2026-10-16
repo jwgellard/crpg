@@ -163,9 +163,10 @@ packages.
 | Bookkeeping, commit and PR text | OpenCode O2 `crpg-grunt` | Claude `bookkeeper` (Haiku 5.5) |
 | Scouting | `Explore` or OpenCode `crpg-scout` | — |
 
-**Preference (the user, 2026-10-16):** the strongest suitable OpenCode model
-for the job, then Claude. OpenCode usage is plentiful, so free versus Go only
-breaks ties. Claude tokens are kept for higher-level thinking:
+**Preference (the user, 2026-10-16):** stretch tokens. Among the OpenCode
+models strong enough for the job, use the intelligent free models first, then
+cheap Go, then expensive Go for reviews (`docs/agents/MODELS.md` §4). Claude is
+used at the manager's discretion. Claude tokens are kept for higher-level thinking:
 A and C packages, the S-set (rule 1 above still holds), judgment review and
 escalations. Mixed work is split so that a free worker gathers the facts and
 measurements and Claude does only the design.
@@ -530,3 +531,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + D28 adopted · Marked the plan adopted with the user's D28 answers and applied D28b (Pro): Claude workers stop at Sonnet 5.5, Opus 5.5 is kept to A and C packages, escalations past Sonnet go to the manager, and §9 adds the Pro cost rules.
 - 2026-10-16 (UTC) · claude-code + user model preference · Applied the user's free-then-Go-then-Claude order to §4.3's default routes and A0-3/A0-4, and added `record`/`stats` to A0-3 for the model record, so that Claude is spent on design and judgment rather than exact-spec work.
 - 2026-10-16 (UTC) · claude-code + user correction on model choice · Reworded the preference as the strongest suitable OpenCode model, then Claude, with free versus Go only a tiebreak. Restored O1 as the default worker tier in §4.3 and recorded the A0-3 head-to-head.
+- 2026-10-16 (UTC) · claude-code + user preference, third statement · Reworded the preference note: intelligent free models first, then cheap and then expensive Go, with Claude at the manager's discretion, as the user asked once the Go cap was hit.

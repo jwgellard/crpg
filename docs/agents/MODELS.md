@@ -215,9 +215,12 @@ to break ties, never to overrule a bake-off failure.
 
 ## 4. Routing table
 
-**Preference (the user, 2026-10-16): the strongest suitable OpenCode model
-for the job, then Claude.** OpenCode usage is plentiful, so free versus Go is
-only a tiebreak, never a reason to take a weaker model. Claude tokens are
+**Preference (the user, 2026-10-16): stretch tokens.** Among the models
+strong enough for the job, use up the intelligent free models' limits first:
+Muse Spark 1.3 Free, DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat
+Free. Then use cheap Go models, and keep expensive Go models (Kimi K3,
+Gemini 4 Argon) for reviews and escalations. Never take a weaker model only
+because it is free. Claude tokens are
 kept for higher-level thinking: A and C packages, the S-set, which
 `docs/AGENT_TEAM_PLAN.md` §4.2 keeps Claude-only, judgment review, and
 escalations an O1 model failed. "Strongest" means the tier below and the §4.1
@@ -348,3 +351,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user correction on model choice · Replaced "free first" with the strongest suitable OpenCode model for the job, since the user said OpenCode usage is plentiful and some free models are weaker. Added head-to-head runs as evidence for the field record.
 - 2026-10-16 (UTC) · claude-code + user prompt on Muse Spark 1.3 · Promoted Muse Spark 1.3, both variants, from O3 to O1 and made it the first choice for bookkeeping and a second choice for routine implementation, citing its bake-off results and its record in this repository rather than the privacy terms that had placed it in O3.
 - 2026-10-16 (UTC) · claude-code + Go cap hit · Recorded that the Go cap is shared across the account and was hit after $5.01, mostly from expensive models. Added the cheap-implementer rule and two new run failure modes (a silent hang after a fatal provider error, and the paid title model), so later routing spends Go where it counts.
+- 2026-10-16 (UTC) · claude-code + user preference, third statement · Set the order within the strong models: the intelligent free models' limits first, then cheap Go, then expensive Go for reviews, with Claude at the manager's discretion. The user wants tokens stretched as far as possible.
