@@ -76,6 +76,13 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    "limited regions". At 12:11 UTC both answered while DeepSeek V4.1 Flash
    Free was still refused, and that morning they had kept working through
    the shared limit. Item 10's caps apply to the other free models.
+   **"Unlimited" still has a burst limit.** Later the same day LongCat
+   refused every run with `Rate limit exceeded` from 12:19 UTC, with about
+   eight runs on it at once, and Cat Jam from 12:25 UTC, with five
+   deep-research runs taking many fast steps. Every LongCat run in flight was
+   lost, including citation checks near their end. Run **at most three at
+   once per model**, start them apart, and prefer fewer long runs to many
+   short ones.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -386,3 +393,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + free-tier rate limits · Added the at-most-one-run-per-free-model rule after three concurrent DeepSeek Free runs and one Muse Spark Free run hit `Rate limit exceeded`.
 - 2026-10-16 (UTC) · claude-code + free-tier rate limit correction · Corrected item 10: the free-tier limit is shared across the account, not set per model. Capped concurrency at three free runs in total, after four runs on four different free models failed at step 0.
 - 2026-10-16 (UTC) · claude-code + user preference on LongCat and Cat Jam · Recorded that OpenCode lists both as unlimited for Go subscribers, the user's wish to use them heavily once proven, the rule that promotes them, and the unbenchmarked models now on the Go page.
+- 2026-10-16 (UTC) · claude-code + rate-limit finding · Corrected item 11 the same afternoon: LongCat and Cat Jam also refuse under burst load (about eight and five concurrent runs), so they get a cap of three runs per model.
