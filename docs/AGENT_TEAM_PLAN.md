@@ -187,7 +187,9 @@ The O1/O2/O3 membership and the concrete model per row are in
    question goes to the contract, not to a stronger model.
 5. Infrastructure failures (model unavailable, quota exhausted, timeout before
    the first edit) are retried on the next model in the same tier and never
-   count as attempts.
+   count as attempts. A failure confined to a test with an open flake record
+   (T098, QUIC case 13) counts the same way: rerun it, do not charge the
+   worker.
 
 ## 5. Dispatch
 
@@ -254,7 +256,9 @@ next: retry with this output (attempt 2 of 2 on this rung)
 ```
 
 `wave` runs several `run`s in parallel up to the slot limit and prints one
-table, so a whole wave costs the manager one tool call and one table.
+table, so a whole wave costs the manager one tool call and one table. It
+refuses a wave in which two packages own the same crate: writes to one area
+stay single-threaded (`docs/agents/RESEARCH-2026-10-16.md`, R7.1).
 
 Until A0-3 lands, the manager runs one worker at a time by hand, in Git Bash,
 with the same fixes, and reads only the last text event:
@@ -512,7 +516,7 @@ decision first.
 | A0-4 | `tools/agents/verify_task.py` with planted-fault tests | OpenCode DeepSeek V4.1 Flash, the free endpoint (rerouted as A0-3) | Each §7.1 check fails on its planted fault and passes clean |
 | A0-5 | `tools/agents/brief.py` and `recall.py` | OpenCode O1, following A0-3's style | `brief.py T023b` yields the contract sections only and is under a quarter of the file |
 | A0-6 | Hooks: `SubagentStop` runs `verify_task.py` for Claude implementers; `PreToolUse` protects the files in §7.1; `SessionStart` (compact) re-injects the handover; A0-6b: `PostToolUse` context meter (§8) | Scripts by an OpenCode worker, wiring by the manager | Each hook blocks its planted case |
-| A0-7 | Promote the 2026-10-16 bake-off harness (`docs/agents/bakeoff-2026-10-16/`) to `tools/agents/bakeoff/`, and add harder fixtures cut from this repository's history: a past task at its pre-implementation commit with its real tests hidden, and the code before a real fix (T019, T023d) as a review case | OpenCode O1 for the harness; the manager picks the fixtures | One command re-scores every configured model, and the new fixtures separate models the 2026-10-16 ones could not |
+| A0-7 | Promote the 2026-10-16 bake-off harness (`docs/agents/bakeoff-2026-10-16/`) to `tools/agents/bakeoff/`, and add harder fixtures cut from this repository's history: a past task at its pre-implementation commit with its real tests hidden, and the code before a real fix (T019, T023d) as a review case | OpenCode O1 for the harness; the manager picks the fixtures | One command re-scores every configured model, and the new fixtures separate models the 2026-10-16 ones could not; about 20 fixtures, which also measure brief ordering and reasoning variant (`docs/agents/RESEARCH-2026-10-16.md`) |
 | A0-8 | Context diet: the root `AGENTS.md` note moved to `PROJECT_STATE.md` on 2026-10-16 (D28f, done); next, trim crate `AGENTS.md` files, crate by crate | Manager drafts, you approve each crate | No information lost: each moved paragraph has a new home |
 | A0-9 | Create slots 1 and 2 (disk freed 2026-10-16, D28-c) | Manager | `oc.py` finds both slots and each builds once |
 
@@ -578,3 +582,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + user preference, third statement · Reworded the preference note: intelligent free models first, then cheap and then expensive Go, with Claude at the manager's discretion, as the user asked once the Go cap was hit.
 - 2026-10-16 (UTC) · claude-code + user question on manager effort and handover · Set the manager's effort by session type (medium, high, xhigh), added handover thresholds at 150k and 200k tokens enforced by a context-meter hook, and recorded why managers relay rather than nest. The first manager session's context reached about 346k tokens, which is what prompted this.
 - 2026-10-16 (UTC) · claude-code + user request · Made §12 the prompt that the root `CLAUDE.md` triggers on "start working", with the session's work taken from the handover, so the user no longer pastes a kickoff prompt.
+- 2026-10-16 (UTC) · claude-code + research fold-in · Took three rules from the citation-checked R5–R7 reports: `oc.py wave` keeps one package per crate, a known-flake failure is an infrastructure exit, and A0-7 aims at about 20 fixtures that also measure brief ordering. The rest is recorded in `docs/agents/RESEARCH-2026-10-16.md`.
