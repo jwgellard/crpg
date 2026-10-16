@@ -198,6 +198,20 @@ to break ties, never to overrule a bake-off failure.
 
 ## 4. Routing table
 
+**Preference order (the user, 2026-10-16): free, then Go, then Claude.**
+Claude tokens are kept for higher-level thinking: A and C packages, the
+S-set, which `docs/AGENT_TEAM_PLAN.md` §4.2 keeps Claude-only, judgment
+review, and escalations a Go model failed. For every OpenCode row below,
+start with a free model that passed that bake-off task, before the Go first
+choice:
+- implementation and tests: `opencode/cat-jam-free`,
+  `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
+  `opencode/longcat-2.5-preview-free`;
+- review: any of those, all 5/5 with no false positives.
+
+The Go columns become the first escalation, Claude the last (§4.4 of the
+plan). §4.1's record decides which free models stay first.
+
 The principle: **plentiful models implement, scarce strong models review.**
 A bake-off implementation run took 5–42 requests (median 10); a review took
 2–5. Kimi K3's 110 requests per 5 hours is about ten implementations but
@@ -225,7 +239,10 @@ Tier membership:
 - **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview
   Free, Muse Spark 1.3 Contributor Free, Big Pickle, Space Bunny Free (correct
   but slow and token-hungry), Qwen3.8 Max and Hy4 preview (correct but slow;
-  Qwen3.8 Max is also scarce).
+  Qwen3.8 Max is also scarce). Under the preference order above, the free
+  models that passed the bake-off (and Cat Jam Free in O2) are tried first
+  for non-S-set work. A core-crate package still gets the "two keys" test
+  writer and the Claude reviewer.
 - **Not routed:** Nemotron 3.5 Lightning and Nemotron 3 Ultra (timeouts),
   Nemotron 3.5 Super VL and MiMo-V2.6-Flash Free (scouting at most), MiniMax
   M3 (stalled and missed a bug), Step 5 Preview for implementation (gate
@@ -300,3 +317,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Recorded the same-day access test and three-task bake-off of 26 OpenCode models with the Claude lineup, limits and privacy terms, and derived the routing table and tiers from them, noting where the tasks were too easy to rank and public composites fill in.
 - 2026-10-16 (UTC) · claude-code + D28b · Narrowed the Opus 5.5 and Sonnet 5.5 roles to the Pro routing the user chose: Opus for A and C packages only, Sonnet as the top implementer rung.
 - 2026-10-16 (UTC) · claude-code + user request on model pruning · Added §4.1, a demote-and-promote rule driven by `oc.py`'s per-run result records, so that routing narrows to the models that keep passing on real tasks, as the user asked.
+- 2026-10-16 (UTC) · claude-code + user model preference · Recorded the user's order (free, then Go, then Claude, with Claude kept for higher-level thinking) and named the free models each OpenCode row tries first, so that routing spends Claude only where judgment is the deliverable.

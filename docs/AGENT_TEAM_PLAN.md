@@ -154,14 +154,20 @@ packages.
 | A — architecture | `architect` (Opus 5.5, high) | Fable 5.1 only on your request |
 | C — contract, first of a kind or S-set | `architect` (Opus 5.5, high) | — |
 | C — contract following a pattern | `implementer` (Sonnet 5.5) from an Opus outline | `architect` |
-| I — outside the S-set | OpenCode O1 implementer | Next O1 model of another family, then Claude `implementer` (Sonnet 5.5), then the manager splits it or asks you |
+| I — outside the S-set | A free OpenCode model (`docs/agents/MODELS.md` §4) | An O1 Go model, then an O1 model of another family, then Claude `implementer` (Sonnet 5.5), then the manager splits it or asks you |
 | I — S-set | Claude `implementer` (Sonnet 5.5, high) | The manager splits it or asks you |
-| Tests from a contract | OpenCode O1 test writer | Claude `implementer` |
-| Review, first pass | OpenCode O1 reviewer | — |
+| Tests from a contract | A free OpenCode test writer from another family than the implementer | O1 Go test writer, then Claude `implementer` |
+| Review, first pass | A free OpenCode reviewer | O1 Go reviewer |
 | Review, core, S-set or contract | Claude `reviewer` (Sonnet 5.5) | You |
 | G — content and data | OpenCode O2 with the `crpgc validate --json` loop | O1 |
-| Bookkeeping, commit and PR text | OpenCode O2/O3 `crpg-grunt` | Claude `bookkeeper` (Haiku 5.5) |
+| Bookkeeping, commit and PR text | A free OpenCode `crpg-grunt` | O2 Go, then Claude `bookkeeper` (Haiku 5.5) |
 | Scouting | `Explore` or OpenCode `crpg-scout` | — |
+
+**Preference order (the user, 2026-10-16):** free OpenCode models, then
+OpenCode Go, then Claude. Claude tokens are kept for higher-level thinking:
+A and C packages, the S-set (rule 1 above still holds), judgment review and
+escalations. Mixed work is split so that a free worker gathers the facts and
+measurements and Claude does only the design.
 
 The O1/O2/O3 membership and the concrete model per row are in
 `docs/agents/MODELS.md`, which is the only file that changes when models do.
@@ -461,8 +467,8 @@ decision first.
 |---|---|---|---|
 | A0-1 | `.claude/agents/` (four files), `.claude/settings.json` permissions for the `tools/agents` scripts, `.agents/` and `BRIEF.md` in `.gitignore` | Manager | Each agent spawns on its pinned model; `Explore` still works |
 | A0-2 | `opencode.json` and `.opencode/agents/crpg-{implement,tests,review,scout,grunt}.md` | Manager | `opencode run --agent crpg-scout` answers a question; a denied command is refused |
-| A0-3 | `tools/agents/oc.py` (`run`, `wave`, `ask`) with tests in `tools/tests/` against a fake `opencode` | Claude `implementer` (tooling is first of a kind) | Each failure mode in §5.1 has a test; a dry run prints the summary format |
-| A0-4 | `tools/agents/verify_task.py` with planted-fault tests | Claude `implementer` | Each §7.1 check fails on its planted fault and passes clean |
+| A0-3 | `tools/agents/oc.py` (`run`, `wave`, `ask`, plus `record` and `stats` for the model record in `docs/agents/MODELS.md` §4.1) with tests in `tools/tests/` against a fake `opencode` | Free OpenCode model from an exact brief (rerouted from Claude 2026-10-16 by the user's preference order) | Each failure mode in §5.1 has a test; a dry run prints the summary format |
+| A0-4 | `tools/agents/verify_task.py` with planted-fault tests | Free OpenCode model from an exact brief (rerouted as A0-3) | Each §7.1 check fails on its planted fault and passes clean |
 | A0-5 | `tools/agents/brief.py` and `recall.py` | OpenCode O1, following A0-3's style | `brief.py T023b` yields the contract sections only and is under a quarter of the file |
 | A0-6 | Hooks: `SubagentStop` runs `verify_task.py` for Claude implementers; `PreToolUse` protects the files in §7.1; `SessionStart` (compact) re-injects the handover | Manager | Each hook blocks its planted case |
 | A0-7 | Promote the 2026-10-16 bake-off harness (`docs/agents/bakeoff-2026-10-16/`) to `tools/agents/bakeoff/`, and add harder fixtures cut from this repository's history: a past task at its pre-implementation commit with its real tests hidden, and the code before a real fix (T019, T023d) as a review case | OpenCode O1 for the harness; the manager picks the fixtures | One command re-scores every configured model, and the new fixtures separate models the 2026-10-16 ones could not |
@@ -521,3 +527,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Proposed a manager-and-workers delegation plan adapted from the two plans in `extras/`, routing implementation volume to OpenCode workers behind a verifying script and Claude subagents to A, C, S and core review, grounded in a same-day access test and bake-off; it is pending the user's D28 answers and changes no gate, contract or task order.
 - 2026-10-16 (UTC) · claude-code + disk cleanup · Recorded the same-day cleanup the user asked for (merged worktree, merged branches, stale build caches) and moved §5.3 from one build slot to two, since 43 GB is now free.
 - 2026-10-16 (UTC) · claude-code + D28 adopted · Marked the plan adopted with the user's D28 answers and applied D28b (Pro): Claude workers stop at Sonnet 5.5, Opus 5.5 is kept to A and C packages, escalations past Sonnet go to the manager, and §9 adds the Pro cost rules.
+- 2026-10-16 (UTC) · claude-code + user model preference · Applied the user's free-then-Go-then-Claude order to §4.3's default routes and A0-3/A0-4, and added `record`/`stats` to A0-3 for the model record, so that Claude is spent on design and judgment rather than exact-spec work.
