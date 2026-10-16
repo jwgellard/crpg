@@ -252,7 +252,27 @@ Windows/MSVC, through the embedded server.
 | T056 | C → I | crpg-ai | T028, T036 | MVP AI: move to nearest hostile and attack, consuming `legal_actions` only. Opens the crate |
 | T057 | C → I | crpg-godot | T051, T054 | Dialogue UI and quest journal |
 
+### M6-R — Authoring UX research (D28j; runs now, in parallel with M4)
+
+**Why.** Both agents and humans must find campaign authoring easy. Until
+2026-10-16 the only usability check was the H-author gate at the end of M6
+and T079, and spec risk 18's talks with module authors had not happened.
+**Exit:** the T101 ADR is accepted and you have walked through the T102
+prototype. No M6 contract is approved before then. None of these packages
+needs a build slot.
+
+| Id | Kind | Owner | Prerequisites | Notes |
+|---|---|---|---|---|
+| T099 | R | OpenCode researchers, citation-checked by another lab | — | Four angles, one report each: module-editor prior art (NWN/NWN2 toolsets, Solasta Dungeon Maker, the Divinity: Original Sin 2 editor, Creation Kit, RPG Maker, Foundry); narrative tools (articy:draft, Ink, Yarn Spinner, Twine, Arcweave); agent-facing authoring (intent versus patch commands, errors with suggested fixes, dry runs, tool design); usability methods for a small team |
+| T100 | I | OpenCode O1, from a manager contract | — | Agent authoring benchmark under `tools/`: campaign briefs of rising size given to several models with only `crpgc` and the schemas; scores validity, playability (`crpgc run`), steps and errors. Baseline on today's tools first; re-run on each candidate command design |
+| T101 | A | `architect` (Opus 5.5) | T099, T100 baseline | Authoring UX ADR: personas, task flows for each spec §17.2 editor item, information architecture, an intent-level command layer above T058's `EditCommand` shared by the GUI and `crpgc apply`, and usability acceptance criteria for each M6 package. Set against a blind design from another lab (T101b, an expensive Go model) and compared by the `reviewer`. H-accept |
+| T102 | I | OpenCode or `implementer` | T101 draft | Clickable HTML prototype of the main window and the MVP flows. **H-proto:** you walk through it first, then module authors; findings return to T101 |
+| T103 | C → I | crpg-edit (then crpg-cli) | T101 accepted | The intent-level command layer, if T101 keeps it; T059's JSON format follows it |
+
 ### M6 — Editor v1 (spec Phase 6; headless command API first, per D18)
+
+Every M6 contract carries the usability criteria T101 sets for it. H-author
+gains two earlier checkpoints: the T102 walkthrough and a session after T062.
 
 **Exit:** H-author. The MVP campaign (spec §17.2) is built entirely in the
 editor by someone who has never seen the JSON.
@@ -260,7 +280,7 @@ editor by someone who has never seen the JSON.
 | Id | Kind | Crate | Prerequisites | Notes |
 |---|---|---|---|---|
 | T058 | C → I | crpg-edit | — (data APIs exist) | `EditCommand`, document, undo, validation, receipts; random-command-sequence property test (§19.2 #15). Opens the crate. **Can start in Wave 2** |
-| T059 | C → I | crpg-cli | T058 | `crpgc apply` over the command API |
+| T059 | C → I | crpg-cli | T058, T101 (and T103 if kept) | `crpgc apply` over the command API; its JSON format follows the T101 ADR |
 | T060 | C → I | crpg-godot | T047, T058 | `editor/` shell: read-only campaign explorer (§19.1 #24), problems panel (#26) |
 | T061 | C → I | crpg-godot | T060 | Schema-generated property forms (#25) |
 | T062 | C → I | crpg-godot | T061 | Placement tools: select, move, rotate, snap, duplicate, delete (§19.2 #16) |
@@ -355,7 +375,7 @@ spec/architect slot; "Impl" is the two implementer slots.
 | **1 (now)** | T022, T029b | T038 contract; then T058 contract | D27 batch; approve the T038 and T058 contracts |
 | **2** | T023 (after its contract), T038 or T058 | T023 contract (after the T022 API is on branch), T043, T052 | Approve the T023 contract (S); T029b/T022 merge review |
 | **3** | T023b, T039, T058/T059, T052 | T024, T027b | Golden review for T052 if hashes move |
-| **4** | T024, T043, T053 | T025a, T034 (movement ADR) | Accept the movement ADR |
+| **4** | T024, T043, T053 | T025a, T034 (movement ADR); M6-R (T099–T102) alongside, needing no build slot | Accept the movement ADR; accept the T101 authoring UX ADR; H-proto |
 | **5** | T025a, T027b, T035, T054 | T036, T026p, T042, T040 | Approve the nav dependency (D27c) |
 | **6** | T036 (S), T025b, T027c, T042 | T037, T041, T045 (bridge ADR) | H-golden for movement |
 | **7** | T026p (S), T037, T040 (S), T056 | T046, T047 | Accept the bridge ADR; godot pin (D27d) |
@@ -397,3 +417,4 @@ estimates slip.
 - 2026-10-04 (UTC) · claude-code + D27 recorded · Appended the user's D27 answers under §2 so delegated agents see that merge delegation was declined and which dependencies are pre-approved.
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Appended a §1.3 pointer to the proposed `docs/AGENT_TEAM_PLAN.md`, so delegated agents see which sections it would replace and that nothing changes until the user answers D28.
 - 2026-10-16 (UTC) · claude-code + D28 adopted · Appended the adoption under §1.3 so delegated agents follow the agent-team plan's routing and dispatch instead of §§1.3–1.4.
+- 2026-10-16 (UTC) · claude-code + D28j · Added M6-R, an authoring UX research stage (T099–T103) that runs alongside M4 and must close before any M6 contract, because agent and human usability of the editor had no check before the end of M6. T059 now waits on its ADR.

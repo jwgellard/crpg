@@ -87,6 +87,28 @@ RUSTSEC-2026-0346, -0347, -0348 and -0349 against `rustls` 0.23.45 fail
 one crate (`crpg-net-quic`) plus `Cargo.lock`, with the QUIC suites re-run on
 Windows/MSVC and Linux/GNU, recorded as S002.
 
+## D28j — authoring UX research stage (M6-R) before the editor contracts
+
+Raised by the user: "a major, major concern is both agent and human
+usability. When it comes to the editor especially, agents should be able to
+easily make campaigns. But it also needs to be very intuitive for humans."
+The manager proposed a research stage; the user's answers, in order:
+"Parallel is good. Opus is good. I will do initial testing then reach out to
+authors. Yes."
+
+- M6-R runs now, in parallel with M4. It uses no build slot, so it delays no
+  M4 package.
+- Synthesis is by the Opus 5.5 `architect`, set against a blind design from
+  another lab. Fable 5.1 is not used.
+- The user is the first human tester of the prototype and then recruits
+  module authors (spec risk 18).
+- The research may conclude that an intent-level command layer belongs above
+  the merged T058 `EditCommand` API. It is added above it, not in its place.
+
+The packages are T099–T103 in `docs/IMPLEMENTATION_PLAN.md` §3, M6-R. No M6
+contract is approved before the T101 ADR is accepted.
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + D28 · Recorded the user's answers to the agent-team plan's questions and the same-day rustls advisory decision, with what each answer changes, so the manager's first session starts from a settled record.
+- 2026-10-16 (UTC) · claude-code + D28j · Recorded the user's same-day answers on the authoring UX research stage, so that M6-R and its gate on the editor contracts rest on a quoted decision.
