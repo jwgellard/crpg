@@ -234,12 +234,21 @@ Windows/MSVC, through the embedded server.
 |---|---|---|---|---|
 | T045 | A | — | M4 4A done | Bridge ADR: §11.3 FFI surface, threading, embedded host via `crpg-server`, error mapping, `net_id`↔`EntityId` view, `client/` project layout (E012/E022) |
 | T046 | C → I | crpg-net | T024, T027b | Replica storage, delta application, engine-neutral read queries |
-| T047 | C → I, S | crpg-godot | T045, T046, D27d | Bridge skeleton: gdext extension, `client/` project, embedded host, proxy spawn from a bulk snapshot (§19.1 #22), Windows client build (gate 12). Opens the crate. H-unsafe |
+| T047 | C → I, S | crpg-godot | T045, T046, D27d, T105 | Bridge skeleton: gdext extension, `client/` project, embedded host, proxy spawn from a bulk snapshot (§19.1 #22), Windows client build (gate 12). Opens the crate. H-unsafe |
 | T048 | C → I | crpg-godot | T047 | Scene sync and proxy lifecycle (§19.2 #12) |
 | T049 | C → I | crpg-godot | T047 | Interpolation buffer (§19.1 #23) |
 | T026 | C → I | crpg-godot | T026p, T037, T049 | Own-movement prediction and reconciliation |
-| T050 | C → I | crpg-godot | T048 | Camera, click-to-move, selection |
-| T051 | C → I | crpg-godot | T048 | HUD, combat log, `SimEvent`-driven VFX/audio hooks |
+| T050 | C → I | crpg-godot | T048, T104 | Camera, click-to-move, selection |
+| T051 | C → I | crpg-godot | T048, T104 | HUD, combat log, `SimEvent`-driven VFX/audio hooks |
+
+**Player experience and art (added 2026-10-16 with D28j's method).** H-play
+above checks only that the game runs; these check that it reads well and has
+something to show. Neither needs a build slot.
+
+| Id | Kind | Owner | Prerequisites | Notes |
+|---|---|---|---|---|
+| T104 | R, then prototype | OpenCode researcher, then OpenCode or `implementer` | — (before the T050/T051 contracts) | Player UX for turn-based CRPG combat, from genre conventions (Baldur's Gate 3, Solasta, Pathfinder, Pillars of Eternity): camera, selection, action choice, combat readability, roll transparency. Then a clickable combat-HUD prototype. **H-proto:** you walk through it; findings become T050/T051 acceptance criteria |
+| T105 | Scout, then H | OpenCode scout | — (before T047) | Asset sourcing per spec risk 15: compare licence-compatible glTF packs (CC0 or paid) for one humanoid rig standard, animations and props. **H-buy:** you choose and approve any purchase |
 
 ### M5′ — MVP gameplay (parallel with M5; needed by spec §17.2)
 
@@ -247,7 +256,7 @@ Windows/MSVC, through the embedded server.
 |---|---|---|---|---|
 | T029b | I **ready** | crpg-script | — | Synchronous trusted bindings (D17, D21). Opens the crate |
 | T052 | C → I, S | crpg-sim | D27f | Persisted continuation state for dialogue, quests and waits; `World` touch |
-| T053 | C → I | crpg-script | T029b, T052 | Event IR interpreter with serializable `Wait` continuations (§19.2 #19) and D17 budgets |
+| T053 | C → I | crpg-script | T029b, T052, T101 draft | Event IR interpreter with serializable `Wait` continuations (§19.2 #19) and D17 budgets. The IR must be authorable by people through M8's graph editor and by agents; its contract waits on the T101 draft's event-authoring section |
 | T054 | C → I | crpg-script | T053 | Dialogue engine and quest state machine over the existing `crpg-data` dialogue/quest documents |
 | T056 | C → I | crpg-ai | T028, T036 | MVP AI: move to nearest hostile and attack, consuming `legal_actions` only. Opens the crate |
 | T057 | C → I | crpg-godot | T051, T054 | Dialogue UI and quest journal |
@@ -263,7 +272,7 @@ needs a build slot.
 
 | Id | Kind | Owner | Prerequisites | Notes |
 |---|---|---|---|---|
-| T099 | R | OpenCode researchers, citation-checked by another lab | — | Four angles, one report each: module-editor prior art (NWN/NWN2 toolsets, Solasta Dungeon Maker, the Divinity: Original Sin 2 editor, Creation Kit, RPG Maker, Foundry); narrative tools (articy:draft, Ink, Yarn Spinner, Twine, Arcweave); agent-facing authoring (intent versus patch commands, errors with suggested fixes, dry runs, tool design); usability methods for a small team |
+| T099 | R | OpenCode researchers, citation-checked by another lab | — | Five angles, one report each: module-editor prior art (NWN/NWN2 toolsets, Solasta Dungeon Maker, the Divinity: Original Sin 2 editor, Creation Kit, RPG Maker, Foundry); narrative tools (articy:draft, Ink, Yarn Spinner, Twine, Arcweave); agent-facing authoring (intent versus patch commands, errors with suggested fixes, dry runs, tool design); usability methods for a small team; event and trigger authoring for non-programmers (NWN scripts, Osiris, Papyrus, Blueprints, Godot's removed VisualScript), which T053's event IR and M8's graph editor inherit |
 | T100 | I | OpenCode O1, from a manager contract | — | Agent authoring benchmark under `tools/`: campaign briefs of rising size given to several models with only `crpgc` and the schemas; scores validity, playability (`crpgc run`), steps and errors. Baseline on today's tools first; re-run on each candidate command design |
 | T101 | A | `architect` (Opus 5.5) | T099, T100 baseline | Authoring UX ADR: personas, task flows for each spec §17.2 editor item, information architecture, an intent-level command layer above T058's `EditCommand` shared by the GUI and `crpgc apply`, and usability acceptance criteria for each M6 package. Set against a blind design from another lab (T101b, an expensive Go model) and compared by the `reviewer`. H-accept |
 | T102 | I | OpenCode or `implementer` | T101 draft | Clickable HTML prototype of the main window and the MVP flows. **H-proto:** you walk through it first, then module authors; findings return to T101 |
@@ -337,6 +346,7 @@ green on their targets. Then H sign-off.
 | T088 | C → I | crpg-server / crpg-cli | Admin tooling |
 | T089 | C → I, S | CI | Public Windows/MSVC and Linux/GNU dedicated-server release builds. H-release |
 | T090 | G | docs | Operator port-forwarding guide (D05). UPnP/IGD only by later decision |
+| T106 | R | OpenCode researcher | Before M10's contracts | Hosting friction for co-op players: relays, NAT traversal, Steam networking and their cost and dependencies, since the spec requires port forwarding at first. Feeds a decision, not code |
 | — | H | — | Record "no multiplayer host migration" (D18) as an ADR |
 
 ### M11 — PF2e (spec Phase 11; its own sub-roadmap)
@@ -352,6 +362,7 @@ green on their targets. Then H sign-off.
 | Id | Kind | Notes |
 |---|---|---|
 | — | H | Decide E023 (native loading, ABI, signing trust root) or keep deferring it |
+| T107 | R | Where module authors share work today (Nexus, mod.io, Steam Workshop, community hubs) and what each requires of a package; feeds T093's format and signing design. Before T093's contract |
 | T093 | C → I | `.crpg` packaging with hashing and signing (§19.2 #22), `crpgc pack`, malicious-archive tests |
 | T094 | C → I | Campaign publishing and dependency resolution |
 | T095 | A | Third-party server extension story (WASM only if needed) |
@@ -418,3 +429,4 @@ estimates slip.
 - 2026-10-16 (UTC) · claude-code + agent-team plan · Appended a §1.3 pointer to the proposed `docs/AGENT_TEAM_PLAN.md`, so delegated agents see which sections it would replace and that nothing changes until the user answers D28.
 - 2026-10-16 (UTC) · claude-code + D28 adopted · Appended the adoption under §1.3 so delegated agents follow the agent-team plan's routing and dispatch instead of §§1.3–1.4.
 - 2026-10-16 (UTC) · claude-code + D28j · Added M6-R, an authoring UX research stage (T099–T103) that runs alongside M4 and must close before any M6 contract, because agent and human usability of the editor had no check before the end of M6. T059 now waits on its ADR.
+- 2026-10-16 (UTC) · claude-code + D28k · Added the other human-facing stages the user approved: an event-authoring angle in T099 with T053 waiting on the T101 draft, player UX (T104) and asset sourcing (T105) before their M5 contracts, and hosting (T106) and distribution (T107) research placeholders.

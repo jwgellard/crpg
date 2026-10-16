@@ -29,6 +29,20 @@ file.
 - Alternative: drop `memory: project`, so the reviewer starts every review
   without notes from earlier ones.
 
+## D29c — who comes first: primary authors and players
+
+M6-R's personas, and every usability trade-off after them, need an order of
+priority among: you or a small team making your own game (experts; speed and
+power first), a community of module authors (hobbyists; onboarding,
+templates and forgiving errors first), and AI agents (command shape and
+error messages first). Players split the same way: people playing your
+campaign, or people finding and installing community modules.
+
+- **Needed by:** the T101 ADR, before it fixes the personas.
+- **Recommend:** no recommendation; this is a product choice. Whatever the
+  order, agents stay a first-class audience (D28j).
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + manager session · Started the D29 draft with two non-blocking questions found during setup wave A0, stacked PRs and the reviewer's write access, so that they wait for a batch instead of interrupting the wave.
+- 2026-10-16 (UTC) · claude-code + manager session · Added D29c, the order of priority among authors and players, which the T101 ADR needs before it fixes personas; it is a product choice, so it carries no recommendation.
