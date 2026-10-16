@@ -203,7 +203,7 @@ Each I row needs its C row approved first unless it says **ready**.
 
 | Id | Kind | Crate | Prerequisites | Notes |
 |---|---|---|---|---|
-| T108 | A | `architect` (Opus 5.5) | T099's pause-and-mode report | Kernel range and time model (D28l). (1) Test the seven rules primitives against CRPG system families (d20, dice pool, percentile, action points, classless skill-based) and state what is supported, what is a gap and what is out of scope. (2) Real-time-with-pause and turn-based in one game: the real-time `Timeline` policy, pause, switching modes per encounter or area, split parties, per-session pause authority and auto-pause for multiplayer, and what snapshots and the protocol carry. H-accept |
+| T108 | A | `architect` (Opus 5.5) | T099's pause-and-mode report | Kernel range and time model (D28l). (1) Test the seven rules primitives against CRPG system families (d20, dice pool, percentile, action points, classless skill-based) and state what is supported, what is a gap and what is out of scope. (2) Real-time-with-pause and turn-based in one game: the real-time `Timeline` policy, pause, switching modes per encounter or area, split parties, per-session pause authority and auto-pause for multiplayer, and what snapshots and the protocol carry. (3) How a ruleset describes its player UI (character sheet, action bar, spellbook, inventory, level-up, combat HUD) so that any ruleset displays correctly, with T104. H-accept |
 | T109 | G (+ Lua) | `rulesets/` | T108 | A third throwaway ruleset from a family unlike d6/d20 (for example action points with percentile skills), in data and Lua only. A kernel change it needs is an abstraction failure and goes back to T108 |
 | T034 | A | — | T024 merged, T108 accepted | Movement and navigation ADR, in both time modes: D13 path format, movement rules, numeric limits, and how sim consumes caller-supplied nav results (sim may not import nav) |
 | T035 | C → I | crpg-nav | T034, D27c | Navigation v1 (spec §19.1 #21). Opens the crate |
@@ -241,7 +241,7 @@ Windows/MSVC, through the embedded server.
 | T049 | C → I | crpg-godot | T047 | Interpolation buffer (§19.1 #23) |
 | T026 | C → I | crpg-godot | T026p, T037, T049 | Own-movement prediction and reconciliation |
 | T050 | C → I | crpg-godot | T048, T104 | Camera, click-to-move, selection |
-| T051 | C → I | crpg-godot | T048, T104 | HUD, combat log, `SimEvent`-driven VFX/audio hooks |
+| T051 | C → I | crpg-godot | T048, T104, T108 | HUD, combat log, `SimEvent`-driven VFX/audio hooks |
 
 **Player experience and art (added 2026-10-16 with D28j's method).** H-play
 above checks only that the game runs; these check that it reads well and has
@@ -249,7 +249,7 @@ something to show. Neither needs a build slot.
 
 | Id | Kind | Owner | Prerequisites | Notes |
 |---|---|---|---|---|
-| T104 | R, then prototype | OpenCode researcher, then OpenCode or `implementer` | — (before the T050/T051 contracts) | Player UX for turn-based CRPG combat, from genre conventions (Baldur's Gate 3, Solasta, Pathfinder, Pillars of Eternity): camera, selection, action choice, combat readability, roll transparency. Then a clickable combat-HUD prototype. **H-proto:** you walk through it; findings become T050/T051 acceptance criteria |
+| T104 | R, then prototype | OpenCode researcher, then OpenCode or `implementer` | — (before the T050/T051 contracts) | Player UX for turn-based CRPG combat, from genre conventions (Baldur's Gate 3, Solasta, Pathfinder, Pillars of Eternity): camera, selection, action choice, combat readability, roll transparency, and ruleset-driven screens (character sheet, action bar, spellbook, inventory, level-up), with T108. Then a clickable combat-HUD prototype. **H-proto:** you walk through it; findings become T050/T051 acceptance criteria |
 | T105 | Scout, then H | OpenCode scout | — (before T047) | Asset sourcing per spec risk 15: compare licence-compatible glTF packs (CC0 or paid) for one humanoid rig standard, animations and props. **H-buy:** you choose and approve any purchase |
 
 ### M5′ — MVP gameplay (parallel with M5; needed by spec §17.2)
@@ -274,9 +274,9 @@ needs a build slot.
 
 | Id | Kind | Owner | Prerequisites | Notes |
 |---|---|---|---|---|
-| T099 | R | OpenCode researchers, citation-checked by another lab | — | Seven angles, one report each: module-editor prior art (NWN/NWN2 toolsets, Solasta Dungeon Maker, the Divinity: Original Sin 2 editor, Creation Kit, RPG Maker, Foundry); narrative tools (articy:draft, Ink, Yarn Spinner, Twine, Arcweave); agent-facing authoring (intent versus patch commands, errors with suggested fixes, dry runs, tool design); usability methods for a small team; event and trigger authoring for non-programmers (NWN scripts, Osiris, Papyrus, Blueprints, Godot's removed VisualScript), which T053's event IR and M8's graph editor inherit; ruleset authoring (Foundry VTT game systems, Fantasy Grounds rulesets, NWN's 2DA tables, RPG Maker's database, Owlcat's Pathfinder modding); pause, auto-pause and switching between real-time-with-pause and turn-based, in single and multiplayer (Baldur's Gate and Icewind Dale, NWN, Pathfinder: Kingmaker and Wrath of the Righteous, Deadfire, BG3, Solasta, Divinity: Original Sin 2), which T108 needs |
+| T099 | R | OpenCode researchers, citation-checked by another lab | — | Eight angles, one report each: module-editor prior art (NWN/NWN2 toolsets, Solasta Dungeon Maker, the Divinity: Original Sin 2 editor, Creation Kit, RPG Maker, Foundry); narrative tools (articy:draft, Ink, Yarn Spinner, Twine, Arcweave); agent-facing authoring (intent versus patch commands, errors with suggested fixes, dry runs, tool design); usability methods for a small team; event and trigger authoring for non-programmers (NWN scripts, Osiris, Papyrus, Blueprints, Godot's removed VisualScript), which T053's event IR and M8's graph editor inherit; ruleset authoring (Foundry VTT game systems, Fantasy Grounds rulesets, NWN's 2DA tables, RPG Maker's database, Owlcat's Pathfinder modding); pause, auto-pause and switching between real-time-with-pause and turn-based, in single and multiplayer (Baldur's Gate and Icewind Dale, NWN, Pathfinder: Kingmaker and Wrath of the Righteous, Deadfire, BG3, Solasta, Divinity: Original Sin 2), which T108 needs; custom content from module authors (NWN haks, Creation Kit, Solasta and BG3 modding, Godot's glTF import): bringing in models, portraits, audio and VFX, checking them against a rig standard, and packaging them |
 | T100 | I | OpenCode O1, from a manager contract | — | Agent authoring benchmark under `tools/`: campaign briefs of rising size given to several models with only `crpgc` and the schemas; scores validity, playability (`crpgc run`), steps and errors. Baseline on today's tools first; re-run on each candidate command design. Includes a "define a small rule system" brief beside the campaign briefs |
-| T101 | A | `architect` (Opus 5.5) | T099, T100 baseline | Authoring UX ADR: personas (module authors first, agents equal: D28l), task flows for each spec §17.2 editor item and for creating a ruleset from a template, information architecture, an intent-level command layer above T058's `EditCommand` shared by the GUI and `crpgc apply`, and usability acceptance criteria for each M6 package. Set against a blind design from another lab (T101b, an expensive Go model) and compared by the `reviewer`. H-accept |
+| T101 | A | `architect` (Opus 5.5) | T099, T100 baseline | Authoring UX ADR: personas (module authors first, agents equal: D28l), task flows for each spec §17.2 editor item and for creating a ruleset from a template, information architecture, an intent-level command layer above T058's `EditCommand` shared by the GUI and `crpgc apply`, the asset-import flow for custom content, and usability acceptance criteria for each M6 package. Set against a blind design from another lab (T101b, an expensive Go model) and compared by the `reviewer`. H-accept |
 | T102 | I | OpenCode or `implementer` | T101 draft | Clickable HTML prototype of the main window and the MVP flows. **H-proto:** you walk through it first, then module authors; findings return to T101 |
 | T103 | C → I | crpg-edit (then crpg-cli) | T101 accepted | The intent-level command layer, if T101 keeps it; T059's JSON format follows it |
 
@@ -312,6 +312,7 @@ green on their targets. Then H sign-off.
 | T069 | G | `campaigns/mvp` | M6 | MVP campaign content, `crpgc validate` loop |
 | T070 | C → I, S | crpg-testkit (+ CI) | T069, T041 | Automated §17.2 acceptance (headless where possible); smoke on Windows embedded, Windows dedicated and Linux dedicated with two clients |
 | T071 | G | docs | M6 | Authoring guide (`docs/guides/`), a ruleset authoring guide, and `docs/contracts/` |
+| T111 | A | `architect` (Opus 5.5) | Before MVP sign-off | Module updates and player saves (D28m): what a save keeps when an author renames, moves or removes content in a new module version, and what the publishing tools (T093, T094) must offer authors. Format migration already exists; content change does not. H-accept |
 | T072 | C → I | crpg-data, then host/client | D03 | Client presentation-manifest export/import and strip leak test (E022 ledger, Phase 7) |
 | T07x | — | as found | — | Integration fixes, filed as they appear (Phase 7 exists for this) |
 
@@ -338,6 +339,7 @@ green on their targets. Then H sign-off.
 | T082 | C → I | crpg-ai | Behaviour trees for schedules |
 | T083 | C → I | crpg-ai | Party AI |
 | T084 | C → I | crpg-ai, then crpg-cli | Encounter dry-run simulator (§19.2 #23) and its CLI wrapper |
+| T112 | C → I | crpg-testkit, then crpg-cli | Automated module playtester (D28m): an agent or bot plays a module headlessly to its end and reports soft-locks, unreachable quests and unwinnable fights, building on T075 and T084 |
 
 ### M10 — Multiplayer hardening (spec Phase 10)
 
@@ -365,7 +367,7 @@ green on their targets. Then H sign-off.
 | Id | Kind | Notes |
 |---|---|---|
 | — | H | Decide E023 (native loading, ABI, signing trust root) or keep deferring it |
-| T107 | R | Where module authors share work today (Nexus, mod.io, Steam Workshop, community hubs) and what each requires of a package; feeds T093's format and signing design. Before T093's contract |
+| T107 | R | Where module authors share work today (Nexus, mod.io, Steam Workshop, community hubs) and what each requires of a package, and how several mods that change the same content combine (load order, conflicts, patches); feeds T093's format and signing design and T094's resolution rules. Before T093's contract |
 | T093 | C → I | `.crpg` packaging with hashing and signing (§19.2 #22), `crpgc pack`, malicious-archive tests |
 | T094 | C → I | Campaign publishing and dependency resolution |
 | T095 | A | Third-party server extension story (WASM only if needed) |
@@ -434,3 +436,4 @@ estimates slip.
 - 2026-10-16 (UTC) · claude-code + D28j · Added M6-R, an authoring UX research stage (T099–T103) that runs alongside M4 and must close before any M6 contract, because agent and human usability of the editor had no check before the end of M6. T059 now waits on its ADR.
 - 2026-10-16 (UTC) · claude-code + D28k · Added the other human-facing stages the user approved: an event-authoring angle in T099 with T053 waiting on the T101 draft, player UX (T104) and asset sourcing (T105) before their M5 contracts, and hosting (T106) and distribution (T107) research placeholders.
 - 2026-10-16 (UTC) · claude-code + D28l · Made rule-defining an authoring task and both time modes a design input: T099 gains ruleset and pause/mode angles, T108 (kernel range and time model) gates T034, T109 is a third ruleset family, and T110 places the rules editor after M6.
+- 2026-10-16 (UTC) · claude-code + D28m · Added the four further gaps the user approved: a custom-content angle in T099 and T101, ruleset-driven player UI in T104 and T108 (gating T051), module updates versus player saves (T111), mod combination in T107, and an automated module playtester (T112).

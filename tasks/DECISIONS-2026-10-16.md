@@ -143,9 +143,22 @@ game, so the engine should be able to." Approving the manager's proposal:
   including multiplayer pause authority. T034 waits on it. T109 is a third
   throwaway ruleset from another family.
 
+## D28m — four further gaps and the module playtester
+
+The user: "Love all your ideas, put them in."
+
+- Ruleset-driven player UI: T108 decides how a ruleset describes its
+  screens, and T104 researches and prototypes them. T051 waits on both.
+- Custom content from module authors: a T099 angle, and the asset-import
+  flow in T101.
+- Module updates versus player saves: T111, an ADR before MVP sign-off.
+- Several mods changing the same content: part of T107, before T093/T094.
+- T112: an automated module playtester in M9.
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + D28 · Recorded the user's answers to the agent-team plan's questions and the same-day rustls advisory decision, with what each answer changes, so the manager's first session starts from a settled record.
 - 2026-10-16 (UTC) · claude-code + D28j · Recorded the user's same-day answers on the authoring UX research stage, so that M6-R and its gate on the editor contracts rest on a quoted decision.
 - 2026-10-16 (UTC) · claude-code + D28k · Recorded the user's approval of the further human-facing stages, so T053's new prerequisite and T104–T107 rest on a quoted decision.
 - 2026-10-16 (UTC) · claude-code + D28l · Recorded the user's audience order, rule-defining pillar and both-time-modes requirement, with the plan changes each one drives.
+- 2026-10-16 (UTC) · claude-code + D28m · Recorded the user's approval of the four further gaps and the module playtester, with the packages each one changes.
