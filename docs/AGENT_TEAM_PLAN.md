@@ -466,6 +466,14 @@ questions for you.
   the bookkeeper or an OpenCode worker, and never run two Claude workers at
   once when an OpenCode worker could take one of them. Opus 5.5, Sonnet 5.5
   and Haiku 5.5 all draw on the same five-hour and weekly limits.
+- **What Claude's usage report showed (2026-10-16).** 88% of usage was at
+  over 150k context, 27% came from subagent-heavy sessions, 14% from
+  always-on context over 40k tokens, and 11% from the `/claude-api` skill.
+  So: the context meter is wired before any other work (§8). Scouting goes
+  to OpenCode `crpg-scout` on a Go model rather than `Explore`, which
+  inherits the manager's Opus. Every Claude agent has a `tools:` allowlist
+  (about 21k tokens saved per spawn). Unused MCP connectors are turned off
+  for this project, and A0-8 trims the `AGENTS.md` files.
 - **Effort per agent.** In the agent files: `architect` high, `implementer`
   high, `reviewer` high, `bookkeeper` low. A spawn may override.
 - **Turn caps.** `maxTurns` on Claude workers; `--timeout` and the agent's
@@ -583,3 +591,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + user question on manager effort and handover · Set the manager's effort by session type (medium, high, xhigh), added handover thresholds at 150k and 200k tokens enforced by a context-meter hook, and recorded why managers relay rather than nest. The first manager session's context reached about 346k tokens, which is what prompted this.
 - 2026-10-16 (UTC) · claude-code + user request · Made §12 the prompt that the root `CLAUDE.md` triggers on "start working", with the session's work taken from the handover, so the user no longer pastes a kickoff prompt.
 - 2026-10-16 (UTC) · claude-code + research fold-in · Took three rules from the citation-checked R5–R7 reports: `oc.py wave` keeps one package per crate, a known-flake failure is an infrastructure exit, and A0-7 aims at about 20 fixtures that also measure brief ordering. The rest is recorded in `docs/agents/RESEARCH-2026-10-16.md`.
+- 2026-10-16 (UTC) · claude-code + usage report · Added the user-supplied Claude usage breakdown to §9 with the rule each figure drives, so later sessions cost less.

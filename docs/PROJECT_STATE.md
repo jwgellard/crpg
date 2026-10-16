@@ -12,42 +12,42 @@ Updated: 2026-10-16
 
   PR #34 (T024 contract draft) still awaits your approval. The D29 draft (`tasks/DECISIONS-D29-DRAFT.md`) holds a (stacked PRs) and b (reviewer write access).
 - Next:
-  1. Collect the runs below.
-  2. A0-3 (`oc.py`, commit `0b1550d` on `setup/A0-3-oc-py`, verified 0/9):
-     - Live smoke test on a Go ID: `oc.py ask --role scout --model opencode-go/cat-jam-free ...`. The first try hit the free-route rate limit.
-     - First-pass review on Go Argon. Decide on its size, about twice the budget.
-     - Attempt-2 notes: `wave` caps runs per model, enforces the free-tier caps (MODELS.md §1 items 10–11), and refuses two packages that own one crate (plan §5.1).
+  1. **First, wire the hooks into `.claude/settings.json`**, the context meter included, so §8's 150k/200k rule is enforced. The 2026-10-16 manager session ran far past it: Claude's usage report showed 88% of usage at over 150k context.
+     - A0-6b attempt 2 is running; after it, verify, review on Go Argon and cherry-pick.
+     - A0-6 is already on PR #33.
+  2. A0-3 (`oc.py`, `0b1550d` on `setup/A0-3-oc-py`, verified 0/9):
+     - Live smoke test on a Go ID: `oc.py ask --role scout --model opencode-go/cat-jam-free ...`.
+     - First-pass review on Go Argon, and a decision on its size (about twice the budget).
+     - Attempt-2 notes:
+       - `wave` caps runs per model and the free Zen tier (MODELS.md §1 items 10–11);
+       - it refuses two packages that own one crate (plan §5.1);
+       - it refuses `opencode/cat-jam-free` and `opencode/longcat-2.5-preview-free` and names their Go IDs (MODELS.md §4).
      - Then cherry-pick it.
-  3. A0-6b: verify, review and cherry-pick, then wire the hooks into `.claude/settings.json`.
-  4. T099 research:
-     - When V6, V8 and V9 land, check R4 and the R9, R11 and R15 deep reports the same way (`manager/mkcheck.sh`, `manager/vsum.py`).
-     - Copy the verified reports into the repository with signatures and write the T099 record.
-     - R3's OpenRouter $10 question goes into D29 once V6 holds.
-     - Verify R4's config keys before applying any.
-  5. T097-m numbers go to the T097 contract (`architect`).
-  6. Write the T100 benchmark contract and the T108 brief (`architect`; inputs R13-deep and R14-deep), then T101.
-  7. A0-5, A0-7 and A0-8 come after.
+  3. T099 research. Checked and holding:
+     - first passes R1–R3, R8, R9, R11–R13 and R15 (Cat Jam: 222 of 225 checkable citations held);
+     - deep reports R10-deep 29/29 and R14-deep 44/44.
+
+     Still to check: R8-, R12- and R13-deep (V8 failed twice on Go LongCat with an upstream 429, so rerun it on Go Cat Jam), and R9-, R11- and R15-deep and R4 (a new V10). Tools: `manager/mkcheck.sh` and `manager/vsum.py`.
+
+     Then copy the verified reports into the repository with signatures and write the T099 record. R3's OpenRouter $10 question goes into D29; verify R4's config keys before applying any.
+  4. T097-m numbers go to the T097 contract (`architect`).
+  5. Write the T100 benchmark contract and the T108 brief (`architect`; inputs R13-deep and R14-deep), then T101.
+  6. A0-5, A0-7 and A0-8 come after.
 
   Dispatch with `python ../crpg-slots/manager/ocrun.py SLOT AGENT MODEL LOG TIMEOUT [PROMPT]` until `oc.py` lands. Deep research uses `manager/mkdeep.sh` and the `crpg-deep-research` agent.
-- Blocked: nothing. The free Zen route (`opencode/...`) has refused most free models since about 11:00 UTC. **Route Cat Jam and LongCat by their `opencode-go/` IDs**, which stayed available (MODELS.md §1 item 11). Keep at most three runs per model.
+- Blocked: nothing. Free Zen capacity goes only to Muse Spark, DeepSeek V4.1 Flash and GLM-5.3-Flash free variants. LongCat and Cat Jam always use their `opencode-go/` IDs (MODELS.md §4). Keep at most three runs per model.
 
-Running at handover (2026-10-16 ~12:50 UTC; worktrees in `C:\crpg\dev\crpg-slots`; logs under `.agents/runs/<ID>/`):
+Running at handover (2026-10-16 ~13:10 UTC; worktrees in `C:\crpg\dev\crpg-slots`; logs under `.agents/runs/<ID>/`):
 
 | ID | Work | Model | Worktree · branch |
 |---|---|---|---|
-| A0-6b | `context_meter.py` (brief in the worktree) | `opencode-go/deepseek-v4.1-flash` | `alt-2` · `setup/A0-6-hooks` |
-| T097-m | attempt 3: `HistoryWorld` cost measurement, finishing a partial scratch file; `CARGO_TARGET_DIR` = `slot-1/target` | `opencode-go/mimo-v2.6-pro` | `scratch-1` · detached |
-| V6 | citation check of R1, R2, R3 | `opencode-go/muse-spark-1.3-contributor` | `research/V6` |
-| V8 | citation check of R8-, R12-, R13-deep | `opencode-go/longcat-2.5-preview-free` | `research/V8` |
-| V9 | citation check of R10-, R14-deep | `opencode-go/cat-jam-free` | `research/V9` |
-| R11-deep | deep pass, usability methods | `opencode-go/longcat-2.5-preview-free` | `research/R11-deep` |
+| A0-6b | attempt 2: the two review notes at the end of its `BRIEF.md` | `opencode-go/deepseek-v4.1-flash` | `alt-2` · `setup/A0-6-hooks` |
+| T097-m | attempt 3: `HistoryWorld` cost measurement; `CARGO_TARGET_DIR` = `slot-1/target` | `opencode-go/mimo-v2.6-pro` | `scratch-1` · detached |
 
 Research outputs live in `../crpg-slots/research/<ID>/`, outside the repository:
 - first passes R1–R4 and R8–R15;
-- deep passes `R8/9/10/12/13/14/15-deep`;
-- checks V1–V5 (`V*.jsonl`).
-
-The checks so far hold for Cat Jam's six first passes: 68 of 70 checkable citations held.
+- deep passes `R8/9/10/11/12/13/14/15-deep`;
+- checks V1–V6 and V9 (`V*.jsonl`).
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -733,3 +733,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-16 (UTC) · claude-code + handover after S002 · Moved the handover past the S002 merge, added PR #31 (T096) and T097 for the manager, and cleared the deny blocker.
 - 2026-10-16 (UTC) · claude-code + manager handover · Rewrote the handover for the next manager session, naming every run still going with its worktree, model and log, plus where the interim runner and the A0-6b brief live, because the first manager session's context passed the new 200k limit.
 - 2026-10-16 (UTC) · claude-code + manager handover (second session) · Rewrote the handover for the next session: what PR #33 gained, the numbered next steps, the Go-route rule, and every run still going with its model and worktree.
+- 2026-10-16 (UTC) · claude-code + final handover (second session) · Brought the handover to the session's end: wiring the context meter comes first, after Claude's usage report showed 88% of usage above 150k context; two runs are named as still going.
