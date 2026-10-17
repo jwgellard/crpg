@@ -363,7 +363,7 @@ verdict first, at most 40 lines:
 | Test weakening | An existing test file lost an `assert`, a `#[test]` or a case, or gained `#[ignore]` |
 | `unsafe` | Any new `unsafe` outside `crpg-godot` |
 | Floats and maps | `determinism.py` and `deps.py` (already gates) |
-| Doc signatures | A changed `.md` file has no new agent-log entry dated today (the `AGENTS.md` rule, now checked) |
+| Doc signatures | A changed .md file has no new agent-log entry dated between the UTC day of the branch's oldest commit and today (today only for uncommitted work) |
 | Floating `todo!()` | `todo!()` or `unimplemented!()` left in owned non-test code |
 
 ### 7.2 What the manager judges
@@ -621,3 +621,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + usage report · Added the user-supplied Claude usage breakdown to §9 with the rule each figure drives, so later sessions cost less.
 - 2026-10-17 (UTC) · claude-code + user decision · Recorded the compaction-versus-handover study and the user's instruction to cut Claude usage in §8 (keep 150k/200k, trial a mid-wave `/compact`, fewer manager turns, no Claude bookkeeper) and added A0-10, the manager start-up diet, because the start-up read is the largest remaining lever.
 - 2026-10-16 (UTC) · claude-code + user direction · Added the parallel-by-default and parallel-design rules to §8 with the Go-cap evidence that keeps design drafts off Kimi K3 and Gemini 4 Argon, because the user asked for parallel work and design to be run in parallel.
+- 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Updated the doc-signature check description to state the branch-age date window and the uncommitted-work exception.

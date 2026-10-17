@@ -479,6 +479,21 @@ Infra exits (rate limit, quota) are listed but do not count.
 | `opencode/glm-5.3-flash-free` | tests | T128: verified first time, and found defect D6 with two exact reproductions. 10 minutes; said it could not read `crates/crpg-net/src/` and worked from the contract and public API |
 | `opencode/glm-5.3-flash-free` | review | T127: clean, checked every infeasible reading against the source |
 
+**Record, 2026-10-17 session 8 (free lanes only, Go capped).**
+
+| Model | Role | Runs and outcome |
+|---|---|---|
+| `opencode/deepseek-v4.1-flash-free` | review | Audit low rows #73–#90: six verdicts, each with file:line evidence; accepted |
+| `opencode/deepseek-v4.1-flash-free` | implement | A0-3d attempt 1: read the brief and stopped after 2 steps with no edit (counts); `oc.py` printed PASS, the defect A0-3d then fixed. Later runs: HTTP 429 at step 0 from about 07:00 until at least 08:06 UTC (infra) |
+| `opencode/glm-5.3-flash-free` | review | Audit low rows #93–#103: five verdicts with file:line evidence; accepted |
+| `opencode/glm-5.3-flash-free` | implement | T098 measurement: `provider.internal` "upstream service failed" after 9 steps (infra; `oc.py` printed PASS), then 429 at step 0 twice (infra) |
+| `opencode-go/beam-free` | review, implement | HTTP 429 on three runs between 06:56 and 07:05 UTC (infra); one ask ended with no text after a few steps |
+| `opencode/muse-spark-1.3-contributor-free` | review | `provider.no-route` "Model unavailable" at 06:58 UTC: the free variant appears withdrawn. Off the free routes until it answers again |
+| `openai/gpt-6-luna` | implement | A0-3d twice: failed acceptance both times (31, then 20 failing tool tests). The first run correctly reported a brief defect (not counted); the second counts. Both reports were honest about what was unfinished |
+| Claude `implementer` (Sonnet 5.5) | implement | A0-3d after the ladder above: verified first time (0/9), about 100k tokens, 10 minutes |
+
+The free Zen limit is account-wide: with at most three concurrent runs it refused every free model from about 07:00 UTC and had not recovered at 08:06 UTC.
+
 ## 5. Bake-off method
 
 Run 2026-10-16. The harness, fixtures and scored results are in
@@ -538,3 +553,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + redirect hole · Added to item 15 the shell-redirection hole in read-only roles and its probed `"*>*": deny` fix.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + user routing change · Took Kimi K3 and Gemini 4 Argon off the default routes (§1 item 16, §4) after the Go weekly limit, because their per-request cost spent most of the shared Go budget.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + session 7 field record · Added the T120–T129 runs, including the Beam upstream rate limit and the free DeepSeek and GLM results that replaced it, so routing reflects how they did on real work.
+- 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Added the session 8 field record and account-wide free Zen outage sentence to capture run outcomes and availability.
