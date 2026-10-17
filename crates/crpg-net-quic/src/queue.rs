@@ -142,6 +142,9 @@ pub(crate) struct Conn {
     pub(crate) published: bool,
     pub(crate) event_polled: bool,
     pub(crate) closed_reported: bool,
+    /// Whether the connection held inbound frames (queued or parked) at the
+    /// time its `Closed` was published (record-lifetime rule).
+    pub(crate) held_frames: bool,
     /// Its `Closed` was polled and reported: the API no longer sees it. The
     /// record stays only until the control task has taken `quinn_close`.
     pub(crate) released: bool,
@@ -173,6 +176,7 @@ impl Conn {
             published: false,
             event_polled: false,
             closed_reported: false,
+            held_frames: false,
             released: false,
             quinn_close: None,
             flush: None,
@@ -413,6 +417,7 @@ impl State {
         if conn.reader_active || conn.published {
             return;
         }
+        conn.held_frames = !conn.drained();
         conn.published = true;
         if self.emit_events && conn.phase != Phase::Hello {
             self.events.push_back(ServerEvent::Closed {

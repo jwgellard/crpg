@@ -50,6 +50,10 @@ failure mode without the network or the real OpenCode:
                      no-route      emit a top-level error event
                                    (provider.no-route, "Model unavailable")
                                    with exit 1 and no steps, like 2.x.
+                     no-agent      emit a top-level error event reading
+                                   `Agent not found: "crpg-implement"`,
+                                   exit 1, no steps: the cause table must
+                                   map it to no-agent, not error.
                      error-quota   emit a top-level error event whose message
                                    says "Rate limit exceeded", exit 1, no
                                    steps: the message goes through the cause
@@ -431,6 +435,14 @@ def main() -> int:
         emit({"type": "error", "timestamp": 1,
               "error": {"type": "provider.no-route",
                         "message": "Model unavailable: opencode-go/cat-jam-free"}})
+        return 1
+
+    if has_token(tokens, "no-agent"):
+        # The agent the run asked for is not defined: exit 1 with a top-level
+        # error event, no steps, like 2.x.
+        emit({"type": "error", "timestamp": 1,
+              "error": {"type": "provider.agentNotFound",
+                        "message": 'Agent not found: "crpg-implement"'}})
         return 1
 
     if has_token(tokens, "error-quota"):

@@ -2032,6 +2032,7 @@ pub(crate) fn perform_action_tracked(
                 .filter(|(_, state)| !state.dead)
                 .count();
             let mut facts = TransitionFacts::default();
+            let actor_dead = !world.timeline().contains(actor);
             if alive < 2 {
                 if world.timeline().contains(actor) {
                     let popped = end_turn(world);
@@ -2043,6 +2044,8 @@ pub(crate) fn perform_action_tracked(
                     .expect("the encounter is checked above")
                     .active = None;
                 facts.encounter_ended = Some((definition.encounter, round));
+            } else if actor_dead {
+                facts = advance_tracked(world);
             } else if entry.ends_turn {
                 let popped = end_turn(world);
                 debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
