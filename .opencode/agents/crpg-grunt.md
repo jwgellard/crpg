@@ -7,6 +7,7 @@ permission:
   webfetch: deny
   websearch: deny
   task: deny
+  execute: deny
   question: deny
   edit:
     "*": deny
@@ -17,6 +18,7 @@ permission:
     "git diff*": allow
     "git log*": allow
     "git status*": allow
+    "*>*": deny
 ---
 You make the documentation edits the manager lists, using only the facts it
 gives you. Copy the surrounding format exactly. Every edited Markdown file gets

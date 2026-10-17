@@ -52,15 +52,13 @@ prints the command for the detected version.
 (`docs/agents/MODELS.md` §4): at most one run per free Zen model
 (`opencode/…-free`), at most three free Zen runs in total, and at most
 three runs per model of any other kind. Members over a cap wait for a
-free place in spec order; they are not refused. The Zen LongCat ID that
-moved to the Go subscription is refused (exit 2 `usage`, naming the Go
-ID): `opencode/longcat-2.5-preview-free` →
-`opencode-go/longcat-2.5-preview-free` (one constant, `RENAMED_MODELS`).
-Both Cat Jam IDs are gone after the OpenCode 2.x upgrade and are refused
-(exit 2 `usage`) as removed: `opencode/cat-jam-free` and
-`opencode-go/cat-jam-free` suggest scouting with
-`opencode-go/deepseek-v4.1-flash` instead (one constant,
-`REMOVED_MODELS`).
+free place in spec order; they are not refused. A model ID that moved is
+refused (exit 2 `usage`, naming the new ID; one constant,
+`RENAMED_MODELS`): `opencode/longcat-2.5-preview-free` →
+`opencode-go/longcat-2.5-preview-free`, and Cat Jam, which became Beam
+Free after the OpenCode 2.x upgrade, `opencode/cat-jam-free`,
+`opencode-go/cat-jam-free` and `opencode/beam-free` →
+`opencode-go/beam-free`.
 
 Briefs: `run` takes `--brief`, else `<repo>/.agents/briefs/<ID>.md`
 when filed, else generates one via `brief.py`; `wave` resolves each
@@ -117,4 +115,5 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 · Wrote this usage guide for the new `tools/agents` scripts so the manager can route OpenCode workers without reading `oc.py`; it ends with this signed entry per the root `AGENTS.md` rule.
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor-free + A0-3 attempt 3 · Documented the review fixes above (wave model caps, refused Zen IDs, brief precedence with placeholder and same-crate checks) so the guide matches `oc.py`'s routing behaviour.
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor + A0-3 attempt 4 · Documented OpenCode 2.x support (version probe, `--standalone` with model `#variant` and no `--dir`, kept 1.x form, removed Cat Jam IDs, top-level error events, versioned fake) so the guide matches `oc.py`'s dual-generation behaviour.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Recorded Beam Free as the Go ID behind both Cat Jam IDs and its own Zen ID, replacing the removed-model refusal, as the user directed.
 - 2026-10-16 (UTC) · opencode-go/DeepSeek-Flash-V4.1 + A0-3b · Documented the `--base` pass-through to `verify_task.py` (run and wave) and the agent-declaration fallback with its `info/exclude` entries and `no-agent` cause, so the guide matches the slot preparation defect fixes.

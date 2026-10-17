@@ -413,6 +413,32 @@ little:
   `tools/agents/context_meter.py` (A0-6b), reads the exact figure from the
   transcript's `usage` field after each tool call and injects a notice when
   a threshold is crossed. A notice is a rule, not a suggestion.
+- **Cutting Claude usage (the user, 2026-10-17: "We need to cut claude
+  usage").** A study of two real manager sessions found a manager turn costs
+  about $0.042 fixed plus $0.20 per MTok of context (Opus 5.5 API prices), so
+  below 150k the **number of manager turns** matters more than the context
+  size. The rules that follow:
+  - Keep 150k and 200k. Never compact earlier: compacting at 80k cost +18%
+    in the model, because each compaction has a fixed cost.
+  - Mid-wave at 150k, a manager may `/compact` with a focus on the handover
+    and the runs in flight, instead of handing over (modelled −10 to −20%,
+    not yet measured). This is a trial for two sessions, compared by
+    `/usage`. Wave ends still hand over.
+  - The larger lever is the start-up read: each 15k cut saves about 12%.
+    A0-10 replaces the §12 read list with one short manager brief.
+  - Fewer turns: dispatch, wait for the summary, act on the exit code. No
+    hand-fixing, no exploratory reads. Bookkeeping goes to OpenCode
+    `crpg-grunt`, not the Claude `bookkeeper`. Start a Claude subagent only
+    when the work is Claude-only and cannot wait.
+  - Parallel by default (the user, 2026-10-17): when a slot frees, dispatch
+    the next ready package first. Slots 3–6 are doc-only (no cargo) for
+    design, research, briefs and doc trims.
+  - Design in parallel: a fact pack and two blind drafts by OpenCode models
+    of different labs on doc slots, then one `architect` pass that
+    adjudicates, then you. Claude still writes every final A, C and S-set
+    text (§4.2). Drafts run on the cheap O1 models; Kimi K3 and Gemini 4
+    Argon take only short reviews, one at a time, because on 2026-10-16
+    they were $3.15 of the $3.64 that hit the Go 5-hour cap.
 - **How to hand over.**
   1. Prefer a quiet point, with no worker running. A new session does not
      receive the old session's background notifications.
@@ -527,6 +553,7 @@ decision first.
 | A0-7 | Promote the 2026-10-16 bake-off harness (`docs/agents/bakeoff-2026-10-16/`) to `tools/agents/bakeoff/`, and add harder fixtures cut from this repository's history: a past task at its pre-implementation commit with its real tests hidden, and the code before a real fix (T019, T023d) as a review case | OpenCode O1 for the harness; the manager picks the fixtures | One command re-scores every configured model, and the new fixtures separate models the 2026-10-16 ones could not; about 20 fixtures, which also measure brief ordering and reasoning variant (`docs/agents/RESEARCH-2026-10-16.md`) |
 | A0-8 | Context diet: the root `AGENTS.md` note moved to `PROJECT_STATE.md` on 2026-10-16 (D28f, done); next, trim crate `AGENTS.md` files, crate by crate | Manager drafts, you approve each crate | No information lost: each moved paragraph has a new home |
 | A0-9 | Create slots 1 and 2 (disk freed 2026-10-16, D28-c) | Manager | `oc.py` finds both slots and each builds once |
+| A0-10 | Manager start-up diet (§8, 2026-10-17): one `docs/agents/MANAGER.md` of at most about 8k tokens (the rules a manager acts on from §§1–9, the routing table, dispatch commands), which §12 and `CLAUDE.md` point to instead of §§1–9 plus `MODELS.md` | OpenCode O1 drafts, the manager checks, you approve | A fresh manager session starts under 60k context and nothing it acts on is lost |
 
 ## 12. Kickoff prompt for a manager session
 
@@ -592,3 +619,5 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + user request · Made §12 the prompt that the root `CLAUDE.md` triggers on "start working", with the session's work taken from the handover, so the user no longer pastes a kickoff prompt.
 - 2026-10-16 (UTC) · claude-code + research fold-in · Took three rules from the citation-checked R5–R7 reports: `oc.py wave` keeps one package per crate, a known-flake failure is an infrastructure exit, and A0-7 aims at about 20 fixtures that also measure brief ordering. The rest is recorded in `docs/agents/RESEARCH-2026-10-16.md`.
 - 2026-10-16 (UTC) · claude-code + usage report · Added the user-supplied Claude usage breakdown to §9 with the rule each figure drives, so later sessions cost less.
+- 2026-10-17 (UTC) · claude-code + user decision · Recorded the compaction-versus-handover study and the user's instruction to cut Claude usage in §8 (keep 150k/200k, trial a mid-wave `/compact`, fewer manager turns, no Claude bookkeeper) and added A0-10, the manager start-up diet, because the start-up read is the largest remaining lever.
+- 2026-10-16 (UTC) · claude-code + user direction · Added the parallel-by-default and parallel-design rules to §8 with the Go-cap evidence that keeps design drafts off Kimi K3 and Gemini 4 Argon, because the user asked for parallel work and design to be run in parallel.
