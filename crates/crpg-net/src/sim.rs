@@ -181,10 +181,13 @@ impl TokenBucket {
     /// Attempts to spend `amount` tokens at `now_ms`.
     ///
     /// Credit for elapsed time accrues first (capped at capacity) whether or
-    /// not the spend succeeds; only a successful spend deducts.
+    /// not the spend succeeds; only a successful spend deducts. The watermark
+    /// only ever moves forward: a backwards or equal timestamp accrues nothing
+    /// and leaves `last_ms` where it was, so no later call can re-credit a gap
+    /// already counted.
     pub fn consume(&mut self, now_ms: u64, amount: u64) -> bool {
         let elapsed = now_ms.saturating_sub(self.last_ms);
-        self.last_ms = now_ms;
+        self.last_ms = self.last_ms.max(now_ms);
         self.available_mt = self
             .available_mt
             .saturating_add(elapsed.saturating_mul(self.refill_mt_per_ms))
