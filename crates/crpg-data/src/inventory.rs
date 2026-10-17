@@ -401,7 +401,7 @@ fn inventory_value(
         }
         DataValue::List(items) => {
             for (i, item) in items.iter().enumerate() {
-                inventory_value(out, file, format!("{base}/{i}"), item, source);
+                inventory_value(out, file, format!("{base}/value/{i}"), item, source);
             }
         }
         DataValue::Map(entries) => {
@@ -409,7 +409,7 @@ fn inventory_value(
                 inventory_value(
                     out,
                     file,
-                    format!("{base}/{}", escape_segment(key)),
+                    format!("{base}/value/{}", escape_segment(key)),
                     item,
                     source,
                 );

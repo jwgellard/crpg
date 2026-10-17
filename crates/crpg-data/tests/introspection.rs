@@ -554,12 +554,12 @@ fn every_reference_family_reports_source_and_target_locations() {
         .unwrap()
         .iter()
         .any(|e| {
-            e["pointer"] == json!("/placements/0/overrides/deep/k/0/value")
+            e["pointer"] == json!("/placements/0/overrides/deep/value/k/value/0/value")
                 && e["source"] == json!(id(5).to_string())
         }));
     let world_deep = explain(&campaign2, 2).expect("world deep");
     assert!(world_deep["outbound"].as_array().unwrap().iter().any(|e| {
-        e["pointer"] == json!("/variables/0/default/k/0/value")
+        e["pointer"] == json!("/variables/0/default/value/k/value/0/value")
             && e["source"] == json!(id(2).to_string())
     }));
 }
@@ -1164,12 +1164,12 @@ fn every_argument_site_reports_nested_refs_with_enclosing_sources() {
         }),
     );
     for (node, pointer) in [
-        (802, "/nodes/0/body/on_enter/0/args/arg/k/value"),
-        (803, "/nodes/1/body/on_select/0/args/arg/k/value"),
-        (812, "/states/0/on_enter/0/args/arg/k/value"),
-        (822, "/nodes/0/body/call/args/arg/k/value"),
-        (823, "/nodes/1/body/args/arg/k/value"),
-        (824, "/nodes/2/body/args/arg/k/value"),
+        (802, "/nodes/0/body/on_enter/0/args/arg/value/k/value"),
+        (803, "/nodes/1/body/on_select/0/args/arg/value/k/value"),
+        (812, "/states/0/on_enter/0/args/arg/value/k/value"),
+        (822, "/nodes/0/body/call/args/arg/value/k/value"),
+        (823, "/nodes/1/body/args/arg/value/k/value"),
+        (824, "/nodes/2/body/args/arg/value/k/value"),
     ] {
         let value = explain(&campaign, node).expect("arg node present");
         assert!(
