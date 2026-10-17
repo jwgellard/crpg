@@ -17,8 +17,8 @@ use crpg_script::{
     ActionBinding, ActionBindings, ActionHandler, BindingError, HandlerError, InvocationContext,
 };
 use crpg_sim::{
-    perform_action, start_encounter, state_hash, CombatAction, CombatError, EncounterSpec, EntityMeta,
-    PlacementAndArea, World,
+    perform_action, start_encounter, state_hash, CombatAction, CombatError, EncounterSpec,
+    EntityMeta, PlacementAndArea, World,
 };
 use serde_json::json;
 
