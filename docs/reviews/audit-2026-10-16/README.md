@@ -55,9 +55,16 @@ implementation"), run while the Go 5-hour cap held the paid models.
 
 ## Status (2026-10-17)
 
-Every confirmed defect has a fix PR with a regression test, implemented by `opencode-go/beam-free` and reviewed by Beam plus, where noted in each PR, a free model of another lab: D1 → T117 (PR #41), D2 → T113 (PR #38), D3 → T114 (PR #39), D4 → T115 (PR #36), D5 → T116 (PR #40). Test-writer pass: crpg-edit → T118 (PR #42; #92 reported unreachable), crpg-sim → T119 (PR #43), crpg-net-quic → T120 (branch `task/T120-quic-test-gaps`, under review). No lead in those three crates turned out to be a defect. Remaining: crpg-testkit's high gap and the medium rows of the other crates.
+Every confirmed defect has a fix PR with a regression test, implemented by `opencode-go/beam-free` and reviewed by Beam plus, where noted in each PR, a free model of another lab: D1 → T117 (PR #41), D2 → T113 (PR #38), D3 → T114 (PR #39), D4 → T115 (PR #36), D5 → T116 (PR #40). Test-writer pass: crpg-edit → T118 (PR #42; #92 reported unreachable), crpg-sim → T119 (PR #43), crpg-net-quic → T120 (PR #47). No lead in those three crates turned out to be a defect.
+
+Session 7 finished the pass with one tests-only package per crate, giving each crate's medium *assumption* rows to its writer as leads: crpg-testkit → T121 (PR #46, closes the last high row, #11), crpg-persist → T122 (PR #48), crpg-core → T123 (PR #49), crpg-script → T124 (PR #50), crpg-server → T125 (PR #53), crpg-rules → T126 (PR #51), crpg-cli → T127 (PR #55), crpg-net → T128 (PR #52).
+
+- **One more confirmed defect, D6:** `TokenBucket::consume` (`crates/crpg-net/src/sim.rs`) rewound its watermark on a backwards timestamp and credited the gap twice (row #31). Fix and regression tests: T129 (PR #54).
+- **Contract questions, not code defects**, now in `tasks/DECISIONS-D29-DRAFT.md` (D29g–D29k): #66 (T022 §4 promises `IllegalAction` where step 5 answers `NotAuthorized`), #63 (checkpoint loading accepts history gaps between records, which T022 does not forbid), #65 and #67 (v1 host-wide caps no input can reach), #52 (`RefreshTrigger` decodes a zero `OnTick` period), #12 ("byte-identical" CLI apply versus its own error wording).
+- Every other tests-lens and medium row became a passing test or was reported false or infeasible, with its reason in the PR body. The low *assumption* rows (#73, #74, #87–#90, #93, #95–#97, #103) were not worked and stay unverified leads.
 
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + crate audit · Recorded the method, the five defects confirmed by a second Beam pass (two also read by the manager) and the high test gaps, so fix and test tasks can be cut from them.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + audit follow-up · Recorded which PR fixes each confirmed defect and how far the test-writer pass got, so the remaining crates can be picked up from here.
+- 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + session 7 test-writer pass · Recorded the rest of the per-crate pass, defect D6 and the contract questions it raised, so the audit's open state is readable from this file alone.

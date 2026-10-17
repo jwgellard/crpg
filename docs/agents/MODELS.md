@@ -467,6 +467,18 @@ Infra exits (rate limit, quota) are listed but do not count.
 | `opencode-go/mimo-v2.6-pro` | research | V8 complete (81 rows over R8/R12/R13-deep) although the process ended rc=1 mid-run (infra) |
 | `opencode/glm-5.3-flash-free`, `opencode/muse-spark-1.3-contributor-free` | research | V8 and V10: rate limit at step 0, about 14:00 UTC (infra) |
 
+**Record, 2026-10-17 session 7 (test-writer pass T120–T129, all $0.00).**
+
+| Model | Role | Runs and outcome |
+|---|---|---|
+| `opencode-go/beam-free` | tests | T121, T122, T123, T124, T125, T126 verified first time (6/6). Review sent back T122, T123, T124 and T125 once each (a test that did not reach its stated behaviour); T125's second round went to another lab. One `cargo fmt` miss (T124) that the worker reported as clean |
+| `opencode-go/beam-free` | any | **Upstream rate limit (HTTP 429, "Rate limit exceeded")** at about 03:40 UTC, after about 2.5 h of up to three concurrent Beam runs: T127 and T128 stopped mid-run, and T129 stopped at step 0 about 20 minutes later. "Unlimited" on Go does not mean no burst limit: keep Beam to two concurrent runs, and move work to free Zen on a 429 |
+| `opencode-go/beam-free` | review | 6 reviews: 4 real findings that changed tests (T122, T124, T125 twice), 2 dismissed (T120: misread which connection was the probe) |
+| `opencode/deepseek-v4.1-flash-free` | tests, implement | T125 attempt 3, T127 and T129 (the D6 fix): all verified first time, 3/3 |
+| `opencode/deepseek-v4.1-flash-free` | review | T120, T123, T126: precise; the T123 finding (range-only RNG test) was real |
+| `opencode/glm-5.3-flash-free` | tests | T128: verified first time, and found defect D6 with two exact reproductions. 10 minutes; said it could not read `crates/crpg-net/src/` and worked from the contract and public API |
+| `opencode/glm-5.3-flash-free` | review | T127: clean, checked every infeasible reading against the source |
+
 ## 5. Bake-off method
 
 Run 2026-10-16. The harness, fixtures and scored results are in
@@ -525,3 +537,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + execute-tool escape · Added item 15: OpenCode 2.x's `execute` tool bypassed every agent permission rule (two Beam reviews moved their sessions into other slots), and the probed `execute: deny` fix with its guard test.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + redirect hole · Added to item 15 the shell-redirection hole in read-only roles and its probed `"*>*": deny` fix.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + user routing change · Took Kimi K3 and Gemini 4 Argon off the default routes (§1 item 16, §4) after the Go weekly limit, because their per-request cost spent most of the shared Go budget.
+- 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + session 7 field record · Added the T120–T129 runs, including the Beam upstream rate limit and the free DeepSeek and GLM results that replaced it, so routing reflects how they did on real work.
