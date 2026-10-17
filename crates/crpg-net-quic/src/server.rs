@@ -244,7 +244,11 @@ impl QuicServer {
             let id = conn.get();
             let forget = state.conns.get_mut(&id).is_some_and(|record| {
                 record.event_polled = true;
-                record.closed_reported || record.drained()
+                if record.held_frames {
+                    record.closed_reported
+                } else {
+                    true
+                }
             });
             if forget {
                 state.release(id);
