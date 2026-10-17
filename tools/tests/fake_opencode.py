@@ -58,6 +58,9 @@ failure mode without the network or the real OpenCode:
                                    says "Rate limit exceeded", exit 1, no
                                    steps: the message goes through the cause
                                    table (quota), not the plain-quota branch.
+                     long-report   normal run whose report is 30 lines.
+                     provider-fail three tool-call steps, then a top-level
+                                   provider.internal error event, no text, exit 0.
                      rc1           exit 1 with no output at all.
                      spawn-child   start a heartbeating child, then sleep.
                      error-log     append a matching level=ERROR line to
@@ -116,7 +119,11 @@ def emit_ok(prompt: str, tokens: list[str]) -> None:
                    "tokens": {"input": 1200, "output": 300, "reasoning": 50,
                               "cache": {"read": 900, "write": 10}},
                    "cost": 0.01}})
-    if not has_token(tokens, "no-text"):
+    if has_token(tokens, "long-report"):
+        report = "\n".join(f"report line {i}" for i in range(1, 31))
+        emit({"type": "text", "timestamp": 4,
+              "part": {"type": "text", "text": report}})
+    elif not has_token(tokens, "no-text"):
         emit({"type": "text", "timestamp": 4,
               "part": {"type": "text", "text": "fake worker report line 1\nline 2"}})
     emit({"type": "step_finish", "timestamp": 5,
@@ -452,6 +459,23 @@ def main() -> int:
               "error": {"type": "provider.apiError",
                         "message": "Rate limit exceeded"}})
         return 1
+
+    if has_token(tokens, "provider-fail"):
+        # Tool-call steps, then the provider fails mid-run: a top-level
+        # error event (provider.internal), no text, exit 1.
+        for index in range(3):
+            emit({"type": "step_start", "timestamp": 1 + index,
+                  "part": {"type": "step-start", "sessionID": "ses_fake"}})
+            emit({"type": "step_finish", "timestamp": 1 + index,
+                  "part": {"type": "step-finish", "reason": "tool-calls",
+                           "tokens": {"input": 100, "output": 10, "reasoning": 0,
+                                      "cache": {"read": 0, "write": 0}},
+                           "cost": 0.0}})
+        emit({"type": "error", "timestamp": 9,
+              "error": {"type": "provider.internal",
+                        "message": "upstream service failed"}})
+        # Exit 0, as in the T098 incident: the exit code did not flag it.
+        return 0
 
     if has_token(tokens, "rc1"):
         return 1

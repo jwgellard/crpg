@@ -90,6 +90,16 @@ Exit-2 causes: `fetch`, `no-brief`, `no-verify`, `no-slot`, `slot-busy`,
 `no-edit`, `model`, `verify-error`, `usage`. Of these, `quota`, `402` and
 `locked` never count against the model; `no-edit`, `timeout` and `hang` do.
 
+Verification: `implement` and `tests` runs get the full gates; only `grunt`
+passes `--skip gates`. A PASS from the verifier with no changed file
+(`files` empty) is not a PASS for `implement` and `tests`: the run exits 2,
+with the infra cause when the event log holds an `error` event (`quota` for a
+rate limit, `model` for any other `provider.*` error), else `no-edit`.
+`review`, `scout` and `grunt` are unaffected. The summary shows the first 14
+lines of the worker's report and a `report: <path>` line; the whole report is
+in `<repo>/.agents/runs/<ID>/<attempt>-<model>.report.md`, beside the event
+log and the result record.
+
 Tests live in `tools/tests/test_oc.py` and run against
 `tools/tests/fake_opencode.py` (every failure mode above, both OpenCode
 generations: `$FAKE_OC_VERSION` picks the `--version` answer, default
@@ -106,7 +116,13 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 ## Neighbours (other workers, not this script)
 
 - `tools/agents/verify_task.py` — the verifier `oc.py` runs (A0-4). Faked in
-  tests via `$CRPG_VERIFY`.
+  tests via `$CRPG_VERIFY`. Without `--brief` it uses the slot's `BRIEF.md`,
+  unless that file's first line (`# Brief — <ID> ·` or `# Review brief — <ID> ·`)
+  names a different task; then it uses `.agents/briefs/<ID>.md` in `$CRPG_REPO`
+  (default: the repository holding the script), and exits 2 `no-brief` if
+  neither exists. Its `docsig` check accepts an added agent-log entry dated
+  from the UTC day of the oldest commit in `base..HEAD` up to today (today only
+  with no commits; `$CRPG_TODAY` overrides today).
 - `tools/agents/brief.py`, `tools/agents/recall.py` — brief generation and
   memory search (A0-5). `oc.py` calls `brief.py` when `--brief` is omitted.
 
@@ -117,3 +133,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor + A0-3 attempt 4 · Documented OpenCode 2.x support (version probe, `--standalone` with model `#variant` and no `--dir`, kept 1.x form, removed Cat Jam IDs, top-level error events, versioned fake) so the guide matches `oc.py`'s dual-generation behaviour.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Recorded Beam Free as the Go ID behind both Cat Jam IDs and its own Zen ID, replacing the removed-model refusal, as the user directed.
 - 2026-10-16 (UTC) · opencode-go/DeepSeek-Flash-V4.1 + A0-3b · Documented the `--base` pass-through to `verify_task.py` (run and wave) and the agent-declaration fallback with its `info/exclude` entries and `no-agent` cause, so the guide matches the slot preparation defect fixes.
+- 2026-10-17 (UTC) · claude-code/sonnet-5.5 (implementer) + A0-3d · Documented the gates for the tests role, the empty-change `no-edit` rule, the report file, the brief-by-task-ID fallback and the docsig date range so the guide matches the five tool fixes.
