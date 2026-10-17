@@ -1,0 +1,57 @@
+# R13-deep — Ruleset authoring (T099)
+
+## Recommendations
+
+1. **new — Define systems as typed, inheritable data models with separate, small script hooks; generate the UI from schema, never from hand-written sheets.** Why: Foundry separates `system` data/schema from Actor/Item sheets and migrations; its wiki says data models replace/augment `template.json` with OOP inheritance, while sheets remain HTML/CSS code. Evidence (vendor doc): "Classically, Foundry uses the `templates` object to define shared properties. `DataModel.defineSchema()` allows you to use standard object-oriented principles to define inheritance." — https://foundryvtt.wiki/en/development/api/DataModel. Effort: medium.
+
+2. **confirmed from pass 1 — Ship clone-and-modify starter systems (`minimal-d6`, `srd-lite`) plus richer examples rather than blank rulesets.** Why: practitioners learn fastest by modifying a known-good system, and the MVP abstraction test already mandates two throwaway systems. Evidence (vendor doc): "The easiest way to create a ruleset for Fantasy Grounds is to copy an existing ruleset, give it a new folder/file name, and begin modifying the interface in small ways." — https://fantasygroundsunity.atlassian.net/wiki/spaces/FGCP/pages/996644412/Ruleset+-+Overview. Effort: small.
+
+3. **confirmed from pass 1 — Support ruleset layering plus targeted patch overrides by identity.** Why: inheritance (CoreRPG) and `AssetId`/`.patch` replacement let authors change one fact without forking, exactly how Owlcat's `.patch` files and FG's merged window classes work. Evidence (vendor doc): "Rulesets do allow layering of functionality, so that a ruleset can inherit all the functionality of another ruleset" — https://fantasygroundsunity.atlassian.net/wiki/spaces/FGCP/pages/996644412/Ruleset+-+Overview; and (vendor doc) "if you specify AssetId of an existing blueprint ... then the existing blueprint will be replaced" — https://github.com/OwlcatOpenSource/WrathModificationTemplate/blob/master/README.md. Effort: medium.
+
+4. **confirmed from pass 1 — Expose engine limits as data and validate capacity in schema, instead of fixed slot caps.** Why: NWN's `.2da` remains only partially datafied; hidden uint8/uint16/line caps still produce "engine limitations" errors and TLK coupling. Evidence (practitioner report): "You can use 0 through 254 for class lines, due to engine limitations. 255 is reserved for CLASS_TYPE_INVALID in the game engine/nwscript." — https://nwn.wiki/spaces/NWN1/pages/38175085/classes.2da. Effort: small.
+
+5. **new — Author derived stats through a constrained expression DSL with named inputs, plus lifecycle hooks for exceptional cases.** Why: RPG Maker lets non-programmers author RPG math safely because named attacker/target variables are documented and validated as JavaScript expressions. Evidence (practitioner report): "The `damage.formula` field in Skills.json is a JavaScript expression evaluated at runtime by the RPG Maker engine. The variables `a` (attacker) and `b` (target) expose the battler's current stats." — https://github.com/nightquill/rpgmaker-agent-skills/blob/main/skills/rpgmaker-database/SKILL.md. Effort: medium.
+
+6. **new — Provide deterministic migration (`migrateData`-style) and idempotent patch operations for every authored object version.** Why: rulesets change schemas over time; Foundry runs migrations when source data is first retrieved and on update deltas, which prevents silently broken campaigns. Evidence (vendor doc): "Migrations are run when the source data is first retrieved from disk, as well as run on any update deltas before they are applied to the Document." — https://foundryvtt.com/article/system-data-models/. Effort: medium.
+
+7. **corrects pass 1 — Treat testing as an editor/runtime capability (headless dry-runs + pack validation), not an external tool or in-game-only check.** Why: Fantasy Grounds' reload is still experimental and Roll20 sheets "must be examined inside a game"; external web dev environments do not faithfully run the runtime. Evidence (vendor doc): "This feature is officially still in testing, but is a convenience when working on rulesets with no clients connected." — https://www.fantasygrounds.com/modguide (pass 1); and (vendor doc): "Character sheets for Roll20 ... cannot properly be tested outside Roll20 in general web-dev environments such as Codepen or JSFiddle, and must be examined inside a game." — https://wiki.roll20.net/Building_Character_Sheets (search snippet; page load returned 403). Our deterministic 20 Hz server and encounter simulator already make this nearly free. Effort: small. [check: unavailable — V8]
+
+8. **new — Give modders a tool surface, not code access, for a ruleset's meaning-bearing data (blueprints/content, .2da, scripts); keep a separate privileged channel for arbitrary code.** Why: NWN, Owlcat and FG all separate "data tables" from "NWScript/C#/Lua" and require privilege/licensing for the code part; this matches our data+Lua rulesets with T0 native artifacts still deferred. Evidence (vendor doc): "A full license is required to customize rulesets." — https://www.fantasygrounds.com/modguide (pass 1); and (vendor doc): "Blueprints are JSON files which represent serialized version of static game data" — https://github.com/OwlcatOpenSource/WrathModificationTemplate/blob/master/README.md. Effort: large.
+
+## What the research literature says
+
+- Acosta/Literature: modding is end-user programming whose participants are motivated by ownership; Gerhard Fischer's "meta-design" is the closest academic match to our authored-rules vision (Wells 2018, ElPub open paper): "modding is a form of end-user engagement of the sort advocated by scholars such as Gerald Fischer." — https://elpub.episciences.org/articles/4609 (academic).
+- Non-programmers can author mechanics through data-first tools and constrained scripting languages: "Lua ... It is possible to use Lua as a [scripting] language for configuration files that can be edited by people who don't know anything about programming." — https://elpub.episciences.org/articles/4609 (academic, quotation of a Lua reference). [check: not found — V8]
+- Empirical mod studies indicate official modding support improves mod quality and longevity: "providing official support for mods can be beneficial for the perceived quality of the mods of a game." — https://arxiv.org/abs/2103.07528 (academic).
+- Copy-and-modify scaffolds are not merely convenient; game-template studies show they let learners focus on domain content instead of tool mechanics: "these templates allow learners to focus on subject-relevant problem solving activities rather than on understanding the functionality of the app." — https://arxiv.org/abs/1805.04517 (academic).
+- There is an inherent ease-of-use vs. expressiveness trade-off; one proven resolution is two-stage authoring (visual/template first, code second): "Designing an end-user development environment seems to require making a trade-off between ease of use and expressiveness." — https://dl.acm.org/doi/10.1145/1920778.1920822 (search snippet; ACM blocked direct fetch in this run) (academic). [check: unavailable — V8]
+- Integrated environments help novices connect representations: in ChoiCo, a parameter appears as UI field, database field, and code block simultaneously: "When students added a new parameter in the game, they defined it in the database as a new field..." — http://etl.ppp.uoa.gr/choico/publications/ChoiCoPublication1.pdf (academic). [check: unavailable — V8]
+- Modding studies show most game-engine support today concerns asset/mechanic injection and override, not ruleset authoring per se — developers should ship hooks and document stable IDs (Schreiner & von Mammen 2021, ACM; Modulith 2023, ACM) (academic; fetched only as arXiv/OpenAlex search snippets due to ACM blocking).
+
+## Pass-1 claims that did not hold
+
+- The pass-1 sheet-first quotation ("If you’ve made your character sheet, you have made your system") remains accurate for Foundry's beginner guide, but **current Foundry practice is schema-first**: systems define `system` DataModels with inheritance and migrations; sheets are separate Handlebars/HTML views. The rule is "data first, views generated", not "sheet equals system" (https://foundryvtt.wiki/en/development/api/DataModel).
+- NWN `.2da` unhardcoding is **partial, not total**: `ruleset.2da` exposes previously hardcoded constants, yet class lines remain 0–254 and many columns are still engine-coded (https://nwn.wiki/spaces/NWN1/pages/38175085/classes.2da; https://nwn.wiki/spaces/NWN1/pages/38174875/2da+Files).
+- "Templates let you define UI by merging" proved true within FG, but FG **merging window classes is XML-node-name-plus-name matching**, not arbitrary patching; authors still full-copy fallback for complex changes (https://fantasygroundsunity.atlassian.net/wiki/spaces/FGCP/pages/996644522/Ruleset+-+Layering).
+
+## Contradictions
+
+- **Schema-first vs. sheet-first**: Foundry's beginner guide still says "If you’ve made your character sheet, you have made your system" (https://foundryvtt.wiki/en/development/guides/System-Development-for-Beginners), while modern Foundry and our spec keep data models primary and views generated. Both paradigms coexist in the same vendor ecosystem.
+- **Reload vs. in-game-only testing**: FG advertises reload ("officially still in testing", per pass 1) but recommends it only with no clients connected; Roll20 states sheets "must be examined inside a game" and cannot be tested in web-dev sandboxes (https://wiki.roll20.net/Building_Character_Sheets, search snippet, page returned 403). [check: unavailable — V8]
+- **Data completeness**: NWN's `ruleset.2da` successfully unhardcoded constants, yet the same wiki documents caps that authors cannot lift, so datafication alone does not remove engine walls (https://nwn.wiki/spaces/NWN1/pages/38174875/2da+Files).
+
+## Not applicable
+
+- Foundry is a web tabletop platform: JS module lifecycle, Handlebars sheets and compendium packs do not map to our authoritative Rust server/Godot client, only the data-model discipline does.
+- Fantasy Grounds requires a full license for ruleset customization, so its authoring ergonomics are not freely reproducible (pass 1).
+- NWN's fixed row caps and TLK indirection are engine-level constraints to avoid, not to emulate.
+- Owlcat blueprint modding assumes Unity/C# and a shipped game UI; it informs patching, not data-only rule authoring.
+- Roll20's per-sheet HTML/CSS authoring is too UI-coupled for generated property forms, but its explicit typing (`str.mod`, `@lvl`) is reusable.
+- RPG Maker's fixed database tabs, built-in menus and `note`-plugin indirection are less flexible, but its positional-array/version/id discipline and formula DSL are reusable.
+- Game-modding academic studies (Nexus, ACM engines) concern community adoption and asset authoring more than authoring ergonomics, but support investment in official templates and tooling.
+- Game-template and ChoiCo studies concern K-12 constructivist learning; their dual-representation idea transfers, their pedagogy does not.
+- No open-access book chapters on CRPG rule authoring were located this run; only previews/snippets (Google Books/ACM paywalls blocked), so book-level evidence is excluded rather than approximated.
+
+## Agent log
+
+- 2026-10-16 (UTC) · claude-code/bookkeeper + T099 fold-in · Keeps the deep pass's ruleset authoring findings as the T099 record; markers flag the claims the V8 check could not verify.

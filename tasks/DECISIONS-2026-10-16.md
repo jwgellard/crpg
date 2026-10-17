@@ -87,6 +87,78 @@ RUSTSEC-2026-0346, -0347, -0348 and -0349 against `rustls` 0.23.45 fail
 one crate (`crpg-net-quic`) plus `Cargo.lock`, with the QUIC suites re-run on
 Windows/MSVC and Linux/GNU, recorded as S002.
 
+## D28j — authoring UX research stage (M6-R) before the editor contracts
+
+Raised by the user: "a major, major concern is both agent and human
+usability. When it comes to the editor especially, agents should be able to
+easily make campaigns. But it also needs to be very intuitive for humans."
+The manager proposed a research stage; the user's answers, in order:
+"Parallel is good. Opus is good. I will do initial testing then reach out to
+authors. Yes."
+
+- M6-R runs now, in parallel with M4. It uses no build slot, so it delays no
+  M4 package.
+- Synthesis is by the Opus 5.5 `architect`, set against a blind design from
+  another lab. Fable 5.1 is not used.
+- The user is the first human tester of the prototype and then recruits
+  module authors (spec risk 18).
+- The research may conclude that an intent-level command layer belongs above
+  the merged T058 `EditCommand` API. It is added above it, not in its place.
+
+The packages are T099–T103 in `docs/IMPLEMENTATION_PLAN.md` §3, M6-R. No M6
+contract is approved before the T101 ADR is accepted.
+
+## D28k — the other missing human-facing stages
+
+The manager listed further places where the open question is about people
+rather than code; the user: "I like all the suggestions you make."
+
+- T099 gains a fifth angle, event and trigger authoring, and T053's
+  contract waits on the T101 draft, because T053 fixes the event IR that
+  M8's graph editor and agents must author.
+- T104: player-UX research and a combat-HUD prototype before the T050/T051
+  contracts, with an H-proto walkthrough.
+- T105: asset sourcing before T047, with the user choosing any purchase.
+- T106 (hosting friction, before M10) and T107 (module distribution, before
+  T093) are research placeholders.
+
+## D28l — audience, rule-defining as a pillar, and both time modes
+
+The user, answering D29c: "Module authors is the primary goal, yes with
+agents being equal. The idea is that this should be a CRPG engine, thats
+where the rules later comes in. Anyone should be able to make any CRPG by
+defining rules. Thats a core pillar." On time modes: "It should be capable
+of RTWP and Turn based. Pathfinder CRPGs and Deadfire do both in the same
+game, so the engine should be able to." Approving the manager's proposal:
+"Yep, amazing work."
+
+- Personas: module authors first, agents equal. Your own game comes after them.
+- Defining a ruleset is an authoring task in its own right: T099 gains a
+  ruleset-authoring angle, T100 a rule-system brief, T101 the ruleset flows,
+  T071 a ruleset guide, and the rules editor (T110, after M6) creates a
+  ruleset from a template as well as overriding one. This changes spec
+  Phase 6's "do not build the rules editor" from never to after M6.
+- T108 (Opus `architect`) tests the kernel against CRPG system families and
+  fixes the time model for real-time-with-pause and turn-based in one game,
+  including multiplayer pause authority. T034 waits on it. T109 is a third
+  throwaway ruleset from another family.
+
+## D28m — four further gaps and the module playtester
+
+The user: "Love all your ideas, put them in."
+
+- Ruleset-driven player UI: T108 decides how a ruleset describes its
+  screens, and T104 researches and prototypes them. T051 waits on both.
+- Custom content from module authors: a T099 angle, and the asset-import
+  flow in T101.
+- Module updates versus player saves: T111, an ADR before MVP sign-off.
+- Several mods changing the same content: part of T107, before T093/T094.
+- T112: an automated module playtester in M9.
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code + D28 · Recorded the user's answers to the agent-team plan's questions and the same-day rustls advisory decision, with what each answer changes, so the manager's first session starts from a settled record.
+- 2026-10-16 (UTC) · claude-code + D28j · Recorded the user's same-day answers on the authoring UX research stage, so that M6-R and its gate on the editor contracts rest on a quoted decision.
+- 2026-10-16 (UTC) · claude-code + D28k · Recorded the user's approval of the further human-facing stages, so T053's new prerequisite and T104–T107 rest on a quoted decision.
+- 2026-10-16 (UTC) · claude-code + D28l · Recorded the user's audience order, rule-defining pillar and both-time-modes requirement, with the plan changes each one drives.
+- 2026-10-16 (UTC) · claude-code + D28m · Recorded the user's approval of the four further gaps and the module playtester, with the packages each one changes.

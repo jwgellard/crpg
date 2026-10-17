@@ -7,3 +7,7 @@
 
 __pycache__/
 *.pyc
+
+# Agent team (docs/AGENT_TEAM_PLAN.md): run logs and the per-slot brief
+/.agents/
+/BRIEF.md
