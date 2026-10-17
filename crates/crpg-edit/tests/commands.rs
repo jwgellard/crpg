@@ -1126,3 +1126,197 @@ fn error_display_strings_are_pinned() {
     assert_eq!(EditLimit::Value.to_string(), "value");
     assert_eq!(EditLimit::Document.to_string(), "document");
 }
+
+#[test]
+fn manifest_members_protected_object_relative() {
+    // Object-relative pointers (target Object(1)) that resolve to each
+    // protected manifest member are refused as Protected, for every pointer
+    // edit kind, not only the absolute-pointer forms.
+    let mut doc = open();
+    let cases: Vec<(EditCommand, &str)> = vec![
+        (set(obj(1), "/engine", &json_str("x")), "/engine"),
+        (set(obj(1), "/package", &json_str("x")), "/package"),
+        (set(obj(1), "/requires", b"[]"), "/requires"),
+        (insert(obj(1), "/requires/-", b"{}"), "/requires/-"),
+        (remove(obj(1), "/engine"), "/engine"),
+        (remove(obj(1), "/package"), "/package"),
+        (remove(obj(1), "/requires"), "/requires"),
+    ];
+    for (command, pointer) in cases {
+        assert_eq!(
+            protected(refused(&mut doc, vec![command])),
+            (String::from("campaign.json"), pointer.to_owned())
+        );
+    }
+    // Positive controls stay editable.
+    doc.apply(set(obj(1), "/version", &json_str("0.2.0")))
+        .unwrap();
+}
+
+#[test]
+fn create_document_serialized_form_exceeds_cap() {
+    let mut doc = open();
+    let big = "x".repeat(4_200_000);
+    let mut big_item = item(20, "big");
+    big_item.note = Some(big);
+    assert_eq!(
+        refused(
+            &mut doc,
+            vec![EditCommand::CreateDocument {
+                path: sp("items/big.json"),
+                document: Document::Item(big_item),
+            }]
+        ),
+        EditError::InputTooLarge {
+            index: 0,
+            limit: EditLimit::Document
+        }
+    );
+    // Positive control: a small document is accepted.
+    doc.apply(EditCommand::CreateDocument {
+        path: sp("items/small.json"),
+        document: Document::Item(item(21, "small")),
+    })
+    .unwrap();
+}
+
+#[test]
+fn value_commands_on_absent_path_and_unknown_object() {
+    let mut doc = open();
+    for command in [
+        set(at("nope.json"), "/x", &json_str("v")),
+        insert(at("nope.json"), "/x", &json_str("v")),
+        remove(at("nope.json"), "/x"),
+    ] {
+        assert_eq!(
+            refused(&mut doc, vec![command]),
+            EditError::MissingPath {
+                index: 0,
+                path: sp("nope.json")
+            }
+        );
+    }
+    for command in [
+        set(obj(99), "/x", &json_str("v")),
+        insert(obj(99), "/x", &json_str("v")),
+        remove(obj(99), "/x"),
+    ] {
+        assert_eq!(
+            refused(&mut doc, vec![command]),
+            EditError::UnknownObject {
+                index: 0,
+                id: id(99)
+            }
+        );
+    }
+}
+
+#[test]
+fn move_placement_unknown_placement() {
+    let mut doc = open();
+    assert_eq!(
+        refused(
+            &mut doc,
+            vec![EditCommand::MovePlacement {
+                placement: id(99),
+                transform: transform(1),
+            }]
+        ),
+        EditError::UnknownObject {
+            index: 0,
+            id: id(99)
+        }
+    );
+}
+
+#[test]
+fn delete_document_absent_path() {
+    let mut doc = open();
+    assert_eq!(
+        refused(
+            &mut doc,
+            vec![EditCommand::DeleteDocument {
+                path: sp("nope.json")
+            }]
+        ),
+        EditError::MissingPath {
+            index: 0,
+            path: sp("nope.json")
+        }
+    );
+}
+
+#[test]
+fn assets_lock_protected_against_delete_and_rename_from() {
+    let mut doc = open();
+    assert_eq!(
+        protected(refused(
+            &mut doc,
+            vec![EditCommand::DeleteDocument {
+                path: sp("assets/assets.lock")
+            }]
+        )),
+        (String::from("assets/assets.lock"), String::new())
+    );
+    assert_eq!(
+        protected(refused(
+            &mut doc,
+            vec![EditCommand::RenameDocument {
+                from: sp("assets/assets.lock"),
+                to: sp("items/x.json"),
+            }]
+        )),
+        (String::from("assets/assets.lock"), String::new())
+    );
+}
+
+#[test]
+fn pointer_size_cap_for_set_and_insert() {
+    let mut doc = open();
+    let pointer = format!("/{}", "a".repeat(4096));
+    assert_eq!(
+        refused(&mut doc, vec![set(obj(4), &pointer, b"1")]),
+        EditError::InputTooLarge {
+            index: 0,
+            limit: EditLimit::Pointer
+        }
+    );
+    assert_eq!(
+        refused(&mut doc, vec![insert(obj(4), &pointer, b"1")]),
+        EditError::InputTooLarge {
+            index: 0,
+            limit: EditLimit::Pointer
+        }
+    );
+    // Cap passed: pointer reaches edit_document, which reports NotFound.
+    let pointer = format!("/{}/x", "a".repeat(4093));
+    assert_eq!(
+        pointer_error(&mut doc, set(obj(4), &pointer, b"1")),
+        PointerEditError::NotFound
+    );
+    assert_eq!(
+        pointer_error(&mut doc, insert(obj(4), &pointer, b"1")),
+        PointerEditError::NotFound
+    );
+}
+
+#[test]
+fn insert_value_at_root_and_schema_refused() {
+    let mut doc = open();
+    assert_eq!(
+        pointer_error(&mut doc, insert(at(CREATURE), "", b"1")),
+        PointerEditError::RootPointer
+    );
+    assert_eq!(
+        pointer_error(&mut doc, insert(obj(4), "", b"1")),
+        PointerEditError::RootPointer
+    );
+    assert_eq!(
+        pointer_error(&mut doc, insert(at(CREATURE), "/schema", b"1")),
+        PointerEditError::SchemaTag
+    );
+    assert_eq!(
+        pointer_error(&mut doc, insert(obj(4), "/schema", b"1")),
+        PointerEditError::SchemaTag
+    );
+}
