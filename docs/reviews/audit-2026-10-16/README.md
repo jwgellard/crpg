@@ -63,8 +63,11 @@ Session 7 finished the pass with one tests-only package per crate, giving each c
 - **Contract questions, not code defects**, now in `tasks/DECISIONS-D29-DRAFT.md` (D29g–D29k): #66 (T022 §4 promises `IllegalAction` where step 5 answers `NotAuthorized`), #63 (checkpoint loading accepts history gaps between records, which T022 does not forbid), #65 and #67 (v1 host-wide caps no input can reach), #52 (`RefreshTrigger` decodes a zero `OnTick` period), #12 ("byte-identical" CLI apply versus its own error wording).
 - Every other tests-lens and medium row became a passing test or was reported false or infeasible, with its reason in the PR body. The low *assumption* rows (#73, #74, #87–#90, #93, #95–#97, #103) were not worked and stay unverified leads.
 
+Session 8 verified the 11 low *assumption* rows read-only: #73, #74, #87–#90 on `opencode/deepseek-v4.1-flash-free`; #93, #95–#97, #103 on `opencode/glm-5.3-flash-free`. Refuted: #73 (harness returns one hash per tick; `hash_every = 0` refused), #74 (the casts are the contract, `crates/crpg-cli/AGENTS.md:90-95`), #87 (placement pointers are always `/placements/<i>`), #95 (validation and `select_group` give every live modifier a status), #96 (preflight parses every dice entry in the same order), #97 (a GRAY node is always on the path). Unreachable: #88, #89 (sums past `usize::MAX`), #90, #93, #103 (2^64 operations). None confirmed. **Every row of this audit is now settled.**
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + crate audit · Recorded the method, the five defects confirmed by a second Beam pass (two also read by the manager) and the high test gaps, so fix and test tasks can be cut from them.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + audit follow-up · Recorded which PR fixes each confirmed defect and how far the test-writer pass got, so the remaining crates can be picked up from here.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + session 7 test-writer pass · Recorded the rest of the per-crate pass, defect D6 and the contract questions it raised, so the audit's open state is readable from this file alone.
+- 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Recorded the read-only verdicts for all 11 low assumption rows, closing the audit with none confirmed.

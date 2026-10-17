@@ -666,7 +666,7 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
 
-    def test_tests_role_skips_gates(self) -> None:
+    def test_tests_role_runs_gates(self) -> None:
         task = self.tid()
         verify_log = self.fresh_file("verify.jsonl")
         result = self.oc_run(
@@ -678,8 +678,62 @@ class DispatchCase(unittest.TestCase):
             for line in verify_log.read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(len(logged), 1)
-        self.assertIn("--skip", logged[0])
-        self.assertIn("gates", logged[0])
+        # A test package's fmt/clippy/test failures must not be hidden.
+        self.assertNotIn("--skip", logged[0])
+        self.assertNotIn("gates", logged[0])
+
+    # -- full report file (A0-3d) -------------------------------------
+
+    def test_full_report_is_written_beside_the_log(self) -> None:
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_OC_MODE": "long-report"})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = self.log_path(task).with_suffix(".report.md")
+        self.assertEqual(report.name, "1-go_fake-a.report.md")
+        text = report.read_text(encoding="utf-8")
+        self.assertEqual(text.splitlines()[-1], "report line 30")
+        self.assertEqual(len(text.splitlines()), 30)
+        lines = result.stdout.splitlines()
+        self.assertIn(f"report: {report}", lines)
+        self.assertIn("--- worker report (first 14 lines) ---", lines)
+        self.assertIn("report line 14", lines)
+        self.assertNotIn("report line 15", lines)
+        self.assertLessEqual(len(lines), 40)
+
+    # -- a run that changed nothing is not a PASS (A0-3d) -------------
+
+    def test_empty_change_set_is_no_edit_not_pass(self) -> None:
+        for role in ("implement", "tests"):
+            task = self.tid()
+            result = self.oc_run(task, role=role, env={"FAKE_VERIFY_MODE": "empty"})
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertNotIn("PASS", result.stdout.splitlines()[0])
+            self.assertIn("cause: no-edit", result.stdout)
+            record = self.read_record(task)
+            self.assertEqual(record["cause"], "no-edit")
+            self.assertEqual(record["failed_checks"], ["no-edit"])
+            self.assertTrue(OCMOD.is_failure(record))
+
+    def test_empty_change_set_is_fine_for_review_and_grunt(self) -> None:
+        for role in ("review", "grunt"):
+            task = self.tid()
+            result = self.oc_run(task, role=role, env={"FAKE_VERIFY_MODE": "empty"})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
+
+    def test_provider_error_with_no_change_is_infra_not_pass(self) -> None:
+        task = self.tid()
+        result = self.oc_run(
+            task,
+            env={"FAKE_OC_MODE": "provider-fail", "FAKE_VERIFY_MODE": "empty"},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("cause: model", result.stdout)
+        record = self.read_record(task)
+        self.assertEqual(record["cause"], "model")
+        self.assertEqual(record["verdict"], "INFRA")
+        self.assertEqual(record["failed_checks"], [])
+        self.assertFalse(OCMOD.is_failure(record))
 
     def test_ask_without_text_is_exit_1(self) -> None:
         result = self.oc(

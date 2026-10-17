@@ -45,7 +45,7 @@ DEFAULT_IDLE = 600
 START_GAP_DEFAULT = 4.0
 LOCK_RETRIES = 2
 MAX_SUMMARY_LINES = 40
-WORKER_TAIL_LINES = 15
+WORKER_TAIL_LINES = 14
 CHECK_TAIL_LINES = 12
 
 # Thresholds from docs/agents/MODELS.md section 4.1 (demote and promote rule).
@@ -905,6 +905,7 @@ def parse_events(log_path: Path) -> dict:
     saw_step = False
     raw_chunks: list[str] = []
     infra_chunks: list[str] = []
+    error_types: list[str] = []
     try:
         blob = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -942,6 +943,9 @@ def parse_events(log_path: Path) -> dict:
                 last_text = text
         elif kind == "error":
             infra_chunks.append(line)
+            detail = event.get("error")
+            if isinstance(detail, dict) and isinstance(detail.get("type"), str):
+                error_types.append(detail["type"])
         if kind == "tool_use":
             # A tool error echoes command output, so it is never a
             # provider/process failure and must never be classified as
@@ -965,6 +969,8 @@ def parse_events(log_path: Path) -> dict:
         # Provider/process errors only: error events and raw process output.
         # Never tool outputs or tool errors, and never the worker's text.
         "infra_text": "\n".join(infra_chunks),
+        # The `type` of every top-level error event, in order.
+        "error_types": error_types,
     }
 
 
@@ -977,6 +983,22 @@ def infra_cause(events: dict) -> str | None:
     if events.get("last_reason") == "stop":
         return None
     return classify_infra(events.get("infra_text", ""))
+
+
+def empty_run_cause(events: dict) -> str:
+    """Why a run that changed nothing ended: an infra cause or `no-edit`.
+
+    An `error` event in the log is the provider's failure, not the model's:
+    the infra rules classify it first (a rate limit stays `quota`), and any
+    other `provider.*` error is `model`. Only a log with no such error is
+    the model's own `no-edit`.
+    """
+    cause = infra_cause(events)
+    if cause:
+        return cause
+    if any(t.startswith("provider.") for t in events.get("error_types") or []):
+        return "model"
+    return "no-edit"
 
 
 def next_attempt_number(task_dir: Path) -> int:
@@ -1005,7 +1027,7 @@ def run_verify(repo: Path, task: str, slot: Path, role: str, base: str) -> dict:
     # commits as out-of-scope changes. Without --base the verifier falls
     # back to `merge-base HEAD origin/master` (verify_task.py:215).
     cmd = verify_prefix(repo) + [task, "--slot", str(slot), "--base", base, "--json"]
-    if role in ("tests", "grunt"):
+    if role == "grunt":
         cmd += ["--skip", "gates"]
     try:
         proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=900)
@@ -1106,6 +1128,8 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
             lines.append(f"--- {check.get('name')} (last {CHECK_TAIL_LINES} lines) ---")
             output = check.get("output") or []
             lines.extend(output[-CHECK_TAIL_LINES:])
+    if info.get("report"):
+        lines.append(f"report: {info['report']}")
     if info.get("last_text"):
         lines.append(f"--- worker report (first {WORKER_TAIL_LINES} lines) ---")
         lines.extend(info["last_text"].splitlines()[:WORKER_TAIL_LINES])
@@ -1123,6 +1147,10 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
 
 def record_path(task_dir: Path, attempt: int, model: str) -> Path:
     return task_dir / f"{attempt}-{sanitize_model(model)}.result.json"
+
+
+def report_path(task_dir: Path, attempt: int, model: str) -> Path:
+    return task_dir / f"{attempt}-{sanitize_model(model)}.report.md"
 
 
 def write_record(path: Path, info: dict) -> None:
@@ -1253,6 +1281,12 @@ def do_run(args: argparse.Namespace) -> int:
 
     def finish(code: int, verify: dict | None) -> int:
         info["elapsed_s"] = time.time() - wall_start
+        if info.get("last_text") and not dry:
+            # The summary shows the head of the report; the file keeps it all.
+            report = report_path(task_dir, attempt, args.model)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(info["last_text"], encoding="utf-8")
+            info["report"] = str(report)
         lines = build_summary(info, verify, bool(args.full))
         payload = result_payload(info, verify, "\n".join(lines))
         if slot_number is not None and not dry:
@@ -1423,6 +1457,17 @@ def do_run(args: argparse.Namespace) -> int:
         if args.role in VERIFY_ROLES:
             verify = run_verify(repo, args.task, slot, args.role, base)
             verdict = verify.get("verdict")
+            if (verdict == "PASS" and args.role in ("implement", "tests")
+                    and not verify.get("files")):
+                # Every check passes on an empty change set, so an empty
+                # `files` list means the worker changed nothing (or the
+                # provider failed under it): not a PASS.
+                cause = empty_run_cause(events)
+                info["verdict"] = "INFRA"
+                info["cause"] = cause
+                if cause in MODEL_FAULT_CAUSES:
+                    info["failed_checks"] = [cause]
+                return finish(2, verify)
             if verdict == "PASS":
                 info["verdict"] = "PASS"
                 return finish(0, verify)
