@@ -1236,16 +1236,22 @@ fn fault_duplicate_does_not_release_host_staging_accounting() {
 
 #[test]
 fn removing_peer_with_duplicates_releases_only_counted_staging() {
+    // Host frame and byte caps are set exactly to the totals staged across
+    // both peers, so an over-releasing remove_peer (one that also frees the
+    // fault duplicates) would leave observable extra capacity under either
+    // cap rather than hiding behind saturation.
     let caps = QueueCaps {
         per_peer_frames: 1_000,
         per_peer_bytes: 1_000_000,
-        host_frames: 10,
-        host_bytes: 1_000_000,
+        host_frames: 3,
+        host_bytes: 30,
     };
     let mut transport = InMemoryTransport::new(caps, generous_rates(), SimClock(0));
     let first = transport.add_peer(EPOCH).expect("peer admitted");
-    assert!(transport.send_to(first, vec![0xAA]).is_ok());
-    assert!(transport.send_to(first, vec![0xBB]).is_ok());
+    let second = transport.add_peer(EPOCH).expect("peer admitted");
+    assert!(transport.send_to(first, vec![0xAA; 10]).is_ok());
+    assert!(transport.send_to(first, vec![0xAA; 10]).is_ok());
+    assert!(transport.send_to(second, vec![0xBB; 10]).is_ok());
     transport.tick(&FaultSchedule {
         loss_every: None,
         dup_every: Some(1),
@@ -1253,12 +1259,14 @@ fn removing_peer_with_duplicates_releases_only_counted_staging() {
         seed: 0,
     });
     transport.remove_peer(first);
-    let second = transport.add_peer(EPOCH).expect("peer admitted");
-    for _ in 0..10 {
-        assert!(transport.send_to(second, vec![0xCC]).is_ok());
+    // `first` contributed 2 counted datagrams (4 ready entries once doubled);
+    // only those 2 counted against the host totals, so `second`'s 1 staged
+    // datagram leaves exactly 2 more sends of room under both caps.
+    for _ in 0..2 {
+        assert!(transport.send_to(second, vec![0xCC; 10]).is_ok());
     }
     assert_eq!(
-        transport.send_to(second, vec![0xDD]),
+        transport.send_to(second, vec![0xDD; 10]),
         Err(RejectionCode::QueueFull),
         "exactly the counted slots were released"
     );
