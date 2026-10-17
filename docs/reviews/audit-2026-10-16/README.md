@@ -53,6 +53,11 @@ implementation"), run while the Go 5-hour cap held the paid models.
   medium rows are unverified; give each crate's rows to its test writer as
   leads, and have the writer report which were false.
 
+## Status (2026-10-17)
+
+Every confirmed defect has a fix PR with a regression test, implemented by `opencode-go/beam-free` and reviewed by Beam plus, where noted in each PR, a free model of another lab: D1 → T117 (PR #41), D2 → T113 (PR #38), D3 → T114 (PR #39), D4 → T115 (PR #36), D5 → T116 (PR #40). Test-writer pass: crpg-edit → T118 (PR #42; #92 reported unreachable), crpg-sim → T119 (PR #43), crpg-net-quic → T120 (branch `task/T120-quic-test-gaps`, under review). No lead in those three crates turned out to be a defect. Remaining: crpg-testkit's high gap and the medium rows of the other crates.
+
 ## Agent log
 
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + crate audit · Recorded the method, the five defects confirmed by a second Beam pass (two also read by the manager) and the high test gaps, so fix and test tasks can be cut from them.
+- 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + audit follow-up · Recorded which PR fixes each confirmed defect and how far the test-writer pass got, so the remaining crates can be picked up from here.
