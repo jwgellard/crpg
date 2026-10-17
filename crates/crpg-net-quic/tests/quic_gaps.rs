@@ -100,9 +100,7 @@ fn outbound_host_wide_cap_filled_across_connections() {
         let frame = pattern(9, next_id, DELTA_CAP);
         next_id += 1;
         let mut progressed = false;
-        if server.try_send(conn_a, &frame).is_ok()
-            || server.try_send(conn_b, &frame).is_ok()
-        {
+        if server.try_send(conn_a, &frame).is_ok() || server.try_send(conn_b, &frame).is_ok() {
             progressed = true;
         }
         if !progressed {
