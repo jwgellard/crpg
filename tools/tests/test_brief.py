@@ -106,6 +106,9 @@ class Classification(unittest.TestCase):
         "Out of scope (later work; do not expand into it)",
         "Read first",
         "Read first (all children)",
+        "Decision",
+        "What must not change",
+        "1. Decisions this contract makes",
     ]
     HISTORY = [
         "Agent log",
@@ -121,10 +124,8 @@ class Classification(unittest.TestCase):
         "Downstream — 2026-10-04 (UTC): the `crpg-net-quic` split",
         "History",
         "Dependency record and approval request (H-dep)",
-        "1. Decisions this contract makes",
         "3. Host save payload v1 layout (normative)",
         "5. Determinism and the gate-10 claim",
-        "What must not change",
         "Whatever unknown heading",
     ]
 
@@ -182,6 +183,66 @@ class Classification(unittest.TestCase):
             heading = lines[number - 1]
             self.assertTrue(heading.startswith("## Tests"), f"{name}:{number}: {heading!r}")
             self.assertEqual(brief.classify_heading(heading[3:].strip()), "contract", heading)
+
+
+class DecisionSections(unittest.TestCase):
+    """The narrowed decision rule of A0-3b attempt 2.
+
+    `Decision` (exactly), `Decisions this contract makes…` and
+    `What must not change…` are base contract; every other `…decision…`
+    heading stays history, so a task's decision log is not mistaken for its
+    contract.
+    """
+
+    CONTRACT = (
+        "Decision",
+        "What must not change",
+        "1. Decisions this contract makes",
+        "Decision: the journal cache",
+        "What must not change (ADR-0017)",
+    )
+    HISTORY = (
+        "Decision already made",
+        "Decision output",
+        "Decision to make",
+        "Decisions — 2026-10-04 (UTC)",
+        "Decisions (D19–D26)",
+        "Amendment decisions",
+        "Amendment decisions — 2026-10-06 (UTC)",
+        "Reading decisions",
+        "Implementation blocker and decision — 2026-10-05 (UTC)",
+    )
+
+    def test_narrow_rule_pins_the_headings(self) -> None:
+        for heading in self.CONTRACT:
+            self.assertEqual(brief.classify_heading(heading), "contract", heading)
+        for heading in self.HISTORY:
+            self.assertEqual(brief.classify_heading(heading), "history", heading)
+
+    def test_t097_brief_names_both_sections_in_file_order(self) -> None:
+        root = recall.find_repo_root()
+        with open(Path(root) / "tasks" / "T097.md", encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        headings, sections, _ = brief.parse(text)
+        current = brief.select_current(sections)
+        by_line = {section["line"]: section for section in current}
+        self.assertIn(44, by_line, [section["text"] for section in current])
+        self.assertIn(63, by_line)
+
+        built, document = brief.build("T097", text, root)
+        contract_line = next(line for line in built.splitlines() if line.startswith("Contract:"))
+        decision = brief.section_reference("T097", by_line[44])
+        unchanged = brief.section_reference("T097", by_line[63])
+        self.assertIn(decision, contract_line)
+        self.assertIn(unchanged, contract_line)
+        self.assertLess(contract_line.index(decision), contract_line.index(unchanged))
+        self.assertIn(f"- {decision}", built)
+        self.assertIn(f"- {unchanged}", built)
+        self.assertLess(built.index(f"- {decision}"), built.index(f"- {unchanged}"))
+        for section in document["sections"]:
+            if section["heading"] in ("Decision", "What must not change"):
+                self.assertEqual(section["kind"], "contract")
+                self.assertTrue(section["current"])
 
 
 class CurrentContract(unittest.TestCase):

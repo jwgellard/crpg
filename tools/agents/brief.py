@@ -48,6 +48,12 @@ BASE_SECTIONS = (
 EXACT_PREFIXES = ("exact contract", "re-contract")
 AMENDMENT_PREFIXES = ("contract amendment", "amendment")
 
+# Decision-shaped base sections (A0-3b attempt 2). Deliberately narrow: only
+# a heading whose normalised name is exactly `decision`, or that starts with
+# one of these tails, is contract. `Decisions — 2026-10-05 (UTC)`,
+# `Decisions (D19–D26)` and `Amendment decisions …` stay history.
+DECISION_PREFIXES = ("decisions this contract makes", "what must not change")
+
 ACCEPT_PREFIXES = ("cargo ", "python ", "bash ", "pwsh ")
 
 STOP_TEXT = (
@@ -104,6 +110,11 @@ def _starts_with_base(name: str) -> bool:
     return any(_matches_base(name, base) for base in BASE_SECTIONS)
 
 
+def _is_decision_base(name: str) -> bool:
+    """True for the decision-shaped base sections (`tasks/T097.md:44`, `:63`)."""
+    return name == "decision" or name.startswith(DECISION_PREFIXES)
+
+
 def classify_heading(text: str) -> str:
     """`contract` or `history` for one `##` heading, per the A0-5 rules."""
     norm = _strip_prefix(normalize_heading(text))
@@ -113,7 +124,7 @@ def classify_heading(text: str) -> str:
         return "contract"
     if norm.startswith("amendment"):
         return "contract"
-    if _starts_with_base(norm):
+    if _starts_with_base(norm) or _is_decision_base(norm):
         return "contract"
     return "history"
 
