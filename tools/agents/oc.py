@@ -1378,7 +1378,7 @@ def do_run(args: argparse.Namespace) -> int:
                 idle_s, f"crpg-{args.role}", args.model,
             )
             events = parse_events(log_path)
-            if idle_or_timeout in ("timeout", "hang", "quota", "402", "model"):
+            if idle_or_timeout in ("timeout", "hang", "quota", "402", "model", "no-agent"):
                 absorb_events(info, events)
                 info["cause"] = idle_or_timeout
                 if idle_or_timeout in MODEL_FAULT_CAUSES:

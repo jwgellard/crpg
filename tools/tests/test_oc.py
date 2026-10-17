@@ -691,6 +691,28 @@ class DispatchCase(unittest.TestCase):
 
     # -- the run's base reaches the verifier (A0-3b) -----------------------
 
+    def test_default_base_is_origin_master(self) -> None:
+        # Running without --base defaults the verifier's base to origin/master.
+        task = self.tid()
+        # Make origin/master fetchable in this synthetic repo.
+        sh(["git", "remote", "add", "origin", str(self.repo)], self.repo)
+        sh(["git", "update-ref", "refs/remotes/origin/master", "HEAD"], self.repo)
+        verify_log = self.fresh_file("verify-default.jsonl")
+        result = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--timeout", "60", "--idle", "10",
+            "--brief", self.brief(),
+            env={"FAKE_VERIFY_LOG": str(verify_log)},
+            timeout=120,
+        )
+        # remove remote to keep repo clean for other tests
+        sh(["git", "remote", "remove", "origin"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        logged = [json.loads(line) for line in verify_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(logged), 1)
+        self.assertIn("--base", logged[0])
+        self.assertEqual(logged[0][logged[0].index("--base") + 1], "origin/master")
+
     def test_verify_receives_the_runs_base(self) -> None:
         # A slot prepared from `--base X` is verified against X. Without this
         # the verifier falls back to `merge-base HEAD origin/master` and
@@ -769,6 +791,17 @@ class DispatchCase(unittest.TestCase):
         self.assertIn("opencode.json", copied)
         self.assertNotIn(".opencode/agents/crpg-tests.md", copied)
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "# sentinel\n")
+
+    def test_add_to_exclude_is_idempotent(self) -> None:
+        slot = self.fresh_dir("exclude-slot")
+        # ensure git worktree? exclude_file uses git rev-parse in slot.
+        # Use an existing slot instead.
+        slot = self.slot1
+        OCMOD.add_to_exclude(slot, [".opencode/agents/crpg-implement.md", "opencode.json"])
+        OCMOD.add_to_exclude(slot, [".opencode/agents/crpg-implement.md", "opencode.json"])
+        listed = self.exclude_file(slot).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(listed.count(".opencode/agents/crpg-implement.md"), 1)
+        self.assertEqual(listed.count("opencode.json"), 1)
 
     def test_agent_fallback_needs_the_declaration_in_the_slot_or_the_root(self) -> None:
         bare = self.fresh_dir("bare-root")
@@ -933,6 +966,39 @@ class DispatchCase(unittest.TestCase):
         record = self.read_record(task)
         self.assertEqual(record["cause"], "hang")
         self.assertEqual(record["failed_checks"], ["hang"])
+
+    def test_idle_error_log_maps_to_no_agent(self) -> None:
+        task = self.tid()
+        oc_log = self.fresh_file("opencode-noagent.log")
+        # Pre-create an empty log so run_worker's baseline size is 0; a
+        # background thread appends the Agent-not-found line before the idle
+        # watchdog fires, mirroring a real OpenCode log growing mid-run.
+        oc_log.write_text("", encoding="utf-8")
+
+        def append() -> None:
+            time.sleep(0.3)
+            with oc_log.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    'timestamp=2026-10-16T10:27:27.101Z level=ERROR message="stream error" '
+                    'providerID=opencode-go modelID=fake-a session.id=ses_fake '
+                    'agent=crpg-implement error.error="Agent not found: \\"crpg-implement\\""\n'
+                )
+
+        thread = threading.Thread(target=append, daemon=True)
+        thread.start()
+        result = self.oc_run(
+            task,
+            extra=["--idle", "1"],
+            env={
+                "FAKE_OC_MODE": "silent",
+                "CRPG_OPENCODE_LOG": str(oc_log),
+            },
+            timeout=60,
+        )
+        thread.join(timeout=5)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("no-agent", result.stdout + result.stderr)
+        self.assertEqual(self.read_record(task)["cause"], "no-agent")
 
     def test_idle_error_log_maps_to_quota(self) -> None:
         task = self.tid()

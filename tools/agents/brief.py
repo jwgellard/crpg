@@ -110,8 +110,22 @@ def _starts_with_base(name: str) -> bool:
     return any(_matches_base(name, base) for base in BASE_SECTIONS)
 
 
+def _decision_name(text: str) -> str:
+    """A decision-relevant normalised name that keeps any date/parenthetical
+    suffix, so dated `Decisions — 2026-…` headings stay distinguishable from
+    the bare `Decisions` base section (which is contract)."""
+    norm = text.strip()
+    norm = norm.split(":", 1)[0]
+    norm = PREFIX_RE.sub("", norm).strip()
+    return norm.lower()
+
+
 def _is_decision_base(name: str) -> bool:
-    """True for the decision-shaped base sections (`tasks/T097.md:44`, `:63`)."""
+    """True for the decision-shaped base sections (`tasks/T097.md:44`, `:63`).
+
+    `name` is the date-stripped normalised name; the bare-word check uses the
+    raw heading text passed separately, so this helper is only a fallback.
+    """
     return name == "decision" or name.startswith(DECISION_PREFIXES)
 
 
@@ -124,7 +138,10 @@ def classify_heading(text: str) -> str:
         return "contract"
     if norm.startswith("amendment"):
         return "contract"
-    if _starts_with_base(norm) or _is_decision_base(norm):
+    if _starts_with_base(norm):
+        return "contract"
+    decision = _decision_name(text)
+    if decision == "decision" or decision == "decisions" or decision.startswith(DECISION_PREFIXES):
         return "contract"
     return "history"
 

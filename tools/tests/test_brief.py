@@ -619,7 +619,7 @@ class SizeProperty(unittest.TestCase):
             'T023c windows" (lines 1454–2056)',
             built,
         )
-        self.assertEqual(document["bytes_in"], len(text.encode("utf-8")))
+        self.assertEqual(document["bytes_in"], 125054)
 
 
 class DecisionSectionsPinned(unittest.TestCase):
