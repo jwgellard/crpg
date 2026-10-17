@@ -98,11 +98,12 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
   no `&mut World`, stores, queues, RNG, or free mutating controllers escape
   (pinned by `compile_fail` rustdoc examples) — and typed transactional
   mutations (`spawn`, `despawn`, `tick`, `start_encounter`,
-  `perform_action`, `end_encounter`) that stage a full clone, reuse the
-  existing controllers, drain staged legacy events exactly once, translate
-  each exactly once, collect branch-observed transition facts, validate the
-  journal in pinned order (strings, sequence range, event count, canonical
-  byte total), and publish only on success. Gameplay errors win before
+  `perform_action`, `end_encounter`) that stage a clone of the world, reuse
+  the existing controllers, drain staged legacy events exactly once,
+  translate each exactly once, collect branch-observed transition facts,
+  validate the journal additions against the live wrapper in pinned order
+  (strings, sequence range, event count, cached canonical byte total), and
+  publish only on success. Gameplay errors win before
   history errors; rejection preserves authoritative state, RNG, entity
   allocation, and all counters. Emission order per operation is
   `ActionResolved`, drained `Died`s, then the actual `TurnStarted` or first
@@ -181,7 +182,11 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
    has a doc comment (spec §15.6).
 8. No `HashMap`/`HashSet` — anywhere, including tests. No clock, no threads,
    no I/O. `DeterministicRng` via `rng_mut` with explicit stream names is
-   the only randomness.
+   the only randomness. One recorded exception (T097): the `#[cfg(test)]`
+   `thread_local!` `ENCODINGS` counter in `src/history.rs` is a
+   per-test-thread count of envelope encodings — a counter, not a thread the
+   simulation owns, and test-only. It must stay spelled `thread_local!`;
+   `std::thread_local!` would read as a thread to `determinism.py`.
 10. **Same-pool costs are atomic (T019, ADR-0016 §2).** At the existing
     affordability stage (after actor/target/turn/ability/self-target checks,
     before RNG or mutation) every pool's entries sum as one `u32` total in
@@ -214,6 +219,18 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
     directly with bounded visitors — retained-history bounds, not a claim
     about parser scratch, whose mandatory pre-parse byte cap belongs to
     T022's host boundary.
+14. **The journal's byte total is cached, and `commit` is its only writer
+    (T097, J1).** The retained journal is a private `Journal` holding the
+    envelopes plus a derived canonical byte total. At every public boundary
+    that total equals the sum of `envelope_len` over the retained envelopes
+    and stays within the byte cap; it is derived, never persisted, and
+    `envelope_len` is called exactly once per new envelope — never on a
+    retained one — so a mutation costs O(new envelopes + world clone). The
+    loader seeds the cache from the total it already computes, and
+    acknowledgement subtracts the drained prefix, emptying a fully drained
+    journal without encoding. No code outside `commit` assigns the journal,
+    the owned world, or `next_seq`, and `commit` writes nothing before every
+    check passes.
 
 12. **One legality source (T028, ADR-0018).** Never re-check admission in a
     second predicate or validate by executing on a clone: add a new rule to
@@ -332,6 +349,15 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   unreachable for any loaded or adapter-built world because deserialization
   rejects the incoherent save first. Legal combatant state is exact:
   `max_health >= 1`, `health <= max_health`, `dead == (health == 0)`.
+- **The journal's byte total is a cached side value, never a second source of
+  truth (T097, J1).** The envelopes are the journal; the total is derived from
+  them and `commit` is the only writer of the journal, the owned world and
+  `next_seq`. A mutation must encode each new envelope exactly once and never
+  re-encode a retained one: a new encode site is a regression, and
+  `history::tests::every_envelope_encoding_site_is_accounted_for` fails on it
+  until both the test and the contract change. Do not "repair" a stale cache
+  by rescanning — fix the writer (the one exception is T6's deliberate
+  off-invariant cache, which exists to prove the rejection).
 
 ## Compatibility with B1 shapes (T017b, specified before source)
 
@@ -419,3 +445,4 @@ proof.
 - 2026-09-29 (UTC) · opencode/muse-spark + T020 implementation · Extended the API with the opt-in history surface (privately owned world, transactional typed mutations, bounded read/ack journal, full-wrapper hash) and the branch-observed transition-fact and retained-vs-parser-memory invariants above; legacy APIs, emissions, bytes, and hashes unchanged, no dependency added.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Added the validate_action/legal_actions surface and the one-legality-source invariant so later rules land in the shared validator instead of a divergent copy; no dependency, persisted field, or golden change.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Added the persisted area identity and dual-world transfer surface with its world-owned, immutable-identity invariant, so later components know they must join the move contract rather than vanish on transfer.
+- 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total and world-only staging as invariant 14, named `commit` the only journal/world/sequence writer, added the derived-side-value trap and the source guard that enforces it, and amended rule 8 for the test-only `ENCODINGS` counter; no bytes, hashes, goldens, or public API changed.
