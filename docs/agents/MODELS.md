@@ -146,6 +146,12 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    `tools/tests/test_opencode_config.py` fails if it goes. A slot whose
    branch predates the fix (T097 in slot-1, A0-3b in slot-2) still allows
    the tool until its branch takes `setup/A0-config`.
+   A second hole, found the same night: a bash allow rule such as
+   `"git show*": allow` also matches `git show X > file`, so two Beam reviews
+   with `edit: deny` wrote copies of committed files into the worktree. The
+   read-only roles (`crpg-review`, `crpg-scout`, `crpg-grunt`) now end their
+   `bash` rules with `"*>*": deny`; probed (the redirect is refused, plain
+   `git show` still runs) and guarded by the same test file.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -500,3 +506,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: many free reviews · Added to item 13 the user's rule to run several independent reviews on Beam and LongCat and collate them before any paid review.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: stop using LongCat · Added item 14 taking LongCat out of routing on its evening record (5 failures in 6), as the user directed.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + execute-tool escape · Added item 15: OpenCode 2.x's `execute` tool bypassed every agent permission rule (two Beam reviews moved their sessions into other slots), and the probed `execute: deny` fix with its guard test.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + redirect hole · Added to item 15 the shell-redirection hole in read-only roles and its probed `"*>*": deny` fix.

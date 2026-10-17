@@ -32,6 +32,17 @@ class ExecuteToolDenied(unittest.TestCase):
                 front = text.split("---", 2)[1]
                 self.assertRegex(front, re.compile(r"^  execute: deny$", re.M))
 
+    def test_read_only_roles_deny_shell_redirection(self) -> None:
+        # "git show*": allow also matched `git show X > file`, so a review
+        # with `edit: deny` wrote files (2026-10-16). The last rule wins.
+        for name in ("crpg-review.md", "crpg-scout.md", "crpg-grunt.md"):
+            with self.subTest(agent=name):
+                front = (REPO / ".opencode" / "agents" / name).read_text(
+                    encoding="utf-8").split("---", 2)[1]
+                bash = front.split("  bash:\n", 1)[1].split("\n")
+                rules = [line for line in bash if line.startswith("    ")]
+                self.assertEqual(rules[-1].strip(), '"*>*": deny')
+
 
 if __name__ == "__main__":
     unittest.main()

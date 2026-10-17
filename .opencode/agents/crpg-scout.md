@@ -16,6 +16,7 @@ permission:
     "git log*": allow
     "git show*": allow
     "cargo test*": allow
+    "*>*": deny
 ---
 Answer the question from this repository in at most 20 lines, citing
 `file:line`. Do not edit.
