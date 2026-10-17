@@ -1,27 +1,29 @@
 //! Audit-gap tests for crpg-script (T124).
 //!
-//! Each test guards a contract path the crate audit flagged as untested.
-//! Helpers are copied from tests/action_bindings.rs; that file is untouched.
+//! Each test here proves one contract behaviour named by the crate audit's
+//! unverified leads. Helpers are copied from `action_bindings.rs`.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 
 use crpg_core::{EntityId, Fx16_16, Ulid};
 use crpg_data::{
     Ability, ActionBundleIdentity, ActionCall, ActionParameter, ActionSignature,
     ActionSignatureStore, Creature, DataValue, Effect, Encounter,
-    OutcomeTable as AuthoredOutcomeTable, Placement, Ruleset, ValueType, MAX_ACTION_SIGNATURES,
+    OutcomeTable as AuthoredOutcomeTable, Placement, Ruleset, SignatureErrorCode, ValueType,
+    MAX_ACTION_SIGNATURES,
 };
 use crpg_script::{
     ActionBinding, ActionBindings, ActionHandler, BindingError, HandlerError, InvocationContext,
 };
 use crpg_sim::{
-    perform_action, start_encounter, state_hash, CombatAction, CombatError, EncounterSpec,
-    EntityMeta, PlacementAndArea, World,
+    perform_action, start_encounter, state_hash, CombatAction, CombatError, EncounterSpec, EntityMeta,
+    PlacementAndArea, World,
 };
 use serde_json::json;
 
 // ---------------------------------------------------------------------------
-// Instrumentation (thread-local invocation counter)
+// Instrumentation
 // ---------------------------------------------------------------------------
 
 thread_local! {
@@ -37,12 +39,14 @@ fn calls() -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Combat fixture (copied, trimmed to what the tests need)
+// Combat fixture (copied)
 // ---------------------------------------------------------------------------
 
 const ATTACK: u128 = 103;
 const JAB: u128 = 201;
 const SLAY: u128 = 202;
+const WHIFF: u128 = 203;
+const BUNDLE: u128 = 900;
 
 fn uid(value: u128) -> String {
     Ulid::from_u128(value).to_string()
@@ -55,11 +59,11 @@ fn fx_raw(value: i32) -> i32 {
 struct Fixture {
     encounter: Encounter,
     ruleset: Ruleset,
-    abilities: std::collections::BTreeMap<Ulid, Ability>,
-    tables: std::collections::BTreeMap<Ulid, AuthoredOutcomeTable>,
-    effects: std::collections::BTreeMap<Ulid, Effect>,
-    placements: std::collections::BTreeMap<Ulid, (Placement, Ulid)>,
-    creatures: std::collections::BTreeMap<Ulid, Creature>,
+    abilities: BTreeMap<Ulid, Ability>,
+    tables: BTreeMap<Ulid, AuthoredOutcomeTable>,
+    effects: BTreeMap<Ulid, Effect>,
+    placements: BTreeMap<Ulid, (Placement, Ulid)>,
+    creatures: BTreeMap<Ulid, Creature>,
 }
 
 fn ability_doc(id: u128, attribute: &str, success: u32, failure: u32, ends_turn: bool) -> Ability {
@@ -81,7 +85,7 @@ fn ability_doc(id: u128, attribute: &str, success: u32, failure: u32, ends_turn:
         "requires_target": true,
         "allow_self_target": false
     }))
-    .expect("ability")
+    .expect("the fixture ability is valid")
 }
 
 fn placement_doc(id: u128, prefab: u128) -> Placement {
@@ -90,10 +94,14 @@ fn placement_doc(id: u128, prefab: u128) -> Placement {
         "slug": format!("probe-placement-{id}"),
         "name": format!("probe.placement-{id}"),
         "prefab": uid(prefab),
-        "transform": {"position": [0,0,0], "rotation": [0,0,0], "scale": [65536,65536,65536]},
+        "transform": {
+            "position": [0, 0, 0],
+            "rotation": [0, 0, 0],
+            "scale": [65536, 65536, 65536]
+        },
         "overrides": {}
     }))
-    .expect("placement")
+    .expect("the fixture placement is valid")
 }
 
 fn creature_doc(id: u128, health: i32) -> Creature {
@@ -101,61 +109,80 @@ fn creature_doc(id: u128, health: i32) -> Creature {
         "id": uid(id),
         "slug": format!("probe-creature-{id}"),
         "name": format!("probe.creature-{id}"),
-        "stats": {"alpha": fx_raw(100), "beta": fx_raw(6), "gamma": fx_raw(1), "health": fx_raw(health)},
-        "tags": [], "faction": null, "inventory": []
+        "stats": {
+            "alpha": fx_raw(100),
+            "beta": fx_raw(6),
+            "gamma": fx_raw(1),
+            "health": fx_raw(health)
+        },
+        "tags": [],
+        "faction": null,
+        "inventory": []
     }))
-    .expect("creature")
+    .expect("the fixture creature is valid")
 }
 
 impl Fixture {
     fn new() -> Self {
         let ruleset: Ruleset = serde_json::from_value(json!({
-            "id": uid(102), "slug": "probe-ruleset", "name": "probe.ruleset",
-            "package": "probe-pack", "version": "0.1.0",
+            "id": uid(102),
+            "slug": "probe-ruleset",
+            "name": "probe.ruleset",
+            "package": "probe-pack",
+            "version": "0.1.0",
             "stats": [
                 {"name": "alpha", "kind": "int"},
                 {"name": "beta", "kind": "int"},
                 {"name": "gamma", "kind": "int"},
                 {"name": "health", "kind": "int"}
             ],
-            "health_stat": "health", "attributes": ["alpha","beta","gamma"],
-            "pools": [{"id": uid(105), "max": 40, "refresh": {"type": "on_turn_start"}}],
-            "abilities": [uid(ATTACK), uid(JAB), uid(SLAY)]
+            "health_stat": "health",
+            "attributes": ["alpha", "beta", "gamma"],
+            "pools": [
+                {"id": uid(105), "max": 40, "refresh": {"type": "on_turn_start"}}
+            ],
+            "abilities": [uid(ATTACK), uid(JAB), uid(SLAY), uid(WHIFF)]
         }))
-        .expect("ruleset");
+        .expect("the fixture ruleset is valid");
         let table: AuthoredOutcomeTable = serde_json::from_value(json!({
-            "id": uid(104), "slug": "probe-table", "name": "probe.table",
+            "id": uid(104),
+            "slug": "probe-table",
+            "name": "probe.table",
             "bands": [
                 {"min_margin": i64::MIN, "outcome": {"type": "success"}},
                 {"min_margin": 1, "outcome": {"type": "failure"}}
             ],
             "natural_rules": []
         }))
-        .expect("table");
+        .expect("the fixture table is valid");
         let encounter: Encounter = serde_json::from_value(json!({
-            "id": uid(101), "slug": "probe-encounter", "name": "probe.encounter",
+            "id": uid(101),
+            "slug": "probe-encounter",
+            "name": "probe.encounter",
             "ruleset": uid(102),
             "participants": [
                 {"placement": uid(111), "initiative": 10},
                 {"placement": uid(112), "initiative": 9}
             ]
         }))
-        .expect("encounter");
-        let mut abilities = std::collections::BTreeMap::new();
+        .expect("the fixture encounter is valid");
+
+        let mut abilities = BTreeMap::new();
         for ability in [
             ability_doc(ATTACK, "alpha", 2, 0, true),
-            ability_doc(201, "alpha", 0, 0, false),
+            ability_doc(JAB, "alpha", 0, 0, false),
             ability_doc(SLAY, "alpha", 100, 100, false),
+            ability_doc(WHIFF, "gamma", 2, 0, true),
         ] {
             abilities.insert(ability.id, ability);
         }
-        let mut tables = std::collections::BTreeMap::new();
+        let mut tables = BTreeMap::new();
         tables.insert(Ulid::from_u128(104), table);
         let area = Ulid::from_u128(131);
-        let mut placements = std::collections::BTreeMap::new();
+        let mut placements = BTreeMap::new();
         placements.insert(Ulid::from_u128(111), (placement_doc(111, 121), area));
         placements.insert(Ulid::from_u128(112), (placement_doc(112, 122), area));
-        let mut creatures = std::collections::BTreeMap::new();
+        let mut creatures = BTreeMap::new();
         creatures.insert(Ulid::from_u128(121), creature_doc(121, 10));
         creatures.insert(Ulid::from_u128(122), creature_doc(122, 6));
         Self {
@@ -163,18 +190,18 @@ impl Fixture {
             ruleset,
             abilities,
             tables,
-            effects: std::collections::BTreeMap::new(),
+            effects: BTreeMap::new(),
             placements,
             creatures,
         }
     }
 
     fn start_in(&self, world: &mut World) -> (EntityId, EntityId) {
-        let abilities: std::collections::BTreeMap<Ulid, &Ability> =
+        let abilities: BTreeMap<Ulid, &Ability> =
             self.abilities.iter().map(|(id, doc)| (*id, doc)).collect();
-        let tables: std::collections::BTreeMap<Ulid, &AuthoredOutcomeTable> =
+        let tables: BTreeMap<Ulid, &AuthoredOutcomeTable> =
             self.tables.iter().map(|(id, doc)| (*id, doc)).collect();
-        let placements: std::collections::BTreeMap<Ulid, PlacementAndArea<'_>> = self
+        let placements: BTreeMap<Ulid, PlacementAndArea<'_>> = self
             .placements
             .iter()
             .map(|(id, (placement, area))| {
@@ -187,9 +214,9 @@ impl Fixture {
                 )
             })
             .collect();
-        let creatures: std::collections::BTreeMap<Ulid, &Creature> =
+        let creatures: BTreeMap<Ulid, &Creature> =
             self.creatures.iter().map(|(id, doc)| (*id, doc)).collect();
-        let effects: std::collections::BTreeMap<Ulid, &Effect> =
+        let effects: BTreeMap<Ulid, &Effect> =
             self.effects.iter().map(|(id, doc)| (*id, doc)).collect();
         let spec = EncounterSpec {
             encounter: &self.encounter,
@@ -201,22 +228,23 @@ impl Fixture {
             effects: &effects,
         };
         let before: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
-        start_encounter(world, &spec).expect("start");
+        start_encounter(world, &spec).expect("the fixture starts");
         let fresh: Vec<EntityId> = world
             .combatants()
             .iter()
             .map(|(id, _)| id)
             .filter(|id| !before.contains(id))
             .collect();
+        assert_eq!(fresh.len(), 2);
         let a = fresh
             .iter()
             .copied()
-            .find(|id| world.combatants().get(*id).expect("c").initiative() == 10)
+            .find(|id| world.combatants().get(*id).expect("combatant").initiative() == 10)
             .expect("A");
         let b = fresh
             .iter()
             .copied()
-            .find(|id| world.combatants().get(*id).expect("c").initiative() == 9)
+            .find(|id| world.combatants().get(*id).expect("combatant").initiative() == 9)
             .expect("B");
         (a, b)
     }
@@ -228,41 +256,30 @@ impl Fixture {
     }
 }
 
-// ---------------------------------------------------------------------------
-// State helpers
-// ---------------------------------------------------------------------------
+fn active(world: &World) -> EntityId {
+    world
+        .combat()
+        .expect("combat")
+        .active
+        .expect("an active turn")
+}
 
 fn snapshot(world: &World) -> (Vec<u8>, [u8; 32]) {
-    (serde_json::to_vec(world).expect("ser"), state_hash(world))
+    (
+        serde_json::to_vec(world).expect("the world serializes"),
+        state_hash(world),
+    )
 }
 
-fn assert_unchanged(world: &World, before: &(Vec<u8>, [u8; 32]), ctx: &str) {
+fn assert_unchanged(world: &World, before: &(Vec<u8>, [u8; 32]), context: &str) {
     let after = snapshot(world);
-    assert_eq!(before.0, after.0, "bytes changed: {ctx}");
-    assert_eq!(before.1, after.1, "hash changed: {ctx}");
-}
-
-fn opponent(context: &InvocationContext<'_>) -> Result<EntityId, HandlerError> {
-    context
-        .world()
-        .combatants()
-        .iter()
-        .filter(|(id, combatant)| *id != context.actor() && !combatant.dead())
-        .map(|(id, _)| id)
-        .min()
-        .ok_or(HandlerError::Refused)
+    assert_eq!(before.0, after.0, "world bytes changed: {context}");
+    assert_eq!(before.1, after.1, "state hash changed: {context}");
 }
 
 // ---------------------------------------------------------------------------
-// Binding helpers
+// Declarations and trusted handlers
 // ---------------------------------------------------------------------------
-
-fn signature(action_id: &str, parameters: Vec<ActionParameter>) -> ActionSignature {
-    ActionSignature {
-        action_id: action_id.to_owned(),
-        parameters,
-    }
-}
 
 fn parameter(name: &str, value_type: ValueType, required: bool) -> ActionParameter {
     ActionParameter {
@@ -272,20 +289,30 @@ fn parameter(name: &str, value_type: ValueType, required: bool) -> ActionParamet
     }
 }
 
-fn store_of(entries: &[(ActionSignature, ActionHandler)]) -> ActionSignatureStore {
-    ActionSignatureStore::new(
-        Ulid::from_u128(900),
-        entries.iter().map(|(s, _)| s.clone()).collect(),
-    )
-    .expect("store")
+fn signature(action_id: &str, parameters: Vec<ActionParameter>) -> ActionSignature {
+    ActionSignature {
+        action_id: action_id.to_owned(),
+        parameters,
+    }
 }
 
-fn bind(entries: &[(ActionSignature, ActionHandler)]) -> Vec<ActionBinding> {
-    entries
+fn store_of(table: &[(ActionSignature, ActionHandler)]) -> ActionSignatureStore {
+    ActionSignatureStore::new(
+        Ulid::from_u128(BUNDLE),
+        table
+            .iter()
+            .map(|(signature, _)| signature.clone())
+            .collect(),
+    )
+    .expect("the declarations are valid")
+}
+
+fn bind(table: &[(ActionSignature, ActionHandler)]) -> Vec<ActionBinding> {
+    table
         .iter()
-        .map(|(s, h)| ActionBinding {
-            signature: s.clone(),
-            handler: *h,
+        .map(|(signature, handler)| ActionBinding {
+            signature: signature.clone(),
+            handler: *handler,
         })
         .collect()
 }
@@ -295,16 +322,6 @@ fn build(
     entries: &[(ActionSignature, ActionHandler)],
 ) -> Result<ActionBindings, BindingError> {
     ActionBindings::new(store.clone(), store.identity().clone(), bind(entries))
-}
-
-fn standard() -> (ActionBindings, ActionBundleIdentity) {
-    // Reuse a tiny table matching the audit's needs: combo-like via handlers
-    // defined below. We instead build from the shared table() helper.
-    let entries = table();
-    let store = store_of(&entries);
-    let identity = store.identity().clone();
-    let bindings = build(&store, &entries).expect("standard");
-    (bindings, identity)
 }
 
 fn table() -> Vec<(ActionSignature, ActionHandler)> {
@@ -317,19 +334,8 @@ fn table() -> Vec<(ActionSignature, ActionHandler)> {
                     parameter("second", ValueType::ObjectRef, true),
                 ],
             ),
-            combo_handler as ActionHandler,
+            combo as ActionHandler,
         ),
-        (signature("hijack", Vec::new()), hijack_handler),
-        (signature("pass", Vec::new()), pass_handler),
-        (signature("refuse", Vec::new()), refuse_handler),
-        (
-            signature(
-                "strike",
-                vec![parameter("ability", ValueType::ObjectRef, true)],
-            ),
-            strike_handler,
-        ),
-        (signature("wait", Vec::new()), wait_handler),
         (
             signature(
                 "flurry",
@@ -338,15 +344,39 @@ fn table() -> Vec<(ActionSignature, ActionHandler)> {
                     parameter("count", ValueType::Unsigned, true),
                 ],
             ),
-            flurry_handler,
+            flurry,
         ),
+        (signature("hijack", Vec::new()), hijack),
+        (signature("pass", Vec::new()), pass),
+        (signature("refuse", Vec::new()), refuse),
+        (
+            signature(
+                "strike",
+                vec![parameter("ability", ValueType::ObjectRef, true)],
+            ),
+            strike,
+        ),
+        (signature("tripwire", Vec::new()), tripwire),
+        (signature("wait", Vec::new()), wait),
+        (signature("heavy", Vec::new()), heavy_foreign),
     ]
+}
+
+fn standard() -> (ActionBindings, ActionBundleIdentity) {
+    let entries = table();
+    let store = store_of(&entries);
+    let identity = store.identity().clone();
+    let bindings = build(&store, &entries).expect("the standard table binds");
+    (bindings, identity)
 }
 
 fn call(action_id: &str, args: Vec<(&str, DataValue)>) -> ActionCall {
     ActionCall {
         action_id: action_id.to_owned(),
-        args: args.into_iter().map(|(n, v)| (n.to_owned(), v)).collect(),
+        args: args
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
     }
 }
 
@@ -364,107 +394,48 @@ fn flurry_call(ability: u128, count: u64) -> ActionCall {
     )
 }
 
-fn strike_call(ability: u128) -> ActionCall {
-    call("strike", vec![("ability", ability_ref(ability))])
+fn tripwire_call() -> ActionCall {
+    call("tripwire", vec![])
 }
 
-// handlers
-fn combo_handler(
+fn object_arg(call: &ActionCall, name: &str) -> Result<Ulid, HandlerError> {
+    match call.args.get(name) {
+        Some(DataValue::ObjectRef(id)) => Ok(*id),
+        _ => Err(HandlerError::Refused),
+    }
+}
+
+fn opponent(context: &InvocationContext<'_>) -> Result<EntityId, HandlerError> {
+    context
+        .world()
+        .combatants()
+        .iter()
+        .filter(|(id, combatant)| *id != context.actor() && !combatant.dead())
+        .map(|(id, _)| id)
+        .min()
+        .ok_or(HandlerError::Refused)
+}
+
+fn strike(
     context: &InvocationContext<'_>,
     call: &ActionCall,
 ) -> Result<Vec<CombatAction>, HandlerError> {
     record();
-    let target = opponent(context)?;
-    let first = match call.args.get("first") {
-        Some(DataValue::ObjectRef(id)) => *id,
-        _ => return Err(HandlerError::Refused),
-    };
-    let second = match call.args.get("second") {
-        Some(DataValue::ObjectRef(id)) => *id,
-        _ => return Err(HandlerError::Refused),
-    };
-    Ok(vec![
-        CombatAction::UseAbility {
-            actor: context.actor(),
-            ability: first,
-            target,
-        },
-        CombatAction::UseAbility {
-            actor: context.actor(),
-            ability: second,
-            target,
-        },
-    ])
-}
-
-fn hijack_handler(
-    context: &InvocationContext<'_>,
-    _call: &ActionCall,
-) -> Result<Vec<CombatAction>, HandlerError> {
-    record();
-    let foreign = opponent(context)?;
-    Ok(vec![
-        CombatAction::EndTurn {
-            actor: context.actor(),
-        },
-        CombatAction::EndTurn { actor: foreign },
-    ])
-}
-
-fn pass_handler(
-    context: &InvocationContext<'_>,
-    _call: &ActionCall,
-) -> Result<Vec<CombatAction>, HandlerError> {
-    record();
-    Ok(vec![CombatAction::EndTurn {
-        actor: context.actor(),
-    }])
-}
-
-fn refuse_handler(
-    _context: &InvocationContext<'_>,
-    _call: &ActionCall,
-) -> Result<Vec<CombatAction>, HandlerError> {
-    record();
-    Err(HandlerError::Refused)
-}
-
-fn wait_handler(
-    _context: &InvocationContext<'_>,
-    _call: &ActionCall,
-) -> Result<Vec<CombatAction>, HandlerError> {
-    record();
-    Err(HandlerError::UnsupportedWait)
-}
-
-fn strike_handler(
-    context: &InvocationContext<'_>,
-    call: &ActionCall,
-) -> Result<Vec<CombatAction>, HandlerError> {
-    record();
-    let ability = match call.args.get("ability") {
-        Some(DataValue::ObjectRef(id)) => *id,
-        _ => return Err(HandlerError::Refused),
-    };
-    let target = opponent(context)?;
     Ok(vec![CombatAction::UseAbility {
         actor: context.actor(),
-        ability,
-        target,
+        ability: object_arg(call, "ability")?,
+        target: opponent(context)?,
     }])
 }
 
-fn flurry_handler(
+fn flurry(
     context: &InvocationContext<'_>,
     call: &ActionCall,
 ) -> Result<Vec<CombatAction>, HandlerError> {
     record();
-    let ability = match call.args.get("ability") {
-        Some(DataValue::ObjectRef(id)) => *id,
-        _ => return Err(HandlerError::Refused),
-    };
+    let ability = object_arg(call, "ability")?;
     let count = match call.args.get("count") {
-        Some(DataValue::Unsigned(c)) if *c <= 64 => *c,
+        Some(DataValue::Unsigned(count)) if *count <= 64 => *count,
         _ => return Err(HandlerError::Refused),
     };
     let target = opponent(context)?;
@@ -477,164 +448,226 @@ fn flurry_handler(
         .collect())
 }
 
-// ---------------------------------------------------------------------------
-// Handlers specific to audit gaps
-// ---------------------------------------------------------------------------
-
-fn many_with_foreign(
+fn combo(
     context: &InvocationContext<'_>,
-    _call: &ActionCall,
-) -> Result<Vec<CombatAction>, HandlerError> {
-    record();
-    let foreign = opponent(context)?;
-    let mut proposals = Vec::with_capacity(33);
-    for _ in 0..32 {
-        proposals.push(CombatAction::EndTurn {
-            actor: context.actor(),
-        });
-    }
-    proposals.push(CombatAction::EndTurn { actor: foreign });
-    Ok(proposals)
-}
-
-fn slay_then_attack(
-    context: &InvocationContext<'_>,
-    _call: &ActionCall,
+    call: &ActionCall,
 ) -> Result<Vec<CombatAction>, HandlerError> {
     record();
     let target = opponent(context)?;
     Ok(vec![
         CombatAction::UseAbility {
             actor: context.actor(),
-            ability: Ulid::from_u128(SLAY),
+            ability: object_arg(call, "first")?,
             target,
         },
         CombatAction::UseAbility {
             actor: context.actor(),
-            ability: Ulid::from_u128(ATTACK),
+            ability: object_arg(call, "second")?,
             target,
         },
     ])
+}
+
+fn hijack(
+    context: &InvocationContext<'_>,
+    _call: &ActionCall,
+) -> Result<Vec<CombatAction>, HandlerError> {
+    record();
+    Ok(vec![
+        CombatAction::EndTurn {
+            actor: context.actor(),
+        },
+        CombatAction::EndTurn {
+            actor: opponent(context)?,
+        },
+    ])
+}
+
+fn pass(
+    context: &InvocationContext<'_>,
+    _call: &ActionCall,
+) -> Result<Vec<CombatAction>, HandlerError> {
+    record();
+    Ok(vec![CombatAction::EndTurn {
+        actor: context.actor(),
+    }])
+}
+
+fn refuse(
+    _context: &InvocationContext<'_>,
+    _call: &ActionCall,
+) -> Result<Vec<CombatAction>, HandlerError> {
+    record();
+    Err(HandlerError::Refused)
+}
+
+fn wait(
+    _context: &InvocationContext<'_>,
+    _call: &ActionCall,
+) -> Result<Vec<CombatAction>, HandlerError> {
+    record();
+    Err(HandlerError::UnsupportedWait)
+}
+
+fn tripwire(
+    _context: &InvocationContext<'_>,
+    _call: &ActionCall,
+) -> Result<Vec<CombatAction>, HandlerError> {
+    panic!("tripwire handler invoked");
+}
+
+fn heavy_foreign(
+    context: &InvocationContext<'_>,
+    _call: &ActionCall,
+) -> Result<Vec<CombatAction>, HandlerError> {
+    record();
+    let target = opponent(context)?;
+    let mut out = Vec::with_capacity(33);
+    for _ in 0..32 {
+        out.push(CombatAction::UseAbility {
+            actor: context.actor(),
+            ability: Ulid::from_u128(ATTACK),
+            target,
+        });
+    }
+    out.push(CombatAction::EndTurn { actor: target });
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-// #56, #59: more than 32 proposals that also include a foreign actor report
-// ProposalLimit first (pinned order: bound before substitute).
+// Lead #56/#59: more than 32 proposals that also include a foreign actor
+// report the error the pinned order puts first (ProposalLimit before
+// ForeignActor).
 #[test]
 fn proposal_limit_precedes_foreign_actor() {
-    let entries = vec![(
-        signature("many", Vec::new()),
-        many_with_foreign as ActionHandler,
-    )];
-    let store = store_of(&entries);
-    let identity = store.identity().clone();
-    let bindings = build(&store, &entries).expect("binds");
-    let (mut world, _a, b) = Fixture::started(5);
+    // Control: a foreign actor alone is ForeignActor.
+    let (bindings, identity) = standard();
+    let (mut world, _, b) = Fixture::started(19);
     let before = snapshot(&world);
     let start = calls();
     let error = bindings
-        .dispatch(&mut world, b, &identity, &call("many", Vec::new()))
-        .expect_err("33 incl foreign");
+        .dispatch(&mut world, b, &identity, &call("hijack", Vec::new()))
+        .expect_err("foreign actor");
+    assert_eq!(error, BindingError::ForeignActor { index: 1 });
+    assert_eq!(calls(), start + 1);
+    assert_unchanged(&world, &before, "foreign actor control");
+
+    // Over-count input that also contains a foreign actor: count wins.
+    let entries = vec![(
+        signature("heavy", Vec::new()),
+        heavy_foreign as ActionHandler,
+    )];
+    let store = store_of(&entries);
+    let identity = store.identity().clone();
+    let bindings = build(&store, &entries).expect("heavy binds");
+    let (mut world, _, b) = Fixture::started(19);
+    let before = snapshot(&world);
+    let start = calls();
+    let error = bindings
+        .dispatch(&mut world, b, &identity, &call("heavy", Vec::new()))
+        .expect_err("over count with foreign actor");
     assert_eq!(error, BindingError::ProposalLimit);
     assert_eq!(calls(), start + 1);
     assert_unchanged(&world, &before, "proposal limit");
 }
 
-// #57: Call validation precedes every actor-error kind.
+// Lead #57: Call-before-Actor precedence against each actor-error kind.
 #[test]
 fn call_precedes_every_actor_error_kind() {
-    let store = ActionSignatureStore::new(Ulid::from_u128(900), Vec::new()).expect("empty store");
-    let identity = store.identity().clone();
-    let bindings = ActionBindings::new(store.clone(), identity.clone(), Vec::new()).expect("empty");
-    let forged = call("forged", Vec::new());
-
-    // NoEncounter
-    {
-        let mut idle = World::new(4);
-        let loner = idle.spawn(EntityMeta {});
-        let before = snapshot(&idle);
-        let error = bindings
-            .dispatch(&mut idle, loner, &identity, &forged)
-            .expect_err("no enc");
-        assert!(matches!(error, BindingError::Call(_)));
-        assert_unchanged(&idle, &before, "no encounter");
-    }
-
-    // Started world cases.
+    let (bindings, identity) = standard();
     let fixture = Fixture::new();
+
+    // No encounter.
+    let mut idle = World::new(4);
+    let loner = idle.spawn(EntityMeta {});
+    let before = snapshot(&idle);
+    let error = bindings
+        .dispatch(&mut idle, loner, &identity, &call("forged", Vec::new()))
+        .expect_err("no encounter + bad call");
+    assert!(matches!(
+        &error,
+        BindingError::Call(inner) if inner.code == SignatureErrorCode::UnknownAction
+    ));
+    assert_unchanged(&idle, &before, "no encounter");
+
+    // Live non-participant, stale id, out-of-turn.
     let mut world = World::new(4);
     let outsider = world.spawn(EntityMeta {});
     let stale = world.spawn(EntityMeta {});
     world.despawn(stale);
     let (a, b) = fixture.start_in(&mut world);
+    assert_eq!(active(&world), b);
+    let cases = [outsider, stale, a];
+    let before = snapshot(&world);
+    for actor in &cases {
+        let error = bindings
+            .dispatch(&mut world, *actor, &identity, &call("forged", Vec::new()))
+            .expect_err("actor + bad call");
+        assert!(
+            matches!(
+                &error,
+                BindingError::Call(inner) if inner.code == SignatureErrorCode::UnknownAction
+            ),
+            "actor {actor:?}"
+        );
+        assert_unchanged(&world, &before, "actor + bad call");
+    }
 
-    // NotParticipant
-    {
-        let before = snapshot(&world);
-        let error = bindings
-            .dispatch(&mut world, outsider, &identity, &forged)
-            .expect_err("outsider");
-        assert!(matches!(error, BindingError::Call(_)));
-        assert_unchanged(&world, &before, "outsider");
-    }
-    // AbsentActor
-    {
-        let before = snapshot(&world);
-        let error = bindings
-            .dispatch(&mut world, stale, &identity, &forged)
-            .expect_err("stale");
-        assert!(matches!(error, BindingError::Call(_)));
-        assert_unchanged(&world, &before, "stale");
-    }
-    // OutOfTurn
-    {
-        let before = snapshot(&world);
-        let error = bindings
-            .dispatch(&mut world, a, &identity, &forged)
-            .expect_err("out of turn");
-        assert!(matches!(error, BindingError::Call(_)));
-        assert_unchanged(&world, &before, "out of turn");
-    }
-    // DeadActor
-    {
-        let mut killed = world.clone();
-        perform_action(
-            &mut killed,
-            &CombatAction::UseAbility {
-                actor: b,
-                ability: Ulid::from_u128(SLAY),
-                target: a,
-            },
-        )
-        .expect("slay");
-        let before = snapshot(&killed);
-        let error = bindings
-            .dispatch(&mut killed, a, &identity, &forged)
-            .expect_err("dead");
-        assert!(matches!(error, BindingError::Call(_)));
-        assert_unchanged(&killed, &before, "dead");
-    }
+    // Dead combatant.
+    let mut killed = world.clone();
+    perform_action(
+        &mut killed,
+        &CombatAction::UseAbility {
+            actor: b,
+            ability: Ulid::from_u128(SLAY),
+            target: a,
+        },
+    )
+    .expect("the slay is legal");
+    let before_dead = snapshot(&killed);
+    let error = bindings
+        .dispatch(&mut killed, a, &identity, &call("forged", Vec::new()))
+        .expect_err("dead + bad call");
+    assert!(matches!(
+        &error,
+        BindingError::Call(inner) if inner.code == SignatureErrorCode::UnknownAction
+    ));
+    assert_unchanged(&killed, &before_dead, "dead + bad call");
+
+    // Positive control: a valid call with the same actors still yields Actor errors.
+    let error = bindings
+        .dispatch(&mut world, outsider, &identity, &tripwire_call())
+        .expect_err("non-participant");
+    assert!(matches!(
+        error,
+        BindingError::Actor(CombatError::NotParticipant { .. })
+    ));
 }
 
-// #60: Apply-rejection path runs the handler exactly once.
+// Lead #60: the Apply-rejection test's handler ran exactly once.
 #[test]
-fn apply_rejection_runs_handler_once() {
-    let entries = vec![(
-        signature("combo2", Vec::new()),
-        slay_then_attack as ActionHandler,
-    )];
-    let store = store_of(&entries);
-    let identity = store.identity().clone();
-    let bindings = build(&store, &entries).expect("binds");
+fn apply_rejection_handler_runs_once() {
+    let (bindings, identity) = standard();
     let (mut world, a, b) = Fixture::started(17);
     let before = snapshot(&world);
     let start = calls();
     let error = bindings
-        .dispatch(&mut world, b, &identity, &call("combo2", Vec::new()))
-        .expect_err("apply rejects");
+        .dispatch(
+            &mut world,
+            b,
+            &identity,
+            &call(
+                "combo",
+                vec![
+                    ("first", ability_ref(SLAY)),
+                    ("second", ability_ref(ATTACK)),
+                ],
+            ),
+        )
+        .expect_err("apply rejection");
     assert_eq!(
         error,
         BindingError::Apply {
@@ -642,49 +675,15 @@ fn apply_rejection_runs_handler_once() {
             error: CombatError::DeadTarget { target: a },
         }
     );
-    assert_eq!(calls(), start + 1);
+    assert_eq!(calls(), start + 1, "handler ran exactly once");
     assert_unchanged(&world, &before, "apply rejection");
 }
 
-// #62: binding count bound precedes unknown ids.
+// Lead #101: each of the six rejection paths leaves the world unchanged.
 #[test]
-fn binding_count_precedes_unknown() {
-    let store = ActionSignatureStore::new(Ulid::from_u128(900), Vec::new()).expect("empty store");
-    let mut entries = Vec::new();
-    for i in 0..(MAX_ACTION_SIGNATURES + 1) {
-        entries.push((
-            signature(&format!("a{i:04}"), Vec::new()),
-            pass_handler as ActionHandler,
-        ));
-    }
-    let error = build(&store, &entries).expect_err("too many");
-    assert_eq!(error, BindingError::TooManyBindings);
-}
-
-// #62: binding count bound precedes missing ids.
-#[test]
-fn binding_count_precedes_missing() {
-    let declared = vec![
-        (signature("pass", Vec::new()), pass_handler as ActionHandler),
-        (
-            signature("refuse", Vec::new()),
-            refuse_handler as ActionHandler,
-        ),
-    ];
-    let store = store_of(&declared);
-    let mut entries = Vec::new();
-    for _ in 0..(MAX_ACTION_SIGNATURES + 1) {
-        entries.push(declared[0].clone());
-    }
-    let error = build(&store, &entries).expect_err("too many");
-    assert_eq!(error, BindingError::TooManyBindings);
-}
-
-// #101: each rejection in the retry sequence leaves the world unchanged.
-#[test]
-fn retry_rejections_leave_world_unchanged() {
+fn retry_rejections_each_leave_world_unchanged() {
     let (bindings, identity) = standard();
-    let (mut world, _a, b) = Fixture::started(29);
+    let (mut world, _, b) = Fixture::started(29);
     let rejected = [
         call(
             "combo",
@@ -697,28 +696,65 @@ fn retry_rejections_leave_world_unchanged() {
         call("wait", Vec::new()),
         flurry_call(JAB, 33),
         call("forged", Vec::new()),
-        strike_call(999),
+        call("strike", vec![("ability", ability_ref(999))]),
     ];
     for rejected_call in &rejected {
         let before = snapshot(&world);
-        bindings
+        let _ = bindings
             .dispatch(&mut world, b, &identity, rejected_call)
             .expect_err("rejected");
-        assert_unchanged(&world, &before, "rejection");
+        assert_unchanged(&world, &before, "rejection path");
     }
 }
 
-// #102: empty proposals assert the handler ran.
+// Lead #102: the empty-proposals case asserts the handler ran.
 #[test]
-fn empty_proposals_asserts_handler_ran() {
+fn empty_proposals_handler_ran() {
     let (bindings, identity) = standard();
-    let (mut world, _a, b) = Fixture::started(23);
+    let (mut world, _, b) = Fixture::started(13);
     let before = snapshot(&world);
     let start = calls();
     let outcomes = bindings
         .dispatch(&mut world, b, &identity, &flurry_call(JAB, 0))
-        .expect("empty");
+        .expect("empty proposals");
     assert!(outcomes.is_empty());
-    assert_eq!(calls(), start + 1);
-    assert_unchanged(&world, &before, "empty");
+    assert_eq!(calls(), start + 1, "handler ran");
+    assert_unchanged(&world, &before, "empty proposals");
+}
+
+// Lead #62 (unknown): count bound precedes unknown ids.
+#[test]
+fn binding_count_precedes_unknown() {
+    // Over-count input: one declared id plus 1024 unknown ids (1025 total),
+    // no duplicate and no missing declared id.
+    let declared = vec![(signature("zzzz", Vec::new()), pass as ActionHandler)];
+    let store = store_of(&declared);
+    let mut over: Vec<(ActionSignature, ActionHandler)> = vec![declared[0].clone()];
+    for i in 0..MAX_ACTION_SIGNATURES {
+        over.push((
+            signature(&format!("u{i:04}"), Vec::new()),
+            pass as ActionHandler,
+        ));
+    }
+    assert_eq!(over.len(), MAX_ACTION_SIGNATURES + 1);
+    let error = build(&store, &over).expect_err("over count");
+    assert_eq!(error, BindingError::TooManyBindings);
+
+    // Same input minus the excess (1024 bindings) still has an unknown id and
+    // no missing declared id, so it fails as UnknownBinding on its own.
+    let mut under: Vec<(ActionSignature, ActionHandler)> = vec![declared[0].clone()];
+    for i in 0..(MAX_ACTION_SIGNATURES - 1) {
+        under.push((
+            signature(&format!("u{i:04}"), Vec::new()),
+            pass as ActionHandler,
+        ));
+    }
+    assert_eq!(under.len(), MAX_ACTION_SIGNATURES);
+    let error = build(&store, &under).expect_err("unknown on its own");
+    assert_eq!(
+        error,
+        BindingError::UnknownBinding {
+            action_id: "u0000".into()
+        }
+    );
 }
