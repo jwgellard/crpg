@@ -104,6 +104,71 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    pattern denies a whole compound command when any part matches (for example
    `git branch --show-current` inside a `;` chain), and one worker read that
    single refusal as "shell denied" and stopped: briefs now name the denied
+13. **Beam Free is Cat Jam renamed (the user, 2026-10-16: "a BeamFree model
+   that is unlimited on Go"; "Beam is just Cat Jam as a new name, so it
+   should take over Cat Jams tasks").** Every rule, tier place and
+   field-record row written for Cat Jam in this file applies to
+   `opencode-go/beam-free`, and the uncapped Go models are Beam and
+   `opencode-go/longcat-2.5-preview-free`; both keep working after the Go
+   5-hour cap. Never route `opencode/beam-free`, which draws on the free Zen
+   pool; `oc.py` refuses it and both Cat Jam IDs, naming the Go Beam ID.
+   First runs under the new name: the T108 blind ADR draft, 395 lines in
+   88 s at $0.00 (unreviewed); then A0-8 (crpg-cli `AGENTS.md` trim).
+   **Many free reviews, collated (the user, 2026-10-16):** "Feel free to run
+   multiple reviews through the unlimited models since they are completely
+   free. Happy to have multiple review sessions running with them that
+   collate into an overall finding." Run several independent reviews of one
+   package on Beam and LongCat (within the three-runs-per-model cap) and
+   merge their findings into one verdict before any Kimi K3 or Gemini 4 Argon
+   review. A finding counts once however many reviewers raise it; a finding
+   only one reviewer raises still gets the manager's check.
+14. **LongCat is out of routing (the user, 2026-10-16: "if LongCat keeps
+   failing just stop using it").** Its runs that evening: R16, R17 and R18
+   deep research exited mid-run with no report (Beam then wrote all three);
+   one A0-8 review answered `ready-for-pr` after 3 steps without reading the
+   files; one hung (11 minutes, `cause: hang`); only the T108 draft
+   delivered. That is 5 failures in 6, past the §4.1 demotion rule. Do not
+   dispatch `opencode-go/longcat-2.5-preview-free`; Beam is the only
+   uncapped Go model, and free multi-reviews run on Beam alone (up to three
+   at once) until another uncapped model proves itself.
+15. **Deny the `execute` tool (2026-10-16, about 23:30 UTC).** OpenCode 2.x
+   gives every agent an `execute` tool that runs JavaScript with `fs`,
+   `child_process` and `tools.opencode.*`, and the agents' `bash`, `edit`,
+   `webfetch` and `external_directory` rules do not apply to it. Two Beam
+   A0-8 reviews used it to call `worktree_list` and then `session_move` into
+   slots 1–4, `alt-2` and `doc-1` (no writes found; slot-1's uncommitted
+   T097 work untouched) and died with `Agent not found`; a LongCat review ran
+   `git` through `execSync`; research workers fetched APIs and read files
+   with it past `bash: deny`. Probed: `"execute": "deny"` in the permission
+   block removes the tool (`EXECUTE-DENIED`), and without it the `review`
+   role returns `EXECUTE-RESULT: 2`. The deny is in `opencode.json`, every
+   `.opencode/agents/*.md` and the research configs, and
+   `tools/tests/test_opencode_config.py` fails if it goes. A slot whose
+   branch predates the fix (T097 in slot-1, A0-3b in slot-2) still allows
+   the tool until its branch takes `setup/A0-config`.
+   A second hole, found the same night: a bash allow rule such as
+   `"git show*": allow` also matches `git show X > file`, so two Beam reviews
+   with `edit: deny` wrote copies of committed files into the worktree. The
+   read-only roles (`crpg-review`, `crpg-scout`, `crpg-grunt`) now end their
+   `bash` rules with `"*>*": deny`; probed (the redirect is refused, plain
+   `git show` still runs) and guarded by the same test file.
+
+16. **Kimi K3 and Gemini 4 Argon leave the default routes (the user,
+   2026-10-17: "Kimi and Argon get so few usages that we should probably
+   consider switching their tasks to something else").** The Go weekly
+   limit stopped every Go model on 2026-10-17 at about 00:00 UTC (reset
+   about 2026-10-18 23:15 UTC) after $13.63 of notional spend in two days;
+   Gemini 4 Argon ($5.34, 79 steps) and Kimi K3 ($4.17, 76 steps) were
+   $9.51 of it, from about 10% of the paid steps. The Go page
+   (<https://opencode.ai/go>, read 2026-10-17) gives Kimi K3 110 requests
+   per 5 hours and Argon 220 (880 while its 2× promotion lasts), against
+   34,670 for DeepSeek V4.1 Flash and 45,300 for Muse Spark. Their routes
+   in §4 now go to MiMo-V2.6-Pro, DeepSeek V4 Pro and collated Beam
+   reviews. Either model may take one short review, at most one per 5-hour
+   window, only to settle a high finding the collated free reviews disagree
+   on. `opencode stats --days 7 --models --cost --json --standalone` shows
+   local spend per model; the quota left and the reset time are only on the
+   opencode.ai dashboard.
 
 ## 2. Claude models (subagents in Claude Code)
 
@@ -299,9 +364,9 @@ on the free list. They wait for A0-7's fixtures.
 The principle: **plentiful models implement, scarce strong models review.**
 On Go that also means **cheap**: implement on Muse Spark Contributor,
 DeepSeek V4.1 Flash or MiMo-V2.6-Pro, which cost fractions of a cent per
-request. Keep Kimi K3 and Gemini 4 Argon for reviews (2–5 requests) and
-escalations, and never run them head to head on a long implementation or
-measurement run. The manager learned this on 2026-10-16 by doing it.
+request. Kimi K3 and Gemini 4 Argon take no default route (§1 item 16):
+at most one short tie-break review per 5-hour window, and never a long
+implementation or measurement run. The manager learned this on 2026-10-16 by doing it.
 A bake-off implementation run took 5–42 requests (median 10); a review took
 2–5. Kimi K3's 110 requests per 5 hours is about ten implementations but
 thirty reviews.
@@ -309,9 +374,9 @@ thirty reviews.
 | Work | First choice | Second, another lab | When Go limits run out |
 |---|---|---|---|
 | I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
-| I outside the S-set, harder or after one failure | `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | Claude `implementer` |
-| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | `opencode-go/deepseek-v4.1-flash` |
-| First-pass review | `opencode-go/gemini-4-argon-contributor` | `opencode-go/kimi-k3`, or `opencode-go/glm-5.3` | `opencode-go/deepseek-v4-pro` |
+| I outside the S-set, harder or after one failure | `opencode-go/mimo-v2.6-pro` | `opencode-go/deepseek-v4-pro` | Claude `implementer` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
 | Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
@@ -331,7 +396,8 @@ Tier membership:
   budget of any model.
 - **O2:** GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash,
   Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation
-  retry), and Cat Jam Free (fast, but a stealth model whose terms can change).
+  retry), and Beam Free, formerly Cat Jam Free (fast, but a stealth model
+  whose terms can change; §1 item 13).
 - **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview
   Free, Big Pickle, Space Bunny Free (correct
   but slow and token-hungry), Qwen3.8 Max and Hy4 preview (correct but slow;
@@ -345,8 +411,8 @@ Tier membership:
 Data handling: Gemini 4 Argon Contributor, the Muse Spark contributor models,
 Big Pickle and MiMo-V2.6-Flash Free may train on prompts. That is acceptable
 for this public repository under `docs/AGENT_TEAM_PLAN.md` §4.2 rule 4 and
-D28-e; if D28-e is refused, drop them and promote Kimi K3 to first-pass
-reviewer.
+D28-e; if D28-e is refused, drop them (Argon is already off the default
+routes, §1 item 16).
 
 ### 4.1 Field record: demote and promote
 
@@ -452,3 +518,10 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code + user routing rule · Recorded the user's rule that free Zen capacity goes only to strong models with a free Zen variant (Muse Spark, DeepSeek V4.1 Flash, GLM-5.3-Flash), while LongCat and Cat Jam always use their unlimited Go IDs.
 - 2026-10-16 (UTC) · claude-code + free-tier reset time · Recorded the user's report that the free Zen limit takes about 12 hours to reset, and the 14:00 UTC repeat, so a manager routes to Go IDs after a hit instead of retrying free models.
 - 2026-10-16 (UTC) · claude-code + manager handover · Recorded OpenCode 2.x as item 12, moved Scouting and the routine and bookkeeping routes off Cat Jam, and added the session field-record rows, so routing matches the versions and runs in use.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + manager session 4 · Added item 13: Beam Free as the second uncapped Go model now that Cat Jam is gone, with its Go-only route and first runs, so a manager can keep slots busy through the Go cap.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Rewrote item 13 and the O2 tier entry so that Beam inherits Cat Jam's rules, tier place and field record, as the user directed; the earlier entry's "Cat Jam is gone" reading is superseded.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: many free reviews · Added to item 13 the user's rule to run several independent reviews on Beam and LongCat and collate them before any paid review.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + user: stop using LongCat · Added item 14 taking LongCat out of routing on its evening record (5 failures in 6), as the user directed.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + execute-tool escape · Added item 15: OpenCode 2.x's `execute` tool bypassed every agent permission rule (two Beam reviews moved their sessions into other slots), and the probed `execute: deny` fix with its guard test.
+- 2026-10-16 (UTC) · claude-code/opus-5.5 + redirect hole · Added to item 15 the shell-redirection hole in read-only roles and its probed `"*>*": deny` fix.
+- 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + user routing change · Took Kimi K3 and Gemini 4 Argon off the default routes (§1 item 16, §4) after the Go weekly limit, because their per-request cost spent most of the shared Go budget.

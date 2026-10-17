@@ -60,15 +60,13 @@ MODEL_FAULT_CAUSES = frozenset({"no-edit", "timeout", "hang"})
 
 # docs/agents/MODELS.md section 4: the Zen LongCat ID now lives on the Go
 # subscription, so the Zen form is refused with a pointer at the Go form.
-# Cat Jam is gone from both providers after the OpenCode 2.x upgrade, so
-# both Cat Jam IDs are refused as removed (scout with DeepSeek Flash).
+# Cat Jam came back after the OpenCode 2.x upgrade as Beam Free (the user,
+# 2026-10-16), so both Cat Jam IDs and Beam's Zen ID name the Go Beam ID.
 RENAMED_MODELS = {
     "opencode/longcat-2.5-preview-free": "opencode-go/longcat-2.5-preview-free",
-}
-
-REMOVED_MODELS = {
-    "opencode/cat-jam-free": "opencode-go/deepseek-v4.1-flash",
-    "opencode-go/cat-jam-free": "opencode-go/deepseek-v4.1-flash",
+    "opencode/beam-free": "opencode-go/beam-free",
+    "opencode/cat-jam-free": "opencode-go/beam-free",
+    "opencode-go/cat-jam-free": "opencode-go/beam-free",
 }
 
 # Wave concurrency caps from docs/agents/MODELS.md sections 1 and 4
@@ -646,16 +644,9 @@ def check_wave_crates(members: list[tuple[str, str, str]],
 def check_model_id(model: str) -> None:
     """Refuse moved or removed model IDs (exit 2 usage).
 
-    Zen IDs that moved to the Go subscription name the Go form; Cat Jam
-    IDs removed by the 2.x upgrade name the DeepSeek Flash scout instead
-    (docs/agents/MODELS.md section 4).
+    Zen IDs that moved to the Go subscription name the Go form, and Cat
+    Jam IDs name Beam, its new name (docs/agents/MODELS.md section 4).
     """
-    if model in REMOVED_MODELS:
-        raise Exit(
-            2,
-            f"usage: model {model} is no longer offered after the 2.x upgrade; "
-            f"scout with {REMOVED_MODELS[model]} instead",
-        )
     if model in RENAMED_MODELS:
         raise Exit(
             2,
