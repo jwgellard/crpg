@@ -48,9 +48,9 @@ BASE_SECTIONS = (
 EXACT_PREFIXES = ("exact contract", "re-contract")
 AMENDMENT_PREFIXES = ("contract amendment", "amendment")
 
-# Decision-shaped base sections (A0-3b attempt 2). Deliberately narrow: only
-# a heading whose normalised name is exactly `decision`, or that starts with
-# one of these tails, is contract. `Decisions — 2026-10-05 (UTC)`,
+# Decision-shaped base sections (A0-3b). Deliberately narrow: after prefix
+# stripping, a heading is contract only when its normalised name is exactly
+# `decision`, or starts with one of these tails. `Decisions — 2026-10-05 (UTC)`,
 # `Decisions (D19–D26)` and `Amendment decisions …` stay history.
 DECISION_PREFIXES = ("decisions this contract makes", "what must not change")
 

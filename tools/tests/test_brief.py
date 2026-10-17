@@ -605,9 +605,10 @@ class SizeProperty(unittest.TestCase):
         self.assertLess(document["bytes_out"], size / 4)
 
     def test_t023b_reference_matches_the_documented_example(self) -> None:
-        root = recall.find_repo_root()
-        with open(Path(root) / "tasks" / "T023b.md", encoding="utf-8", newline="") as handle:
+        fixture = HERE / "fixtures" / "brief" / "T023b.md"
+        with open(fixture, encoding="utf-8", newline="") as handle:
             text = handle.read()
+        root = recall.find_repo_root()
         built, document = brief.build("T023b", text, root)
         self.assertIn(
             'tasks/T023b.md §"Exact contract — 2026-10-05 (UTC)" (lines 125–1401)',
@@ -618,7 +619,28 @@ class SizeProperty(unittest.TestCase):
             'T023c windows" (lines 1454–2056)',
             built,
         )
-        self.assertEqual(document["bytes_in"], 124563)
+        self.assertEqual(document["bytes_in"], len(text.encode("utf-8")))
+
+
+class DecisionSectionsPinned(unittest.TestCase):
+    """Pins the narrowed decision rule of A0-3b (manager's fixture headings)."""
+
+    def test_contract_headings(self) -> None:
+        for heading in ("Decision", "What must not change", "1. Decisions this contract makes"):
+            self.assertEqual(brief.classify_heading(heading), "contract", heading)
+
+    def test_history_headings(self) -> None:
+        for heading in (
+            "Decision already made",
+            "Decision output",
+            "Decision to make",
+            "Decisions — 2026-10-04 (UTC)",
+            "Decisions (D19–D26)",
+            "Amendment decisions",
+        ):
+            self.assertEqual(brief.classify_heading(heading), "history", heading)
+
+
 
 
 if __name__ == "__main__":
