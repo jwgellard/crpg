@@ -2,7 +2,7 @@
 
 use crpg_core::{EntityId, Ulid};
 use crpg_net::protocol::{ReceiptStatus, RejectionCode, LANE_COMBAT};
-use crpg_server::checkpoint::load_checkpoint;
+use crpg_server::checkpoint::{load_checkpoint, CheckpointError};
 use crpg_server::host::{
     ControlGrant, DisclosureGrants, EntityDisclosure, Host, HostConfig, IngestDisposition,
     ProtocolSelection,
@@ -112,9 +112,15 @@ fn end_turn(version: u8, epoch: [u8; 16], seq: u64, observed: u64, actor: u64) -
     out
 }
 
-// #63
+// #63 — T022.md:616 requires the retained records to be exactly the
+// contiguous `capture_seq` range `(capture_acknowledged, last_capture]`, so
+// a `capture_seq` gap is invalid. History ranges are validated per record
+// (T022.md:613-614) and are never required to be contiguous between records;
+// this test removes the first retained record, which leaves seq 1 missing
+// from `(0, 2]` while every other field stays valid, so the contiguity check
+// is the only check that can reject the input.
 #[test]
-fn checkpoint_rejects_capture_history_gap() {
+fn checkpoint_rejects_capture_seq_gap() {
     let config = HostConfig {
         protocol: V2,
         incarnation: 1,
@@ -131,7 +137,10 @@ fn checkpoint_rejects_capture_history_gap() {
     host.ingest(peer, &bytes, 0).expect("ingest");
     host.pump(0).expect("pump");
     let saved = host.save_checkpoint().expect("save");
-    let text = String::from_utf8(saved).unwrap();
+    let text = String::from_utf8(saved.clone()).unwrap();
+    // Positive control: the unmodified checkpoint loads, so the removal below
+    // is the input's only defect.
+    assert!(load_checkpoint(&saved, 2, 0).is_ok());
     let start = text.find("\"captured\":[").expect("captured");
     let end = text.rfind("],\"capture_acknowledged\":0}").expect("tail");
     let second = text.find("\"capture_seq\":2").expect("second");
@@ -142,13 +151,15 @@ fn checkpoint_rejects_capture_history_gap() {
         &text[obj_start..end],
         &text[end..]
     );
-    let res = load_checkpoint(gapped.as_bytes(), 2, 0);
-    assert!(res.is_err());
+    assert_eq!(
+        load_checkpoint(gapped.as_bytes(), 2, 0).err(),
+        Some(CheckpointError::Malformed)
+    );
 }
 
-// #67
+// #67 — per-peer ingress cap, T022.md:301 (128 frames / 256 KiB).
 #[test]
-fn ingress_caps_refuse_and_admit_after_drain() {
+fn ingress_per_peer_cap_refuses_and_admits_after_drain() {
     let config = HostConfig {
         protocol: V2,
         incarnation: 1,
