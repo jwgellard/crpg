@@ -555,9 +555,15 @@ fn compare_step(op: &Op, oracle: &mut HistoryWorld, fresh: &mut HistoryWorld, dr
             assert_eq!(a, b, "use-ability diverged");
         }
         Op::EndTurn(index) => {
-            let action = CombatAction::EndTurn {
-                actor: active_or_live(fresh, *index),
+            // Keep both reaching later turns (active actor) and exercising the
+            // rejected EndTurn path (a random live id), chosen by the index's
+            // low bit, as the manager's attempt-3 note allows.
+            let actor = if index % 2 == 0 {
+                live_id(fresh, *index)
+            } else {
+                active_or_live(fresh, *index)
             };
+            let action = CombatAction::EndTurn { actor };
             let a = reference::perform_action(oracle, &action);
             let b = fresh.perform_action(&action);
             assert_eq!(a, b, "end-turn diverged");
