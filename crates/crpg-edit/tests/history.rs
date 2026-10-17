@@ -302,7 +302,13 @@ fn history_bytes_evicts_oldest_exact_survivors() {
     for _ in 0..doc.undo_depth() {
         doc.undo().unwrap();
     }
+    let before_files = doc.canonical_files().clone();
+    let before_revision = doc.revision();
+    let before_history = doc.history_bytes();
     assert_eq!(doc.undo(), Err(EditError::NothingToUndo));
+    assert_eq!(doc.canonical_files(), &before_files);
+    assert_eq!(doc.revision(), before_revision);
+    assert_eq!(doc.history_bytes(), before_history);
     // The three evicted (oldest) entries leave their documents behind; the
     // nine surviving entries are undone.
     for n in 0..3_u128 {

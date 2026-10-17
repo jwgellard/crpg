@@ -1156,6 +1156,11 @@ fn manifest_members_protected_object_relative() {
 #[test]
 fn create_document_serialized_form_exceeds_cap() {
     let mut doc = open();
+    let before_files = doc.canonical_files().clone();
+    let before_revision = doc.revision();
+    let before_history = doc.history_bytes();
+    let before_undo = doc.undo_depth();
+    let before_redo = doc.redo_depth();
     let big = "x".repeat(4_200_000);
     let mut big_item = item(20, "big");
     big_item.note = Some(big);
@@ -1172,6 +1177,13 @@ fn create_document_serialized_form_exceeds_cap() {
             limit: EditLimit::Document
         }
     );
+    // The refusal is observable only: nothing was committed.
+    assert_eq!(doc.canonical_files(), &before_files);
+    assert_eq!(doc.revision(), before_revision);
+    assert_eq!(doc.history_bytes(), before_history);
+    assert_eq!(doc.undo_depth(), before_undo);
+    assert_eq!(doc.redo_depth(), before_redo);
+    assert!(!doc.canonical_files().contains_key(&sp("items/big.json")));
     // Positive control: a small document is accepted.
     doc.apply(EditCommand::CreateDocument {
         path: sp("items/small.json"),
@@ -1183,6 +1195,9 @@ fn create_document_serialized_form_exceeds_cap() {
 #[test]
 fn value_commands_on_absent_path_and_unknown_object() {
     let mut doc = open();
+    let before_files = doc.canonical_files().clone();
+    let before_revision = doc.revision();
+    let before_history = doc.history_bytes();
     for command in [
         set(at("nope.json"), "/x", &json_str("v")),
         insert(at("nope.json"), "/x", &json_str("v")),
@@ -1195,6 +1210,10 @@ fn value_commands_on_absent_path_and_unknown_object() {
                 path: sp("nope.json")
             }
         );
+        assert_eq!(doc.canonical_files(), &before_files);
+        assert_eq!(doc.revision(), before_revision);
+        assert_eq!(doc.history_bytes(), before_history);
+        assert!(!doc.canonical_files().contains_key(&sp("nope.json")));
     }
     for command in [
         set(obj(99), "/x", &json_str("v")),
@@ -1208,6 +1227,9 @@ fn value_commands_on_absent_path_and_unknown_object() {
                 id: id(99)
             }
         );
+        assert_eq!(doc.canonical_files(), &before_files);
+        assert_eq!(doc.revision(), before_revision);
+        assert_eq!(doc.history_bytes(), before_history);
     }
 }
 
