@@ -345,6 +345,19 @@ impl FaultSchedule {
 // The fabric.
 // ---------------------------------------------------------------------------
 
+/// One pumped datagram awaiting `recv_from`, tagged with whether it still
+/// counts against staging caps.
+///
+/// Fault duplicates are clones of an already-counted datagram and carry
+/// `counted = false`, so receiving them releases no accounting.
+#[derive(Debug, Clone)]
+struct ReadyDatagram {
+    /// Datagram bytes.
+    bytes: Vec<u8>,
+    /// Whether this entry still holds staging accounting.
+    counted: bool,
+}
+
 /// One peer's staged datagrams plus its ingress budgets.
 ///
 /// The fabric keys peers by handle and never decodes bytes, so the session
@@ -355,7 +368,7 @@ struct PeerEntry {
     /// Staged but not yet pumped.
     pending: VecDeque<Vec<u8>>,
     /// Pumped and awaiting `recv_from`.
-    ready: VecDeque<Vec<u8>>,
+    ready: VecDeque<ReadyDatagram>,
     /// Staged datagram count (`pending` plus `ready`) against frame caps.
     staged_frames: usize,
     /// Staged byte total (`pending` plus `ready`) against byte caps.
@@ -521,12 +534,30 @@ impl InMemoryTransport {
     /// or [`None`] when nothing is ready (unknown peers included).
     pub fn recv_from(&mut self, peer: PeerId) -> Option<Vec<u8>> {
         let entry = self.peers.get_mut(&peer)?;
-        let bytes = entry.ready.pop_front()?;
-        entry.staged_frames = entry.staged_frames.saturating_sub(1);
-        entry.staged_bytes = entry.staged_bytes.saturating_sub(bytes.len());
-        self.staged_host_frames = self.staged_host_frames.saturating_sub(1);
-        self.staged_host_bytes = self.staged_host_bytes.saturating_sub(bytes.len());
-        Some(bytes)
+        let datagram = entry.ready.pop_front()?;
+        if datagram.counted {
+            debug_assert!(
+                entry.staged_frames > 0,
+                "counted recv underflows staged_frames"
+            );
+            entry.staged_frames -= 1;
+            debug_assert!(
+                entry.staged_bytes >= datagram.bytes.len(),
+                "counted recv underflows staged_bytes"
+            );
+            entry.staged_bytes -= datagram.bytes.len();
+            debug_assert!(
+                self.staged_host_frames > 0,
+                "counted recv underflows host frames"
+            );
+            self.staged_host_frames -= 1;
+            debug_assert!(
+                self.staged_host_bytes >= datagram.bytes.len(),
+                "counted recv underflows host bytes"
+            );
+            self.staged_host_bytes -= datagram.bytes.len();
+        }
+        Some(datagram.bytes)
     }
 
     /// Deterministic pump only: moves every peer's staged datagrams through
@@ -557,9 +588,15 @@ impl InMemoryTransport {
                     continue;
                 }
                 if periodic(faults.dup_every, entry.datagrams) {
-                    batch.push(bytes.clone());
+                    batch.push(ReadyDatagram {
+                        bytes: bytes.clone(),
+                        counted: false,
+                    });
                 }
-                batch.push(bytes);
+                batch.push(ReadyDatagram {
+                    bytes,
+                    counted: true,
+                });
             }
             if faults.reorder_depth > 0 && batch.len() > 1 {
                 window_shuffle(stream, &mut batch, faults.reorder_depth);
@@ -585,7 +622,7 @@ fn periodic(every: Option<u64>, counter: u64) -> bool {
 /// datagram surf right without bound; rotation keeps the proven bound.)
 /// Draws come from the seeded stream, keeping identical send/tick sequences
 /// byte-identical on the same build.
-fn window_shuffle(stream: &mut crpg_core::Pcg32, batch: &mut [Vec<u8>], depth: usize) {
+fn window_shuffle(stream: &mut crpg_core::Pcg32, batch: &mut [ReadyDatagram], depth: usize) {
     use core::num::NonZeroU32;
     let block = depth.saturating_add(1).max(1);
     let mut start = 0;

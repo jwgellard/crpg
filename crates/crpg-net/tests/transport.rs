@@ -1167,3 +1167,99 @@ fn snapshot_reassembly_bounds() {
     slot = Some(try_begin(&slot, clock.now()).expect("expiry resyncs: slot released"));
     assert!(slot.is_some());
 }
+
+// ---------------------------------------------------------------------------
+// T116: fault duplicates neither take nor release staging accounting.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fault_duplicate_does_not_release_staging_accounting() {
+    let caps = QueueCaps {
+        per_peer_frames: 1,
+        per_peer_bytes: 1_000_000,
+        host_frames: 1_000,
+        host_bytes: 1_000_000,
+    };
+    let mut transport = InMemoryTransport::new(caps, generous_rates(), SimClock(0));
+    let peer = transport.add_peer(EPOCH).expect("peer admitted");
+    assert!(transport.send_to(peer, vec![0xAA]).is_ok());
+    transport.tick(&FaultSchedule {
+        loss_every: None,
+        dup_every: Some(1),
+        reorder_depth: 0,
+        seed: 0,
+    });
+    let first = transport.recv_from(peer).expect("duplicate delivers");
+    assert_eq!(first, vec![0xAA]);
+    assert_eq!(
+        transport.send_to(peer, vec![0xBB]),
+        Err(RejectionCode::QueueFull),
+        "cap still held after receiving the duplicate"
+    );
+    let second = transport.recv_from(peer).expect("original delivers");
+    assert_eq!(second, vec![0xAA]);
+    assert!(
+        transport.send_to(peer, vec![0xBB]).is_ok(),
+        "admitted once the counted datagram is received"
+    );
+}
+
+#[test]
+fn fault_duplicate_does_not_release_host_staging_accounting() {
+    let caps = QueueCaps {
+        per_peer_frames: 1_000,
+        per_peer_bytes: 1_000_000,
+        host_frames: 1,
+        host_bytes: 1_000_000,
+    };
+    let mut transport = InMemoryTransport::new(caps, generous_rates(), SimClock(0));
+    let peer = transport.add_peer(EPOCH).expect("peer admitted");
+    assert!(transport.send_to(peer, vec![0xAA]).is_ok());
+    transport.tick(&FaultSchedule {
+        loss_every: None,
+        dup_every: Some(1),
+        reorder_depth: 0,
+        seed: 0,
+    });
+    let _ = transport.recv_from(peer).expect("duplicate delivers");
+    assert_eq!(
+        transport.send_to(peer, vec![0xBB]),
+        Err(RejectionCode::QueueFull),
+        "host cap still held after receiving the duplicate"
+    );
+    let _ = transport.recv_from(peer).expect("original delivers");
+    assert!(
+        transport.send_to(peer, vec![0xBB]).is_ok(),
+        "admitted once the counted datagram is received"
+    );
+}
+
+#[test]
+fn removing_peer_with_duplicates_releases_only_counted_staging() {
+    let caps = QueueCaps {
+        per_peer_frames: 1_000,
+        per_peer_bytes: 1_000_000,
+        host_frames: 10,
+        host_bytes: 1_000_000,
+    };
+    let mut transport = InMemoryTransport::new(caps, generous_rates(), SimClock(0));
+    let first = transport.add_peer(EPOCH).expect("peer admitted");
+    assert!(transport.send_to(first, vec![0xAA]).is_ok());
+    assert!(transport.send_to(first, vec![0xBB]).is_ok());
+    transport.tick(&FaultSchedule {
+        loss_every: None,
+        dup_every: Some(1),
+        reorder_depth: 0,
+        seed: 0,
+    });
+    transport.remove_peer(first);
+    let second = transport.add_peer(EPOCH).expect("peer admitted");
+    for _ in 0..10 {
+        assert!(transport.send_to(second, vec![0xCC]).is_ok());
+    }
+    assert_eq!(
+        transport.send_to(second, vec![0xDD]),
+        Err(RejectionCode::QueueFull),
+        "exactly the counted slots were released"
+    );
+}
