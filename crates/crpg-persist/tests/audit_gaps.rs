@@ -121,13 +121,43 @@ fn zstd_frame_header_descriptor_is_pinned() {
 // #42
 #[test]
 fn compressed_length_equal_payload_length_stored_raw() {
+    // Payload whose pinned (level 3, checksum off, dict id off, content size on)
+    // compression is exactly as long as the payload: must be stored raw.
     let payload = vec![0u8; 17];
+    let mut c = zstd::bulk::Compressor::new(ZSTD_LEVEL).expect("compressor");
+    c.include_checksum(false).expect("checksum");
+    c.include_dictid(false).expect("dict id");
+    c.include_contentsize(true).expect("content size");
+    c.set_pledged_src_size(Some(payload.len() as u64))
+        .expect("pledge");
+    let compressed = c.compress(&payload).expect("compress");
+    assert_eq!(compressed.len(), payload.len());
+
     let encoded = encode_envelope(testkind(), &payload).expect("encode");
     let flags = u16::from_le_bytes([encoded[10], encoded[11]]);
-    assert_eq!(flags, 0);
+    assert_eq!(flags, 0, "equal length must be stored raw");
     assert_eq!(u64::from_le_bytes(encoded[20..28].try_into().unwrap()), 17);
     assert_eq!(u64::from_le_bytes(encoded[28..36].try_into().unwrap()), 17);
     assert_eq!(&encoded[HEADER_BYTES..], &payload[..]);
+
+    // Neighbouring case: compressed length exactly one byte shorter -> stored compressed.
+    let payload2 = vec![0u8; 18];
+    let mut c2 = zstd::bulk::Compressor::new(ZSTD_LEVEL).expect("compressor");
+    c2.include_checksum(false).expect("checksum");
+    c2.include_dictid(false).expect("dict id");
+    c2.include_contentsize(true).expect("content size");
+    c2.set_pledged_src_size(Some(payload2.len() as u64))
+        .expect("pledge");
+    let compressed2 = c2.compress(&payload2).expect("compress");
+    assert_eq!(compressed2.len(), payload2.len() - 1);
+
+    let encoded2 = encode_envelope(testkind(), &payload2).expect("encode");
+    let flags2 = u16::from_le_bytes([encoded2[10], encoded2[11]]);
+    assert_eq!(flags2, FLAG_ZSTD, "one shorter must be stored compressed");
+    assert_eq!(
+        u64::from_le_bytes(encoded2[28..36].try_into().unwrap()) as usize,
+        compressed2.len()
+    );
 }
 
 // #45
