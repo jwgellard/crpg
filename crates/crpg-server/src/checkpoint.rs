@@ -263,6 +263,17 @@ fn validate_captures(parsed: &Parsed) -> Result<(), CheckpointError> {
             return malformed;
         }
     }
+    // The restored host's `last_capture` is `capture_acknowledged +
+    // captured.len()`; bind it to the largest value a running host can reach
+    // (`u64::MAX - 1`, see `accepted_room`), so a checkpoint can never
+    // install the reserved `u64::MAX` counter.
+    let watermark = parsed
+        .capture_acknowledged
+        .checked_add(parsed.captured.len() as u64)
+        .ok_or(CheckpointError::Malformed)?;
+    if watermark > u64::MAX - 1 {
+        return Err(CheckpointError::Malformed);
+    }
     Ok(())
 }
 

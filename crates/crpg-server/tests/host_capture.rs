@@ -2706,6 +2706,27 @@ fn checkpoint_rejects_invalid_input() {
     );
     assert!(end > start);
     assert!(load_checkpoint(emptied.as_bytes(), 2, 0).is_ok());
+    // Reserved capture counter: an empty journal must never carry the
+    // sentinel watermark (would install `u64::MAX` on restore).
+    let emptied_max = format!(
+        "{}\"captured\":[],\"capture_acknowledged\":{}}}",
+        &text[..start],
+        u64::MAX
+    );
+    assert_eq!(
+        load_checkpoint(emptied_max.as_bytes(), 2, 0).err(),
+        Some(CheckpointError::Malformed)
+    );
+    // The largest watermark a running host can reach is `u64::MAX - 1`
+    // (see `accepted_room`); loading it stays valid.
+    let emptied_maxminus1 = format!(
+        "{}\"captured\":[],\"capture_acknowledged\":{}}}",
+        &text[..start],
+        u64::MAX - 1
+    );
+    let loaded = load_checkpoint(emptied_maxminus1.as_bytes(), 2, 0).expect("accepted");
+    assert_eq!(loaded.capture_acknowledged(), u64::MAX - 1);
+    assert_eq!(loaded.last_capture(), u64::MAX - 1);
     // Positive control for the incarnation rule.
     assert_eq!(
         load_checkpoint(&saved, 1, 0).err(),
