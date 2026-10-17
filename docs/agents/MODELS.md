@@ -153,6 +153,23 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    `bash` rules with `"*>*": deny`; probed (the redirect is refused, plain
    `git show` still runs) and guarded by the same test file.
 
+16. **Kimi K3 and Gemini 4 Argon leave the default routes (the user,
+   2026-10-17: "Kimi and Argon get so few usages that we should probably
+   consider switching their tasks to something else").** The Go weekly
+   limit stopped every Go model on 2026-10-17 at about 00:00 UTC (reset
+   about 2026-10-18 23:15 UTC) after $13.63 of notional spend in two days;
+   Gemini 4 Argon ($5.34, 79 steps) and Kimi K3 ($4.17, 76 steps) were
+   $9.51 of it, from about 10% of the paid steps. The Go page
+   (<https://opencode.ai/go>, read 2026-10-17) gives Kimi K3 110 requests
+   per 5 hours and Argon 220 (880 while its 2× promotion lasts), against
+   34,670 for DeepSeek V4.1 Flash and 45,300 for Muse Spark. Their routes
+   in §4 now go to MiMo-V2.6-Pro, DeepSeek V4 Pro and collated Beam
+   reviews. Either model may take one short review, at most one per 5-hour
+   window, only to settle a high finding the collated free reviews disagree
+   on. `opencode stats --days 7 --models --cost --json --standalone` shows
+   local spend per model; the quota left and the reset time are only on the
+   opencode.ai dashboard.
+
 ## 2. Claude models (subagents in Claude Code)
 
 Prices are Anthropic API rates per million tokens; on a subscription they
@@ -347,9 +364,9 @@ on the free list. They wait for A0-7's fixtures.
 The principle: **plentiful models implement, scarce strong models review.**
 On Go that also means **cheap**: implement on Muse Spark Contributor,
 DeepSeek V4.1 Flash or MiMo-V2.6-Pro, which cost fractions of a cent per
-request. Keep Kimi K3 and Gemini 4 Argon for reviews (2–5 requests) and
-escalations, and never run them head to head on a long implementation or
-measurement run. The manager learned this on 2026-10-16 by doing it.
+request. Kimi K3 and Gemini 4 Argon take no default route (§1 item 16):
+at most one short tie-break review per 5-hour window, and never a long
+implementation or measurement run. The manager learned this on 2026-10-16 by doing it.
 A bake-off implementation run took 5–42 requests (median 10); a review took
 2–5. Kimi K3's 110 requests per 5 hours is about ten implementations but
 thirty reviews.
@@ -357,9 +374,9 @@ thirty reviews.
 | Work | First choice | Second, another lab | When Go limits run out |
 |---|---|---|---|
 | I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
-| I outside the S-set, harder or after one failure | `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | Claude `implementer` |
-| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | `opencode-go/deepseek-v4.1-flash` |
-| First-pass review | `opencode-go/gemini-4-argon-contributor` | `opencode-go/kimi-k3`, or `opencode-go/glm-5.3` | `opencode-go/deepseek-v4-pro` |
+| I outside the S-set, harder or after one failure | `opencode-go/mimo-v2.6-pro` | `opencode-go/deepseek-v4-pro` | Claude `implementer` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
 | Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
@@ -394,8 +411,8 @@ Tier membership:
 Data handling: Gemini 4 Argon Contributor, the Muse Spark contributor models,
 Big Pickle and MiMo-V2.6-Flash Free may train on prompts. That is acceptable
 for this public repository under `docs/AGENT_TEAM_PLAN.md` §4.2 rule 4 and
-D28-e; if D28-e is refused, drop them and promote Kimi K3 to first-pass
-reviewer.
+D28-e; if D28-e is refused, drop them (Argon is already off the default
+routes, §1 item 16).
 
 ### 4.1 Field record: demote and promote
 
@@ -507,3 +524,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: stop using LongCat · Added item 14 taking LongCat out of routing on its evening record (5 failures in 6), as the user directed.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + execute-tool escape · Added item 15: OpenCode 2.x's `execute` tool bypassed every agent permission rule (two Beam reviews moved their sessions into other slots), and the probed `execute: deny` fix with its guard test.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + redirect hole · Added to item 15 the shell-redirection hole in read-only roles and its probed `"*>*": deny` fix.
+- 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + user routing change · Took Kimi K3 and Gemini 4 Argon off the default routes (§1 item 16, §4) after the Go weekly limit, because their per-request cost spent most of the shared Go budget.
