@@ -283,3 +283,46 @@ fn oversized_change_is_refused() {
     assert_eq!(receipt.changes.len(), 4);
     assert!(doc.history_bytes() <= MAX_HISTORY_BYTES);
 }
+
+#[test]
+fn history_bytes_evicts_oldest_exact_survivors() {
+    // Twelve entries of ~3.67 MiB each: the cap fits nine, so the three
+    // oldest are evicted and the newest nine survive. The survivors are
+    // determined by undoing every remaining entry, not by re-running the
+    // eviction loop.
+    let mut doc = open();
+    for n in 0..12_u128 {
+        doc.apply(EditCommand::CreateDocument {
+            path: item_path(100 + n),
+            document: big_item(100 + n),
+        })
+        .unwrap();
+    }
+    assert_eq!(doc.undo_depth(), 9);
+    for _ in 0..doc.undo_depth() {
+        doc.undo().unwrap();
+    }
+    let before_files = doc.canonical_files().clone();
+    let before_revision = doc.revision();
+    let before_history = doc.history_bytes();
+    assert_eq!(doc.undo(), Err(EditError::NothingToUndo));
+    assert_eq!(doc.canonical_files(), &before_files);
+    assert_eq!(doc.revision(), before_revision);
+    assert_eq!(doc.history_bytes(), before_history);
+    // The three evicted (oldest) entries leave their documents behind; the
+    // nine surviving entries are undone.
+    for n in 0..3_u128 {
+        assert!(
+            doc.canonical_files().contains_key(&item_path(100 + n)),
+            "evicted entry's document should remain: {}",
+            100 + n
+        );
+    }
+    for n in 3..12_u128 {
+        assert!(
+            !doc.canonical_files().contains_key(&item_path(100 + n)),
+            "surviving entry's document should be undone: {}",
+            100 + n
+        );
+    }
+}

@@ -2348,3 +2348,71 @@ fn pending_discard_close_reaches_client_when_polled_at_once() {
         assert_forgotten_then_refused(&mut server, conn, code, pending);
     }
 }
+
+#[test]
+fn closed_record_kept_until_try_recv_reports_closed() {
+    let mut server = bind_server(ServerLimits::v1());
+    let raw = raw_lane(server.local_addr());
+    let (mut send, mut recv) = raw.open_and_write(&hello_frame(1, 16));
+    let (conn, _, _) = next_hello(&mut server);
+    server
+        .accept(
+            conn,
+            Welcome {
+                wire_version: 1,
+                epoch: epoch(1),
+            },
+        )
+        .expect("accept");
+    raw.read_welcome(&mut recv);
+    let one = pattern(11, 1, 64);
+    let two = pattern(11, 2, 64);
+    let mut bytes = frame_bytes(&one);
+    bytes.extend_from_slice(&frame_bytes(&two));
+    raw.write(&mut send, &bytes);
+    until("two complete frames queued", || {
+        server.stats(conn).expect("stats").inbound_frames == 2
+    });
+    raw.close(0x99);
+    // Drain every frame before polling the Closed event.
+    assert_eq!(server.try_recv(conn), Ok(Some(one)));
+    assert_eq!(server.try_recv(conn), Ok(Some(two)));
+    // Wait for the close to be published.
+    until("closed published", || server.wait(Duration::from_millis(1)));
+    // Polling Closed does not forget the record, because it held frames.
+    assert_eq!(
+        next_closed(&mut server),
+        (conn, CloseReason::Peer { code: 0x99 })
+    );
+    // The next try_recv reports Closed, which forgets the record.
+    assert_eq!(
+        server.try_recv(conn),
+        Err(ServerError::Closed(CloseReason::Peer { code: 0x99 }))
+    );
+    assert_eq!(server.try_recv(conn), Err(ServerError::UnknownConnection));
+}
+
+#[test]
+fn closed_without_held_frames_forgotten_on_poll() {
+    let mut server = bind_server(ServerLimits::v1());
+    let raw = raw_lane(server.local_addr());
+    let (_send, mut recv) = raw.open_and_write(&hello_frame(1, 16));
+    let (conn, _, _) = next_hello(&mut server);
+    server
+        .accept(
+            conn,
+            Welcome {
+                wire_version: 1,
+                epoch: epoch(1),
+            },
+        )
+        .expect("accept");
+    raw.read_welcome(&mut recv);
+    raw.close(0x99);
+    assert_eq!(
+        next_closed(&mut server),
+        (conn, CloseReason::Peer { code: 0x99 })
+    );
+    // No frames were held: forgotten as soon as Closed is polled.
+    assert_eq!(server.try_recv(conn), Err(ServerError::UnknownConnection));
+}

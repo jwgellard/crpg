@@ -754,12 +754,14 @@ fn recursive_object_refs_are_checked_in_every_value_context() {
         "{diagnostics:?}"
     );
     let pointers: Vec<&str> = diagnostics.iter().map(|d| d.pointer.as_str()).collect();
-    assert!(pointers.contains(&"/placements/0/overrides/deep/l0/0/l1/value"));
-    assert!(pointers.contains(&"/variables/0/default/l0/0/l1/value"));
-    assert!(pointers.contains(&"/graphs/0/nodes/0/body/cases/0/l0/0/l1/value"));
-    assert!(pointers.contains(&"/graphs/0/nodes/1/body/call/args/arg/l0/0/l1/value"));
-    assert!(pointers.contains(&"/graphs/0/nodes/2/body/args/arg/l0/0/l1/value"));
-    assert!(pointers.contains(&"/graphs/0/nodes/3/body/args/arg/l0/0/l1/value"));
+    assert!(pointers.contains(&"/placements/0/overrides/deep/value/l0/value/0/value/l1/value"));
+    assert!(pointers.contains(&"/variables/0/default/value/l0/value/0/value/l1/value"));
+    assert!(pointers.contains(&"/graphs/0/nodes/0/body/cases/0/value/l0/value/0/value/l1/value"));
+    assert!(
+        pointers.contains(&"/graphs/0/nodes/1/body/call/args/arg/value/l0/value/0/value/l1/value")
+    );
+    assert!(pointers.contains(&"/graphs/0/nodes/2/body/args/arg/value/l0/value/0/value/l1/value"));
+    assert!(pointers.contains(&"/graphs/0/nodes/3/body/args/arg/value/l0/value/0/value/l1/value"));
     // Asset import settings participate with no double emission.
     let mut campaign = valid_loaded();
     let Document::AssetsLock(assets) = campaign
@@ -783,6 +785,46 @@ fn recursive_object_refs_are_checked_in_every_value_context() {
         diagnostics[0].pointer,
         "/assets/assets~1models~1dragon.glb/import/ref/value"
     );
+}
+
+#[test]
+fn nested_ref_pointers_resolve_against_source_json() {
+    let mut campaign = valid_loaded();
+    let Document::Placements(placements) = campaign
+        .documents
+        .get_mut(&path("areas/start/placements.json"))
+        .unwrap()
+    else {
+        panic!("placements doc")
+    };
+    placements.placements[0].overrides.insert(
+        "deep".into(),
+        DataValue::Map(BTreeMap::from([(
+            "k/l~m".into(),
+            DataValue::List(vec![DataValue::Map(BTreeMap::from([(
+                "inner".into(),
+                DataValue::ObjectRef(id(9000)),
+            )]))]),
+        )])),
+    );
+    let files = serialize_campaign(&campaign).unwrap();
+    let diagnostics = validate(&campaign);
+    assert!(!diagnostics.is_empty());
+    let missing = id(9000).to_string();
+    for diagnostic in &diagnostics {
+        let file = diagnostic.file.as_ref().expect("diagnostic file");
+        let bytes = files.get(file).expect("source file");
+        let json: Value = serde_json::from_slice(bytes).expect("valid json");
+        let resolved = json
+            .pointer(&diagnostic.pointer)
+            .expect("pointer must resolve");
+        assert_eq!(
+            resolved,
+            &json!(missing),
+            "pointer {} did not resolve to the reference id",
+            diagnostic.pointer
+        );
+    }
 }
 
 #[test]
