@@ -1,9 +1,12 @@
 # ADR-0028: A generative game mode, and keeping the engine open to it
 
 Date: 2026-10-18 (UTC)
-Status: **Proposed**. Filed at the user's request to explore the idea; nothing
-is approved, scheduled or built. Each "Decision" item below is a proposal
-until the user accepts it.
+Status: **Accepted** as the prototype direction. The user approved it on
+2026-10-18 (UTC) in the Claude Code session
+https://claude.ai/code/session_01N47fNe43PFcjttNY1dWRSw ("thats basically how
+I want the prototype to be. It can be built out from there"). The game mode
+is the direction; the open items under Consequences are decided by later
+tasks. Nothing is scheduled or built.
 
 ## Context
 
@@ -49,7 +52,7 @@ These facts are true of the engine today, and they shape the proposal:
 
 ## Decision
 
-Proposed. Items 1–3 describe the mode, and items 4–12 are the guardrails
+Items 1–3 describe the mode, and items 4–12 are the guardrails
 that make it possible without weakening the core.
 
 ### The mode
@@ -201,7 +204,7 @@ that make it possible without weakening the core.
 
 ## Authority and affected surface
 
-- Decided by: not decided. Proposed for the user's review.
+- Decided by: the user (project owner), 2026-10-18 (UTC); see Status.
 - Authoritative contract: none yet. Future task files will own the kit
   manifest, the slot and lore-bible schemas, the overlay format, the
   `freeform` dialogue node, the generated-content allow-list and the
@@ -285,9 +288,8 @@ that make it possible without weakening the core.
 
 ## Acceptance and evidence
 
-Not yet run. Nothing is implemented. If the user accepts this ADR, acceptance
-means recording that decision and citing this ADR from spec §4.8, §5.4 and
-§12.1. Each implementing task defines its own tests. At minimum:
+Not yet run. Nothing is implemented. Acceptance was recorded on 2026-10-18
+(UTC) with dated notes citing this ADR in spec §4.8, §5.4 and §12.1. Each implementing task defines its own tests. At minimum:
 - replaying a generative session never calls a model and reproduces its
   `state_hash`;
 - hostile documents and hostile, model-written Lua are rejected or contained
@@ -300,3 +302,4 @@ means recording that decision and citing this ADR from spec §4.8, §5.4 and
 
 - 2026-10-18 (UTC) · claude-code + user request (LLM-generated campaigns) · Filed as Proposed to record the guardrails that keep runtime and author-time LLM generation possible without touching determinism, authority or the human-authored priority. No code, crate or dependency changes.
 - 2026-10-18 (UTC) · claude-code + user feedback on the draft · Reframed as a generative game mode built from human-made kits, allowed generated Lua under the existing sandbox with a narrower binding surface, and made editor generation strictly opt-in, per the user's three corrections. Still Proposed; no code changes.
+- 2026-10-18 (UTC) · claude-code + user acceptance · Marked Accepted as the prototype direction on the user's approval in this session, and recorded the spec cross-references; the Decision text is unchanged.
