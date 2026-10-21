@@ -1886,6 +1886,84 @@ class SpendGuardCase(unittest.TestCase):
         self.assertFalse(row["demote"])
 
 
+class GoSpendWindowCase(unittest.TestCase):
+    """Direct tests for ``go_spend`` window boundaries (A0-3e).
+
+    Every call passes a fixed ``now`` so edges are exact to the second.
+    """
+
+    GO = "opencode-go/deepseek-v4.1-flash"
+    KIMI = "opencode-go/kimi-k3"
+
+    def _fmt(self, dt):
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_b1_five_hour_boundary(self):
+        now = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+        exact = now - timedelta(hours=5)
+        over = now - timedelta(hours=5, seconds=1)
+        records = [
+            {"model": self.GO, "started_utc": self._fmt(exact), "cost": 1.0},
+            {"model": self.GO, "started_utc": self._fmt(over), "cost": 2.0},
+        ]
+        data = OCMOD.go_spend(records, now)
+        self.assertEqual(data["totals"]["5h"], 1.0)
+        self.assertEqual(data["totals"]["week"], 3.0)
+
+    def test_b2_week_boundary(self):
+        now = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+        exact = now - timedelta(days=7)
+        over = now - timedelta(days=7, seconds=1)
+        records = [
+            {"model": self.GO, "started_utc": self._fmt(exact), "cost": 1.0},
+            {"model": self.GO, "started_utc": self._fmt(over), "cost": 2.0},
+        ]
+        data = OCMOD.go_spend(records, now)
+        self.assertEqual(data["totals"]["5h"], 0.0)
+        self.assertEqual(data["totals"]["week"], 1.0)
+
+    def test_b3_clock_skew_not_counted_nor_scarce(self):
+        now = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+        future = now + timedelta(seconds=1)
+        records = [
+            {"model": self.KIMI, "started_utc": self._fmt(future), "cost": 1.0},
+        ]
+        data = OCMOD.go_spend(records, now)
+        self.assertEqual(data["totals"]["5h"], 0.0)
+        self.assertEqual(data["totals"]["week"], 0.0)
+        self.assertNotIn(self.KIMI, data["scarce"])
+
+    def test_b4_cost_coercion(self):
+        now = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+        started = self._fmt(now)
+        records = [
+            {"model": self.GO, "started_utc": started, "cost": True},
+            {"model": self.GO, "started_utc": started, "cost": None},
+            {"model": self.GO, "started_utc": started, "cost": "lots"},
+            {"model": self.GO, "started_utc": started},
+            {"model": self.GO, "started_utc": started, "cost": 7},
+        ]
+        data = OCMOD.go_spend(records, now)
+        self.assertEqual(data["totals"]["5h"], 7.0)
+        self.assertEqual(data["totals"]["week"], 7.0)
+
+    def test_b5_newest_scarce_start_order_independent(self):
+        now = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+        t0 = now - timedelta(hours=4)
+        t1 = now - timedelta(hours=2)
+        t2 = now - timedelta(hours=1)
+        latest = t2
+        records = [
+            {"model": self.KIMI, "started_utc": self._fmt(t0), "cost": 0.1},
+            {"model": self.KIMI, "started_utc": self._fmt(t1), "cost": 0.1},
+            {"model": self.KIMI, "started_utc": self._fmt(t2), "cost": 0.1},
+        ]
+        data_fwd = OCMOD.go_spend(records, now)
+        data_rev = OCMOD.go_spend(list(reversed(records)), now)
+        self.assertEqual(data_fwd["scarce"][self.KIMI], latest)
+        self.assertEqual(data_rev["scarce"][self.KIMI], latest)
+
+
 class HarnessUnitCase(unittest.TestCase):
     """Direct unit tests for oc.py helpers: no git, no worker."""
 

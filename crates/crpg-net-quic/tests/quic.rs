@@ -1108,6 +1108,10 @@ fn client_traffic(mut client: QuicClient, client_id: u8) {
         }
     }
     // Wait for the server to drain our last frames before closing.
+    while client.stats().outbound_frames != 0 {
+        assert!(start.elapsed() < DEADLINE, "deadline: client drain");
+        client.wait(Duration::from_millis(1));
+    }
     let report = client.close(CloseCode::Normal, CloseMode::Flush);
     assert_eq!(report.outbound_frames_discarded, 0);
 }

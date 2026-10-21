@@ -1,0 +1,26 @@
+{
+  "kind": "implement",
+  "prompt": "Read AGENTS.md and src/lib.rs. Implement the three todo!() functions in src/lib.rs exactly as their doc comments specify. Follow AGENTS.md. Finish when `cargo test`, `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` all pass. Then reply with a two-line report: status (done or blocked) and a one-sentence summary.",
+  "timeout_s": 900,
+  "edit": true,
+  "files": [
+    {"tree": "."}
+  ],
+  "hidden": [
+    {"src": "hidden.rs.txt", "ref": "hidden.rs", "dest": "tests/zz_hidden.rs"}
+  ],
+  "score": {
+    "gates": [
+      {"name": "fmt", "cmd": ["cargo", "fmt", "--check"], "expected": 0},
+      {"name": "clippy", "cmd": ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], "expected": 0},
+      {"name": "visible", "cmd": ["cargo", "test"], "expected": 0}
+    ],
+    "hidden_test": "zz_hidden",
+    "hidden_total": 21,
+    "rules": {
+      "no_float": true,
+      "no_unsafe": true,
+      "files_unchanged": ["Cargo.toml", "tests/visible.rs"]
+    }
+  }
+}

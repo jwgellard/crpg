@@ -74,6 +74,8 @@ OpenCode was upgraded from 1.18.35 to 2.0.31 on this machine on 2026-10-16 (MODE
 
 ## D29g — T022 promises `IllegalAction` where the code answers `NotAuthorized` (audit #66)
 
+**Answered 2026-10-21: (a) (the user: \"All d29 are fine\").**
+
 `tasks/T022.md:435-437` says a `Host::new` host "correctly rejects gameplay as `IllegalAction`". But admission step 5 (mapping, `:378-387`) runs before step 7 (execution, where `IllegalAction` comes from). A `new` host has no entities, so no actor maps and step 5 always answers `NotAuthorized`. The code follows the numbered steps (found by T125, PR #53).
 
 - **Recommend:** (a) amend the §4 sentence to `NotAuthorized` and add the test T125 wrote, which pins it. The pipeline order is the deliberate part: missing, hidden and foreign must stay indistinguishable.
@@ -81,12 +83,16 @@ OpenCode was upgraded from 1.18.35 to 2.0.31 on this machine on 2026-10-16 (MODE
 
 ## D29h — should checkpoint loading reject history gaps between capture records? (audit #63)
 
+**Answered 2026-10-21: (a) (the user: \"All d29 are fine\").**
+
 `load_checkpoint` requires `capture_seq` to be contiguous and each record's history range to match its own events (`T022.md:614-616`). It does not require record N+1's range to start where record N's ended, and the code (`crates/crpg-server/src/checkpoint.rs:243`) rejects only overlaps. A live host never produces a gap (every history envelope after the wrap comes from a captured command, and `tick()` journals nothing), so a gap in a loaded checkpoint means omitted evidence.
 
 - **Recommend:** (a) tighten it: add "retained records' history ranges are contiguous" to T022's validation list, and have a crpg-server fix task enforce it with a regression test.
 - Alternative: (b) leave it, and say in T022 that a checkpoint is trusted input.
 
 ## D29i — two v1 host-wide caps no input can reach (audit #65, #67)
+
+**Answered 2026-10-21: (a) (the user: \"All d29 are fine\").**
 
 - The ingress host totals (1024 frames, 2 MiB) are exactly 8 × the per-peer caps (128 frames, 256 KiB), and at most 8 peers bind, so the per-peer cap always refuses first.
 - The grant-narrowing `QueueFull` (`T022.md:549-551`) needs the resync state to miss the 16 MiB egress host total after the narrowed peer's own log is discarded. The other seven peers hold at most 14 MiB, so it needs a resync state over about 2 MiB.
@@ -98,12 +104,16 @@ Neither path has a test, because none can be written.
 
 ## D29j — `RefreshTrigger` decodes a zero `OnTick` period (audit #52)
 
+**Answered 2026-10-21: (a) (the user: \"All d29 are fine\").**
+
 `T015.md:378` says "OnTick period must be nonzero" in the `ResourcePool` validation paragraph. `ResourcePool` construction rejects zero, but a standalone `RefreshTrigger` decodes `{"type":"on_tick","value":0}` as `OnTick(0)` (found by T126, PR #51).
 
 - **Recommend:** (a) reject zero in `RefreshTrigger`'s own decoder (a small crpg-rules fix task with a regression test), so no value of the type can carry the invalid period.
 - Alternative: (b) state in T015 that the rule binds the pool only.
 
 ## D29k — "byte-identical" CLI apply versus its own error wording (audit #12)
+
+**Answered 2026-10-21: (a) (the user: \"All d29 are fine\").**
 
 `crates/crpg-cli/AGENTS.md` invariant 4 says the CLI's reference apply "must stay byte-identical\*" to testkit's `test_apply`. The CLI's unknown-payload diagnostic says `unknown intent payload`, testkit's says `unknown test payload`. T016d pins the CLI wording as black-box behaviour, and two existing CLI tests assert it. The invariant's stated reason is that both must verify the fixture to the same result, which the wording does not affect. The stray `*` points to an unfinished qualifier.
 
@@ -118,3 +128,4 @@ Neither path has a test, because none can be written.
 - 2026-10-16 (UTC) · claude-code + manager handover · Added D29d, D29e and D29f from the T097 review and the OpenCode 2.x upgrade, so the user can answer them with the T097 contract.
 - 2026-10-16 (UTC) · claude-code + user answers · Marked D29d, D29e and D29f answered (a) each, from the user's "approve all" on the T097 contract and its questions.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + session 7 test-writer pass · Added D29g–D29k, five contract questions the per-crate test writers turned up that are not code defects, each with a recommendation, so the user can answer them in one batch.
+- 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + user answers · Recorded the user's (a) to D29g–D29k in one batch; D29h and D29j each become a small fix task, the other three are doc edits.

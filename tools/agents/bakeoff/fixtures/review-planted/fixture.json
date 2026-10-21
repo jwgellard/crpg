@@ -1,0 +1,21 @@
+{
+  "kind": "review",
+  "prompt": "Review src/combat.rs against SPEC.md. Do not modify any file. Report only real defects where the code violates SPEC.md: no style issues, no suggestions. Reply with a JSON array only, one object per defect: {\"line\": <line number in src/combat.rs>, \"spec\": \"S<n>\", \"summary\": \"<one sentence>\"}. If there are none, reply [].",
+  "timeout_s": 300,
+  "edit": false,
+  "files": [
+    {"tree": "."}
+  ],
+  "hidden": [],
+  "score": {
+    "file": "src/combat.rs",
+    "defects": [
+      {"id": "A", "lines": [10, 12], "specs": ["S1"], "keywords": null},
+      {"id": "B", "lines": [15, 17], "specs": ["S2"], "keywords": null},
+      {"id": "C", "lines": [20, 23], "specs": ["S3"], "keywords": "overflow|saturat|panic|exceed|u32::MAX"},
+      {"id": "D", "lines": [19, 25], "specs": ["S3"], "keywords": "order|sort|HashMap|determin|iterat|random"},
+      {"id": "E", "lines": [38, 41], "specs": ["S5"], "keywords": "cast|as i32|negative|wrap|overflow|lower|reduc|truncat|exceed"}
+    ],
+    "decoy_lines": [[29, 34]],    "decoy_specs": ["S4"]
+  }
+}

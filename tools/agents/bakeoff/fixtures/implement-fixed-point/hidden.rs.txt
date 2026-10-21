@@ -1,0 +1,24 @@
+use fx::{Fx, ParseFxError};
+use ParseFxError::*;
+
+#[test] fn h_mul_tie_pos() { assert_eq!(Fx(3).mul_round(Fx(32768)), Fx(2)); }
+#[test] fn h_mul_tie_neg() { assert_eq!(Fx(-3).mul_round(Fx(32768)), Fx(-2)); }
+#[test] fn h_mul_tie_small() { assert_eq!(Fx(1).mul_round(Fx(32768)), Fx(1)); assert_eq!(Fx(-1).mul_round(Fx(32768)), Fx(-1)); }
+#[test] fn h_mul_below_half() { assert_eq!(Fx(1).mul_round(Fx(32767)), Fx(0)); assert_eq!(Fx(-1).mul_round(Fx(32767)), Fx(0)); }
+#[test] fn h_mul_exact_neg() { assert_eq!(Fx(98304).mul_round(Fx(-147456)), Fx(-221184)); }
+#[test] fn h_mul_sat() { assert_eq!(Fx::MAX.mul_round(Fx::MAX), Fx::MAX); assert_eq!(Fx::MIN.mul_round(Fx::MAX), Fx::MIN); assert_eq!(Fx::MIN.mul_round(Fx::MIN), Fx::MAX); }
+#[test] fn h_mul_one_identity() { for v in [0, 1, -1, 12345, -98765, i32::MAX, i32::MIN] { assert_eq!(Fx(v).mul_round(Fx::ONE), Fx(v)); } }
+#[test] fn h_div_neg_trunc() { assert_eq!(Fx(-65536).checked_div(Fx(196608)), Some(Fx(-21845))); assert_eq!(Fx(65536).checked_div(Fx(-196608)), Some(Fx(-21845))); }
+#[test] fn h_div_min_by_neg_one() { assert_eq!(Fx::MIN.checked_div(Fx(-65536)), Some(Fx::MAX)); }
+#[test] fn h_div_sat() { assert_eq!(Fx::MIN.checked_div(Fx(-1)), Some(Fx::MAX)); assert_eq!(Fx::MAX.checked_div(Fx(1)), Some(Fx::MAX)); assert_eq!(Fx::MIN.checked_div(Fx(1)), Some(Fx::MIN)); }
+#[test] fn h_div_exact() { assert_eq!(Fx(491520).checked_div(Fx(163840)), Some(Fx(196608))); }
+#[test] fn h_div_zero_num() { assert_eq!(Fx(0).checked_div(Fx::MIN), Some(Fx(0))); assert_eq!(Fx(0).checked_div(Fx(0)), None); }
+#[test] fn h_parse_round() { assert_eq!(Fx::parse("0.0000076"), Ok(Fx(0))); assert_eq!(Fx::parse("0.0000077"), Ok(Fx(1))); assert_eq!(Fx::parse("-0.0000077"), Ok(Fx(-1))); }
+#[test] fn h_parse_tie() { assert_eq!(Fx::parse("0.00000762939453125"), Ok(Fx(1))); assert_eq!(Fx::parse("-0.00000762939453125"), Ok(Fx(-1))); assert_eq!(Fx::parse("0.00000762939453124"), Ok(Fx(0))); }
+#[test] fn h_parse_18_digits() { assert_eq!(Fx::parse("0.500000000000000000"), Ok(Fx(32768))); assert_eq!(Fx::parse("0.5000000000000000000"), Err(Invalid)); }
+#[test] fn h_parse_max_edge() { assert_eq!(Fx::parse("32767.99998474"), Ok(Fx::MAX)); assert_eq!(Fx::parse("32767.9999924"), Err(OutOfRange)); }
+#[test] fn h_parse_min_edge() { assert_eq!(Fx::parse("-32768"), Ok(Fx::MIN)); assert_eq!(Fx::parse("-32768.00001"), Err(OutOfRange)); assert_eq!(Fx::parse("-32768.000007"), Ok(Fx::MIN)); }
+#[test] fn h_parse_huge() { assert_eq!(Fx::parse("99999999999999999999999"), Err(OutOfRange)); assert_eq!(Fx::parse("-99999999999999999999999.5"), Err(OutOfRange)); }
+#[test] fn h_parse_leading_zeros() { assert_eq!(Fx::parse("0001.5"), Ok(Fx(98304))); assert_eq!(Fx::parse("00000000000000000000000000001"), Ok(Fx::ONE)); }
+#[test] fn h_parse_neg_zero() { assert_eq!(Fx::parse("-0"), Ok(Fx(0))); assert_eq!(Fx::parse("-0.000001"), Ok(Fx(0))); }
+#[test] fn h_parse_invalid() { for s in ["", "-", "5.", "+1", "1e3", "1.2.3", " 1", "1 ", "--1", "0x10", "1,5", "\u{0661}", "-.5", "1._5"] { assert_eq!(Fx::parse(s), Err(Invalid), "input {s:?}"); } }
