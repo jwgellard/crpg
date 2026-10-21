@@ -143,6 +143,21 @@ Its T034+ ids are reserved places in that order, not written contracts.
 
 ---
 
+## Sessions 10–11 batch (PR #60)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T130 | in PR #60 | — | `crpg-rules` (D29j): `RefreshTrigger` rejects a zero `OnTick` period on decode, with regression test |
+| T131 | in PR #60 | — | `crpg-server` (D29h): checkpoint loading rejects history gaps between capture records, with regression test |
+| T132 | in PR #60 | — | docs (D29g/h/i): `tasks/T022.md` (empty host answers `NotAuthorized`; contiguous history ranges) and `docs/architecture/crpg-server.md` (two unreachable v1 caps) |
+| T133 | in PR #60 | — | `crpg-sim` (T097's two low review findings): 4095/4096-envelope `ENCODINGS` and journal-in-place tests; invariant 14's "before validation ends" qualifier |
+| T098c | in PR #60 | — | measurement (`tasks/T098.md`): `lane0_codec_frames_decode_after_impaired_delivery` fails only at 8× contention; verdict test-side, fix is D30a |
+| A0-3f | in PR #60 | — | tools: `verify_task.py` `todo` check limited to `crates/**`; `oc.py --base` accepts a local ref with a slash; `oc.py run` creates a missing task branch |
+| A0-7a | in PR #60 | — | bake-off harness, attempt 4: `score.file` read from the fixture; DeepSeek V4 Pro re-review `ready-for-pr`; done |
+| T108 | in PR #60 | — | ADR-0029 "Kernel range and time model" (Proposed), `docs/adr/0029-kernel-range-and-time-model.md`; needs the user's H-accept; nine open questions (D30c) |
+
+---
+
 ## Carried decisions and blockers
 
 - **quinn dedup window (quinn-rs/quinn#2710).** ADR-0004 flags it unresolved.
@@ -410,3 +425,4 @@ Record it here, one line per week.
 - 2026-10-06 (UTC) · claude-code + PR #28 Windows · PR #28 (T023d + T023b) is green on both OSes; Windows ran `quic` 30/30 and `host_quic` 25/25, the fourth Windows run for T023v.
 - 2026-10-06 (UTC) · claude-code + T024 contract · Moved T024 from blocked to contract draft awaiting approval, with its design in one line and five open questions, since T021 and T023b are finished and the remaining gate is the user's approval.
 - 2026-10-06 (UTC) · claude-code + PR #28 landed · Marked T023d and T023b done (merge `16f58c8`) and moved throughput to 53, so the index shows T024's contract as the next gate.
+- 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S11 bookkeeping · Added the Sessions 10–11 batch table with T130/T131/T132/T133/T098c/A0-3f/A0-7a/T108 rows at "in PR #60", changing no other row.
