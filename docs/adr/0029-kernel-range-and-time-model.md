@@ -31,11 +31,11 @@ What is true today:
   (`resource.rs`). But the data that reaches it is narrow: rulesets declare
   `Int` stats only (`crpg-data/src/combat.rs:44`) and no derived stats; an
   ability has one dice expression, flat per-outcome damage
-  (`crpg-sim/src/combat.rs:241`) and a defence that is either roll-under the
-  actor's attribute or the bare roll against a target stat — the actor's
+  (`crpg-sim/src/combat.rs:231`, `:239`) and a defence that is either roll-under
+  the actor's attribute or the bare roll against a target stat — the actor's
   attribute is **not** added in the target-stat case (`combat.rs:1851-1900`);
   effects modify only the roll and DC folds with `Add`/`Set`
-  (`combat.rs:173`, `1464`); combatants carry no tags; initiative is an
+  (`combat.rs:173-177`, `1464`); combatants carry no tags; initiative is an
   authored constant (`crpg-data/src/combat.rs:376`); an encounter ends when
   fewer than two combatants are alive, with no sides (`combat.rs:2029-2036`).
 - **Effects** are not a kernel type: `crpg.effect/1` documents become sim
@@ -438,7 +438,7 @@ may not add code or expressions.
   This interleaves two policies in one ordered walk, or creates a second
   structure that can disagree with the first.
 - **Mode held by the host, outside the hash**: rejected. Mode changes
-  behaviour, so ADR-0009 requires it in the World.
+  behaviour, so ADR-0013 (Decision 1) requires it in the World.
 - **Pause in the World or the journal** (Beam open question 2): rejected.
   Nothing advances while paused, so there is nothing to replay.
 - **Immediate mode switch**: rejected for now. It refills pools mid-round or
@@ -478,7 +478,7 @@ ADR.
 | # | Id | Crate | Contract to write | Depends on | S |
 |---|---|---|---|---|---|
 | 1 | | `crpg-rules` | K3(a) success-count and face-count evaluation modes on `DiceExpr` (sum default, notation extension, trace unchanged) | Accepted; implement with its first consumer (4) | — |
-| 2 | | `crpg-rules` | K3(b) pool refill amount and validated maximum setter | Accepted | — |
+| 2 | | `crpg-rules` | K3(b) pool refill amount and validated maximum setter | Accepted | Yes |
 | 3 | | `crpg-data` | Surface schemas: typed and derived stats; resolution shape (bonus stats, constant, actor-stat, target-stat or opposed defence, tiered thresholds); damage dice; initiative spec; effects on stats with tag grants and lifetime kinds; combatant tags and sides; `round_ticks`, `recovery_ticks`, `repeats_in_real_time`; migrations. May split the RT fields into a small first task | Accepted; 1 and 2 if exposed | Yes |
 | 4 | | `crpg-sim` | Adapter generalization consuming 3, with existing goldens unchanged | 3 | Yes |
 | 5 | | `crpg-sim` | Encounter mode and RT policy, T1–T16; history v2 (N5) | 3 (RT fields) | Yes |
@@ -487,6 +487,10 @@ ADR.
 | 8 | | `crpg-server` | P1–P9; mode requests; projection of the new facts; heartbeat | 5, 7 (in-process pause can come first) | — |
 | 9 | | `crpg-data` | `crpg.ui/1` schema, validation and generated defaults (U1–U8, U10) | Accepted; T104 report as input | Yes |
 | 10 | | `crpg-sim` | Read-only action preview: exact integer outcome distribution, bounded (U9) | 4 | — |
+
+The `crpg-rules` change itself is outside the S-set, but a new
+`ResourcePool` field reaches the hashed `World`, so its contract is
+serialized and human-reviewed.
 
 ## Open questions for the user
 
@@ -528,3 +532,4 @@ including the toggle-refresh count (T10).
 ## Agent log
 
 - 2026-10-21 (UTC) · claude-code/opus-5.5 architect + T108 · Filed the proposed kernel-range, two-mode time model and ruleset-UI decision from the Beam and LongCat drafts and the R13/R14/R16 research, after checking each engine claim against the code. The main finding is that the kernel covers the five families except three named gaps, while the data/sim surface is the real limit; numbered 0029 because T024 reserves 0028.
+- 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T108-adr-fix · Corrected the two combat.rs citations, moved the hashed-World rule to ADR-0013 Decision 1, and marked the pool setter S-set because a new ResourcePool field reaches World.
