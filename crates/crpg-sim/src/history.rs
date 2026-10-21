@@ -5,13 +5,13 @@
 //! [`HistoryEvent`] envelopes. Callers get immutable world queries plus the
 //! approved typed transactional operations — never `&mut World`, stores,
 //! queues, or RNG handles on the owned authority. Each operation stages a
-//! full clone, reuses the existing combat controllers on the staged state,
-//! drains the staged legacy queue exactly once, translates each legacy event
-//! exactly once, collects the branch-observed transition facts, validates
-//! the resulting journal, and only then replaces the live state. A rejected
-//! operation commits nothing: authoritative state, RNG draws, entity
-//! allocation, legacy queue counters, and history counters are all
-//! preserved.
+//! clone of the world, reuses the existing combat controllers on the staged
+//! state, drains the staged legacy queue exactly once, translates each
+//! legacy event exactly once, collects the branch-observed transition facts,
+//! validates the journal additions against the live wrapper, and only then
+//! publishes. A rejected operation commits nothing: authoritative state,
+//! RNG draws, entity allocation, legacy queue counters, and history
+//! counters are all preserved.
 //!
 //! The legacy path is untouched: [`SimEvent`](crate::SimEvent) stays closed,
 //! every free function and [`World`](crate::World) method keeps its
@@ -39,7 +39,7 @@ use std::cell::Cell;
 use std::fmt;
 
 use serde::de::{DeserializeSeed, Error as DeError, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crpg_core::{EntityId, Tick, Ulid};
 use crpg_rules::Outcome;
@@ -266,6 +266,106 @@ impl std::error::Error for HistoryError {
     }
 }
 
+/// The retained journal plus its derived canonical byte total (T097).
+///
+/// The total is the checked sum of [`envelope_len`] over [`envelopes`], cached
+/// because every mutation used to re-derive it by re-encoding the whole
+/// retained journal. It is a derived value, never persisted: [`Serialize`]
+/// writes exactly the envelope sequence, so wrapper bytes are unchanged. J1
+/// holds it to the envelopes at every public boundary.
+///
+/// [`envelopes`]: Journal::envelopes
+#[derive(Clone, PartialEq, Eq)]
+struct Journal {
+    /// The retained envelopes, oldest first.
+    envelopes: Vec<HistoryEnvelope>,
+    /// The derived canonical byte total; never serialized.
+    bytes: usize,
+}
+
+impl Journal {
+    /// An empty journal with a zero byte total.
+    fn new() -> Self {
+        Self {
+            envelopes: Vec::new(),
+            bytes: 0,
+        }
+    }
+
+    /// A loaded journal carrying the canonical byte total the loader computed.
+    fn from_loaded(envelopes: Vec<HistoryEnvelope>, bytes: usize) -> Self {
+        Self { envelopes, bytes }
+    }
+
+    /// The retained envelopes, oldest first.
+    fn as_slice(&self) -> &[HistoryEnvelope] {
+        &self.envelopes
+    }
+
+    /// The number of retained envelopes.
+    fn len(&self) -> usize {
+        self.envelopes.len()
+    }
+
+    /// The cached canonical byte total.
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Appends `envelopes`, adopting `total` as the new FULL byte total.
+    ///
+    /// `total` is the post-append total, not a delta: the caller has already
+    /// added the new envelopes' canonical lengths to [`bytes`](Self::bytes).
+    fn append(&mut self, envelopes: Vec<HistoryEnvelope>, total: usize) {
+        debug_assert!(
+            total >= self.bytes,
+            "a full byte total only grows on append"
+        );
+        self.envelopes.extend(envelopes);
+        self.bytes = total;
+    }
+
+    /// Drops the first `count` envelopes, subtracting their canonical bytes.
+    ///
+    /// Emptying the journal resets the total to zero without encoding
+    /// anything: every retained envelope is already in the cache.
+    fn drain_prefix(&mut self, count: usize) {
+        debug_assert!(
+            count <= self.envelopes.len(),
+            "a drained prefix stays inside the journal"
+        );
+        if count == self.envelopes.len() {
+            self.envelopes.clear();
+            self.bytes = 0;
+            return;
+        }
+        let mut removed: usize = 0;
+        for envelope in &self.envelopes[..count] {
+            removed = removed.saturating_add(envelope_len(envelope));
+        }
+        self.bytes = self.bytes.saturating_sub(removed);
+        self.envelopes.drain(..count);
+    }
+}
+
+impl fmt::Debug for Journal {
+    /// Delegates to the envelope sequence, so `Debug` output is unchanged.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.envelopes, f)
+    }
+}
+
+impl Serialize for Journal {
+    /// Writes exactly the retained envelope sequence; the byte cache is not
+    /// persisted.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.envelopes.serialize(serializer)
+    }
+}
+
 /// The opt-in authoritative history wrapper: one privately owned [`World`](crate::World)
 /// plus its bounded journal.
 ///
@@ -285,7 +385,7 @@ pub struct HistoryWorld {
     /// The next issuable sequence, or `u64::MAX` once exhausted.
     next_seq: u64,
     /// The retained contiguous suffix `(acknowledged, next_seq)`.
-    pending: Vec<HistoryEnvelope>,
+    pending: Journal,
 }
 
 impl HistoryWorld {
@@ -297,7 +397,7 @@ impl HistoryWorld {
             world: World::new(seed),
             acknowledged: 0,
             next_seq: 1,
-            pending: Vec::new(),
+            pending: Journal::new(),
         }
     }
 
@@ -359,17 +459,16 @@ impl HistoryWorld {
     /// Capacity rejection preserves entity allocation: the staged id is
     /// discarded with the staged clone.
     pub fn spawn(&mut self, meta: EntityMeta) -> Result<EntityId, HistoryError> {
-        let mut staged = self.clone();
-        let id = staged.world.spawn(meta);
-        let drained = staged.world.events_mut().drain();
-        let tick = staged.world.tick();
+        let mut world = self.world.clone();
+        let id = world.spawn(meta);
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
         debug_assert_eq!(drained.len(), 1, "spawn enqueues exactly one event");
         let mut events = Vec::with_capacity(drained.len());
         for envelope in &drained {
             events.push(translate_legacy(&envelope.payload));
         }
-        staged.finish(events, tick)?;
-        *self = staged;
+        self.commit(world, events, tick)?;
         Ok(id)
     }
 
@@ -381,18 +480,17 @@ impl HistoryWorld {
     /// encounter journals one `EncounterEnded`; removing the last of an
     /// already terminal encounter journals no second end.
     pub fn despawn(&mut self, entity: EntityId) -> Result<bool, HistoryError> {
-        let mut staged = self.clone();
-        let (removed, facts) = staged.world.despawn_tracked(entity);
-        let drained = staged.world.events_mut().drain();
-        let tick = staged.world.tick();
+        let mut world = self.world.clone();
+        let (removed, facts) = world.despawn_tracked(entity);
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
         debug_assert!(drained.len() <= 1, "despawn enqueues at most one event");
         let mut events = Vec::with_capacity(drained.len() + 1);
         for envelope in &drained {
             events.push(translate_legacy(&envelope.payload));
         }
         push_transition(&mut events, &facts);
-        staged.finish(events, tick)?;
-        *self = staged;
+        self.commit(world, events, tick)?;
         Ok(removed)
     }
 
@@ -402,10 +500,10 @@ impl HistoryWorld {
     /// event is still translated rather than dropped. Zero-event operations
     /// need no free journal slot or sequence.
     pub fn tick(&mut self) -> Result<(), HistoryError> {
-        let mut staged = self.clone();
-        crate::tick::tick(&mut staged.world);
-        let drained = staged.world.events_mut().drain();
-        let tick = staged.world.tick();
+        let mut world = self.world.clone();
+        crate::tick::tick(&mut world);
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
         let mut events = Vec::with_capacity(drained.len());
         for envelope in &drained {
             events.push(translate_legacy(&envelope.payload));
@@ -414,8 +512,7 @@ impl HistoryWorld {
             events.is_empty(),
             "the tick system list currently emits no events"
         );
-        staged.finish(events, tick)?;
-        *self = staged;
+        self.commit(world, events, tick)?;
         Ok(())
     }
 
@@ -424,13 +521,13 @@ impl HistoryWorld {
     ///
     /// Gameplay errors win before history errors and commit nothing.
     pub fn start_encounter(&mut self, spec: &EncounterSpec<'_>) -> Result<(), HistoryError> {
-        let mut staged = self.clone();
-        let facts = match start_encounter_tracked(&mut staged.world, spec) {
+        let mut world = self.world.clone();
+        let facts = match start_encounter_tracked(&mut world, spec) {
             Ok(facts) => facts,
             Err(error) => return Err(HistoryError::Combat(error)),
         };
-        let drained = staged.world.events_mut().drain();
-        let tick = staged.world.tick();
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
         let mut events = Vec::with_capacity(drained.len() + 1);
         for envelope in &drained {
             events.push(translate_legacy(&envelope.payload));
@@ -441,8 +538,7 @@ impl HistoryWorld {
                 round: u64::from(round),
             });
         }
-        staged.finish(events, tick)?;
-        *self = staged;
+        self.commit(world, events, tick)?;
         Ok(())
     }
 
@@ -460,13 +556,13 @@ impl HistoryWorld {
         &mut self,
         action: &CombatAction,
     ) -> Result<Option<ActionOutcome>, HistoryError> {
-        let mut staged = self.clone();
-        let (outcome, facts) = match perform_action_tracked(&mut staged.world, action) {
+        let mut world = self.world.clone();
+        let (outcome, facts) = match perform_action_tracked(&mut world, action) {
             Ok(done) => done,
             Err(error) => return Err(HistoryError::Combat(error)),
         };
-        let drained = staged.world.events_mut().drain();
-        let tick = staged.world.tick();
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
         let mut events = Vec::with_capacity(drained.len() + 2);
         if let Some(ref produced) = outcome {
             events.push(HistoryEvent::ActionResolved {
@@ -481,8 +577,7 @@ impl HistoryWorld {
             events.push(translate_legacy(&envelope.payload));
         }
         push_transition(&mut events, &facts);
-        staged.finish(events, tick)?;
-        *self = staged;
+        self.commit(world, events, tick)?;
         Ok(outcome)
     }
 
@@ -491,20 +586,19 @@ impl HistoryWorld {
     ///
     /// Zero-event operations need no free journal slot or sequence.
     pub fn end_encounter(&mut self) -> Result<EncounterSummary, HistoryError> {
-        let mut staged = self.clone();
-        let summary = match crate::combat::end_encounter(&mut staged.world) {
+        let mut world = self.world.clone();
+        let summary = match crate::combat::end_encounter(&mut world) {
             Ok(summary) => summary,
             Err(error) => return Err(HistoryError::Combat(error)),
         };
-        let drained = staged.world.events_mut().drain();
-        let tick = staged.world.tick();
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
         let mut events = Vec::with_capacity(drained.len());
         for envelope in &drained {
             events.push(translate_legacy(&envelope.payload));
         }
         debug_assert!(events.is_empty(), "release emits no legacy events");
-        staged.finish(events, tick)?;
-        *self = staged;
+        self.commit(world, events, tick)?;
         Ok(summary)
     }
 
@@ -526,13 +620,10 @@ impl HistoryWorld {
 
     /// The checked sum of each retained envelope's compact canonical byte
     /// length: struct declaration order with the existing core serde, no
-    /// `Vec` brackets or commas. Derived, never persisted.
+    /// `Vec` brackets or commas. Derived, never persisted, and O(1): it
+    /// reads the journal's cached total instead of re-encoding anything.
     pub fn pending_bytes(&self) -> usize {
-        let mut total: usize = 0;
-        for envelope in &self.pending {
-            total = total.saturating_add(envelope_len(envelope));
-        }
-        total
+        self.pending.bytes()
     }
 
     /// Reads up to `limit` cloned envelopes with sequences above `after`, in
@@ -567,6 +658,7 @@ impl HistoryWorld {
         let skip = (after - self.acknowledged) as usize;
         Ok(self
             .pending
+            .as_slice()
             .iter()
             .skip(skip)
             .take(limit)
@@ -594,15 +686,25 @@ impl HistoryWorld {
             return Ok(());
         }
         let drop = (through - self.acknowledged) as usize;
-        self.pending.drain(..drop);
+        self.pending.drain_prefix(drop);
         self.acknowledged = through;
         Ok(())
     }
 
     /// Validates staged journal additions in pinned order — event strings,
     /// then sequence range, then event count, then canonical byte total —
-    /// assigns sequences, and appends. Failure commits nothing.
-    fn finish(&mut self, events: Vec<HistoryEvent>, tick: Tick) -> Result<(), HistoryError> {
+    /// assigns sequences, and commits the staged world plus the appended
+    /// envelopes. Failure commits nothing.
+    ///
+    /// The byte stage starts from the live journal's cached total and encodes
+    /// only the new envelopes, so it costs O(new envelopes) and never
+    /// re-encodes a retained one; a zero-event operation encodes nothing.
+    fn commit(
+        &mut self,
+        world: World,
+        events: Vec<HistoryEvent>,
+        tick: Tick,
+    ) -> Result<(), HistoryError> {
         for event in &events {
             if let HistoryEvent::ActionResolved { outcome, .. } = event {
                 if outcome.len() > MAX_HISTORY_STRING_BYTES {
@@ -627,15 +729,7 @@ impl HistoryWorld {
         if retained > MAX_HISTORY_EVENTS {
             return Err(HistoryError::EventLimit);
         }
-        let mut bytes: usize = 0;
-        for envelope in &self.pending {
-            bytes = bytes
-                .checked_add(envelope_len(envelope))
-                .ok_or(HistoryError::ByteLimit)?;
-            if bytes > MAX_HISTORY_BYTES {
-                return Err(HistoryError::ByteLimit);
-            }
-        }
+        let mut bytes = self.pending.bytes();
         let mut envelopes = Vec::with_capacity(events.len());
         let mut seq = self.next_seq;
         for event in events {
@@ -652,7 +746,8 @@ impl HistoryWorld {
             envelopes.push(envelope);
             seq = seq.checked_add(1).ok_or(HistoryError::SequenceExhausted)?;
         }
-        self.pending.extend(envelopes);
+        self.world = world;
+        self.pending.append(envelopes, bytes);
         self.next_seq = end;
         Ok(())
     }
@@ -756,9 +851,29 @@ fn is_valid_outcome(text: &str) -> bool {
     }
 }
 
+// Test-only count of [`envelope_len`] calls on the current test thread.
+//
+// The CI regression guard for T097 is a count of canonical encodings, never a
+// wall clock: it proves a mutation's byte cost is proportional to its new
+// envelopes rather than to the retained journal. It is a per-test-thread
+// counter (`thread_local!`), not a thread the simulation owns, and it does not
+// exist in any non-test build.
+#[cfg(test)]
+thread_local! {
+    // Encodings this thread has performed since it last reset the counter.
+    static ENCODINGS: Cell<u64> = const { Cell::new(0) };
+}
+
 /// One envelope's compact canonical byte length, the unit of journal byte
 /// accounting.
+///
+/// Every call is an encoding ([`ENCODINGS`] counts them under `#[cfg(test)]`),
+/// so callers must encode an envelope exactly once: the loader's inline encode
+/// is deliberately not routed through here, and the retained journal's total
+/// is cached rather than re-derived.
 fn envelope_len(envelope: &HistoryEnvelope) -> usize {
+    #[cfg(test)]
+    ENCODINGS.with(|count| count.set(count.get() + 1));
     serde_json::to_vec(envelope)
         .expect("history envelopes serialize")
         .len()
@@ -1273,7 +1388,7 @@ impl<'de> Visitor<'de> for WrapperVisitor {
         let mut world: Option<World> = None;
         let mut acknowledged: Option<u64> = None;
         let mut next_seq: Option<u64> = None;
-        let mut pending: Option<Vec<HistoryEnvelope>> = None;
+        let mut pending: Option<Journal> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "version" => {
@@ -1344,7 +1459,7 @@ impl<'de> Visitor<'de> for WrapperVisitor {
                 "history wrapper holds a nonempty inner event queue",
             ));
         }
-        validate_journal(&pending, acknowledged, next_seq, world.tick())?;
+        validate_journal(pending.as_slice(), acknowledged, next_seq, world.tick())?;
         Ok(HistoryWorld {
             version,
             world,
@@ -1403,9 +1518,9 @@ fn validate_journal<E: DeError>(
 struct PendingSeed;
 
 impl<'de> DeserializeSeed<'de> for PendingSeed {
-    type Value = Vec<HistoryEnvelope>;
+    type Value = Journal;
 
-    fn deserialize<D>(self, deserializer: D) -> Result<Vec<HistoryEnvelope>, D::Error>
+    fn deserialize<D>(self, deserializer: D) -> Result<Journal, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -1417,13 +1532,13 @@ impl<'de> DeserializeSeed<'de> for PendingSeed {
 struct PendingSeqVisitor;
 
 impl<'de> Visitor<'de> for PendingSeqVisitor {
-    type Value = Vec<HistoryEnvelope>;
+    type Value = Journal;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a bounded history journal")
     }
 
-    fn visit_seq<A>(self, mut seq: A) -> Result<Vec<HistoryEnvelope>, A::Error>
+    fn visit_seq<A>(self, mut seq: A) -> Result<Journal, A::Error>
     where
         A: SeqAccess<'de>,
     {
@@ -1440,7 +1555,7 @@ impl<'de> Visitor<'de> for PendingSeqVisitor {
             }
             out.push(envelope);
         }
-        Ok(out)
+        Ok(Journal::from_loaded(out, bytes))
     }
 }
 
@@ -1467,3 +1582,6 @@ impl<'de> DeserializeSeed<'de> for CappedSeed<'_> {
         HistoryEnvelope::deserialize(deserializer)
     }
 }
+
+#[cfg(test)]
+mod tests;

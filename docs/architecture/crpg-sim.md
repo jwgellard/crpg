@@ -202,6 +202,23 @@ mandatory pre-parse byte cap is the host loading boundary. `history_hash`
 the new `history_v1` goldens are generated independently per native target
 from the pinned sim-local schedule with its hand-authored oracle.
 
+### Journal byte accounting and world-only staging (T097)
+
+The retained journal is a private `Journal`: the envelopes plus their derived
+canonical byte total, held to the envelopes at every public boundary (J1) and
+never persisted, so wrapper bytes, hashes and goldens are unchanged. Each
+mutation stages `self.world.clone()` instead of a wrapper clone and ends in
+one `commit`, which validates the additions against the live wrapper in the
+pinned order — strings, sequence range, event count, byte total — and then
+publishes world, journal and sequence together or not at all. The byte stage
+starts from the cached total and encodes only the new envelopes, so a
+mutation costs O(new envelopes + world clone) and a zero-event operation
+encodes nothing; acknowledgement subtracts the drained prefix, and a fully
+drained journal is emptied without encoding. The loader hands the total it
+already computes to `Journal::from_loaded` rather than re-encoding. A
+`#[cfg(test)]` `thread_local!` `ENCODINGS` counter makes that cost a test
+count, never a wall clock.
+
 ## Shared read-only combat legality (T028)
 
 `combat` exposes the pure admission check as `validate_action(&World,
@@ -254,3 +271,4 @@ validates the authored area against loaded content and owns viewer grants.
 - 2026-09-29 (UTC) · opencode/muse-spark + T020 implementation · Recorded the opt-in history wrapper with its transactional journal, bounded read/ack, full-wrapper hash, retained-vs-parser-memory persistence boundary, and independently generated per-target history goldens; legacy path unchanged.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Recorded the shared validate_action/legal_actions surface (single validation path, pinned enumeration order, whole-failure output bound) so consumers see a read-only query with no persisted or hash change.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Recorded the persisted area identity, liveness-based presence and the atomic two-world transfer producer, naming the net/host consumers that own disclosure.
+- 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total (J1) and world-only staging through `commit`, which keep every mutation O(new envelopes + world clone) with unchanged bytes, hashes, and goldens; the test-only `ENCODINGS` counter is named so the cost guard stays a count.

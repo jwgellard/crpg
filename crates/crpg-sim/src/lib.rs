@@ -13,6 +13,11 @@
 //! later tasks; the module docs say which task owns each missing piece so
 //! nothing here reads as finished.
 
+// T097: the unit-test fixtures are included with `#[path]`, so the crate
+// names itself the way an integration test does.
+#[cfg(test)]
+extern crate self as crpg_sim;
+
 pub mod area;
 pub mod combat;
 pub mod event;
