@@ -156,6 +156,15 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | A0-7a | in PR #61 | — | bake-off harness, attempt 4: `score.file` read from the fixture; DeepSeek V4 Pro re-review `ready-for-pr`; done |
 | T108 | in PR #61 | — | ADR-0029 "Kernel range and time model" (Proposed), `docs/adr/0029-kernel-range-and-time-model.md`; needs the user's H-accept; nine open questions (D30c) |
 
+## Session 12 batch (PR #62)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| S12-docs | in PR #62 | — | docs: ADR-0029's ten follow-on contracts numbered T134–T143 (ADR table, a new `tasks/BACKLOG.md` section, `docs/IMPLEMENTATION_PLAN.md` rows); T109 re-scoped to data only after T136 and T137 (ADR-0029 Q2); D29k applied to `crates/crpg-cli/AGENTS.md` invariant 4 |
+| T098d | in PR #62 | — | `crpg-net-quic` tests (D30a): `UdpRelay` starts unimpaired; `set_impaired(true)` after the handshake in `ordered_exactly_once_through_impaired_relay` and `codec_frames_through`; 20/20 each alone, 16/16 at 8× |
+| T144 | in PR #62 | — | measurement (`tasks/T144.md`): `peer_close_drains_then_unbinds` failed on Windows CI twice on 2026-10-21 (master after PR #60, and PR #61's first run); 0/420 locally; `UnbindPeer` can precede the `Closed` poll; verdict test-side |
+| T144b | next | — | fix part (c) of `peer_close_drains_then_unbinds` (`crates/crpg-server/tests/host_quic.rs:2248-2257`) with part (b)'s pattern: accumulate across steps and wait until both the `(conn, IdleTimeout)` close and `UnbindPeer` have been seen, then keep the assertions |
+
 ## ADR-0029 follow-on contracts
 
 | Task | Crate | Status | S-set | Contract to write | Depends on |
@@ -445,3 +454,4 @@ Record it here, one line per week.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S11 bookkeeping · Added the Sessions 10–11 batch table with T130/T131/T132/T133/T098c/A0-3f/A0-7a/T108 rows at "in PR #60", changing no other row.
 - 2026-10-21 (UTC) · claude-code/opus-5.5 + session 11 PR number · Moved the session 11 rows to PR #61, because PR #60 merged before the batch was pushed.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Indexed the ten ADR-0029 follow-on contracts (T134–T143) with crates, statuses, S-set flags and dependencies; no status decided beyond the brief's facts.
+- 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12 bookkeeping · Added the Session 12 batch table (S12-docs, T098d, T144 in PR #62; T144b next), changing no other row.
