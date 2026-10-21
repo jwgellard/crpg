@@ -34,7 +34,10 @@ exact fake-mode matching so the ``error-quota`` event branch is live,
 counting a PID alive when in doubt, plus A0-3b: the run's base reaching the
 verifier (``run`` and ``wave``), the agent-declaration fallback into a slot
 prepared from a base that predates A0-2 with its ``info/exclude`` entries,
-and ``no-agent`` as both a setup exit and an event classification.
+and ``no-agent`` as both a setup exit and an event classification, plus
+A0-3c: the Go spend guard (window sums from injected records, the ``spend``
+view and ``--json``, the 5-hour/weekly/scarce refusals with their cost-0
+record, ``ask`` and ``wave`` refusals, the override and ``--dry-run``).
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -666,7 +670,7 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
 
-    def test_tests_role_skips_gates(self) -> None:
+    def test_tests_role_runs_gates(self) -> None:
         task = self.tid()
         verify_log = self.fresh_file("verify.jsonl")
         result = self.oc_run(
@@ -678,8 +682,62 @@ class DispatchCase(unittest.TestCase):
             for line in verify_log.read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(len(logged), 1)
-        self.assertIn("--skip", logged[0])
-        self.assertIn("gates", logged[0])
+        # A test package's fmt/clippy/test failures must not be hidden.
+        self.assertNotIn("--skip", logged[0])
+        self.assertNotIn("gates", logged[0])
+
+    # -- full report file (A0-3d) -------------------------------------
+
+    def test_full_report_is_written_beside_the_log(self) -> None:
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_OC_MODE": "long-report"})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = self.log_path(task).with_suffix(".report.md")
+        self.assertEqual(report.name, "1-go_fake-a.report.md")
+        text = report.read_text(encoding="utf-8")
+        self.assertEqual(text.splitlines()[-1], "report line 30")
+        self.assertEqual(len(text.splitlines()), 30)
+        lines = result.stdout.splitlines()
+        self.assertIn(f"report: {report}", lines)
+        self.assertIn("--- worker report (first 14 lines) ---", lines)
+        self.assertIn("report line 14", lines)
+        self.assertNotIn("report line 15", lines)
+        self.assertLessEqual(len(lines), 40)
+
+    # -- a run that changed nothing is not a PASS (A0-3d) -------------
+
+    def test_empty_change_set_is_no_edit_not_pass(self) -> None:
+        for role in ("implement", "tests"):
+            task = self.tid()
+            result = self.oc_run(task, role=role, env={"FAKE_VERIFY_MODE": "empty"})
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertNotIn("PASS", result.stdout.splitlines()[0])
+            self.assertIn("cause: no-edit", result.stdout)
+            record = self.read_record(task)
+            self.assertEqual(record["cause"], "no-edit")
+            self.assertEqual(record["failed_checks"], ["no-edit"])
+            self.assertTrue(OCMOD.is_failure(record))
+
+    def test_empty_change_set_is_fine_for_review_and_grunt(self) -> None:
+        for role in ("review", "grunt"):
+            task = self.tid()
+            result = self.oc_run(task, role=role, env={"FAKE_VERIFY_MODE": "empty"})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
+
+    def test_provider_error_with_no_change_is_infra_not_pass(self) -> None:
+        task = self.tid()
+        result = self.oc_run(
+            task,
+            env={"FAKE_OC_MODE": "provider-fail", "FAKE_VERIFY_MODE": "empty"},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("cause: model", result.stdout)
+        record = self.read_record(task)
+        self.assertEqual(record["cause"], "model")
+        self.assertEqual(record["verdict"], "INFRA")
+        self.assertEqual(record["failed_checks"], [])
+        self.assertFalse(OCMOD.is_failure(record))
 
     def test_ask_without_text_is_exit_1(self) -> None:
         result = self.oc(
@@ -1538,6 +1596,294 @@ class RecordStatsCase(unittest.TestCase):
         self.assertEqual(best["runs"], 1)
         bad = self.oc("stats", "--since", "October")
         self.assertEqual(bad.returncode, 2)
+
+
+class SpendGuardCase(unittest.TestCase):
+    """The Go spend guard against a fresh temp repo per test.
+
+    Records are injected with chosen ``started_utc`` and ``cost``; the worker
+    is the fake OpenCode and the verifier the fake one, so nothing here
+    touches the network or the real executable.
+    """
+
+    GO = "opencode-go/deepseek-v4.1-flash"
+    KIMI = "opencode-go/kimi-k3"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="oc spend ")
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.repo = root / "repo"
+        self.slots = root / "slots"
+        self.calls = root / "calls.jsonl"
+        self.repo.mkdir()
+        self.slots.mkdir()
+        sh(["git", "init", "-b", "master", str(self.repo)], root)
+        sh(["git", "config", "user.email", "test@example.invalid"], self.repo)
+        sh(["git", "config", "user.name", "oc test"], self.repo)
+        (self.repo / "README.md").write_text("# spend repo\n", encoding="utf-8")
+        agents = self.repo / ".opencode" / "agents"
+        agents.mkdir(parents=True)
+        for role in ("implement", "tests", "review", "scout", "grunt"):
+            (agents / f"crpg-{role}.md").write_text(
+                f"# crpg-{role}\n", encoding="utf-8")
+        (self.repo / "opencode.json").write_text('{"agent": {}}\n',
+                                                 encoding="utf-8")
+        sh(["git", "add", "."], self.repo)
+        sh(["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"],
+           self.repo)
+        sh(["git", "worktree", "add", str(self.slots / "slot-1")], self.repo)
+        sh(["git", "worktree", "add", str(self.slots / "slot-2")], self.repo)
+        self.slot1 = (self.slots / "slot-1").resolve()
+        self.env = {
+            "CRPG_REPO": str(self.repo),
+            "CRPG_SLOTS": str(self.slots),
+            "CRPG_OPENCODE": str(FAKE_OPENCODE),
+            "CRPG_VERIFY": str(FAKE_VERIFY),
+            "CRPG_OC_START_GAP": "0",
+            "CRPG_OC_LOCK_WAIT": "0.05",
+            "FAKE_OC_MODE": "ok",
+            "FAKE_OC_LOG": str(self.calls),
+            "FAKE_VERIFY_MODE": "pass",
+        }
+
+    # -- helpers -----------------------------------------------------
+
+    def oc(self, *argv: str, env: dict | None = None, timeout: int = 120):
+        merged = dict(os.environ)
+        merged.update(self.env)
+        for name in ("CRPG_GO_SPEND_OVERRIDE", "CRPG_GO_CAP_5H",
+                     "CRPG_GO_CAP_WEEK"):
+            merged.pop(name, None)
+        merged.update(env or {})
+        return subprocess.run(
+            [sys.executable, str(OC), *argv],
+            cwd=self.repo, capture_output=True, text=True,
+            timeout=timeout, env=merged,
+        )
+
+    def brief(self, task: str) -> Path:
+        path = self.repo / ".agents" / "briefs" / f"{task}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"# Brief {task}\n\n## Files you own\n\n- `tools/x.py`\n",
+            encoding="utf-8")
+        return path
+
+    def run_go(self, task: str, model: str | None = None,
+               extra: list[str] | None = None, env: dict | None = None):
+        return self.oc(
+            "run", "--task", task, "--role", "implement",
+            "--model", model or self.GO, "--base", "master",
+            "--timeout", "60", "--idle", "10", "--brief", str(self.brief(task)),
+            *(extra or []), env=env,
+        )
+
+    def inject(self, task: str, model: str, cost=0.1, hours_ago: float = 1.0,
+               started: object = "auto") -> Path:
+        if started == "auto":
+            stamp = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+            started = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+        payload = {
+            "version": 1, "task": task, "role": "implement", "model": model,
+            "attempt": 1, "elapsed_s": 20.0, "verdict": "PASS", "cause": None,
+            "failed_checks": [], "steps": 3,
+            "tokens": {"input": 10, "cached": 0, "output": 5},
+            "retries": [], "outcomes": [],
+        }
+        if started is not None:
+            payload["started_utc"] = started
+        if cost is not None:
+            payload["cost"] = cost
+        path = (self.repo / ".agents" / "runs" / task
+                / f"1-{model.replace('/', '_')}.result.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def record_path(self, task: str, model: str) -> Path:
+        return (self.repo / ".agents" / "runs" / task
+                / f"1-{model.replace('/', '_')}.result.json")
+
+    def read_record(self, task: str, model: str) -> dict:
+        return json.loads(self.record_path(task, model).read_text())
+
+    def lock_files(self) -> list[Path]:
+        directory = self.repo / ".agents" / "slots"
+        return sorted(directory.glob("*.lock")) if directory.is_dir() else []
+
+    # -- T1 ----------------------------------------------------------
+
+    def test_1_sums_only_go_records_inside_the_windows(self) -> None:
+        self.inject("A-old", self.GO, cost=5.0, hours_ago=24 * 8)
+        self.inject("B-mid", self.GO, cost=2.0, hours_ago=10)
+        self.inject("C-fresh", self.GO, cost=1.0, hours_ago=1)
+        self.inject("D-zen", "opencode/big-pickle", cost=3.0, hours_ago=1)
+        self.inject("E-nostamp", self.GO, cost=7.0, started=None)
+        self.inject("F-badcost", self.GO, cost="lots", hours_ago=1)
+        result = self.oc("spend", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["windows"]["5h"]["total"], 1.0)
+        self.assertEqual(payload["windows"]["week"]["total"], 3.0)
+        self.assertEqual(
+            [item["model"] for item in payload["windows"]["5h"]["models"]],
+            [self.GO])
+
+    # -- T2 ----------------------------------------------------------
+
+    def test_2_spend_output_and_json(self) -> None:
+        self.inject("A", self.KIMI, cost=0.30, hours_ago=1)
+        self.inject("B", self.GO, cost=0.55, hours_ago=2)
+        self.inject("C", self.GO, cost=0.10, hours_ago=1)
+        result = self.oc("spend")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertTrue(lines[0].startswith("SPEND"), lines[0])
+        self.assertIn("5h $0.95 of $4.50", lines[0])
+        self.assertIn("week $0.95 of $12.00", lines[0])
+        five = next(line for line in lines if line.startswith("5h: "))
+        self.assertLess(five.index(self.GO), five.index(self.KIMI))
+        self.assertLessEqual(len(lines), 40)
+        payload = json.loads(self.oc("spend", "--json").stdout)
+        self.assertEqual(payload["windows"]["5h"]["total"], 0.95)
+        self.assertEqual(payload["windows"]["week"]["total"], 0.95)
+        top = payload["windows"]["5h"]["models"][0]
+        self.assertEqual((top["model"], top["cost"]), (self.GO, 0.65))
+        tightened = json.loads(self.oc(
+            "spend", "--json", env={"CRPG_GO_CAP_5H": "1.25"}).stdout)
+        self.assertEqual(tightened["caps"], {"5h": 1.25, "week": 12.0})
+
+    # -- T3 ----------------------------------------------------------
+
+    def test_3_run_over_the_5h_cap_is_refused(self) -> None:
+        self.inject("A-old", self.GO, cost=4.45, hours_ago=1)
+        result = self.run_go("T-blocked")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.startswith("INFRA T-blocked"),
+                        result.stdout)
+        self.assertIn("cause: spend", result.stdout)
+        self.assertIn("guard: 5h cap:", result.stdout)
+        self.assertIn("CRPG_GO_SPEND_OVERRIDE=1", result.stdout)
+        record = self.read_record("T-blocked", self.GO)
+        self.assertEqual(
+            (record["verdict"], record["cause"], record["cost"]),
+            ("INFRA", "spend", 0))
+        self.assertEqual(self.lock_files(), [])
+        self.assertFalse((self.slot1 / "BRIEF.md").exists())
+        self.assertFalse(self.calls.exists())
+
+    # -- T4 ----------------------------------------------------------
+
+    def test_4_run_over_the_weekly_cap_is_refused(self) -> None:
+        self.inject("A", self.GO, cost=6.00, hours_ago=30)
+        self.inject("B", self.GO, cost=5.95, hours_ago=40)
+        result = self.run_go("T-week")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cause: spend", result.stdout)
+        self.assertIn("guard: week cap:", result.stdout)
+        self.assertIn("5h $0.00 of $4.50", result.stdout)
+        record = self.read_record("T-week", self.GO)
+        self.assertEqual((record["verdict"], record["cause"]), ("INFRA", "spend"))
+
+    # -- T5 ----------------------------------------------------------
+
+    def test_5_scarce_model_is_one_per_5h_window(self) -> None:
+        self.inject("A-old", self.KIMI, cost=0.05, hours_ago=6)
+        first = self.run_go("T-kimi-1", model=self.KIMI)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.inject("A-fresh", self.KIMI, cost=0.05, hours_ago=1)
+        second = self.run_go("T-kimi-2", model=self.KIMI)
+        self.assertEqual(second.returncode, 2,
+                         second.stdout + second.stderr)
+        self.assertIn("guard: scarce", second.stdout)
+        self.assertIn("at most one per 5h", second.stdout)
+        record = self.read_record("T-kimi-2", self.KIMI)
+        self.assertEqual((record["verdict"], record["cause"]), ("INFRA", "spend"))
+
+    # -- T6 ----------------------------------------------------------
+
+    def test_6_non_go_model_is_never_refused(self) -> None:
+        self.inject("A", self.KIMI, cost=100.0, hours_ago=1)
+        result = self.run_go("T-free", model="opencode/big-pickle")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self.read_record("T-free", "opencode/big-pickle")["verdict"], "PASS")
+
+    # -- T7 ----------------------------------------------------------
+
+    def test_7_override_lets_the_run_start(self) -> None:
+        self.inject("A-old", self.GO, cost=4.45, hours_ago=1)
+        result = self.run_go("T-over", env={"CRPG_GO_SPEND_OVERRIDE": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("spend guard overridden", result.stdout)
+        record = self.read_record("T-over", self.GO)
+        self.assertEqual((record["verdict"], record["cause"]), ("PASS", None))
+
+    # -- T8 ----------------------------------------------------------
+
+    def test_8_ask_is_guarded(self) -> None:
+        self.inject("A-old", self.GO, cost=4.45, hours_ago=1)
+        result = self.oc("ask", "--role", "scout", "--model", self.GO,
+                         "what changed?")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cause: spend", result.stdout)
+        self.assertIn("guard:", result.stdout)
+        record = self.read_record("ask", self.GO)
+        self.assertEqual(
+            (record["verdict"], record["cause"], record["cost"]),
+            ("INFRA", "spend", 0))
+        self.assertFalse(self.calls.exists())
+
+    # -- T9 ----------------------------------------------------------
+
+    def test_9_wave_refusal_leaves_the_other_members_running(self) -> None:
+        self.inject("A-old", self.GO, cost=4.45, hours_ago=1)
+        refused, fine = "T-wave-blocked", "T-wave-ok"
+        self.brief(refused)
+        self.brief(fine)
+        result = self.oc(
+            "wave", f"{refused}:implement:{self.GO}",
+            f"{fine}:implement:opencode/big-pickle", "--base", "master")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        lines = result.stdout.splitlines()
+        refused_line = next(line for line in lines
+                            if self.GO in line and line.startswith("INFRA"))
+        self.assertIn("spend", refused_line)
+        self.assertTrue(any(line.startswith(f"PASS {fine}")
+                            for line in lines), result.stdout)
+        self.assertEqual(
+            self.read_record(fine, "opencode/big-pickle")["verdict"], "PASS")
+
+    # -- T10 ---------------------------------------------------------
+
+    def test_10_dry_run_reports_the_refusal(self) -> None:
+        self.inject("A-old", self.GO, cost=4.45, hours_ago=1)
+        result = self.run_go("T-dry", extra=["--dry-run"])
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cause: spend", result.stdout)
+        self.assertIn("guard: 5h cap:", result.stdout)
+        self.assertFalse(self.record_path("T-dry", self.GO).exists())
+        self.assertEqual(self.lock_files(), [])
+        self.assertFalse(self.calls.exists())
+
+    # -- T11 ---------------------------------------------------------
+
+    def test_11_stats_does_not_count_a_spend_exit_against_the_model(self) -> None:
+        injected = self.inject("A-old", self.GO, cost=4.45, hours_ago=1)
+        result = self.run_go("T-stats")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        record = self.read_record("T-stats", self.GO)
+        self.assertFalse(OCMOD.is_failure(record))
+        injected.unlink()
+        rows = json.loads(self.oc("stats", "--json").stdout)["rows"]
+        row = next(r for r in rows
+                   if r["model"] == self.GO and r["role"] == "implement")
+        self.assertEqual(row["infra"], {"spend": 1})
+        self.assertEqual(
+            (row["first_attempt_passes"], row["first_attempt_eligible"]),
+            (0, 0))
+        self.assertFalse(row["demote"])
 
 
 class HarnessUnitCase(unittest.TestCase):

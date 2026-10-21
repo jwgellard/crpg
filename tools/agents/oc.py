@@ -7,6 +7,7 @@ Usage:
     python tools/agents/oc.py ask --role scout --model MODEL QUESTION
     python tools/agents/oc.py record --task ID --role ROLE --model MODEL ...
     python tools/agents/oc.py stats [--role ROLE] [--since DATE] [--json]
+    python tools/agents/oc.py spend [--json]
 
 Exit codes: 0 verified (or, for review/scout/ask, the worker left a text
 message); 1 a check failed; 2 usage or infrastructure error. See
@@ -45,7 +46,7 @@ DEFAULT_IDLE = 600
 START_GAP_DEFAULT = 4.0
 LOCK_RETRIES = 2
 MAX_SUMMARY_LINES = 40
-WORKER_TAIL_LINES = 15
+WORKER_TAIL_LINES = 14
 CHECK_TAIL_LINES = 12
 
 # Thresholds from docs/agents/MODELS.md section 4.1 (demote and promote rule).
@@ -54,7 +55,8 @@ DEMOTE_FAILURES = 2
 PROMOTE_MIN_RUNS = 5
 
 # Infra causes that are not the model's fault: they never count against it.
-NON_FAULT_CAUSES = frozenset({"quota", "402", "locked"})
+# `spend` (the Go spend guard, below) is the manager's budget, not the model's.
+NON_FAULT_CAUSES = frozenset({"quota", "402", "locked", "spend"})
 # Infra causes that are the model's fault: they count against it.
 MODEL_FAULT_CAUSES = frozenset({"no-edit", "timeout", "hang"})
 
@@ -76,6 +78,28 @@ FREE_ZEN_PREFIX = "opencode/"
 FREE_ZEN_PER_MODEL = 1
 FREE_ZEN_TOTAL = 3
 PER_MODEL_MAX = 3
+
+# Go spend guard from docs/agents/MODELS.md section 1 item 16 and section
+# 3.2: the cap is shared across the account and was hit at about $5 of
+# notional spend per 5-hour window (2026-10-16) and about $12.5 per week
+# (2026-10-17), stopping every Go model. The caps below keep a margin under
+# those; CRPG_GO_CAP_5H and CRPG_GO_CAP_WEEK tighten them further.
+GO_PREFIX = "opencode-go/"
+GO_CAP_5H = 4.50
+GO_CAP_WEEK = 12.00
+GO_WINDOW_5H_S = 5 * 60 * 60
+GO_WINDOW_WEEK_S = 7 * 24 * 60 * 60
+# Kimi K3 and Gemini 4 Argon are scarce: at most one short run per 5-hour
+# window (section 1 item 16). Their one long run cost $4.17 and $5.34
+# (section 1 item 16), so a run reserves $1.00 against the caps; every other
+# Go model reserves $0.10.
+SCARCE_MODELS = {
+    "opencode-go/kimi-k3": 1.00,
+    "opencode-go/gemini-4-argon-contributor": 1.00,
+}
+GO_RESERVE_DEFAULT = 0.10
+# The manager's escape hatch when it knows the spend is justified.
+GO_OVERRIDE_ENV = "CRPG_GO_SPEND_OVERRIDE"
 
 # A synthesized result record (from `record` with no matching run) carries
 # this cause so stats can tell "the manager wrote this down" apart from a
@@ -757,6 +781,19 @@ def opencode_log_path() -> Path:
     return home / ".local" / "share" / "opencode" / "log" / "opencode.log"
 
 
+def log_baseline() -> int:
+    """The OpenCode log's size when the run starts preparing.
+
+    Taken before slot prep and the version probe, so a line OpenCode writes
+    while the run gets ready still counts as new for the idle watchdog
+    (the worker itself can only write after it starts).
+    """
+    try:
+        return opencode_log_path().stat().st_size
+    except OSError:
+        return 0
+
+
 def classify_infra(text: str) -> str | None:
     """Map provider/transport failure text to an infra cause, or None."""
     lowered = text.lower()
@@ -830,17 +867,17 @@ def run_worker(
     idle_s: int,
     agent: str,
     model: str,
+    since_size: int | None = None,
 ) -> tuple[str | None, int]:
     """Run the worker; returns (idle/timeout cause or None, process rc).
 
-    Never uses shell=True; stdin is always DEVNULL.
+    Never uses shell=True; stdin is always DEVNULL. `since_size` is the log
+    size the caller captured before preparing the run, so log lines written
+    during preparation are still seen as new.
     """
     assert "--auto" not in cmd
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        log_size = opencode_log_path().stat().st_size
-    except OSError:
-        log_size = 0
+    log_size = log_baseline() if since_size is None else since_size
     proc_args: dict = {
         "cwd": cwd,
         "env": {**os.environ, "PWD": str(cwd)},
@@ -905,6 +942,7 @@ def parse_events(log_path: Path) -> dict:
     saw_step = False
     raw_chunks: list[str] = []
     infra_chunks: list[str] = []
+    error_types: list[str] = []
     try:
         blob = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -942,6 +980,9 @@ def parse_events(log_path: Path) -> dict:
                 last_text = text
         elif kind == "error":
             infra_chunks.append(line)
+            detail = event.get("error")
+            if isinstance(detail, dict) and isinstance(detail.get("type"), str):
+                error_types.append(detail["type"])
         if kind == "tool_use":
             # A tool error echoes command output, so it is never a
             # provider/process failure and must never be classified as
@@ -965,6 +1006,8 @@ def parse_events(log_path: Path) -> dict:
         # Provider/process errors only: error events and raw process output.
         # Never tool outputs or tool errors, and never the worker's text.
         "infra_text": "\n".join(infra_chunks),
+        # The `type` of every top-level error event, in order.
+        "error_types": error_types,
     }
 
 
@@ -977,6 +1020,22 @@ def infra_cause(events: dict) -> str | None:
     if events.get("last_reason") == "stop":
         return None
     return classify_infra(events.get("infra_text", ""))
+
+
+def empty_run_cause(events: dict) -> str:
+    """Why a run that changed nothing ended: an infra cause or `no-edit`.
+
+    An `error` event in the log is the provider's failure, not the model's:
+    the infra rules classify it first (a rate limit stays `quota`), and any
+    other `provider.*` error is `model`. Only a log with no such error is
+    the model's own `no-edit`.
+    """
+    cause = infra_cause(events)
+    if cause:
+        return cause
+    if any(t.startswith("provider.") for t in events.get("error_types") or []):
+        return "model"
+    return "no-edit"
 
 
 def next_attempt_number(task_dir: Path) -> int:
@@ -1005,7 +1064,7 @@ def run_verify(repo: Path, task: str, slot: Path, role: str, base: str) -> dict:
     # commits as out-of-scope changes. Without --base the verifier falls
     # back to `merge-base HEAD origin/master` (verify_task.py:215).
     cmd = verify_prefix(repo) + [task, "--slot", str(slot), "--base", base, "--json"]
-    if role in ("tests", "grunt"):
+    if role == "grunt":
         cmd += ["--skip", "gates"]
     try:
         proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=900)
@@ -1084,6 +1143,15 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
     lines = [verdict_line(info)]
     if info.get("cause"):
         lines.append(f"cause: {info['cause']}")
+    if info.get("spend"):
+        refusal = info["spend"]
+        lines.append(spend_summary(
+            {"totals": refusal["totals"]},
+            (refusal["caps"]["5h"], refusal["caps"]["week"]),
+        ))
+        lines.append(guard_line(refusal))
+    if info.get("spend_note"):
+        lines.append(info["spend_note"])
     files = (verify or {}).get("files") or []
     if files:
         bits = [f"{f.get('path')} +{f.get('added', 0)} -{f.get('deleted', 0)}" for f in files]
@@ -1106,6 +1174,8 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
             lines.append(f"--- {check.get('name')} (last {CHECK_TAIL_LINES} lines) ---")
             output = check.get("output") or []
             lines.extend(output[-CHECK_TAIL_LINES:])
+    if info.get("report"):
+        lines.append(f"report: {info['report']}")
     if info.get("last_text"):
         lines.append(f"--- worker report (first {WORKER_TAIL_LINES} lines) ---")
         lines.extend(info["last_text"].splitlines()[:WORKER_TAIL_LINES])
@@ -1123,6 +1193,10 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
 
 def record_path(task_dir: Path, attempt: int, model: str) -> Path:
     return task_dir / f"{attempt}-{sanitize_model(model)}.result.json"
+
+
+def report_path(task_dir: Path, attempt: int, model: str) -> Path:
+    return task_dir / f"{attempt}-{sanitize_model(model)}.report.md"
 
 
 def write_record(path: Path, info: dict) -> None:
@@ -1193,6 +1267,170 @@ def first_attempt_pass(record: dict) -> bool:
     return True
 
 
+# -- Go spend guard ----------------------------------------------------------------
+
+
+def parse_utc(text: object) -> datetime | None:
+    """A record's started_utc as an aware datetime, or None when unusable."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        stamp = datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return stamp.replace(tzinfo=timezone.utc)
+
+
+def go_caps() -> tuple[float, float]:
+    """The 5-hour and weekly Go caps, with the env overrides applied."""
+    return (
+        env_float("CRPG_GO_CAP_5H", GO_CAP_5H),
+        env_float("CRPG_GO_CAP_WEEK", GO_CAP_WEEK),
+    )
+
+
+def go_override() -> bool:
+    return os.environ.get(GO_OVERRIDE_ENV) == "1"
+
+
+def go_spend(records: list[dict], now: datetime | None = None) -> dict:
+    """Sum Go notional cost over the rolling 5-hour and 7-day windows.
+
+    Only models under GO_PREFIX count, and only records started inside each
+    window; a record with no started_utc or no numeric cost is $0. The
+    per-model sums feed `spend`, the newest scarce start feeds the guard.
+    """
+    now = now or datetime.now(timezone.utc)
+    windows = {"5h": GO_WINDOW_5H_S, "week": GO_WINDOW_WEEK_S}
+    totals = {name: 0.0 for name in windows}
+    models: dict[str, dict[str, float]] = {name: {} for name in windows}
+    scarce: dict[str, datetime] = {}
+    for record in records:
+        model = str(record.get("model") or "")
+        if not model.startswith(GO_PREFIX):
+            continue
+        started = parse_utc(record.get("started_utc"))
+        if started is None:
+            continue
+        age = (now - started).total_seconds()
+        if age < 0:
+            continue
+        if model in SCARCE_MODELS and (model not in scarce or started > scarce[model]):
+            scarce[model] = started
+        cost = record.get("cost")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            cost = 0.0
+        for name, span in windows.items():
+            if age <= span:
+                totals[name] += float(cost)
+                models[name][model] = models[name].get(model, 0.0) + float(cost)
+    return {"now": now, "totals": totals, "models": models, "scarce": scarce}
+
+
+def go_refusal(repo: Path, model: str, now: datetime | None = None) -> dict | None:
+    """Why this Go model may not start now, or None when the guard allows it.
+
+    Rule (a): the window's spend plus the model's reservation would exceed
+    the cap. Rule (b): a scarce model already started within 5 hours
+    (docs/agents/MODELS.md section 1 item 16).
+    """
+    if not model.startswith(GO_PREFIX) or go_override():
+        return None
+    now = now or datetime.now(timezone.utc)
+    data = go_spend(load_records(repo), now)
+    cap5, capweek = go_caps()
+    caps = {"5h": cap5, "week": capweek}
+    reserve = SCARCE_MODELS.get(model, GO_RESERVE_DEFAULT)
+    for name, cap in caps.items():
+        spent = data["totals"][name]
+        if spent + reserve > cap:
+            return {"rule": name, "model": model, "reservation": reserve,
+                    "spent": spent, "cap": cap, "totals": data["totals"],
+                    "caps": caps}
+    if model in SCARCE_MODELS:
+        last = data["scarce"].get(model)
+        if last is not None and (now - last).total_seconds() <= GO_WINDOW_5H_S:
+            return {"rule": "scarce", "model": model, "reservation": reserve,
+                    "spent": data["totals"]["5h"], "cap": cap5,
+                    "totals": data["totals"], "caps": caps,
+                    "last_s": (now - last).total_seconds()}
+    return None
+
+
+def spend_summary(data: dict, caps: tuple[float, float] | None = None,
+                  overridden: bool = False) -> str:
+    """The one line every spend view starts with: totals against the caps."""
+    cap5, capweek = caps or go_caps()
+    line = (
+        f"SPEND \u00b7 5h ${data['totals']['5h']:.2f} of ${cap5:.2f} "
+        f"\u00b7 week ${data['totals']['week']:.2f} of ${capweek:.2f}"
+    )
+    if overridden:
+        line += " \u00b7 spend guard overridden"
+    return line
+
+
+def guard_line(refusal: dict) -> str:
+    """One line: the rule, the totals, the cap and the override."""
+    caps = refusal["caps"]
+    totals = refusal["totals"]
+    seen = (f"5h ${totals['5h']:.2f}/${caps['5h']:.2f}, "
+            f"week ${totals['week']:.2f}/${caps['week']:.2f}")
+    override = f"override with {GO_OVERRIDE_ENV}=1"
+    if refusal["rule"] == "scarce":
+        return (
+            f"guard: scarce {refusal['model']} ran "
+            f"{human_elapsed(refusal['last_s'])} ago; at most one per 5h "
+            f"window ({seen}); {override}"
+        )
+    projected = refusal["spent"] + refusal["reservation"]
+    return (
+        f"guard: {refusal['rule']} cap: ${refusal['spent']:.2f} spent "
+        f"+ ${refusal['reservation']:.2f} reserved = ${projected:.2f} "
+        f"> ${refusal['cap']:.2f} ({seen}); {override}"
+    )
+
+
+def spend_note(repo: Path, model: str) -> str | None:
+    """The summary note when an override skipped the guard, else None."""
+    if not go_override() or not model.startswith(GO_PREFIX):
+        return None
+    return spend_summary(go_spend(load_records(repo)), go_caps(), True)
+
+
+def spend_lines(data: dict, caps: tuple[float, float],
+                overridden: bool) -> list[str]:
+    lines = [spend_summary(data, caps, overridden)]
+    for name, label in (("5h", "5h"), ("week", "7d")):
+        pairs = sorted(data["models"][name].items(),
+                       key=lambda item: (-item[1], item[0]))
+        if not pairs:
+            lines.append(f"{label}: no Go spend")
+            continue
+        lines.append(f"{label}: " + " \u00b7 ".join(
+            f"{model} ${cost:.2f}" for model, cost in pairs))
+    if len(lines) > MAX_SUMMARY_LINES:
+        lines = lines[: MAX_SUMMARY_LINES - 1] + ["... truncated to 40 lines"]
+    return lines
+
+
+def spend_payload(data: dict, caps: tuple[float, float],
+                  overridden: bool) -> dict:
+    windows = {}
+    for name in ("5h", "week"):
+        pairs = sorted(data["models"][name].items(),
+                       key=lambda item: (-item[1], item[0]))
+        windows[name] = {
+            "total": round(data["totals"][name], 4),
+            "models": [{"model": model, "cost": round(cost, 4)}
+                       for model, cost in pairs],
+        }
+    return {"tool": "oc", "version": RESULT_VERSION,
+            "now": data["now"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "caps": {"5h": caps[0], "week": caps[1]},
+            "windows": windows, "overridden": overridden}
+
+
 # -- shared result-record helpers -------------------------------------------------
 
 
@@ -1235,6 +1473,7 @@ def result_payload(info: dict, verify: dict | None, summary: str) -> dict:
 
 def do_run(args: argparse.Namespace) -> int:
     repo = repo_root()
+    since_size = log_baseline()
     check_model_id(args.model)
     slots = list_slots(slots_dir(repo))
     dry = bool(args.dry_run)
@@ -1253,6 +1492,12 @@ def do_run(args: argparse.Namespace) -> int:
 
     def finish(code: int, verify: dict | None) -> int:
         info["elapsed_s"] = time.time() - wall_start
+        if info.get("last_text") and not dry:
+            # The summary shows the head of the report; the file keeps it all.
+            report = report_path(task_dir, attempt, args.model)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(info["last_text"], encoding="utf-8")
+            info["report"] = str(report)
         lines = build_summary(info, verify, bool(args.full))
         payload = result_payload(info, verify, "\n".join(lines))
         if slot_number is not None and not dry:
@@ -1274,6 +1519,18 @@ def do_run(args: argparse.Namespace) -> int:
 
     slot_number: int | None = None
     slot: Path | None = None
+    # The Go spend guard runs before any slot is locked or prepared and
+    # before a process starts; a refusal leaves a cost-0 result record so
+    # `stats` sees it, and `--dry-run` reports it without writing one.
+    refusal = go_refusal(repo, args.model)
+    if refusal is not None:
+        info["cause"] = "spend"
+        info["spend"] = refusal
+        eprint("oc: spend")
+        return finish(2, None)
+    note = spend_note(repo, args.model)
+    if note:
+        info["spend_note"] = note
     if not dry:
         try:
             slot_number, slot = acquire_slot(repo, slots, args.slot, wait=False)
@@ -1375,7 +1632,7 @@ def do_run(args: argparse.Namespace) -> int:
         while True:
             idle_or_timeout, rc = run_worker(
                 worker_cmd(prefix, prompt, variant, major), slot, log_path, timeout_s,
-                idle_s, f"crpg-{args.role}", args.model,
+                idle_s, f"crpg-{args.role}", args.model, since_size,
             )
             events = parse_events(log_path)
             if idle_or_timeout in ("timeout", "hang", "quota", "402", "model", "no-agent"):
@@ -1423,6 +1680,17 @@ def do_run(args: argparse.Namespace) -> int:
         if args.role in VERIFY_ROLES:
             verify = run_verify(repo, args.task, slot, args.role, base)
             verdict = verify.get("verdict")
+            if (verdict == "PASS" and args.role in ("implement", "tests")
+                    and not verify.get("files")):
+                # Every check passes on an empty change set, so an empty
+                # `files` list means the worker changed nothing (or the
+                # provider failed under it): not a PASS.
+                cause = empty_run_cause(events)
+                info["verdict"] = "INFRA"
+                info["cause"] = cause
+                if cause in MODEL_FAULT_CAUSES:
+                    info["failed_checks"] = [cause]
+                return finish(2, verify)
             if verdict == "PASS":
                 info["verdict"] = "PASS"
                 return finish(0, verify)
@@ -1466,6 +1734,7 @@ def do_run(args: argparse.Namespace) -> int:
 
 def do_ask(args: argparse.Namespace) -> int:
     repo = repo_root()
+    since_size = log_baseline()
     check_model_id(args.model)
     task = "ask"
     task_dir = runs_dir(repo) / task
@@ -1493,6 +1762,17 @@ def do_ask(args: argparse.Namespace) -> int:
         return code
 
     try:
+        # The Go spend guard runs before any process starts; a refusal
+        # still writes its cost-0 result record (exit 2 `spend`).
+        refusal = go_refusal(repo, args.model)
+        if refusal is not None:
+            info["cause"] = "spend"
+            info["spend"] = refusal
+            eprint("oc: spend")
+            return finish(2)
+        note = spend_note(repo, args.model)
+        if note:
+            info["spend_note"] = note
         # Resolution and version probing happen inside the try: a missing
         # executable (no-exe) must still write its result record, exactly
         # as `run` does (attempt-5 finding 3).
@@ -1518,7 +1798,7 @@ def do_ask(args: argparse.Namespace) -> int:
                 question,
             ]
         wait_start_gap(repo)
-        idle_or_timeout, rc = run_worker(cmd, repo, log_path, timeout_s, idle_s, agent, args.model)
+        idle_or_timeout, rc = run_worker(cmd, repo, log_path, timeout_s, idle_s, agent, args.model, since_size)
         events = parse_events(log_path)
         absorb_events(info, events)
         if idle_or_timeout is not None:
@@ -1823,6 +2103,20 @@ def do_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def do_spend(args: argparse.Namespace) -> int:
+    """Print the Go spend over the 5-hour and 7-day windows, largest first."""
+    repo = repo_root()
+    caps = go_caps()
+    overridden = go_override()
+    data = go_spend(load_records(repo))
+    if args.json:
+        print(json.dumps(spend_payload(data, caps, overridden), indent=2))
+        return 0
+    for line in spend_lines(data, caps, overridden):
+        print(line)
+    return 0
+
+
 # -- main -------------------------------------------------------------------------------------
 
 
@@ -1874,6 +2168,9 @@ def build_parser() -> argparse.ArgumentParser:
     stats.add_argument("--role", default=None, choices=ROLES)
     stats.add_argument("--since", default=None)
     stats.add_argument("--json", action="store_true")
+
+    spend = sub.add_parser("spend", help="Go spend over the 5h and 7d windows")
+    spend.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1898,6 +2195,8 @@ def main(argv: list[str] | None = None) -> int:
             return do_record(args)
         if args.command == "stats":
             return do_stats(args)
+        if args.command == "spend":
+            return do_spend(args)
     except Exit as stop:
         if stop.cause:
             eprint(f"oc: {stop.cause}")

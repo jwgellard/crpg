@@ -21,6 +21,7 @@ python tools/agents/oc.py ask  --role scout --model MODEL [--timeout SEC] [--jso
 python tools/agents/oc.py record --task ID --role ROLE --model MODEL --outcome OUTCOME
                                [--attempt N] [--note TEXT]
 python tools/agents/oc.py stats [--role ROLE] [--since YYYY-MM-DD] [--json]
+python tools/agents/oc.py spend [--json]
 ```
 
 `SPEC` is `ID:ROLE:MODEL`; `ROLE` is `implement`, `tests`, `review`,
@@ -60,6 +61,26 @@ Free after the OpenCode 2.x upgrade, `opencode/cat-jam-free`,
 `opencode-go/cat-jam-free` and `opencode/beam-free` →
 `opencode-go/beam-free`.
 
+`spend` prints the Go spend over a rolling 5-hour window and a rolling 7-day
+window, summed from the `cost` field of the result records under
+`.agents/runs/` for models whose ID starts with `opencode-go/` and whose
+`started_utc` is inside the window (a missing stamp or non-numeric cost counts
+as $0). The first line is the verdict (`SPEND`, totals against the caps),
+followed by each window's spend per model, largest first; `--json` prints the
+same data.
+
+The same numbers guard `run`, `ask` and every `wave` member before any slot is
+prepared or a process starts. A Go start is refused (exit 2, cause `spend`)
+when the window total plus the model's reservation would exceed its cap, or
+when a scarce model (`kimi-k3`, `gemini-4-argon-contributor`) already started
+within 5 hours — at most one such run per window, per `docs/agents/MODELS.md`
+§1 item 16. The refusal prints the spend line and one line naming the rule,
+the totals, the cap and the override, and leaves the usual cost-0 result
+record. `run --dry-run` applies the guard too. Caps are `GO_CAP_5H` = $4.50
+and `GO_CAP_WEEK` = $12.00, overridable with `$CRPG_GO_CAP_5H` and
+`$CRPG_GO_CAP_WEEK`; `CRPG_GO_SPEND_OVERRIDE=1` skips the guard and the
+summary says `spend guard overridden`.
+
 Briefs: `run` takes `--brief`, else `<repo>/.agents/briefs/<ID>.md`
 when filed, else generates one via `brief.py`; `wave` resolves each
 member the same way (it has no `--brief` of its own). A brief that
@@ -86,9 +107,20 @@ before OpenCode starts; an OpenCode event reading `Agent not found`
 classifies as the same cause.
 
 Exit-2 causes: `fetch`, `no-brief`, `no-verify`, `no-slot`, `slot-busy`,
-`no-exe`, `no-agent`, `branch`, `locked`, `402`, `quota`, `timeout`, `hang`,
-`no-edit`, `model`, `verify-error`, `usage`. Of these, `quota`, `402` and
-`locked` never count against the model; `no-edit`, `timeout` and `hang` do.
+`no-exe`, `no-agent`, `branch`, `locked`, `402`, `quota`, `spend`, `timeout`,
+`hang`, `no-edit`, `model`, `verify-error`, `usage`. Of these, `quota`, `402`,
+`locked` and `spend` never count against the model; `no-edit`, `timeout` and
+`hang` do.
+
+Verification: `implement` and `tests` runs get the full gates; only `grunt`
+passes `--skip gates`. A PASS from the verifier with no changed file
+(`files` empty) is not a PASS for `implement` and `tests`: the run exits 2,
+with the infra cause when the event log holds an `error` event (`quota` for a
+rate limit, `model` for any other `provider.*` error), else `no-edit`.
+`review`, `scout` and `grunt` are unaffected. The summary shows the first 14
+lines of the worker's report and a `report: <path>` line; the whole report is
+in `<repo>/.agents/runs/<ID>/<attempt>-<model>.report.md`, beside the event
+log and the result record.
 
 Tests live in `tools/tests/test_oc.py` and run against
 `tools/tests/fake_opencode.py` (every failure mode above, both OpenCode
@@ -106,7 +138,13 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 ## Neighbours (other workers, not this script)
 
 - `tools/agents/verify_task.py` — the verifier `oc.py` runs (A0-4). Faked in
-  tests via `$CRPG_VERIFY`.
+  tests via `$CRPG_VERIFY`. Without `--brief` it uses the slot's `BRIEF.md`,
+  unless that file's first line (`# Brief — <ID> ·` or `# Review brief — <ID> ·`)
+  names a different task; then it uses `.agents/briefs/<ID>.md` in `$CRPG_REPO`
+  (default: the repository holding the script), and exits 2 `no-brief` if
+  neither exists. Its `docsig` check accepts an added agent-log entry dated
+  from the UTC day of the oldest commit in `base..HEAD` up to today (today only
+  with no commits; `$CRPG_TODAY` overrides today).
 - `tools/agents/brief.py`, `tools/agents/recall.py` — brief generation and
   memory search (A0-5). `oc.py` calls `brief.py` when `--brief` is omitted.
 
@@ -117,3 +155,5 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-16 (UTC) · opencode/muse-spark-1.3-contributor + A0-3 attempt 4 · Documented OpenCode 2.x support (version probe, `--standalone` with model `#variant` and no `--dir`, kept 1.x form, removed Cat Jam IDs, top-level error events, versioned fake) so the guide matches `oc.py`'s dual-generation behaviour.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: Beam is Cat Jam renamed · Recorded Beam Free as the Go ID behind both Cat Jam IDs and its own Zen ID, replacing the removed-model refusal, as the user directed.
 - 2026-10-16 (UTC) · opencode-go/DeepSeek-Flash-V4.1 + A0-3b · Documented the `--base` pass-through to `verify_task.py` (run and wave) and the agent-declaration fallback with its `info/exclude` entries and `no-agent` cause, so the guide matches the slot preparation defect fixes.
+- 2026-10-17 (UTC) · claude-code/sonnet-5.5 (implementer) + A0-3d · Documented the gates for the tests role, the empty-change `no-edit` rule, the report file, the brief-by-task-ID fallback and the docsig date range so the guide matches the five tool fixes.
+- 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3c · Documented `spend`, the pre-start Go guard with its `spend` cause, the cap env vars and the override, so the manager can see the account-wide Go budget without a throwaway script.

@@ -7,6 +7,7 @@ Behaviour from $FAKE_VERIFY_MODE:
   pass   exit 0, verdict PASS, two files and three ok checks.
   fail   exit 1, verdict FAIL, one failed check with a long output tail.
   error  exit 2, verdict ERROR.
+  empty  exit 0, verdict PASS, no files (the worker changed nothing).
 The received argv is appended to $FAKE_VERIFY_LOG for --skip gates checks.
 """
 
@@ -29,6 +30,18 @@ def main() -> int:
         if piece.strip()
     }
     mode = os.environ.get("FAKE_VERIFY_MODE", "pass")
+    if mode == "empty":
+        payload = {
+            "tool": "verify_task",
+            "version": 1,
+            "task": task,
+            "verdict": "PASS",
+            "error": None,
+            "checks": [{"name": "scope", "status": "ok", "detail": "", "output": []}],
+            "files": [],
+        }
+        sys.stdout.write(json.dumps(payload))
+        return 0
     if mode == "fail" or task in fail_tasks:
         payload = {
             "tool": "verify_task",

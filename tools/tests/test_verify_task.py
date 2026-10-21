@@ -521,5 +521,101 @@ class ErrorCases(VerifyCase):
         self.assert_exit_two(self.verify(env_extra=env))
 
 
+OTHER_BRIEF = """# Brief — A0-9 · another task
+Route: x
+## Files you own
+- `docs/other/**`
+## Out of scope
+nothing
+"""
+
+
+class ReusedSlotBrief(VerifyCase):
+    """A0-3d: a slot's BRIEF.md for another task must not decide scope."""
+
+    def filed(self, text: str | None) -> dict[str, str]:
+        repo = self.tmp / "repo"
+        if text is not None:
+            write_file(repo / ".agents" / "briefs" / "A0-4.md", text)
+        return {"CRPG_REPO": str(repo)}
+
+    def test_other_tasks_slot_brief_is_replaced_by_the_filed_brief(self) -> None:
+        self.write_brief(OTHER_BRIEF)
+        self.clean_change()
+        result = self.verify(env_extra=self.filed(DEFAULT_BRIEF))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_other_tasks_slot_brief_without_a_filed_brief_is_no_brief(self) -> None:
+        self.write_brief(OTHER_BRIEF)
+        self.clean_change()
+        result = self.verify(env_extra=self.filed(None))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.startswith("ERROR "), result.stdout)
+        self.assertIn("no-brief", result.stdout)
+        self.assertIn("BRIEF.md", result.stdout)
+        self.assertIn("A0-4.md", result.stdout)
+
+    def test_review_brief_header_is_read_too(self) -> None:
+        self.write_brief(OTHER_BRIEF.replace("# Brief —", "# Review brief —"))
+        self.clean_change()
+        result = self.verify(env_extra=self.filed(None))
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no-brief", result.stdout)
+
+    def test_slot_brief_for_this_task_is_kept(self) -> None:
+        self.write_brief(DEFAULT_BRIEF.replace("DEMO", "A0-4 ·"))
+        self.clean_change()
+        result = self.verify(env_extra=self.filed(None))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_explicit_brief_wins(self) -> None:
+        self.write_brief(OTHER_BRIEF)
+        explicit = self.tmp / "explicit.md"
+        explicit.write_text(DEFAULT_BRIEF, encoding="utf-8")
+        self.clean_change()
+        result = self.verify(brief=explicit, env_extra=self.filed(None))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class DocsigDateRange(VerifyCase):
+    """A0-3d: an entry written when the work began survives a UTC midnight."""
+
+    def commit_on(self, day: str) -> None:
+        stamp = f"{day}T12:00:00+00:00"
+        self.git("add", "-A")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "-c", "user.name=T",
+             "-c", "user.email=t@example.com", "commit", "-q", "-m", "work"],
+            check=True, capture_output=True,
+            env={**os.environ, "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp},
+        )
+
+    def note(self, day: str) -> None:
+        self.add("docs/notes.md", f"# Notes\n\n- {day} (UTC) · test agent + x · why\n")
+
+    def test_entry_from_the_day_the_work_began_passes(self) -> None:
+        self.note("2026-10-15")
+        self.commit_on("2026-10-15")
+        result = self.verify()  # CRPG_TODAY is 2026-10-16
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_entry_older_than_the_oldest_commit_fails_and_names_the_range(self) -> None:
+        self.note("2026-10-14")
+        self.commit_on("2026-10-15")
+        result = self.verify()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("docsig: FAILED", result.stdout)
+        self.assertIn("2026-10-15..2026-10-16", result.stdout)
+
+    def test_entry_dated_after_today_fails(self) -> None:
+        self.note("2026-10-17")
+        self.commit_on("2026-10-15")
+        self.assertEqual(self.verify().returncode, 1)
+
+    def test_uncommitted_work_still_needs_todays_entry(self) -> None:
+        self.note("2026-10-15")
+        self.assertEqual(self.verify().returncode, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

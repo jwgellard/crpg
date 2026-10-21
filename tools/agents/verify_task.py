@@ -12,7 +12,9 @@ Usage:
 
 Options:
     --slot PATH    the worktree to inspect (required)
-    --brief PATH   the brief to parse; default <slot>/BRIEF.md
+    --brief PATH   the brief to parse; default <slot>/BRIEF.md, or
+                   .agents/briefs/<ID>.md when the slot's brief names
+                   another task
     --base REF     the changed-set base; default the merge-base of HEAD and
                    origin/master in the slot
     --skip NAMES   comma-separated checks to report as skipped
@@ -595,7 +597,25 @@ def check_docsig(ctx: Context) -> dict:
     today = os.environ.get("CRPG_TODAY") or datetime.datetime.now(
         datetime.timezone.utc
     ).strftime("%Y-%m-%d")
-    signature = re.compile(r"^- " + re.escape(today) + r" \(UTC\) · ")
+    # An entry written when the work began is still right after a UTC
+    # midnight: accept dates from the oldest commit in base..HEAD to today.
+    # With no commits in the range, only today.
+    first = today
+    stamps = run_git(ctx.slot, ["log", "--format=%ct", f"{ctx.range_base}..HEAD"])
+    commit_days = [
+        datetime.datetime.fromtimestamp(int(s), datetime.timezone.utc).strftime("%Y-%m-%d")
+        for s in stamps.stdout.split()
+        if s.isdigit()
+    ]
+    if stamps.returncode == 0 and commit_days:
+        first = min(min(commit_days), today)
+    wanted = today if first == today else f"{first}..{today}"
+    signature = re.compile(r"^- (\d{4}-\d{2}-\d{2}) \(UTC\) · ")
+
+    def signed(line: str) -> bool:
+        found = signature.match(line)
+        return bool(found) and first <= found.group(1) <= today
+
     offenders: list[str] = []
     for path in sorted(ctx.files):
         if not path.endswith(".md") or ctx.files[path]["status"] == "D":
@@ -604,10 +624,10 @@ def check_docsig(ctx: Context) -> dict:
             continue
         if path.startswith(".opencode/agents/") or "fixtures" in path.split("/"):
             continue
-        if not any(signature.match(line) for line in ctx.added_lines(path)):
-            offenders.append(f"{path}: no added '{today} (UTC)' agent-log entry")
+        if not any(signed(line) for line in ctx.added_lines(path)):
+            offenders.append(f"{path}: no added agent-log entry dated {wanted} (UTC)")
     if offenders:
-        return _fail(f"{len(offenders)} .md file(s) without today's signature", offenders)
+        return _fail(f"{len(offenders)} .md file(s) without a signature dated {wanted}", offenders)
     return _ok()
 
 
@@ -658,6 +678,38 @@ def parse_skip(values: list[str]) -> set[str]:
     return names
 
 
+_BRIEF_HEADER = re.compile(r"^# (?:Review b|B)rief — (\S+) ·")
+
+
+def default_brief_path(slot: str, task: str) -> str:
+    """The brief to use without --brief: the slot's, unless it is another task's.
+
+    A slot is reused, so its BRIEF.md may be for a different task than the
+    one being verified. Only a first line naming a *different* task ID sends
+    us to `.agents/briefs/<ID>.md` (in $CRPG_REPO, else this script's
+    repository); a header with no ID, or this ID, keeps the slot's brief.
+    """
+    slot_brief = os.path.join(slot, "BRIEF.md")
+    try:
+        with open(slot_brief, encoding="utf-8", errors="replace") as handle:
+            first = handle.readline()
+    except OSError:
+        return slot_brief
+    match = _BRIEF_HEADER.match(first)
+    if not match or match.group(1) == task:
+        return slot_brief
+    repo = os.environ.get("CRPG_REPO") or os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    filed = os.path.join(repo, ".agents", "briefs", f"{task}.md")
+    if os.path.isfile(filed):
+        return filed
+    raise UsageError(
+        f"no-brief: {slot_brief} is the brief for {match.group(1)}, "
+        f"and {filed} does not exist for {task}"
+    )
+
+
 def evaluate(args: argparse.Namespace) -> tuple[str, str | None, list[dict], dict[str, dict]]:
     skip = parse_skip(args.skip)
     slot = os.path.abspath(args.slot)
@@ -666,7 +718,7 @@ def evaluate(args: argparse.Namespace) -> tuple[str, str | None, list[dict], dic
     if not is_worktree(slot):
         raise UsageError(f"slot is not a git worktree: {args.slot}")
 
-    brief_path = args.brief or os.path.join(slot, "BRIEF.md")
+    brief_path = args.brief or default_brief_path(slot, args.task)
     if not os.path.isfile(brief_path):
         raise UsageError(f"brief not found: {brief_path}")
     try:
