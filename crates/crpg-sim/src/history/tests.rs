@@ -855,6 +855,76 @@ fn encoding_count_for_actions_matches_journal_growth() {
     assert_j1(&full);
 }
 
+/// T4: the same encoding counts on 4095- and 4096-envelope journals.
+#[test]
+fn encoding_counts_at_the_event_cap() {
+    // Building a 4096-envelope base by spawns is 4096 encodings in total.
+    let mut spawned = HistoryWorld::new(0);
+    let (_, encoded) = encodings_of(|| {
+        for _ in 0..MAX_HISTORY_EVENTS {
+            spawned.spawn(EntityMeta {}).expect("the journal fills");
+        }
+    });
+    assert_eq!(encoded, MAX_HISTORY_EVENTS as u64, "one per spawn");
+    assert_eq!(spawned.pending_len(), MAX_HISTORY_EVENTS);
+    assert_j1(&spawned);
+
+    // On a 4096-envelope journal the zero-event paths still encode nothing.
+    let base = cap_base();
+    let mut zero = base.clone();
+    assert_eq!(zero.pending_len(), MAX_HISTORY_EVENTS);
+    assert!(expect_encodings(0, || zero.tick()).is_ok());
+    assert!(expect_encodings(0, || zero.end_encounter()).is_ok());
+    let absent = expect_encodings(0, || zero.despawn(absent_id()));
+    assert_eq!(absent, Ok(false), "an absent despawn journals nothing");
+    let bytes = expect_encodings(0, || zero.pending_bytes());
+    assert_eq!(bytes, zero.pending.bytes, "pending_bytes reads the cache");
+    let through = zero.last_sequence();
+    assert!(expect_encodings(0, || zero.acknowledge(through)).is_ok());
+    assert_eq!(zero.pending_bytes(), 0);
+    assert_j1(&zero);
+
+    // A non-emptying acknowledgement at the cap encodes its drained prefix.
+    let mut acked = base.clone();
+    let acknowledged = acked.acknowledged();
+    assert!(expect_encodings(3, || acked.acknowledge(acknowledged + 3)).is_ok());
+    assert_eq!(acked.pending_len(), MAX_HISTORY_EVENTS - 3);
+    assert_j1(&acked);
+
+    // A 4095-envelope journal accepts one spawn for one encoding, then
+    // refuses the next spawn at 4096 without encoding it.
+    let mut almost = base.clone();
+    almost.acknowledge(1).expect("drain one");
+    assert_eq!(almost.pending_len(), MAX_HISTORY_EVENTS - 1);
+    assert!(expect_encodings(1, || almost.spawn(EntityMeta {})).is_ok());
+    assert_eq!(almost.pending_len(), MAX_HISTORY_EVENTS);
+    let refused = expect_encodings(0, || almost.spawn(EntityMeta {}));
+    assert_eq!(refused, Err(HistoryError::EventLimit));
+    assert_j1(&almost);
+
+    // An accepted action at the cap base acked down to 4090 pending encodes
+    // one envelope per journal addition there too.
+    let mut actioned = base.clone();
+    actioned.acknowledge(6).expect("drain six");
+    assert_eq!(actioned.pending_len(), MAX_HISTORY_EVENTS - 6);
+    let (actor, target) = active_pair(&actioned);
+    let action = CombatAction::UseAbility {
+        actor,
+        ability: Fixture::standard().ability,
+        target,
+    };
+    let len_before = actioned.pending_len();
+    let (outcome, encoded) = encodings_of(|| actioned.perform_action(&action));
+    outcome.expect("accepted").expect("attack");
+    let growth = actioned.pending_len() - len_before;
+    assert!(
+        (2..=3).contains(&growth),
+        "two or three envelopes: {growth}"
+    );
+    assert_eq!(encoded, growth as u64, "one encoding per new envelope");
+    assert_j1(&actioned);
+}
+
 /// T5: inert and rejected operations leave the journal in place.
 #[test]
 fn inert_and_rejected_operations_leave_the_journal_in_place() {
@@ -877,6 +947,37 @@ fn inert_and_rejected_operations_leave_the_journal_in_place() {
     let capacity = full.pending.envelopes.capacity();
     assert_eq!(full.spawn(EntityMeta {}), Err(HistoryError::EventLimit));
     assert_journal_in_place(&full, pointer, capacity, "an EventLimit spawn");
+}
+
+/// T5: the same inert and rejected operations at the 4096-envelope cap.
+#[test]
+fn inert_and_rejected_operations_at_the_cap_leave_the_journal_in_place() {
+    let mut full = cap_base();
+    let pointer = full.pending.as_slice().as_ptr();
+    let capacity = full.pending.envelopes.capacity();
+
+    full.tick().expect("tick");
+    assert_journal_in_place(&full, pointer, capacity, "a cap tick");
+
+    // The active actor's attack at the cap rejects as `EventLimit` after the
+    // staged world ran; the live journal must not have moved.
+    let (actor, target) = active_pair(&full);
+    let action = CombatAction::UseAbility {
+        actor,
+        ability: Fixture::standard().ability,
+        target,
+    };
+    assert_eq!(full.perform_action(&action), Err(HistoryError::EventLimit));
+    assert_journal_in_place(&full, pointer, capacity, "a cap EventLimit action");
+
+    full.end_encounter().expect("release");
+    assert_journal_in_place(&full, pointer, capacity, "a cap end_encounter");
+
+    assert_eq!(full.despawn(absent_id()), Ok(false));
+    assert_journal_in_place(&full, pointer, capacity, "a cap absent despawn");
+
+    assert_eq!(full.spawn(EntityMeta {}), Err(HistoryError::EventLimit));
+    assert_journal_in_place(&full, pointer, capacity, "a cap EventLimit spawn");
 }
 
 /// The canonical length of the envelope the next spawn would append.

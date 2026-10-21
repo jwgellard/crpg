@@ -220,13 +220,13 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
     about parser scratch, whose mandatory pre-parse byte cap belongs to
     T022's host boundary.
 14. **The journal's byte total is cached, and `commit` is its only writer
-    (T097, J1).** The retained journal is a private `Journal` holding the
-    envelopes plus a derived canonical byte total. At every public boundary
-    that total equals the sum of `envelope_len` over the retained envelopes
-    and stays within the byte cap; it is derived, never persisted, and
-    `envelope_len` is called exactly once per new envelope — never on a
-    retained one — so a mutation costs O(new envelopes + world clone). The
-    loader seeds the cache from the total it already computes, and
+    before validation ends (T097, J1).** The retained journal is a private
+    `Journal` holding the envelopes plus a derived canonical byte total. At
+    every public boundary that total equals the sum of `envelope_len` over the
+    retained envelopes and stays within the byte cap; it is derived, never
+    persisted, and `envelope_len` is called exactly once per new envelope —
+    never on a retained one — so a mutation costs O(new envelopes + world
+    clone). The loader seeds the cache from the total it already computes, and
     acknowledgement subtracts the drained prefix, emptying a fully drained
     journal without encoding. No code outside `commit` assigns the journal,
     the owned world, or `next_seq`, and `commit` writes nothing before every
@@ -446,3 +446,4 @@ proof.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Added the validate_action/legal_actions surface and the one-legality-source invariant so later rules land in the shared validator instead of a divergent copy; no dependency, persisted field, or golden change.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Added the persisted area identity and dual-world transfer surface with its world-owned, immutable-identity invariant, so later components know they must join the move contract rather than vanish on transfer.
 - 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total and world-only staging as invariant 14, named `commit` the only journal/world/sequence writer, added the derived-side-value trap and the source guard that enforces it, and amended rule 8 for the test-only `ENCODINGS` counter; no bytes, hashes, goldens, or public API changed.
+- 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + T133 · Restored T097 D2's qualifier that `commit` is the journal's only writer before validation ends, and added the 4095/4096-envelope `ENCODINGS` and journal-in-place regressions next to the existing small-journal tests; no behaviour, public API, or byte changed.
