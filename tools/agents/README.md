@@ -93,7 +93,13 @@ refused (exit 2 `no-brief`), as is a missing brief or generator.
 `--base REF` (default `origin/master`) is both the ref each slot's task
 branch starts from and the ref handed to `verify_task.py` as `--base`, so a
 run prepared from a non-master base is not reported as a pile of
-out-of-scope base commits. `wave` passes its own `--base` to every member.
+out-of-scope base commits. Its first path segment names a remote only when
+`git remote` in the slot lists it, so `origin/mgr/session-10-batch` fetches
+`mgr/session-10-batch` from `origin` while `mgr/session-10-batch` is a
+local ref and nothing is fetched. When a slot is not on the task branch,
+`run` checks the branch out, or creates it from `--base` when it does not
+exist yet; a slot with uncommitted changes is refused (`branch`). `wave`
+passes its own `--base` to every member.
 
 Agents: OpenCode reads `opencode.json` and `.opencode/agents/crpg-<role>.md`
 from the slot. When the slot has no `crpg-<role>.md` (a base that predates
@@ -157,3 +163,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-16 (UTC) · opencode-go/DeepSeek-Flash-V4.1 + A0-3b · Documented the `--base` pass-through to `verify_task.py` (run and wave) and the agent-declaration fallback with its `info/exclude` entries and `no-agent` cause, so the guide matches the slot preparation defect fixes.
 - 2026-10-17 (UTC) · claude-code/sonnet-5.5 (implementer) + A0-3d · Documented the gates for the tests role, the empty-change `no-edit` rule, the report file, the brief-by-task-ID fallback and the docsig date range so the guide matches the five tool fixes.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3c · Documented `spend`, the pre-start Go guard with its `spend` cause, the cap env vars and the override, so the manager can see the account-wide Go budget without a throwaway script.
+- 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3f · Documented that `--base` splits a remote only when the slot configures it and that `run` checks out or creates a missing task branch (refusing uncommitted work), so the guide matches the session-10 tool fixes.
