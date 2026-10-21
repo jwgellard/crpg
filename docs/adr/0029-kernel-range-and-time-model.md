@@ -472,21 +472,21 @@ may not add code or expressions.
 
 ## Follow-on contracts
 
-IDs are left blank for the manager. One crate each. "Accepted" means this
+IDs assigned 2026-10-21 (session 12). One crate each. "Accepted" means this
 ADR.
 
 | # | Id | Crate | Contract to write | Depends on | S |
 |---|---|---|---|---|---|
-| 1 | | `crpg-rules` | K3(a) success-count and face-count evaluation modes on `DiceExpr` (sum default, notation extension, trace unchanged) | Accepted; implement with its first consumer (4) | — |
-| 2 | | `crpg-rules` | K3(b) pool refill amount and validated maximum setter | Accepted | Yes |
-| 3 | | `crpg-data` | Surface schemas: typed and derived stats; resolution shape (bonus stats, constant, actor-stat, target-stat or opposed defence, tiered thresholds); damage dice; initiative spec; effects on stats with tag grants and lifetime kinds; combatant tags and sides; `round_ticks`, `recovery_ticks`, `repeats_in_real_time`; migrations. May split the RT fields into a small first task | Accepted; 1 and 2 if exposed | Yes |
-| 4 | | `crpg-sim` | Adapter generalization consuming 3, with existing goldens unchanged | 3 | Yes |
-| 5 | | `crpg-sim` | Encounter mode and RT policy, T1–T16; history v2 (N5) | 3 (RT fields) | Yes |
-| 6 | | `crpg-sim` | Persistent creature state outside encounters (stats, pools, effects, tags); join and leave (T13, T14) | 4, 5 | Yes |
-| 7 | | `crpg-net` | Next protocol version: N1–N4 facts, events, intents, snapshot allowlist | T024, T027b, 5 | — (H-filter) |
-| 8 | | `crpg-server` | P1–P9; mode requests; projection of the new facts; heartbeat | 5, 7 (in-process pause can come first) | — |
-| 9 | | `crpg-data` | `crpg.ui/1` schema, validation and generated defaults (U1–U8, U10) | Accepted; T104 report as input | Yes |
-| 10 | | `crpg-sim` | Read-only action preview: exact integer outcome distribution, bounded (U9) | 4 | — |
+| 1 | T134 | `crpg-rules` | K3(a) success-count and face-count evaluation modes on `DiceExpr` (sum default, notation extension, trace unchanged) | Accepted; implement with its first consumer (T137) | — |
+| 2 | T135 | `crpg-rules` | K3(b) pool refill amount and validated maximum setter | Accepted | Yes |
+| 3 | T136 | `crpg-data` | Surface schemas: typed and derived stats; resolution shape (bonus stats, constant, actor-stat, target-stat or opposed defence, tiered thresholds); damage dice; initiative spec; effects on stats with tag grants and lifetime kinds; combatant tags and sides; `round_ticks`, `recovery_ticks`, `repeats_in_real_time`; migrations. May split the RT fields into a small first task | Accepted; T134 and T135 if exposed | Yes |
+| 4 | T137 | `crpg-sim` | Adapter generalization consuming 3, with existing goldens unchanged | T136 | Yes |
+| 5 | T138 | `crpg-sim` | Encounter mode and RT policy, T1–T16; history v2 (N5) | T136 (RT fields) | Yes |
+| 6 | T139 | `crpg-sim` | Persistent creature state outside encounters (stats, pools, effects, tags); join and leave (T13, T14) | T137, T138 | Yes |
+| 7 | T140 | `crpg-net` | Next protocol version: N1–N4 facts, events, intents, snapshot allowlist | T024, T027b, T138 | — (H-filter) |
+| 8 | T141 | `crpg-server` | P1–P9; mode requests; projection of the new facts; heartbeat | T138, T140 (in-process pause can come first) | — |
+| 9 | T142 | `crpg-data` | `crpg.ui/1` schema, validation and generated defaults (U1–U8, U10) | Accepted; T104 report as input | Yes |
+| 10 | T143 | `crpg-sim` | Read-only action preview: exact integer outcome distribution, bounded (U9) | T137 | — |
 
 The `crpg-rules` change itself is outside the S-set, but a new
 `ResourcePool` field reaches the hashed `World`, so its contract is
@@ -534,3 +534,4 @@ including the toggle-refresh count (T10).
 - 2026-10-21 (UTC) · claude-code/opus-5.5 architect + T108 · Filed the proposed kernel-range, two-mode time model and ruleset-UI decision from the Beam and LongCat drafts and the R13/R14/R16 research, after checking each engine claim against the code. The main finding is that the kernel covers the five families except three named gaps, while the data/sim surface is the real limit; numbered 0029 because T024 reserves 0028.
 - 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T108-adr-fix · Corrected the two combat.rs citations, moved the hashed-World rule to ADR-0013 Decision 1, and marked the pool setter S-set because a new ResourcePool field reaches World.
 - 2026-10-21 (UTC) · claude-code/opus-5.5 + D30c answered · Marked the ADR accepted with all nine open-question recommendations, as the user answered ("Accepted.").
+- 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Filled the follow-on table's Id column (T134–T143) and rewrote row-number dependencies as those IDs, per the session 12 assignment; no decision changed.
