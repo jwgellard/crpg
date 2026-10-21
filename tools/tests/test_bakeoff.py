@@ -208,6 +208,131 @@ class BakeoffCase(unittest.TestCase):
         finally:
             shutil.rmtree(fx_dir, ignore_errors=True)
 
+    # Finding 1: the float rule must actually match f32/f64
+    def test_float_rule_matches(self):
+        self.run_cli("setup", str(self.scratch))
+        run_dir = self.scratch / "bake" / "runs" / "implement-fixed-point" / "m"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.scratch / "tpl" / "implement-fixed-point", run_dir, dirs_exist_ok=True)
+        src = (FIXTURES / "implement-fixed-point" / "reference.rs.txt").read_text(encoding="utf-8")
+        src += "\n#[allow(dead_code)]\nfn bakeoff_float_probe() {\n    let _x: f32 = 0.0;\n    println!(\"{_x}\");\n}\n"
+        (run_dir / "src" / "lib.rs").write_text(src, encoding="utf-8")
+        sc = bakeoff.score_implement(run_dir, {"all_text": ""}, scratch=self.scratch)
+        self.assertTrue(sc["gates_ok"], sc.get("gates"))
+        self.assertEqual(sc["hidden"], "21/21")
+        self.assertTrue(sc["float"])
+        self.assertFalse(sc["rules_ok"])
+        self.assertFalse(sc["pass"])
+
+    # Finding 2: display and pass counting come from the fixture's data
+    def test_fixture_driven_display(self):
+        rev_dir = FIXTURES / "throwaway-review3"
+        imp_dir = FIXTURES / "throwaway-implement-gate"
+        for d in (rev_dir, imp_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        try:
+            (rev_dir / "src").mkdir(exist_ok=True)
+            shutil.copyfile(FIXTURES / "review-planted" / "src" / "combat.rs",
+                            rev_dir / "src" / "combat.rs")
+            (rev_dir / "fixture.json").write_text(json.dumps({
+                "kind": "review", "prompt": "p", "timeout_s": 10, "edit": False,
+                "files": [{"tree": "."}], "hidden": [],
+                "score": {
+                    "file": "src/combat.rs",
+                    "defects": [
+                        {"id": "A", "lines": [1, 2], "keywords": None},
+                        {"id": "B", "lines": [3, 4], "keywords": None},
+                        {"id": "C", "lines": [5, 6], "keywords": "kw"},
+                    ],
+                    "decoy_lines": [[9, 10]], "decoy_specs": [],
+                },
+            }), encoding="utf-8")
+            (imp_dir / "Cargo.toml").write_text(
+                "[package]\nname = \"g\"\nversion = \"0.1.0\"\nedition = \"2021\"\n", encoding="utf-8")
+            (imp_dir / "fixture.json").write_text(json.dumps({
+                "kind": "implement", "prompt": "p", "timeout_s": 10, "edit": True,
+                "files": [{"tree": "."}], "hidden": [],
+                "score": {
+                    "gates": [{"name": "unit-tests",
+                               "cmd": [sys.executable, "-c", "raise SystemExit(1)"],
+                               "expected": 0}],
+                    "hidden_test": "zz_hidden", "hidden_total": 3,
+                    "rules": {"no_float": True, "no_unsafe": True,
+                              "files_unchanged": ["Cargo.toml"]},
+                },
+            }), encoding="utf-8")
+            r = self.run_cli("setup", str(self.scratch))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            logs = self.scratch / "bake" / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+
+            def fake_run(fix, model, rep, text):
+                run_dir = self.scratch / "bake" / "runs" / fix / model / f"r{rep}"
+                shutil.copytree(self.scratch / "tpl" / fix, run_dir)
+                log = logs / f"{fix}__{model}__r{rep}.jsonl"
+                log.write_text(json.dumps({"type": "text", "part": {"text": text}}) + "\n",
+                               encoding="utf-8")
+                (logs / (log.name + ".meta.json")).write_text(json.dumps({
+                    "fixture": fix, "task": fix, "model": model, "repeat": rep,
+                    "variant": None, "rc": 0, "secs": 0.1,
+                    "dir": str(run_dir), "log": str(log),
+                }), encoding="utf-8")
+
+            ans3 = json.dumps([{"line": 1, "summary": "x"}, {"line": 3, "summary": "x"},
+                               {"line": 5, "summary": "kw"}])
+            ans2 = json.dumps([{"line": 1, "summary": "x"}, {"line": 3, "summary": "x"}])
+            fake_run("throwaway-review3", "ma", 1, ans3)
+            fake_run("throwaway-review3", "mb", 1, ans3)
+            fake_run("throwaway-review3", "mb", 2, ans2)
+            fake_run("throwaway-implement-gate", "ma", 1, "done")
+            fx_rev = bakeoff.load_fixture("throwaway-review3")
+            self.assertTrue(bakeoff.is_pass(fx_rev, {"found": 3, "fp": 0}))
+            self.assertFalse(bakeoff.is_pass(fx_rev, {"found": 2, "fp": 0}))
+            r = self.run_cli("score", str(self.scratch), "--out", "bake")
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            self.assertIn("3/3", r.stdout)                 # defect count from fixture
+            self.assertIn("1/2", r.stdout)                 # pass counting via is_pass
+            self.assertIn("unit-tests failed", r.stdout)   # gate name from fixture
+        finally:
+            shutil.rmtree(rev_dir, ignore_errors=True)
+            shutil.rmtree(imp_dir, ignore_errors=True)
+
+    # Finding 3: decoy_lines accepts a bare int, a flat range and nested ranges
+    def test_decoy_lines_forms(self):
+        base = {"kind": "review", "prompt": "p", "timeout_s": 10, "edit": False,
+                "files": [], "hidden": [],
+                "score": {"file": "src/combat.rs",
+                          "defects": [{"id": "A", "lines": [1, 2], "keywords": None}],
+                          "decoy_specs": []}}
+
+        def decoy(decoy_lines, line):
+            fx = json.loads(json.dumps(base))
+            fx["score"]["decoy_lines"] = decoy_lines
+            ans = json.dumps([{"line": line, "summary": "x"}])
+            sc = bakeoff.score_review(self.scratch / "x", {"all_text": ans}, fixture=fx)
+            self.assertEqual(sc["found"], 0)
+            self.assertEqual(sc["fp"], 1)
+            return sc["decoy_fp"]
+
+        # flat [lo, hi] is one inclusive range
+        self.assertTrue(decoy([29, 34], 29))
+        self.assertTrue(decoy([29, 34], 32))
+        self.assertFalse(decoy([29, 34], 35))
+        # nested list of ranges
+        self.assertTrue(decoy([[29, 34]], 31))
+        self.assertTrue(decoy([[29, 34], [40, 42]], 41))
+        self.assertFalse(decoy([[29, 34], [40, 42]], 38))
+        # a bare int is one line
+        self.assertTrue(decoy(29, 29))
+        self.assertFalse(decoy(29, 30))
+
+    # Finding 4: score refuses a scratch directory inside the repository
+    def test_score_inside_repo_refused(self):
+        inside = REPO / "scratch-inside"
+        r = self.run_cli("score", str(inside), "--out", "bake")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("refused", r.stderr + r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

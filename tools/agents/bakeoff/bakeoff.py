@@ -44,6 +44,40 @@ BUGS_TEMPLATE = {
     "E": ((38, 41), r"cast|as i32|negative|wrap|overflow|lower|reduc|truncat|exceed"),
 }
 
+DEFAULT_DEFECTS = [
+    {"id": "A", "lines": [10, 12], "keywords": None},
+    {"id": "B", "lines": [15, 17], "keywords": None},
+    {"id": "C", "lines": [20, 23], "keywords": r"overflow|saturat|panic|exceed|u32::MAX"},
+    {"id": "D", "lines": [19, 25], "keywords": r"order|sort|HashMap|determin|iterat|random"},
+    {"id": "E", "lines": [38, 41], "keywords": r"cast|as i32|negative|wrap|overflow|lower|reduc|truncat|exceed"},
+]
+
+
+def decoy_ranges(value):
+    """Normalise `decoy_lines` into inclusive (lo, hi) ranges.
+
+    A bare int is one line; `[lo, hi]` is one range; a list mixes bare
+    ints (single lines) and `[lo, hi]` ranges.
+    """
+    if isinstance(value, int):
+        return [(value, value)]
+    out = []
+    if isinstance(value, (list, tuple)):
+        if len(value) == 2 and all(isinstance(v, int) for v in value):
+            return [(int(value[0]), int(value[1]))]
+        for e in value:
+            if isinstance(e, int):
+                out.append((e, e))
+            elif isinstance(e, (list, tuple)) and len(e) == 2 and all(isinstance(v, int) for v in e):
+                out.append((int(e[0]), int(e[1])))
+    return out
+
+
+def defect_count(fx):
+    """Number of defects a review fixture plants (fixture-driven display)."""
+    defects = ((fx or {}).get("score") or {}).get("defects")
+    return len(defects) if defects is not None else len(DEFAULT_DEFECTS)
+
 
 def sha256_file(p):
     try:
@@ -408,13 +442,7 @@ def score_review(run_dir, log, scratch=None, fixture=None, **kw):
         decoy_specs = sc.get("decoy_specs") or []
     else:
         # Fallback to the original planted defects for direct scorer tests.
-        defects = [
-            {"id": "A", "lines": [10, 12], "keywords": None},
-            {"id": "B", "lines": [15, 17], "keywords": None},
-            {"id": "C", "lines": [20, 23], "keywords": r"overflow|saturat|panic|exceed|u32::MAX"},
-            {"id": "D", "lines": [19, 25], "keywords": r"order|sort|HashMap|determin|iterat|random"},
-            {"id": "E", "lines": [38, 41], "keywords": r"cast|as i32|negative|wrap|overflow|lower|reduc|truncat|exceed"},
-        ]
+        defects = DEFAULT_DEFECTS
         decoy_lines = [[29, 34]]
         decoy_specs = ["S4"]
     found = set()
@@ -446,14 +474,7 @@ def score_review(run_dir, log, scratch=None, fixture=None, **kw):
         else:
             fps += 1
             # decoy detection
-            is_decoy = False
-            for dl in decoy_lines:
-                if isinstance(dl, (list, tuple)) and len(dl) == 2:
-                    if dl[0] <= line <= dl[1]:
-                        is_decoy = True
-                elif isinstance(dl, int):
-                    if line == dl:
-                        is_decoy = True
+            is_decoy = any(lo <= line <= hi for lo, hi in decoy_ranges(decoy_lines))
             if any(spec in summ for spec in decoy_specs):
                 is_decoy = True
             # old hardcoded fallback if no decoy config
@@ -481,8 +502,8 @@ def score_implement(run_dir, log, scratch=None, fixture=None, **kw):
     src = src_path.read_text(encoding="utf-8", errors="replace") if src_path.is_file() else ""
     r["todo_left"] = "todo!()" in src
     code_files = list(run_dir.glob("src/**/*.rs")) + list(run_dir.glob("tests/*.rs"))
-    code = "\\n".join(p.read_text(encoding="utf-8", errors="replace") for p in code_files if p.is_file())
-    r["float"] = bool(re.search(r"\\bf(32|64)\\b", code))
+    code = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in code_files if p.is_file())
+    r["float"] = bool(re.search(r"\bf(32|64)\b", code))
     r["unsafe"] = "unsafe" in src.replace("forbid(unsafe_code)", "")
     # rules from fixture
     rules = {}
@@ -730,7 +751,7 @@ def cmd_run(scratch, args):
 
 def cell_text(fx, row):
     sc = row.get("score", {})
-    kind = fx.get("kind")
+    kind = (fx or {}).get("kind")
     if kind == "scout":
         if sc.get("note"):
             s = sc["note"]
@@ -741,12 +762,30 @@ def cell_text(fx, row):
         return s
     if kind == "implement":
         hidden = sc.get("hidden", "?")
-        gates = "ok" if (sc.get("fmt") and sc.get("clippy") and sc.get("visible")) else "/".join(
-            k for k in ("fmt", "clippy", "visible") if not sc.get(k)) + " failed"
-        rules = "ok" if sc.get("rules_ok") else ",".join(
-            k for k, bad in (("float", sc.get("float")), ("unsafe", sc.get("unsafe")),
-                             ("Cargo.toml", not sc.get("cargo_toml_same", True)),
-                             ("edited tests", not sc.get("visible_same", True))) if bad)
+        gspec = ((fx or {}).get("score") or {}).get("gates") or []
+        gres = sc.get("gates") or []
+        failed = []
+        for i, g in enumerate(gspec or gres):
+            name = str(g.get("name") or f"gate{i + 1}")
+            if "passed" in g:
+                ok = bool(g.get("passed"))
+            elif i < len(gres):
+                ok = bool(gres[i].get("passed"))
+            else:
+                ok = bool(sc.get(name))
+            if not ok:
+                failed.append(name)
+        gates = "/".join(failed) + " failed" if failed else "ok"
+        rules_spec = ((fx or {}).get("score") or {}).get("rules") or {}
+        bad = []
+        if rules_spec.get("no_float", True) and sc.get("float"):
+            bad.append("float")
+        if rules_spec.get("no_unsafe", True) and sc.get("unsafe"):
+            bad.append("unsafe")
+        for fn, same in (sc.get("files_unchanged") or {}).items():
+            if not same:
+                bad.append(str(fn))
+        rules = ",".join(bad) if bad else ("ok" if sc.get("rules_ok", True) else "failed")
         s = f"{hidden} · {gates} · {rules}"
         if sc.get("todo_left"):
             s += " · todo left"
@@ -757,7 +796,7 @@ def cell_text(fx, row):
         if sc.get("note"):
             s = sc["note"]
         else:
-            s = f"{sc.get('found', 0)}/5 [{sc.get('which', '')}] / {sc.get('fp', 0)}"
+            s = f"{sc.get('found', 0)}/{defect_count(fx)} [{sc.get('which', '')}] / {sc.get('fp', 0)}"
             if sc.get("decoy_fp"):
                 s += " · decoy"
         if not sc.get("unchanged", True):
@@ -769,18 +808,21 @@ def cell_text(fx, row):
 
 
 def is_pass(fx, sc):
-    kind = fx.get("kind")
+    kind = (fx or {}).get("kind")
     if kind == "scout":
         return bool(sc.get("pass"))
     if kind == "implement":
         return bool(sc.get("pass"))
     if kind == "review":
-        return sc.get("found", 0) == 5 and (sc.get("fp") or 0) == 0
+        return sc.get("found", 0) == defect_count(fx) and (sc.get("fp") or 0) == 0
     return False
 
 
 def cmd_score(scratch, args):
     scratch = Path(scratch).resolve()
+    if is_inside_repo(scratch):
+        print("score: scratch directory is inside the repository; refused", file=sys.stderr)
+        return 2
     out = args.out or "bake"
     results_dir = scratch / out
     logs_dir = results_dir / "logs"

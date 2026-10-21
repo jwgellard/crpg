@@ -21,8 +21,9 @@ Each `fixtures/<name>/` contains a `fixture.json` plus the fixture's files.
 - `score`: by kind. Scout: `truth` (sorted JSON array). Implement: `gates`
   (each with `cmd`, `expected`, optional `name`), `hidden_test`, `hidden_total`,
   `rules`. Review: `file`, `defects` (`id`, `lines` [lo, hi], `keywords`
-  regex or null), `decoy_lines` (a range `[lo, hi]` or list of ranges
-  `[[lo, hi], ...]`, inclusive), `decoy_specs`.
+  regex or null), `decoy_lines` (a bare int for one line, a range `[lo, hi]`,
+  or a list mixing lines and ranges `[29, [lo, hi], ...]`; ranges are
+  inclusive), `decoy_specs`.
 
 Rules files and specs are stored as `.txt` and renamed to `.md` at setup, so no
 agent in this repository loads them as instructions.
@@ -47,3 +48,4 @@ Keep `<scratch>` outside the repository.
 
 - 2026-10-21 (UTC) · opencode-go/beam-free + A0-7a · Promoted the one-off bake-off harness to a tool with data-driven fixtures.
 - 2026-10-21 (UTC) · opencode-go/beam-free + A0-7a attempt 2 · Scorer now runs fixture gates and enforces the fixture's unchanged-files list; decoy range made inclusive via nested ranges.
+- 2026-10-21 (UTC) · opencode-go/mimo-v2.6-pro + A0-7a attempt 3 · Review fixes: the float rule's regex actually matches `f32`/`f64`, table display and pass counts come from fixture data, `decoy_lines` accepts bare int / flat range / nested ranges, and `score` refuses a scratch inside the repository.
