@@ -332,6 +332,12 @@ impl<'de> serde::Deserialize<'de> for RefreshTrigger {
                         None => Err(A::Error::missing_field("value")),
                     },
                     "on_tick" => match value {
+                        Some(WireValue::Count(period)) if period == 0 => {
+                            Err(A::Error::invalid_value(
+                                serde::de::Unexpected::Unsigned(period),
+                                &"a nonzero tick period",
+                            ))
+                        }
                         Some(WireValue::Count(period)) => Ok(RefreshTrigger::OnTick(period)),
                         Some(WireValue::Text(_)) => Err(A::Error::invalid_type(
                             serde::de::Unexpected::Str("string"),
