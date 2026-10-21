@@ -781,6 +781,19 @@ def opencode_log_path() -> Path:
     return home / ".local" / "share" / "opencode" / "log" / "opencode.log"
 
 
+def log_baseline() -> int:
+    """The OpenCode log's size when the run starts preparing.
+
+    Taken before slot prep and the version probe, so a line OpenCode writes
+    while the run gets ready still counts as new for the idle watchdog
+    (the worker itself can only write after it starts).
+    """
+    try:
+        return opencode_log_path().stat().st_size
+    except OSError:
+        return 0
+
+
 def classify_infra(text: str) -> str | None:
     """Map provider/transport failure text to an infra cause, or None."""
     lowered = text.lower()
@@ -854,17 +867,17 @@ def run_worker(
     idle_s: int,
     agent: str,
     model: str,
+    since_size: int | None = None,
 ) -> tuple[str | None, int]:
     """Run the worker; returns (idle/timeout cause or None, process rc).
 
-    Never uses shell=True; stdin is always DEVNULL.
+    Never uses shell=True; stdin is always DEVNULL. `since_size` is the log
+    size the caller captured before preparing the run, so log lines written
+    during preparation are still seen as new.
     """
     assert "--auto" not in cmd
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        log_size = opencode_log_path().stat().st_size
-    except OSError:
-        log_size = 0
+    log_size = log_baseline() if since_size is None else since_size
     proc_args: dict = {
         "cwd": cwd,
         "env": {**os.environ, "PWD": str(cwd)},
@@ -1460,6 +1473,7 @@ def result_payload(info: dict, verify: dict | None, summary: str) -> dict:
 
 def do_run(args: argparse.Namespace) -> int:
     repo = repo_root()
+    since_size = log_baseline()
     check_model_id(args.model)
     slots = list_slots(slots_dir(repo))
     dry = bool(args.dry_run)
@@ -1618,7 +1632,7 @@ def do_run(args: argparse.Namespace) -> int:
         while True:
             idle_or_timeout, rc = run_worker(
                 worker_cmd(prefix, prompt, variant, major), slot, log_path, timeout_s,
-                idle_s, f"crpg-{args.role}", args.model,
+                idle_s, f"crpg-{args.role}", args.model, since_size,
             )
             events = parse_events(log_path)
             if idle_or_timeout in ("timeout", "hang", "quota", "402", "model", "no-agent"):
@@ -1720,6 +1734,7 @@ def do_run(args: argparse.Namespace) -> int:
 
 def do_ask(args: argparse.Namespace) -> int:
     repo = repo_root()
+    since_size = log_baseline()
     check_model_id(args.model)
     task = "ask"
     task_dir = runs_dir(repo) / task
@@ -1783,7 +1798,7 @@ def do_ask(args: argparse.Namespace) -> int:
                 question,
             ]
         wait_start_gap(repo)
-        idle_or_timeout, rc = run_worker(cmd, repo, log_path, timeout_s, idle_s, agent, args.model)
+        idle_or_timeout, rc = run_worker(cmd, repo, log_path, timeout_s, idle_s, agent, args.model, since_size)
         events = parse_events(log_path)
         absorb_events(info, events)
         if idle_or_timeout is not None:
