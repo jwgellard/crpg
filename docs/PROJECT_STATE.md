@@ -3,7 +3,7 @@
 Updated: 2026-10-21
 
 ## Handover
-- **In flight.** PR #61 (session 11) is green after a CI rerun and awaits the user's merge. Session 12 (2026-10-21, about 13:15–14:00 UTC) is on `mgr/session-12-batch` (PR #62 — the manager opens it right after you), every package verified by `verify_task.py` and judged by the manager:
+- **In flight.** PR #61 (session 11) is green after a CI rerun and awaits the user's merge. Session 12 (2026-10-21, about 13:15–14:00 UTC) is on `mgr/session-12-batch` (PR #62), every package verified by `verify_task.py` and judged by the manager:
   - S12-docs (docs): ADR-0029's ten follow-on contracts numbered T134–T143 (ADR table, a new `tasks/BACKLOG.md` section, `docs/IMPLEMENTATION_PLAN.md` rows); T109 re-scoped to data only after T136 and T137 (ADR-0029 Q2); D29k applied to `crates/crpg-cli/AGENTS.md` invariant 4. Muse Spark Contributor, attempt 1, $0.01.
   - T098d (`crpg-net-quic` tests, D30a): `UdpRelay` starts unimpaired; `set_impaired(true)` after the handshake in `ordered_exactly_once_through_impaired_relay` and `codec_frames_through`. 20/20 each alone, 16/16 at 8×. DeepSeek V4.1 Flash, attempt 1, $0.02.
   - T144 (measurement, `tasks/T144.md`): `peer_close_drains_then_unbinds` failed on Windows CI twice on 2026-10-21 (master after PR #60, and PR #61's first run). 0/420 locally. Mechanism: `UnbindPeer` can follow a close detected in the drain phase (`src/quic.rs:737-742`) before the `Closed` event is polled into `transport_closes` (`:486-496`), so the step slice the test reads holds no close. Verdict: test-side. DeepSeek V4 Pro, attempt 1, $0.29. One silent process death (no panic) in 160 runs at 8×, did not recur: unexplained, recorded only.
