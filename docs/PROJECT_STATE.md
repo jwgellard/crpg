@@ -3,7 +3,7 @@
 Updated: 2026-10-21
 
 ## Handover
-- **In flight.** Session 11 (2026-10-21, about 12:35–14:30 UTC) added to `mgr/session-10-batch` (PR #60, now "Sessions 10–11"), every package verified by `verify_task.py` and judged by the manager:
+- **In flight.** Session 11 (2026-10-21, about 12:35–14:30 UTC) added to `mgr/session-11-batch` (PR #61; PR #60, session 10, was merged at 12:41 UTC), every package verified by `verify_task.py` and judged by the manager:
   - T130 (`crpg-rules`, D29j): `RefreshTrigger` rejects a zero `OnTick` period on decode. DeepSeek V4.1 Flash, attempt 1, $0.01.
   - T131 (`crpg-server`, D29h): checkpoint loading rejects history gaps between capture records; the test fails with the fix stashed. DeepSeek V4.1 Flash, attempt 1, $0.04. Its one gate failure was a `host_quic` 30 s deadline while T098c ran an 8× load in slot 1; rerun 25/25; not charged.
   - T132 (docs, D29g/h/i): `tasks/T022.md` (empty host answers `NotAuthorized`; contiguous history ranges) and `docs/architecture/crpg-server.md` (two unreachable v1 caps). Free DeepSeek V4.1 Flash, attempt 1. The worker found no T125 test pinning `NotAuthorized` for `Host::new` under `crates/crpg-server/tests/`.
@@ -13,7 +13,7 @@ Updated: 2026-10-21
   - A0-7a (bake-off harness) attempt 4: `score.file` read from the fixture. MiMo-V2.6-Pro, $0.04; DeepSeek V4 Pro re-review `ready-for-pr`. A0-7a is done.
   - T108: **ADR-0029** "Kernel range and time model" (Proposed), `docs/adr/0029-kernel-range-and-time-model.md`, by the Claude `architect` (Opus 5.5). Numbered 0029 because `tasks/T024.md` reserves 0028. Two Beam fact-checks (39 claims: 0 false, 3 wrong-place) led to four corrections by free DeepSeek. It needs the user's H-accept and has nine open questions (D30c).
 - **Next:**
-  1. The user: PR #60, then D30 (`tasks/DECISIONS-D30-DRAFT.md`).
+  1. The user: PR #61, then D30 (`tasks/DECISIONS-D30-DRAFT.md`).
   2. After ADR-0029 is accepted: number and file its ten follow-on contracts (its "Follow-on contracts" table), and amend `docs/IMPLEMENTATION_PLAN.md`'s T109 row per its answer to open question 2.
   3. A0-7b (bake-off fixtures from history), now that A0-7a is done.
   4. D29k (`crates/crpg-cli/AGENTS.md` invariant 4) goes on top of the unpushed A0-8 trim branch `task/A0-8-cli-agents-trim` (`af2a66f`, in slot 4's history) once the user decides on A0-8 (D30b).
@@ -729,3 +729,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + session 10 handover · Rewrote the handover at the 150k context mark: #37 and #59 merged at the user's word with the advisory lockfile bump, T098/T098b/A0-3e and A0-7a attempts 1–3 on the session-10 batch, A0-7a attempt 4 and the tool fixes next.
 - 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + user answers · Recorded the user's answers to D29g–D29k, A0-10 and T108 in the handover, with the fix tasks they create.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S11 bookkeeping · Replaced the handover with the session 11 facts: PR #60 is now "Sessions 10–11" with T130/T131/T132/T133/T098c/A0-3f/A0-7a/T108 judged, and D30 is the next user gate.
+- 2026-10-21 (UTC) · claude-code/opus-5.5 + session 11 PR number · Pointed the handover at PR #61 on `mgr/session-11-batch`, because PR #60 merged before the session's batch was pushed.
