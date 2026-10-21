@@ -1,0 +1,47 @@
+# Bake-off harness
+
+A tool to re-run and re-score the model bake-off. Fixtures are data: one
+directory each under `fixtures/`. One command re-runs and re-scores every
+configured model.
+
+## What a fixture is
+
+Each `fixtures/<name>/` contains a `fixture.json` plus the fixture's files.
+`fixture.json` keys:
+
+- `kind`: `scout` | `implement` | `review`.
+- `prompt`: the prompt text.
+- `timeout_s`: per-run timeout.
+- `edit`: whether the worker may edit (only implement).
+- `files`: how the template is built. Entries may be `{"tree": "<dir>"}`,
+  `{"repo": "<path>", "dest": "<path>"}`, `{"commit": "<sha>", "paths": [...],
+  "dest": "<dir>"}`, or `{"rename": {"<from>": "<to>"}}`.
+- `hidden`: files copied into the run directory only at scoring time, kept under
+  `<scratch>/ref/`.
+- `score`: by kind. Scout: `truth` (sorted JSON array). Implement: `gates`,
+  `hidden_test`, `hidden_total`, `rules`. Review: `file`, `defects`
+  (`id`, `lines` [lo, hi], `keywords` regex or null), `decoy_lines`,
+  `decoy_specs`.
+
+Rules files and specs are stored as `.txt` and renamed to `.md` at setup, so no
+agent in this repository loads them as instructions.
+
+## Adding a fixture
+
+Create `fixtures/<name>/fixture.json` and its files. No harness change needed:
+the setup, run and score commands discover fixtures automatically.
+
+## Running
+
+```
+python tools/agents/bakeoff/bakeoff.py setup <scratch>
+python tools/agents/bakeoff/bakeoff.py run <scratch> --fixtures all --models @tools/agents/bakeoff/models.txt
+python tools/agents/bakeoff/bakeoff.py score <scratch>
+python tools/agents/bakeoff/bakeoff.py all <scratch>
+```
+
+Keep `<scratch>` outside the repository.
+
+## Agent log
+
+- 2026-10-21 (UTC) · opencode-go/beam-free + A0-7a · Promoted the one-off bake-off harness to a tool with data-driven fixtures.

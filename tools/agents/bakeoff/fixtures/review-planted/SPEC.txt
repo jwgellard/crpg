@@ -1,0 +1,7 @@
+# combat module — specification
+
+S1. `turn_order` returns combatant ids ordered by initiative, highest first. Equal initiative is broken by id, lowest first.
+S2. A combatant is down when its hp is zero or below.
+S3. `damage_totals` sums damage per attacker. The result is sorted by attacker id ascending, so it is identical on every run. A total that would exceed `u32::MAX` saturates at `u32::MAX`. The function never panics.
+S4. `state_hash` is 32-bit FNV-1a over, for each combatant in slice order, the little-endian bytes of `id` then of `hp`. FNV-1a's multiply is defined modulo 2^32, so wrapping arithmetic is correct here.
+S5. `heal` adds `amount` to `hp` and caps the result at `max_hp`. Healing never lowers hp: if `hp` is already above `max_hp` it is returned unchanged. It never panics, for any inputs.

@@ -1,0 +1,13 @@
+{
+  "kind": "scout",
+  "prompt": "Answer from the files in this directory only. In tools/lint/deps.py, the ALLOWED table says which workspace crates each crate may depend on. Which crates are allowed to depend directly on crpg-sim? Reply with one line only: a JSON array of the crate names, sorted alphabetically. Do not modify any file.",
+  "timeout_s": 240,
+  "edit": false,
+  "files": [
+    {"commit": "16f58c8", "paths": ["AGENTS.md", "tools/lint/deps.py"], "dest": "."}
+  ],
+  "hidden": [],
+  "score": {
+    "truth": ["crpg-ai", "crpg-cli", "crpg-godot", "crpg-net", "crpg-persist", "crpg-script", "crpg-server", "crpg-testkit"]
+  }
+}
