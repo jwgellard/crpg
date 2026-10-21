@@ -37,3 +37,4 @@ The harness has been promoted to `tools/agents/bakeoff/`; see that directory.
 
 - 2026-10-16 (UTC) · claude-code + agent-team plan bake-off · Saved the harness, fixtures and path-free results of the same-day bake-off so the routing table's evidence survives the session and A0-7 can promote and re-run it.
 - 2026-10-21 (UTC) · opencode-go/beam-free + A0-7a · Added one pointer line to the promoted tool at tools/agents/bakeoff/.
+- 2026-10-21 (UTC) · opencode-go/beam-free + A0-7a attempt 2 · Scorer driven by fixture data; decoy range fixed.

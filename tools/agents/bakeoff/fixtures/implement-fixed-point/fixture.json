@@ -11,9 +11,9 @@
   ],
   "score": {
     "gates": [
-      {"cmd": ["cargo", "fmt", "--check"], "expected": 0},
-      {"cmd": ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], "expected": 0},
-      {"cmd": ["cargo", "test"], "expected": 0}
+      {"name": "fmt", "cmd": ["cargo", "fmt", "--check"], "expected": 0},
+      {"name": "clippy", "cmd": ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], "expected": 0},
+      {"name": "visible", "cmd": ["cargo", "test"], "expected": 0}
     ],
     "hidden_test": "zz_hidden",
     "hidden_total": 21,

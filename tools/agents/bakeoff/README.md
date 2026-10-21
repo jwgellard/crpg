@@ -18,10 +18,11 @@ Each `fixtures/<name>/` contains a `fixture.json` plus the fixture's files.
   "dest": "<dir>"}`, or `{"rename": {"<from>": "<to>"}}`.
 - `hidden`: files copied into the run directory only at scoring time, kept under
   `<scratch>/ref/`.
-- `score`: by kind. Scout: `truth` (sorted JSON array). Implement: `gates`,
-  `hidden_test`, `hidden_total`, `rules`. Review: `file`, `defects`
-  (`id`, `lines` [lo, hi], `keywords` regex or null), `decoy_lines`,
-  `decoy_specs`.
+- `score`: by kind. Scout: `truth` (sorted JSON array). Implement: `gates`
+  (each with `cmd`, `expected`, optional `name`), `hidden_test`, `hidden_total`,
+  `rules`. Review: `file`, `defects` (`id`, `lines` [lo, hi], `keywords`
+  regex or null), `decoy_lines` (a range `[lo, hi]` or list of ranges
+  `[[lo, hi], ...]`, inclusive), `decoy_specs`.
 
 Rules files and specs are stored as `.txt` and renamed to `.md` at setup, so no
 agent in this repository loads them as instructions.
@@ -45,3 +46,4 @@ Keep `<scratch>` outside the repository.
 ## Agent log
 
 - 2026-10-21 (UTC) · opencode-go/beam-free + A0-7a · Promoted the one-off bake-off harness to a tool with data-driven fixtures.
+- 2026-10-21 (UTC) · opencode-go/beam-free + A0-7a attempt 2 · Scorer now runs fixture gates and enforces the fixture's unchanged-files list; decoy range made inclusive via nested ranges.

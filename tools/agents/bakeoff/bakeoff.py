@@ -481,27 +481,28 @@ def score_implement(run_dir, log, scratch=None, fixture=None, **kw):
     src = src_path.read_text(encoding="utf-8", errors="replace") if src_path.is_file() else ""
     r["todo_left"] = "todo!()" in src
     code_files = list(run_dir.glob("src/**/*.rs")) + list(run_dir.glob("tests/*.rs"))
-    code = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in code_files if p.is_file())
-    r["float"] = bool(re.search(r"\bf(32|64)\b", code))
+    code = "\\n".join(p.read_text(encoding="utf-8", errors="replace") for p in code_files if p.is_file())
+    r["float"] = bool(re.search(r"\\bf(32|64)\\b", code))
     r["unsafe"] = "unsafe" in src.replace("forbid(unsafe_code)", "")
-    # unchanged files
-    unchanged_files = []
+    # rules from fixture
+    rules = {}
     if fixture is not None:
-        unchanged_files = ((fixture.get("score") or {}).get("rules") or {}).get("files_unchanged", [])
+        rules = (fixture.get("score") or {}).get("rules") or {}
+    no_float_rule = rules.get("no_float", True) if "no_float" in rules else True
+    no_unsafe_rule = rules.get("no_unsafe", True) if "no_unsafe" in rules else True
+    unchanged_files = rules.get("files_unchanged", [])
     if not unchanged_files:
         unchanged_files = ["Cargo.toml", "tests/visible.rs"]
-    cargo_toml_same = True
-    visible_same = True
+    unchanged_map = {}
     for fn in unchanged_files:
         a = sha256_file(run_dir / fn)
         b = sha256_file(tpl / fn) if tpl is not None else None
-        if fn == "Cargo.toml":
-            cargo_toml_same = a == b
-        if fn == "tests/visible.rs":
-            visible_same = a == b
-    r["cargo_toml_same"] = cargo_toml_same
-    r["visible_same"] = visible_same
-    # gates via cargo
+        unchanged_map[fn] = (a == b)
+    r["files_unchanged"] = unchanged_map
+    r["files_unchanged_ok"] = all(unchanged_map.values()) if unchanged_map else True
+    r["cargo_toml_same"] = unchanged_map.get("Cargo.toml", True)
+    r["visible_same"] = unchanged_map.get("tests/visible.rs", True)
+
     def run_cmd(cmd):
         try:
             p = subprocess.run(cmd, cwd=run_dir, capture_output=True, text=True,
@@ -509,12 +510,35 @@ def score_implement(run_dir, log, scratch=None, fixture=None, **kw):
             return p.returncode, p.stdout + p.stderr
         except subprocess.TimeoutExpired:
             return "TIMEOUT", ""
-    rc, out = run_cmd(["cargo", "fmt", "--check"])
-    r["fmt"] = rc == 0
-    rc, out = run_cmd(["cargo", "clippy", "-q", "--all-targets", "--", "-D", "warnings"])
-    r["clippy"] = rc == 0
-    rc, out = run_cmd(["cargo", "test", "-q", "--test", "visible"])
-    r["visible"] = rc == 0
+
+    # gates from fixture
+    gates_spec = []
+    if fixture is not None:
+        gates_spec = (fixture.get("score") or {}).get("gates") or []
+    gate_results = []
+    gates_ok = True
+    for g in gates_spec:
+        cmd = list(g.get("cmd") or g.get("command") or [])
+        expected = g.get("expected", 0)
+        if expected is None:
+            expected = 0
+        rc, out = run_cmd(cmd)
+        passed = (rc == expected)
+        if not passed:
+            gates_ok = False
+        name = g.get("name")
+        gr = {"name": name, "cmd": cmd, "expected": expected, "rc": rc, "passed": passed}
+        gate_results.append(gr)
+        if name:
+            r[name] = passed
+    r["gates"] = gate_results
+    r["gates_ok"] = gates_ok if gates_spec else True
+    for key in ("fmt", "clippy", "visible"):
+        if key not in r:
+            matches = [gr for gr in gate_results if gr.get("name") == key]
+            if matches:
+                r[key] = matches[0]["passed"]
+
     # hidden
     if fixture is None:
         name = infer_fixture_name(run_dir, scratch)
@@ -525,7 +549,6 @@ def score_implement(run_dir, log, scratch=None, fixture=None, **kw):
     hidden_entries = []
     if fixture is not None:
         hidden_entries = fixture.get("hidden") or []
-    # copy hidden files from scratch/ref
     copied = []
     for h in hidden_entries:
         ref_name = hidden_ref_name(h)
@@ -539,31 +562,26 @@ def score_implement(run_dir, log, scratch=None, fixture=None, **kw):
     hidden_test = "zz_hidden"
     hidden_total = 21
     if fixture is not None:
-        hidden_test = (fixture.get("score") or {}).get("hidden_test", hidden_test)
-        hidden_total = (fixture.get("score") or {}).get("hidden_total", hidden_total)
-    rc, out = run_cmd(["cargo", "test", "-q", "--test", hidden_test])
-    m = re.search(r"(\d+) passed; (\d+) failed", out)
-    r["hidden"] = f"{m.group(1)}/{hidden_total}" if m else ("build-fail" if rc != 0 else "?")
-    r["hidden_n"] = int(m.group(1)) if m else 0
-    # remove hidden files
+        sc = fixture.get("score") or {}
+        hidden_test = sc.get("hidden_test", hidden_test)
+        hidden_total = sc.get("hidden_total", hidden_total)
+    hidden_ran = bool(hidden_entries)
+    if hidden_ran:
+        rc, out = run_cmd(["cargo", "test", "-q", "--test", hidden_test])
+        m = re.search(r"(\d+) passed; (\d+) failed", out)
+        r["hidden"] = f"{m.group(1)}/{hidden_total}" if m else ("build-fail" if rc != 0 else "?")
+        r["hidden_n"] = int(m.group(1)) if m else 0
+    else:
+        r["hidden"] = f"0/{hidden_total}" if hidden_total else "0/0"
+        r["hidden_n"] = 0
     for dst, _ in copied:
         try:
             dst.unlink()
         except OSError:
             pass
     # rules_ok
-    no_float_rule = True
-    no_unsafe_rule = True
-    if fixture is not None:
-        rules = (fixture.get("score") or {}).get("rules") or {}
-        if "no_float" in rules:
-            no_float_rule = rules.get("no_float", True)
-        if "no_unsafe" in rules:
-            no_unsafe_rule = rules.get("no_unsafe", True)
-    r["rules_ok"] = ((not r["float"]) if no_float_rule else True) and \
-                    ((not r["unsafe"]) if no_unsafe_rule else True) and \
-                    cargo_toml_same and visible_same
-    r["pass"] = r["rules_ok"] and r["fmt"] and r["clippy"] and r["visible"] and not r["todo_left"]
+    r["rules_ok"] = ((not r["float"]) if no_float_rule else True) and                     ((not r["unsafe"]) if no_unsafe_rule else True) and                     r["files_unchanged_ok"]
+    r["pass"] = r["rules_ok"] and r["gates_ok"] and not r["todo_left"]
     return r
 
 

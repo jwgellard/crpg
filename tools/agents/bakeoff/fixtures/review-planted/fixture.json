@@ -16,7 +16,6 @@
       {"id": "D", "lines": [19, 25], "specs": ["S3"], "keywords": "order|sort|HashMap|determin|iterat|random"},
       {"id": "E", "lines": [38, 41], "specs": ["S5"], "keywords": "cast|as i32|negative|wrap|overflow|lower|reduc|truncat|exceed"}
     ],
-    "decoy_lines": [29, 34],
-    "decoy_specs": ["S4"]
+    "decoy_lines": [[29, 34]],    "decoy_specs": ["S4"]
   }
 }
