@@ -130,6 +130,15 @@ retention and checkpoint policy lives here.
   transport. Exact contract: [T023b](../../tasks/T023b.md) B§3–B§12 as
   amended by A§0–A§7.
 
+Under v1, two host-wide caps cannot be reached by any input and are kept as
+defence in depth, untested because no test can reach them; nobody should
+count them as tested. The ingress host totals (1024 frames, 2 MiB) are
+exactly 8 × the per-peer caps (128 frames, 256 KiB), and at most 8 peers
+bind, so the per-peer cap always refuses first. The grant-narrowing
+`QueueFull` ([T022](../../tasks/T022.md) §5) needs a resync state of more
+than about 2 MiB, because the other seven peers hold at most 14 MiB of the
+16 MiB egress host total.
+
 ## Connections and bindings (T023b)
 
 A QUIC connection has no gameplay identity until the adapter binds it. The
@@ -213,3 +222,4 @@ with T040/T041.
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the doc with the as-built host slice (modules, identity and delivery shape, edges, consumers) so later host, transport and persistence tasks extend one description rather than restating the T022 contract.
 - 2026-10-05 (UTC) · claude-code + T039 · Added the `save` module, the `crpg-persist` edge, the payload/identity/precedence summary and the gate-10 claim with its non-claims, so the doc describes the persistence the crate now has rather than calling it planned.
 - 2026-10-06 (UTC) · claude-code + T023b · Added the `quic` adapter (pump phases, connection-to-binding mapping), the `crpg-net-quic` edge in the dependency diagram, its consumers, and a "planned and not here" list without QUIC endpoints, so the doc describes the transport adapter the crate now has.
+- 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T132 (D29g/h/i) · Recorded that the two unreachable v1 host-wide caps are defence in depth, so nobody counts them as tested.
