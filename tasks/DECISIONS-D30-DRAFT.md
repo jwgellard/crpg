@@ -6,6 +6,8 @@ recommendation. Nothing here is decided until the user answers.
 
 ## D30a — case 23: handshake through a clean relay?
 
+**Answered 2026-10-21: (a) (the user: "Accepted.").**
+
 T098c measured `lane0_codec_frames_decode_after_impaired_delivery` failing
 only at 8× contention (3/320; 0/20 alone, 0/80 at 4×). The server's 5 s
 hello timeout fires because the handshake runs through the impaired relay
@@ -17,6 +19,8 @@ trips. Verdict: test-side.
 
 ## D30b — A0-8, the `crpg-cli` `AGENTS.md` trim
 
+**Answered 2026-10-21: (a) (the user: "Accepted.").**
+
 Branch `task/A0-8-cli-agents-trim` (`af2a66f`, 2026-10-17, unpushed) moves
 389 lines of `crates/crpg-cli/AGENTS.md` into `docs/architecture/crpg-cli.md`.
 A0-8 needs the user's approval per crate.
@@ -25,6 +29,8 @@ A0-8 needs the user's approval per crate.
 - Alternative: (b) reject or revise; D29k is then applied to the current file.
 
 ## D30c — ADR-0029 (T108) acceptance
+
+**Answered 2026-10-21: (a) (the user: "Accepted.").**
 
 ADR-0029 "Kernel range and time model" (Proposed),
 `docs/adr/0029-kernel-range-and-time-model.md`, needs the user's H-accept.
@@ -46,3 +52,4 @@ Its nine open questions with the architect's recommendations:
 ## Agent log
 
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S11 bookkeeping · Started the D30 draft with the case-23 relay, A0-8 trim and ADR-0029 acceptance questions, so the user can answer them in one batch.
+- 2026-10-21 (UTC) · claude-code/opus-5.5 + D30 answered · Recorded the user's answer ("Accepted.") as (a) for D30a–D30c, following the D29 practice.

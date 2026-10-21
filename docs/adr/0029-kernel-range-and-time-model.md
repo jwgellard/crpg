@@ -1,8 +1,8 @@
 # ADR-0029: Kernel range, the two-mode time model, and ruleset-described player UI
 
 Date: 2026-10-21 (UTC)
-Status: **Proposed** — filed for the user's H-accept (T108). Nothing here is
-approved yet.
+Status: **Accepted** by the user on 2026-10-21 (T108, D30c), with the
+recommendation for each of the nine open questions.
 
 Numbering: the brief asked for ADR-0028, but `tasks/T024.md` (S§13) already
 reserves ADR-0028 for the snapshot transfer subprotocol, so this ADR takes the
@@ -533,3 +533,4 @@ including the toggle-refresh count (T10).
 
 - 2026-10-21 (UTC) · claude-code/opus-5.5 architect + T108 · Filed the proposed kernel-range, two-mode time model and ruleset-UI decision from the Beam and LongCat drafts and the R13/R14/R16 research, after checking each engine claim against the code. The main finding is that the kernel covers the five families except three named gaps, while the data/sim surface is the real limit; numbered 0029 because T024 reserves 0028.
 - 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T108-adr-fix · Corrected the two combat.rs citations, moved the hashed-World rule to ADR-0013 Decision 1, and marked the pool setter S-set because a new ResourcePool field reaches World.
+- 2026-10-21 (UTC) · claude-code/opus-5.5 + D30c answered · Marked the ADR accepted with all nine open-question recommendations, as the user answered ("Accepted.").
