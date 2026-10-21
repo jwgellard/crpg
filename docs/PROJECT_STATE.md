@@ -1,26 +1,22 @@
 # Project state
 
-Updated: 2026-10-21 (18:55 UTC)
+Updated: 2026-10-21 (12:30 UTC)
 
 ## Handover
-- **Session 9 (2026-10-21 about 17:30–18:55 UTC), handed over at the 187k context mark.** Master CI is green. **This branch, `mgr/session-9-batch`,** is built on PR #58's tip (`e554b07`) and adds A0-3c plus this handover. Merge #58 first, or merge this branch alone: it already contains #58.
-  - **A0-3c done.** The Go spend guard and `oc.py spend`, on `opencode-go/deepseek-v4.1-flash`, took 2 attempts. Attempt 1 broke `test_idle_error_log_maps_to_no_agent`. Attempt 2 found the real cause, a log baseline taken after slot preparation, and moved the baseline to command start. A Beam review said "ready for PR", with one low test gap: T1 does not cover a non-numeric cost, or `now` at the window boundary. That gap is a follow-up.
-  - **The OpenCode Console API key had expired** (401 `api_key_expired`, and every `opencode-go/` model vanished from `opencode models`). The user renewed it this session.
-- **Running at handover. Collect these, do not rerun them:**
-  - **A0-7a attempt 2**: `opencode-go/beam-free`, slot 3, branch `task/A0-7a-bakeoff`, log `.agents/runs/A0-7a/2-opencode-go_beam-free.jsonl`. It is fixing a review's high finding (`bakeoff.py:498-517`: the implement scorer ignores the fixture's `gates`/`rules`), a medium one (the decoy range `[29, 34]`) and a low one (T7 variant argv); the notes are in `.agents/briefs/NOTES-A0-7a-2.md`. When it passes, cherry-pick it onto this branch and run a review from another lab, `opencode-go/deepseek-v4-pro`, on `.agents/briefs/A0-7a-review.md`. A second failure moves it up a rung (plan §4.4).
-  - **T097 (PR #37) four-way review, at the user's request:**
-    - Claude `reviewer`: **done**, "ready-for-pr", one low finding (T4/T5 run their zero-encoding asserts on 3–4-envelope journals, not the 4095/4096 the contract states; the guard still bites).
-    - Beam, Muse Spark 1.3 Contributor and DeepSeek V4 Pro: running through `oc.py ask` on `.agents/briefs/T097-review-full.md`, logs `.agents/runs/ask/85-*`, `86-*`, `87-*`, summaries in `.agents/briefs/T097-full-*.out`.
-    - Next: collate the four verdicts for the user, who decides #37.
-- **T098: three attempts, nothing committed, but real data.** The measurements are saved in `.agents/briefs/T098-data/` (also in slot 2, `target/t098/`):
-  - Case 13 alone: 20/20 passed. Whole suite: 50/50 passed (Luna).
-  - Under 4× parallel contention: **3 failures in 80 runs**, each panicking with `deadline: server traffic` at `tests/quic.rs:1054` after about 30 s. Luna saw one `deadline: server frame` at `tests/support/quic_rig.rs:170`.
-  - So the failure needs load, and the deadline that fires is the test's own. That points at the harness reading, but it is not proven yet.
-  - Attempts: GPT-6 Luna twice (a denied `git branch` misread as "shell denied", which was a brief defect now fixed; then a shell-tool timeout), then MiMo-V2.6-Pro, which ended on an interim "waiting for the batch" message (no-edit, counts).
-  - Next: one more O1 run (`opencode-go/deepseek-v4-pro` or Muse) with the saved data and `.agents/briefs/NOTES-T098-3.md`. Tell it to write the section from the data first and measure more only after that, and to end its last message with the report, never a status line.
-- **Waiting on the user:** merge #58 (or this batch); decide #37 after the collation; D29g–D29k; A0-10; the word for T108's `architect` pass.
-- **Next:** collect the runs above; A0-7b (new fixtures from history: the code before the T019 and T023d fixes as review cases, and a past task at its pre-implementation commit), once A0-7a lands; the A0-3c T1 test gap.
-- Dispatch facts: prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg/.claude/worktrees/mgr-a0" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";`. Every brief needs the "Shell" section listing the denied commands (see `.agents/briefs/A0-3c.md`). A detached `oc.py ask` sends no notification, so wait on its `.out` file with a background loop. `oc.py stats` flags GPT-6 Luna for demotion in implement (2 of its last 4).
+- **Session 10 (2026-10-21, about 11:00–12:30 UTC), handed over at the 150k context mark at a quiet point: nothing is running.** Master CI is green at `53aadba`. The user merged nothing by hand: at their word the manager merged **#37 (T097, `d51ba52`)** and **#59 (session 9 batch, `53aadba`; #58 closed with it)**. #59 needed one extra commit, `Cargo.lock` `rustls-webpki` 0.103.15 → 0.103.16, because `deny` failed on the new advisory RUSTSEC-2026-0382 (patch bump, no new dependency). The master ruleset requires up-to-date branches, so merging two PRs means updating the second after the first.
+- **This branch, `mgr/session-10-batch`** (on master), carries:
+  - **T098** investigation (DeepSeek V4 Pro, attempt 9): case 13 fails only under load (0/20 alone, 3/80 at 4× contention). The client's `Flush` gives up at the 2 s bound with frames still queued while the server loop is starved; the test treated that bound as a drain wait. Product defect ruled out by code.
+  - **T098b** fix, approved by the user (DeepSeek V4.1 Flash, attempt 1, $0.02): `client_traffic` waits for `outbound_frames == 0` before `close`. 80/80 with the fix, 5/80 failures with it stashed (negative control).
+  - **A0-3e** spend-window boundary tests (Beam, attempt 1), closing A0-3c's review gap.
+  - **A0-7a** attempts 1–3 (Beam twice, then MiMo-V2.6-Pro). DeepSeek's re-review confirmed all four first-review findings fixed and found **one new medium**: `score_review` hard-codes `src/combat.rs` instead of reading `score.file` (`bakeoff.py:428-429`).
+- **Next:**
+  1. **A0-7a attempt 4** on MiMo-V2.6-Pro in slot 3 (branch `task/A0-7a-bakeoff`, already checked out there), with `.agents/briefs/NOTES-A0-7a-4.md`; then a DeepSeek V4 Pro re-review; cherry-pick onto this branch and push it to the open session PR (#60 or the next number, opened at this handover).
+  2. A0-7b (fixtures from history), once A0-7a lands.
+  3. **T098c** (new): `lane0_codec_frames_decode_after_impaired_delivery` failed 2/15 under load with `deadline: server event` at `tests/support/quic_rig.rs:110`, seen by T098b's worker. Probably the same starved-server pattern; measure first, as T098 did.
+  4. Tool fixes, one small O1 package: `verify_task.py`'s `todo` check fires on `tools/agents/bakeoff/fixtures/**` (the fixture's intended `todo!()`; it made `oc.py` print "escalate" on two passing A0-7a attempts), so limit it to `crates/**`; `oc.py --base mgr/<branch>` reads `mgr` as a remote, so pass `origin/<branch>`; `oc.py run` refuses a slot not already on an existing task branch, so `git switch` it first.
+  5. T097's two low review findings: `crates/crpg-sim/AGENTS.md:231` invariant 14 drops the contract's "before validation ends" qualifier; T4/T5 assert on 3–4-envelope journals, not 4095/4096.
+- **Waiting on the user:** D29g–D29k; A0-10; the word for T108's `architect` pass.
+- Dispatch facts: prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg/.claude/worktrees/mgr-a0" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";` in Git Bash. Every brief needs the "Shell" section listing the denied commands. A detached `oc.py ask` or `run` sends no notification, so wait on its `.out` file with a background loop. Go spend at 11:00 UTC: $0.53 of $4.50 (5 h), $1.64 of $12 (week). `../crpg-slots/lockfix` is a detached worktree from the lockfile fix and can be removed.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -725,3 +721,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + user request · Folded session 6's PRs #36 and #38–#44 into batch PR #57 at the user's word, leaving two open PRs, and updated the handover to match.
 - 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Replaced the handover and update time with the supplied session 8 facts, including the closed audit and current PR queue.
 - 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + session 9 handover · Rewrote the handover at the 187k context mark: A0-3c done, A0-7a and three T097 reviews still running with their logs named, and the T098 contention data saved for the next attempt.
+- 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + session 10 handover · Rewrote the handover at the 150k context mark: #37 and #59 merged at the user's word with the advisory lockfile bump, T098/T098b/A0-3e and A0-7a attempts 1–3 on the session-10 batch, A0-7a attempt 4 and the tool fixes next.
