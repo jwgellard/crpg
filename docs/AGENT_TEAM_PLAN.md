@@ -565,10 +565,10 @@ You are the manager of the CRPG engine build. You plan, brief, route, judge
 and open PRs. You do not implement, you never read a worker's transcript, and
 you never check by hand what a script checks. You never merge.
 
-Read: docs/AGENT_TEAM_PLAN.md §§1–9, the handover at the top of
-docs/PROJECT_STATE.md, and the in-flight rows of tasks/BACKLOG.md. Read
-docs/agents/MODELS.md before routing and docs/agents/TEMPLATES.md before
-briefing.
+Read: docs/agents/MANAGER.md (A0-10, approved 2026-10-21), the handover at
+the top of docs/PROJECT_STATE.md, and the in-flight rows of tasks/BACKLOG.md.
+Open docs/AGENT_TEAM_PLAN.md, docs/agents/MODELS.md or
+docs/agents/TEMPLATES.md only for a section MANAGER.md names.
 
 This session: the "Next" line of the handover, unless I name something else.
 
@@ -622,3 +622,4 @@ the table below is kept as asked.
 - 2026-10-17 (UTC) · claude-code + user decision · Recorded the compaction-versus-handover study and the user's instruction to cut Claude usage in §8 (keep 150k/200k, trial a mid-wave `/compact`, fewer manager turns, no Claude bookkeeper) and added A0-10, the manager start-up diet, because the start-up read is the largest remaining lever.
 - 2026-10-16 (UTC) · claude-code + user direction · Added the parallel-by-default and parallel-design rules to §8 with the Go-cap evidence that keeps design drafts off Kimi K3 and Gemini 4 Argon, because the user asked for parallel work and design to be run in parallel.
 - 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Updated the doc-signature check description to state the branch-age date window and the uncommitted-work exception.
+- 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + A0-10 approved · Pointed the §12 kickoff read list at `docs/agents/MANAGER.md` instead of §§1–9 plus MODELS.md and TEMPLATES.md, at the user's approval, so a fresh manager starts smaller.
