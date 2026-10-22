@@ -12,4 +12,3 @@ same total; fault-injection shuffling is deterministically bounded, and
 its draws come from the seeded stream, so identical sequences are
 byte-identical.
 
-Source: fix commit 1cc34a6 (T129); the reviewed file is its parent version.

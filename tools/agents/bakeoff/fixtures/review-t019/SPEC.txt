@@ -20,4 +20,3 @@ crates/crpg-sim/src/combat.rs at 56931eb^ (the parent of the T019 fix).
 The rest of the crate — types, helpers, tables — exists around it; names
 the excerpt does not define are provided by that context.
 
-Source: fix commit 56931eb (T019); the reviewed code is its parent version.

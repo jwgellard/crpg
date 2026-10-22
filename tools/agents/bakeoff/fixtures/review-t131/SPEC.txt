@@ -11,4 +11,3 @@ an overlap.
 S3. The wrapped server_tick equals the world's tick. Loading builds a
 temporary host and validates fully first: no partial state on failure.
 
-Source: fix commit bdc6aec (T131); the reviewed file is its parent version.

@@ -9,4 +9,3 @@ S3. Spending more than the balance fails without mutation. Tick n matches
 positive ticks divisible by n; simulation tick zero never refreshes, and a
 matching event refills to maximum.
 
-Source: fix commit caad63f (T130); the reviewed file is its parent version.
