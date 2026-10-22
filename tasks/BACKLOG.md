@@ -163,15 +163,25 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | S12-docs | in PR #62 | — | docs: ADR-0029's ten follow-on contracts numbered T134–T143 (ADR table, a new `tasks/BACKLOG.md` section, `docs/IMPLEMENTATION_PLAN.md` rows); T109 re-scoped to data only after T136 and T137 (ADR-0029 Q2); D29k applied to `crates/crpg-cli/AGENTS.md` invariant 4 |
 | T098d | in PR #62 | — | `crpg-net-quic` tests (D30a): `UdpRelay` starts unimpaired; `set_impaired(true)` after the handshake in `ordered_exactly_once_through_impaired_relay` and `codec_frames_through`; 20/20 each alone, 16/16 at 8× |
 | T144 | in PR #62 | — | measurement (`tasks/T144.md`): `peer_close_drains_then_unbinds` failed on Windows CI twice on 2026-10-21 (master after PR #60, and PR #61's first run); 0/420 locally; `UnbindPeer` can precede the `Closed` poll; verdict test-side |
-| T144b | next | — | fix part (c) of `peer_close_drains_then_unbinds` (`crates/crpg-server/tests/host_quic.rs:2248-2257`) with part (b)'s pattern: accumulate across steps and wait until both the `(conn, IdleTimeout)` close and `UnbindPeer` have been seen, then keep the assertions |
+| T144b | in session 13 batch | — | fix part (c) of `peer_close_drains_then_unbinds` (`crates/crpg-server/tests/host_quic.rs:2248-2257`) with part (b)'s pattern: accumulate across steps and wait until both the `(conn, IdleTimeout)` close and `UnbindPeer` have been seen, then keep the assertions |
+
+## Session 13 batch (PR pending)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T144b | in session 13 batch | — | `crpg-server` tests: parts (b) and (c) of `peer_close_drains_then_unbinds` accumulate the close and the `UnbindPeer` independently across steps and stop when both are seen; (c) also asserts the unbind; 20/20 runs (DeepSeek V4.1 Flash, attempt 1, $0.01) |
+| A0-7b | in session 13 batch | — | bake-off fixtures: four review fixtures cut from real fixes, `review-t019` (`56931eb`, a 28-line excerpt), `review-t129` (`1cc34a6`), `review-t130` (`caad63f`), `review-t131` (`bdc6aec`), plus a load-and-setup test; T023d skipped (pre-fix code only inside the squashed root import `16f58c8`); `Source: fix commit` line removed from each spec; Muse Spark Contributor, attempt 1, $0.03; not yet run against models |
+| T136-facts | in session 13 batch | — | scout fact sheet in `tasks/T136.md` (81 path:line citations, two spot-checked); DeepSeek V4.1 Flash; attempt 1 hit the grunt step limit and wrote nothing but `oc.py` printed PASS (an `oc.py` defect); attempt 2 wrote the file but did not commit (the manager committed); $0.06 total |
+| T136 | T136a contract proposed; T136b frame only | — | `crpg-data` surface-schema contract (`architect`, Opus 5.5, about 159k tokens): proposed, awaits the user's approval; T136a (RT fields only) written exactly, T136b (rest of row 3) frame only |
+| T135 | contract proposed | — | `crpg-rules` pool refill/maximum contract (`architect`, same run): proposed, awaits the user's approval; `refill: Option<NonZeroU32>`, `with_refill`, clamping `set_max`; no golden or hash changes |
 
 ## ADR-0029 follow-on contracts
 
 | Task | Crate | Status | S-set | Contract to write | Depends on |
 |---|---|---|---|---|---|
 | T134 | `crpg-rules` | contract to write; approved to start (ADR-0029 Q3); implement only with its first consumer, T137 | — | K3(a) success-count and face-count modes on `DiceExpr`; sum default, notation extension, unchanged trace | Accepted; implement with its first consumer (T137) |
-| T135 | `crpg-rules` | contract to write; approved to start (ADR-0029 Q3); serialized, human-reviewed (new ResourcePool field reaches the hashed World) | Yes | K3(b) pool refill amount and validated maximum setter | Accepted |
-| T136 | `crpg-data` | contract to write; ready | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
+| T135 | `crpg-rules` | contract proposed | Yes | K3(b) pool refill amount and validated maximum setter | Accepted |
+| T136 | `crpg-data` | T136a contract proposed; T136b frame only | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
 | T137 | `crpg-sim` | contract to write; waits on T136 | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
 | T138 | `crpg-sim` | contract to write; waits on T136 | Yes | Encounter mode and RT policy (T1–T16); history v2 (N5) | T136 (RT fields) |
 | T139 | `crpg-sim` | contract to write; waits on T137, T138 | Yes | Persistent creature state outside encounters; join and leave (T13, T14) | T137, T138 |
@@ -455,3 +465,4 @@ Record it here, one line per week.
 - 2026-10-21 (UTC) · claude-code/opus-5.5 + session 11 PR number · Moved the session 11 rows to PR #61, because PR #60 merged before the batch was pushed.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Indexed the ten ADR-0029 follow-on contracts (T134–T143) with crates, statuses, S-set flags and dependencies; no status decided beyond the brief's facts.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12 bookkeeping · Added the Session 12 batch table (S12-docs, T098d, T144 in PR #62; T144b next), changing no other row.
+- 2026-10-22 (UTC) · opencode-go/muse-spark-1.3-contributor + S13 bookkeeping · Added the Session 13 batch table (PR pending) and moved T144b, T135 and T136 to their session 13 statuses, so the index shows the D31 gate without deciding it.
