@@ -730,3 +730,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-21 (UTC) · claude-code/opus-5.5 + D30 answered · Recorded the user's D30 answers and ADR-0029's acceptance in the handover's first Next item.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12 bookkeeping · Replaced the handover with the session 12 facts (PR #61 green awaiting merge; S12-docs, T098d and T144 judged on `mgr/session-12-batch`; A0-8 trim correction), so the next session starts from the session 12 close-out.
 - 2026-10-22 (UTC) · opencode-go/muse-spark-1.3-contributor + S13 bookkeeping · Replaced the handover with the session 13 facts (PRs #61 and #62 green awaiting merge; T144b, A0-7b, T136-facts, T136 and T135 contracts judged), so the next session starts from the D31 gate.
+- 2026-10-22 (UTC) · claude-code + S13 handover · Added to Next item 4 that grunt runs left their files uncommitted twice this session, so A0-3g covers that as well as the false PASS.
