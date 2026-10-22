@@ -1,0 +1,12 @@
+# resource refresh — specification
+
+S1. A tick period must be nonzero. Pool construction fails with
+InvalidResource at /resource/refresh for a zero tick period, and at
+/resource/current when current exceeds max.
+S2. No value of the RefreshTrigger type can carry the invalid period: the
+decoder rejects a zero OnTick period just as construction does.
+S3. Spending more than the balance fails without mutation. Tick n matches
+positive ticks divisible by n; simulation tick zero never refreshes, and a
+matching event refills to maximum.
+
+Source: fix commit caad63f (T130); the reviewed file is its parent version.

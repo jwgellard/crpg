@@ -1,0 +1,23 @@
+# affordability check — specification
+
+S1. Affordability is evaluated at the existing stage: after actor, target,
+turn, ability and self-target validation, before any RNG draw or state
+change. All cost entries naming the same pool count as one total.
+S2. Pools are visited in authored template order, primary first. Each
+pool's u32 amounts are combined with checked addition; a sum no u32 can
+represent returns the existing ValueOverflow before any mutation.
+S3. A representable total above the current balance returns the existing
+InsufficientAction carrying the total cost and the original balance. The
+first failing pool in template order wins.
+S4. Only after every pool passes may resolution and spending run. Accepted
+actions spend exactly the sums; zero-cost entries are harmless.
+S5. Ability, turn and self-target validation precede the affordability
+stage in this order; the combat roll tag is interned at encounter start,
+before any action runs.
+
+Note: the file under review is a verbatim excerpt, lines 1579-1606 of
+crates/crpg-sim/src/combat.rs at 56931eb^ (the parent of the T019 fix).
+The rest of the crate — types, helpers, tables — exists around it; names
+the excerpt does not define are provided by that context.
+
+Source: fix commit 56931eb (T019); the reviewed code is its parent version.

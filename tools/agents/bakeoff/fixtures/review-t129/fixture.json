@@ -1,0 +1,19 @@
+{
+  "kind": "review",
+  "prompt": "Review src/sim.rs against SPEC.md. Do not modify any file. Report only real defects where the code violates SPEC.md: no style issues, no suggestions. Reply with a JSON array only, one object per defect: {\"line\": <line number in src/sim.rs>, \"spec\": \"S<n>\", \"summary\": \"<one sentence>\"}. If there are none, reply [].",
+  "timeout_s": 300,
+  "edit": false,
+  "files": [
+    {"commit": "1cc34a6^", "paths": ["crates/crpg-net/src/sim.rs"], "dest": "src"},
+    {"tree": "."}
+  ],
+  "hidden": [],
+  "score": {
+    "file": "src/sim.rs",
+    "defects": [
+      {"id": "A", "lines": [185, 188], "specs": ["S1", "S3"], "keywords": "watermark|last_ms|rewind|backwards|double.?credit|monotonic"}
+    ],
+    "decoy_lines": [[588, 595]],
+    "decoy_specs": ["S4"]
+  }
+}

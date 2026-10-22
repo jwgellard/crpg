@@ -1,0 +1,18 @@
+{
+  "kind": "review",
+  "prompt": "Review src/combat.rs against SPEC.md. Do not modify any file. Report only real defects where the code violates SPEC.md: no style issues, no suggestions. Reply with a JSON array only, one object per defect: {\"line\": <line number in src/combat.rs>, \"spec\": \"S<n>\", \"summary\": \"<one sentence>\"}. If there are none, reply [].",
+  "timeout_s": 300,
+  "edit": false,
+  "files": [
+    {"tree": "."}
+  ],
+  "hidden": [],
+  "score": {
+    "file": "src/combat.rs",
+    "defects": [
+      {"id": "A", "lines": [8, 17], "specs": ["S1", "S2", "S3"], "keywords": "sum|total|same pool|per.?pool|checked|overflow|ValueOverflow|atomic"}
+    ],
+    "decoy_lines": [[18, 21]],
+    "decoy_specs": ["S5"]
+  }
+}

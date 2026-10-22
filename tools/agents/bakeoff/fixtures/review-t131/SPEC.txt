@@ -1,0 +1,14 @@
+# checkpoint capture validation — specification
+
+S1. Loading requires the retained records to be exactly the contiguous
+range (capture_acknowledged, last_capture], with per-record bounds, counts
+and vocabulary enforced. Each record's history range lies inside the
+wrapper's issued sequences and matches its own events exactly.
+S2. Retained records' history ranges are contiguous: each record's
+history_start equals the previous record's history_end — no gap and no
+overlap. A gap means omitted evidence and is rejected as malformed; so is
+an overlap.
+S3. The wrapped server_tick equals the world's tick. Loading builds a
+temporary host and validates fully first: no partial state on failure.
+
+Source: fix commit bdc6aec (T131); the reviewed file is its parent version.

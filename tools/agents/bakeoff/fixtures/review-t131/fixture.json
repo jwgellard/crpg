@@ -1,0 +1,19 @@
+{
+  "kind": "review",
+  "prompt": "Review src/checkpoint.rs against SPEC.md. Do not modify any file. Report only real defects where the code violates SPEC.md: no style issues, no suggestions. Reply with a JSON array only, one object per defect: {\"line\": <line number in src/checkpoint.rs>, \"spec\": \"S<n>\", \"summary\": \"<one sentence>\"}. If there are none, reply [].",
+  "timeout_s": 300,
+  "edit": false,
+  "files": [
+    {"commit": "bdc6aec^", "paths": ["crates/crpg-server/src/checkpoint.rs"], "dest": "src"},
+    {"tree": "."}
+  ],
+  "hidden": [],
+  "score": {
+    "file": "src/checkpoint.rs",
+    "defects": [
+      {"id": "A", "lines": [243, 244], "specs": ["S2"], "keywords": "gap|contigu|history_start|previous_end|adjacent|!="}
+    ],
+    "decoy_lines": [[229, 233]],
+    "decoy_specs": ["S1"]
+  }
+}
