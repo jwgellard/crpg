@@ -13,7 +13,7 @@ Updated: 2026-10-22
   1. On the user's answers to D31: dispatch T136a (S-set: Claude `implementer`, OpenCode test writer from another lab, Claude `reviewer` — or an OpenCode Kimi K3 review first per the usage policy) and T135 the same way; T136a first, they are different crates and can run in two slots.
   2. Contract review of T136 and T135 before approval if the user wants one (Claude `reviewer` per plan §4.3, or an OpenCode Kimi K3 review first).
   3. T136b contract (`architect`), then T137, T138.
-  4. A0-3g: `oc.py` must not print PASS for a run that changed and committed no file (seen on T136-facts attempt 1); and the grunt role's step limit is too low for a fact-gathering task.
+  4. A0-3g: `oc.py` must not print PASS for a run that changed and committed no file (seen on T136-facts attempt 1), and should fail a grunt run that left its files uncommitted (T136-facts attempt 2 and S13-bookkeeping both did); and the grunt role's step limit is too low for a fact-gathering task.
   5. Run the A0-7b fixtures against the configured models (`bakeoff.py all`), then an implement-kind history fixture package.
   6. Carried: T099 research fold-in; T100 benchmark contract; A0-5b; A0-8 for the other crates.
 - **Blocked:** nothing.
