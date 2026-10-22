@@ -2207,7 +2207,10 @@ fn peer_close_drains_then_unbinds() {
     cb.read_until("receipt", |c| c.has_receipt(1));
     let (conn, peer) = (cb.conn, cb.peer);
     drop(cb);
+    // The close may be detected in the drain phase and polled into
+    // `transport_closes` only on a later pump, so wait for both facts.
     let mut closed = false;
+    let mut unbound = false;
     let steps = pump_until(
         &mut qh,
         &mut clock,
@@ -2215,7 +2218,8 @@ fn peer_close_drains_then_unbinds() {
         "dropped client unbound",
         |_, report| {
             closed |= report.transport_closes.iter().any(|(c, _)| *c == conn);
-            closed && report.calls.contains(&HostCall::UnbindPeer { peer })
+            unbound |= report.calls.contains(&HostCall::UnbindPeer { peer });
+            closed && unbound
         },
     );
     assert!(calls(&steps).contains(&HostCall::UnbindPeer { peer }));
@@ -2245,8 +2249,14 @@ fn peer_close_drains_then_unbinds() {
     cc.read_until("initial", |c| !c.frames.is_empty());
     let (conn, peer) = (cc.conn, cc.peer);
     relay.set_blackhole(true);
+    let mut closed = false;
+    let mut unbound = false;
     let steps = pump_until(&mut qh2, &mut clock2, 100, "idle timeout", |_, report| {
-        report.calls.contains(&HostCall::UnbindPeer { peer })
+        closed |= report
+            .transport_closes
+            .contains(&(conn, CloseReason::IdleTimeout));
+        unbound |= report.calls.contains(&HostCall::UnbindPeer { peer });
+        closed && unbound
     });
     let closes: Vec<(ConnectionId, CloseReason)> = steps
         .iter()
@@ -2256,6 +2266,7 @@ fn peer_close_drains_then_unbinds() {
         closes.contains(&(conn, CloseReason::IdleTimeout)),
         "{closes:?}"
     );
+    assert!(calls(&steps).contains(&HostCall::UnbindPeer { peer }));
     pump_until(&mut qh2, &mut clock2, 100, "slot released", |qh, _| {
         qh.transport_totals().connections == 0
     });
