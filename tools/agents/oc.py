@@ -1188,6 +1188,8 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
     lines = [verdict_line(info)]
     if info.get("cause"):
         lines.append(f"cause: {info['cause']}")
+    if info.get("commit"):
+        lines.append(f"committed {info['commit']}")
     if info.get("spend"):
         refusal = info["spend"]
         lines.append(spend_summary(
@@ -1498,6 +1500,30 @@ def absorb_events(info: dict, events: dict) -> None:
                 cost=events["cost"], last_text=events["last_text"])
 
 
+def commit_grunt(slot: Path, task: str, model: str, verify: dict) -> str | None:
+    """Commit exactly the files verification reported; return the short hash.
+
+    A grunt worker has no `git add`/`git commit` permission, so its verified
+    edits are otherwise left for the manager. Stage only the in-scope files the
+    verifier listed and make one commit, never `--no-verify` and never an
+    amend; a failed commit is an infrastructure exit, not a PASS.
+    """
+    paths = [str(f.get("path")) for f in verify.get("files") or [] if f.get("path")]
+    if not paths:
+        return None
+    staged = git(["add", "-A", "--", *paths], slot)
+    if staged.returncode != 0:
+        raise Exit(2, f"verify-error: cannot stage grunt edits: "
+                      f"{staged.stderr.strip() or staged.stdout.strip()}")
+    made = git(["-c", "commit.gpgsign=false", "commit", "-m",
+                f"{task}: grunt edits ({model})"], slot)
+    if made.returncode != 0:
+        raise Exit(2, f"verify-error: cannot commit grunt edits: "
+                      f"{made.stderr.strip() or made.stdout.strip()}")
+    head = git(["rev-parse", "--short", "HEAD"], slot)
+    return head.stdout.strip() if head.returncode == 0 else None
+
+
 def result_payload(info: dict, verify: dict | None, summary: str) -> dict:
     """The --json / wave-capture object for a finished run."""
     return {
@@ -1507,6 +1533,7 @@ def result_payload(info: dict, verify: dict | None, summary: str) -> dict:
         "failed_checks": info["failed_checks"], "steps": info["steps"],
         "tokens": info["tokens"], "cost": info["cost"],
         "elapsed_s": round(info["elapsed_s"], 1),
+        "commit": info.get("commit"),
         "files": (verify or {}).get("files") or [],
         "checks": (verify or {}).get("checks") or [],
         "summary": summary,
@@ -1723,6 +1750,16 @@ def do_run(args: argparse.Namespace) -> int:
 
         # -- verify ---------------------------------------------------------
         if args.role in VERIFY_ROLES:
+            if args.role == "grunt" and not slot_edited(slot, base):
+                # A grunt worker cannot commit and every check passes on an
+                # untouched slot, so a run that changed nothing against the
+                # base is the model's `no-edit`, never a PASS (A0-3g).
+                cause = empty_run_cause(events)
+                info["verdict"] = "INFRA"
+                info["cause"] = cause
+                if cause in MODEL_FAULT_CAUSES:
+                    info["failed_checks"] = [cause]
+                return finish(2, None)
             verify = run_verify(repo, args.task, slot, args.role, base)
             verdict = verify.get("verdict")
             if (verdict == "PASS" and args.role in ("implement", "tests")
@@ -1738,6 +1775,10 @@ def do_run(args: argparse.Namespace) -> int:
                 return finish(2, verify)
             if verdict == "PASS":
                 info["verdict"] = "PASS"
+                if args.role == "grunt":
+                    # The dispatcher commits a verified grunt run's edits;
+                    # implement and tests commit their own work.
+                    info["commit"] = commit_grunt(slot, args.task, args.model, verify)
                 return finish(0, verify)
             if verdict == "FAIL":
                 info["verdict"] = "FAIL"
