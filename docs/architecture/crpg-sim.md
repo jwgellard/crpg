@@ -254,6 +254,18 @@ noncombat, unscheduled entities move. Runtime identity across worlds is
 `(area, EntityId)`. Consumers: T027b projects whole-area presence; T027c
 validates the authored area against loaded content and owns viewer grants.
 
+## Encounter mode and real-time policy (T138a, ADR-0029)
+
+One encounter is turn-based (TB) or real-time (RT), chosen by the host and never by the sim.
+
+- **State shapes.** `CombatState` gains `mode: EncounterMode` (omitted when TB), `clock: Option<EncounterClock { round_ticks, elapsed }>` (`None` means TB-only) and `pending_mode: Option<EncounterMode>`. `Combatant` gains `order: Option<StandingOrder { ability, target, repeat }>`. `AbilityDefinition` gains `recovery_ticks: Option<u32>` and `repeats_in_real_time: bool`. All are absent in TB-only worlds, so their bytes, hashes and goldens do not move; `ability_is_legacy` also requires both RT fields to be empty so a save of an RT-capable single-ability encounter keeps its vectors. `RT_CLOCK_MAX` is `i32::MAX`.
+- **Public API added.** `EncounterMode`, `EncounterClock`, `StandingOrder`, `RT_CLOCK_MAX`, `start_encounter_in_mode`, `request_mode`, `CombatAction::Stop`, `CombatError::{ModeUnsupported, WrongMode}`. `start_encounter` still publishes TB.
+- **Admission.** `validate_action` stays the one legality source. In RT only its turn stage is replaced: `UseAbility` and `Stop` meet a terminal gate (`OutOfTurn { active: None }` when fewer than two combatants are alive), `EndTurn` fails `WrongMode`, and `Stop` in TB fails `WrongMode`. An accepted RT `UseAbility` stores the order and returns `Ok(None)`.
+- **Tick order.** Stage 2 (`encounter_clock_system`) advances the RT clock by one, delivers `OnTick` refreshes, and at a boundary (`elapsed % round_ticks == 0`) applies a pending RT-to-TB switch or runs the RT round start. Stage 3 (`timeline_system`) then snapshots the entries with key `<= elapsed` and executes each stored order through `validate_action` and the shared `resolve_use`; an invalid due order is cleared, a surviving actor is re-keyed at `elapsed + recovery`, a one-shot order clears. The tick that reaches `RT_CLOCK_MAX` does nothing else and the encounter then freezes. TB and TB-only ticks are unchanged.
+- **Switches.** A mode request only sets `pending_mode`. RT to TB applies at an RT boundary (orders cleared, TB round start). TB to RT applies at a TB rollover (everyone keyed at the clock, RT round start). A TB rollover of an RT-capable encounter advances the clock by `round_ticks`, saturating, and delivers `OnTick` refreshes.
+- **Load coherence.** `World::deserialize` rejects incoherent RT saves (rules L1-L5 of `tasks/T138.md`) so the stages never meet them at tick time.
+- **Not here.** History v2 events (`RoundStarted`, `ModeChanged`, `OrderEnded`) and `HistoryWorld` mode operations are T138b; RT start through the history wrapper does not exist yet.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
@@ -272,3 +284,4 @@ validates the authored area against loaded content and owns viewer grants.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Recorded the shared validate_action/legal_actions surface (single validation path, pinned enumeration order, whole-failure output bound) so consumers see a read-only query with no persisted or hash change.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Recorded the persisted area identity, liveness-based presence and the atomic two-world transfer producer, naming the net/host consumers that own disclosure.
 - 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total (J1) and world-only staging through `commit`, which keep every mutation O(new envelopes + world clone) with unchanged bytes, hashes, and goldens; the test-only `ENCODINGS` counter is named so the cost guard stays a count.
+- 2026-10-23 (UTC) · claude-code (Sonnet 5.5) + T138a · Recorded the per-encounter mode, RT clock, standing orders, mode requests and the two RT tick stages with their load checks, so readers know TB-only worlds are byte-identical and where history v2 (T138b) will attach.

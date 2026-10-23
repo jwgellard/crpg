@@ -39,7 +39,10 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
 `LegalActionsError`, `MAX_LEGAL_ACTIONS`, plus the T027a area surface
 (ADR-0020): `World::new_in_area` / `area` / `area_of`,
 `HistoryWorld::new_in_area`, `AreaError`, `transfer_entity`,
-`transfer_history_entity`, and `CombatError::AreaMismatch`.
+`transfer_history_entity`, and `CombatError::AreaMismatch`, plus the T138a
+encounter-mode surface (ADR-0029): `EncounterMode`, `EncounterClock`,
+`StandingOrder`, `RT_CLOCK_MAX`, `start_encounter_in_mode`, `request_mode`,
+`CombatAction::Stop`, and `CombatError::{ModeUnsupported, WrongMode}`.
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -80,8 +83,9 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
   empties with two or more alive, terminal (`active = None`) otherwise. A
   rejected action leaves the whole world — resources, RNG, events, event
   sequence — unchanged. A valid failed attack consumes its action; an
-  invalid action consumes nothing. Combat turn logic lives only in these
-  two operations, never in `tick` / `run_systems` / `end_turn`. Affordability
+  invalid action consumes nothing. Turn-based combat turn logic lives
+  only in these two operations, never in `tick` / `run_systems` / `end_turn`
+  (RT stages 2 and 3 execute stored orders only, T138a). Affordability
   sums same-pool entries as one total in authored template order, primary
   first, with checked `u32` addition (`ValueOverflow`) and `InsufficientAction`
   carrying the total and original balance (T019).
@@ -137,6 +141,20 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
   `ScheduledEntity`, `InvalidTransform` in order, then (history pair only)
   `SourceHistory` before `DestinationHistory`; any failure publishes neither
   side.
+
+- Encounter mode (T138a, ADR-0029): `CombatState.mode` (TB or RT; hashed;
+  omitted when TB), `clock` (`None` = TB-only), `pending_mode`, and
+  `Combatant.order`. `start_encounter` is TB; `start_encounter_in_mode`
+  publishes RT (every key `0`, `active = None`). In RT, `validate_action`
+  swaps only its turn stage (terminal gate for `UseAbility`/`Stop`,
+  `WrongMode` for `EndTurn`; `Stop` in TB is `WrongMode`); an accepted RT
+  `UseAbility` stores a `StandingOrder` and returns `Ok(None)`. `tick`
+  stage 2 runs the clock (+1, `OnTick` delivery, boundary: pending RT-to-TB
+  or RT round start) and stage 3 executes due orders through
+  `validate_action` and the shared `resolve_use`. `request_mode` only sets
+  `pending_mode`; switches apply at an RT boundary or a TB rollover. The
+  clock freezes at `RT_CLOCK_MAX`. TB and TB-only worlds are byte-identical
+  to before.
 
 ## Invariants
 
@@ -328,8 +346,13 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   differently ordered interner reproduces identical behavior (E014).
   Absence-skip (`is_empty` / `is_none`) keeps non-combat worlds
   byte-identical to the T007/T008a skeleton; it is not a hash exclusion.
-- **The combat controller never invents actions.** `tick` / `run_systems`
-  know nothing of combat; `end_turn` stays pop-only. Refresh happens once
+- **The combat controller never invents actions (turn-based).** In TB,
+  `tick` / `run_systems` know nothing of combat; `end_turn` stays pop-only.
+  Since T138a the RT stages are the one exception: stage 2 (clock) and stage 3
+  (`timeline_system`) execute only orders that commands stored earlier, in an
+  RT encounter, and never invent an action. Combat turn logic for TB still
+  lives only in `perform_action` and `despawn`; RT logic lives only in
+  `combat.rs` (`clock_stage`, `execution_stage`) and `tick.rs` merely calls it. Refresh happens once
   per logical turn start via the incoming actor's `TurnStart` (plus
   `RoundStart` on rollover); a rejected action advances nothing.
 - **Death is not despawn; release is neither.** A dead combatant keeps its entity, its
@@ -447,3 +470,4 @@ proof.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Added the persisted area identity and dual-world transfer surface with its world-owned, immutable-identity invariant, so later components know they must join the move contract rather than vanish on transfer.
 - 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total and world-only staging as invariant 14, named `commit` the only journal/world/sequence writer, added the derived-side-value trap and the source guard that enforces it, and amended rule 8 for the test-only `ENCODINGS` counter; no bytes, hashes, goldens, or public API changed.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + T133 · Restored T097 D2's qualifier that `commit` is the journal's only writer before validation ends, and added the 4095/4096-envelope `ENCODINGS` and journal-in-place regressions next to the existing small-journal tests; no behaviour, public API, or byte changed.
+- 2026-10-23 (UTC) · claude-code (Sonnet 5.5) + T138a · Added the encounter-mode surface and RT tick stages to the API list, and amended the "tick knows nothing of combat" trap, which now holds for turn-based play only because RT stages execute stored orders.

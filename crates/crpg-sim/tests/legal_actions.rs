@@ -570,6 +570,7 @@ fn full_identity_order_survives_slot_reuse() {
                 ability, target, ..
             } => Some((ability.to_u128(), (target.index(), target.generation()))),
             CombatAction::EndTurn { .. } => None,
+            CombatAction::Stop { .. } => None,
         })
         .collect();
     assert_eq!(
