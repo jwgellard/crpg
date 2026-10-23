@@ -144,7 +144,8 @@ encounter-mode surface (ADR-0029): `EncounterMode`, `EncounterClock`,
 
 - Encounter mode (T138a, ADR-0029): `CombatState.mode` (TB or RT; hashed;
   omitted when TB), `clock` (`None` = TB-only), `pending_mode`, and
-  `Combatant.order`. `start_encounter` is TB; `start_encounter_in_mode`
+  `Combatant.order`. `start_encounter` is TB (and `start_encounter_tracked` keeps its two-argument
+  form, delegating to the mode-taking `start_encounter_in_mode_tracked`); `start_encounter_in_mode`
   publishes RT (every key `0`, `active = None`). In RT, `validate_action`
   swaps only its turn stage (terminal gate for `UseAbility`/`Stop`,
   `WrongMode` for `EndTurn`; `Stop` in TB is `WrongMode`); an accepted RT
@@ -352,7 +353,8 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   (`timeline_system`) execute only orders that commands stored earlier, in an
   RT encounter, and never invent an action. Combat turn logic for TB still
   lives only in `perform_action` and `despawn`; RT logic lives only in
-  `combat.rs` (`clock_stage`, `execution_stage`) and `tick.rs` merely calls it. Refresh happens once
+  `combat.rs` (`clock_stage`, `execution_stage`) and `tick.rs` merely calls it.
+  Refresh happens once
   per logical turn start via the incoming actor's `TurnStart` (plus
   `RoundStart` on rollover); a rejected action advances nothing.
 - **Death is not despawn; release is neither.** A dead combatant keeps its entity, its
@@ -471,3 +473,4 @@ proof.
 - 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total and world-only staging as invariant 14, named `commit` the only journal/world/sequence writer, added the derived-side-value trap and the source guard that enforces it, and amended rule 8 for the test-only `ENCODINGS` counter; no bytes, hashes, goldens, or public API changed.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + T133 · Restored T097 D2's qualifier that `commit` is the journal's only writer before validation ends, and added the 4095/4096-envelope `ENCODINGS` and journal-in-place regressions next to the existing small-journal tests; no behaviour, public API, or byte changed.
 - 2026-10-23 (UTC) · claude-code (Sonnet 5.5) + T138a · Added the encounter-mode surface and RT tick stages to the API list, and amended the "tick knows nothing of combat" trap, which now holds for turn-based play only because RT stages execute stored orders.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138a resume · Re-wrapped the amended trap and recorded that `start_encounter_tracked` keeps its two-argument form, with the mode-taking `start_encounter_in_mode_tracked` beside it, because `src/history/tests.rs` is a second caller outside this package.
