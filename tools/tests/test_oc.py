@@ -38,6 +38,10 @@ and ``no-agent`` as both a setup exit and an event classification, plus
 A0-3c: the Go spend guard (window sums from injected records, the ``spend``
 view and ``--json``, the 5-hour/weekly/scarce refusals with their cost-0
 record, ``ask`` and ``wave`` refusals, the override and ``--dry-run``).
+A0-3g: a grunt run that changed nothing is ``no-edit`` (never PASS), a
+verified grunt run is committed once by ``oc.py`` with its hash in the
+summary and ``--json``, a failed grunt verification commits nothing, and an
+``implement`` run still gets no commit from ``oc.py``.
 """
 
 from __future__ import annotations
@@ -704,6 +708,20 @@ class DispatchCase(unittest.TestCase):
         self.assertNotIn("report line 15", lines)
         self.assertLessEqual(len(lines), 40)
 
+    def slot_from_verify_log(self, log: Path) -> Path:
+        """The slot the fake verifier was handed in its `--slot` argument."""
+        argv = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+        return Path(argv[argv.index("--slot") + 1]).resolve()
+
+    def commits_since_base(self, slot: Path, base: str = "master") -> int:
+        return int(sh(["git", "rev-list", "--count", f"{base}..HEAD"], slot).stdout)
+
+    def status_paths(self, slot: Path) -> str:
+        """Porcelain status with untracked files listed one path per line."""
+        return sh(
+            ["git", "status", "--porcelain", "--untracked-files=all"], slot
+        ).stdout
+
     # -- a run that changed nothing is not a PASS (A0-3d) -------------
 
     def test_empty_change_set_is_no_edit_not_pass(self) -> None:
@@ -718,12 +736,88 @@ class DispatchCase(unittest.TestCase):
             self.assertEqual(record["failed_checks"], ["no-edit"])
             self.assertTrue(OCMOD.is_failure(record))
 
-    def test_empty_change_set_is_fine_for_review_and_grunt(self) -> None:
-        for role in ("review", "grunt"):
-            task = self.tid()
-            result = self.oc_run(task, role=role, env={"FAKE_VERIFY_MODE": "empty"})
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
+    def test_empty_change_set_is_fine_for_review(self) -> None:
+        task = self.tid()
+        result = self.oc_run(task, role="review", env={"FAKE_VERIFY_MODE": "empty"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.splitlines()[0].startswith(f"PASS {task}"))
+
+    # -- grunt: empty runs and dispatcher commits (A0-3g) --------------
+
+    def test_grunt_run_with_no_change_is_no_edit(self) -> None:
+        # The default fake worker writes nothing and the fake verifier
+        # passes: an untouched slot is no-edit, not PASS (session 13's
+        # T136-facts run hit its step limit and still printed PASS).
+        task = self.tid()
+        result = self.oc_run(task, role="grunt")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertNotIn("PASS", result.stdout.splitlines()[0])
+        self.assertIn("cause: no-edit", result.stdout)
+        record = self.read_record(task)
+        self.assertEqual(record["cause"], "no-edit")
+        self.assertEqual(record["verdict"], "INFRA")
+        self.assertEqual(record["failed_checks"], ["no-edit"])
+        self.assertTrue(OCMOD.is_failure(record))
+
+    def test_verified_grunt_run_is_committed_by_oc(self) -> None:
+        task = self.tid()
+        verify_log = self.fresh_file("verify.jsonl")
+        result = self.oc_run(
+            task,
+            role="grunt",
+            extra=["--json"],
+            env={"FAKE_OC_MODE": "grunt-edit", "FAKE_VERIFY_LOG": str(verify_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        slot = self.slot_from_verify_log(verify_log)
+        self.assertEqual(self.commits_since_base(slot), 1)
+        subject = sh(["git", "log", "-1", "--format=%s"], slot).stdout.strip()
+        self.assertEqual(subject, f"{task}: grunt edits ({MODEL})")
+        committed = sh(
+            ["git", "show", "--name-only", "--format=", "HEAD"], slot
+        ).stdout.split()
+        self.assertEqual(sorted(committed), ["src/lib.rs", "tests/t.rs"])
+        commit = sh(["git", "rev-parse", "--short", "HEAD"], slot).stdout.strip()
+        self.assertEqual(payload["commit"], commit)
+        self.assertIn(f"committed {commit}", payload["summary"].splitlines())
+        # Everything reported was committed: no work is left for the manager.
+        status = self.status_paths(slot)
+        self.assertNotIn("src/lib.rs", status)
+        self.assertNotIn("tests/t.rs", status)
+
+    def test_failed_grunt_verification_commits_nothing(self) -> None:
+        task = self.tid()
+        verify_log = self.fresh_file("verify.jsonl")
+        result = self.oc_run(
+            task,
+            role="grunt",
+            env={"FAKE_OC_MODE": "grunt-edit", "FAKE_VERIFY_MODE": "fail",
+                 "FAKE_VERIFY_LOG": str(verify_log)},
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertNotIn("committed ", result.stdout)
+        slot = self.slot_from_verify_log(verify_log)
+        self.assertEqual(self.commits_since_base(slot), 0)
+        status = self.status_paths(slot)
+        self.assertIn("src/lib.rs", status)
+        self.assertIn("tests/t.rs", status)
+
+    def test_implement_run_is_not_committed_by_oc(self) -> None:
+        task = self.tid()
+        verify_log = self.fresh_file("verify.jsonl")
+        result = self.oc_run(
+            task,
+            extra=["--json"],
+            env={"FAKE_OC_MODE": "grunt-edit", "FAKE_VERIFY_LOG": str(verify_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIsNone(payload["commit"])
+        self.assertNotIn("committed ", payload["summary"])
+        slot = self.slot_from_verify_log(verify_log)
+        self.assertEqual(self.commits_since_base(slot), 0)
+        self.assertIn("src/lib.rs", self.status_paths(slot))
 
     def test_provider_error_with_no_change_is_infra_not_pass(self) -> None:
         task = self.tid()
@@ -1284,7 +1378,8 @@ class DispatchCase(unittest.TestCase):
         task = self.tid()
         verify_log = self.fresh_file("verify.jsonl")
         result = self.oc_run(
-            task, role="grunt", env={"FAKE_VERIFY_LOG": str(verify_log)}
+            task, role="grunt",
+            env={"FAKE_OC_MODE": "grunt-edit", "FAKE_VERIFY_LOG": str(verify_log)},
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         logged = [

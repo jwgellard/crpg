@@ -1,7 +1,7 @@
 ---
 description: Makes the documentation edits the manager lists, from the facts it supplies.
 mode: primary
-steps: 40
+steps: 80
 permission:
   external_directory: deny
   webfetch: deny
