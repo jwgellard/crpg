@@ -407,5 +407,24 @@ class BakeoffCase(unittest.TestCase):
             shutil.rmtree(fx_dir, ignore_errors=True)
 
 
+    # A0-7b: every fixture loads and setup builds its template
+    def test_all_fixtures_load_and_setup(self):
+        names = sorted(
+            d.name for d in FIXTURES.iterdir()
+            if d.is_dir() and (d / "fixture.json").is_file()
+        )
+        self.assertGreaterEqual(len(names), 4)
+        for name in names:
+            with self.subTest(fixture=name):
+                data = json.loads((FIXTURES / name / "fixture.json").read_text(encoding="utf-8"))
+                self.assertIn(data.get("kind"), ("scout", "implement", "review"))
+                self.assertIsNotNone(bakeoff.load_fixture(name))
+        r = self.run_cli("setup", str(self.scratch))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for name in names:
+            with self.subTest(fixture=name):
+                self.assertTrue((self.scratch / "tpl" / name).is_dir(), name)
+
+
 if __name__ == "__main__":
     unittest.main()

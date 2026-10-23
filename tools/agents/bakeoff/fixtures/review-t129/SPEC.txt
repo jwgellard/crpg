@@ -1,0 +1,14 @@
+# token bucket — specification
+
+S1. A TokenBucket keeps a watermark (last_ms) at the highest timestamp it
+has credited for.
+S2. Credit for elapsed time accrues first, capped at capacity, whether or
+not the spend succeeds; only a successful spend deducts.
+S3. A backwards or equal timestamp accrues nothing and leaves the watermark
+where it was, so no later call can re-credit a gap already counted.
+S4. Buckets start full. All balance arithmetic is saturating or provably
+bounded, so any partition of the same elapsed time credits exactly the
+same total; fault-injection shuffling is deterministically bounded, and
+its draws come from the seeded stream, so identical sequences are
+byte-identical.
+
