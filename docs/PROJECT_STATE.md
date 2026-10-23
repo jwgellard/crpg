@@ -5,12 +5,12 @@ Updated: 2026-10-23
 ## Handover
 - **In flight.** Session 16 (2026-10-23) is on `mgr/session-16-batch` (PR opened by the manager after this commit): A0-11 docs (`docs/agents/MANAGER.md` §3.5 + new `docs/agents/LESSONS.md`, Muse Spark 1.3 Contributor, attempt 1 PASS, `d265834`, $0.01; routing-table re-sync with `docs/agents/MODELS.md` §4, lesson L1) and A0-4c tools (`tools/agents/oc.py` `ask --diff`, DeepSeek V4.1 Flash, attempt 1 PASS, `559c0d6`, $0.04, six new tests, 310 tool tests pass). Session 15 is on `master` through PR #66 (the re-land of #65, same head `0a18584`, merged 2026-10-23; see lesson L1 in `docs/agents/LESSONS.md`).
 - **Next:**
-  1. The user answers D32 (`tasks/DECISIONS-D32-DRAFT.md`).
+  1. D32 answered 2026-10-23: every recommendation (a); the T136b and T138 contracts are approved (`[bump]` items in T136b are void, D32c).
   2. After D32: T136b implementation (Claude `implementer`, two sessions) with T136c in the same batch; T138a then T138b (Claude `implementer`, one session each) with T138c–e (OpenCode O1, single-crate, tiny) in the same batch; two-keys test writers from a lab other than the implementer's; Claude `reviewer` for each S-set package. T136b and T138a are independent (T138 needs only T136a) and can build in slots 1 and 2 in parallel.
   3. T137 contract (adapter generalization, waits on T136b's approval): fact pack plus two blind drafts on doc slots, then one `architect` pass, as for T138.
   4. Tool and doc follow-ups: review slot branches with `oc.py ask --role review --diff task/<ID>-<slug>`; Beam reviews returned `402` on 2026-10-23, so try Beam again on the next day; fix the LongCat contradiction in `docs/agents/MODELS.md` §4 (A0-11 reading).
   5. Carried: A0-7b fixtures against models (`bakeoff.py all`); T099 research fold-in; T100 benchmark contract; A0-5b; A0-8 for the other crates.
-- **Blocked:** T136b, T138 and T137 wait on the user's D32 answers.
+- **Blocked:** nothing. T136b, T138 and the T137 contract are ready.
 - **Running at handover:** nothing.
 - Dispatch facts: the manager works from the main checkout `C:/CRPG/dev/crpg`; prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";` in Git Bash. Briefs are in `.agents/briefs/`. A0-4b is merged into this batch, so doc-only slots no longer run cargo and verify waits 1800 s. Slots 1–2 are free (slot 1 `target/` 9 GB; slot 2 cleaned); slots 3 and 4 hold the merged A0-11 and A0-4c branches and can be reused. MiMo-V2.6-Pro is demoted from implement (two hangs). Go spend this session was about $0.05. Claude: manager only, no subagents.
 
@@ -729,3 +729,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S14 bookkeeping · Replaced Updated and the Handover block with the session 14 facts (PR #64, the S-set review gate, tool defects and dispatch facts), so the next session starts from the session 14 close-out.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Replaced the Handover block with the session 15 facts (PR #65 stacked on PR #64, T136b/T138 contracts awaiting D32, tool gaps and dispatch facts), so the next session starts from the session 15 close-out.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S16 bookkeeping · Replaced the Handover block with the session 16 facts (PR #66 re-land on master, A0-11/A0-4c in the session 16 batch, D32 gate), so the next session starts from the session 16 close-out.
+- 2026-10-23 (UTC) · claude-code (manager, Opus 5.5) + D32 answered · Recorded the D32 answers in the handover, so the next session dispatches T136b and T138 directly.
