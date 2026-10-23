@@ -97,8 +97,8 @@ The levers, largest first:
 
 | Role | Runs on | Owns | Never does |
 |---|---|---|---|
-| **You** | — | Vision, D-batch answers, every H gate in `docs/IMPLEMENTATION_PLAN.md` §1.5, dependency and golden approvals, merges | Routine code review |
-| **Manager** | Main Claude Code session, Opus 5.5 (§9 effort) | Wave plans, briefs, routing, reading summaries, judgment review, PRs, bookkeeping approval, gate reports | Implementation beyond a few lines; reading worker transcripts; merging; re-checking script results |
+| **You** | — | Vision, D-batch answers, every H gate in `docs/IMPLEMENTATION_PLAN.md` §1.5, dependency and golden approvals, merges that §7.4 leaves to you | Routine code review |
+| **Manager** | Main Claude Code session, Opus 5.5 (§9 effort) | Wave plans, briefs, routing, reading summaries, judgment review, PRs, bookkeeping approval, gate reports | Implementation beyond a few lines; reading worker transcripts; merging outside §7.4; re-checking script results |
 | **Architect** | Claude subagent `architect`, Opus 5.5 | A packages (ADR drafts) and C packages (exact contracts) that are first of a kind or in the S-set; hard debugging only when you ask (D28b) | Code in `crates/`; approving its own contract |
 | **Contract drafter** | Claude subagent `implementer` (Sonnet 5.5) | C packages that follow an existing contract's pattern, from an Opus-written outline | First-of-a-kind interfaces |
 | **Implementer, OpenCode** | `oc.py` with an O1 or O2 model (`docs/agents/MODELS.md`) | I packages outside the S-set, tests from a written contract | S-set work; anything the brief does not own |
@@ -334,7 +334,7 @@ Per wave:
    the contract, do the tests test the right thing, does anything exceed the
    brief? Core and S-set packages also get the Claude `reviewer`, and the
    "two keys" test writer.
-7. **PR.** The manager pushes the branch and opens the PR. You merge (D27a).
+7. **PR.** The manager pushes the branch, opens the PR and merges it under §7.4 (D27a superseded 2026-10-23).
 8. **Bookkeeping.** The bookkeeper writes the `BACKLOG` row, the
    `PROJECT_STATE` handover and the throughput line from facts the manager
    lists. The manager checks the diff.
@@ -389,6 +389,29 @@ found all five with no false positives, and none flagged the decoy. That fixture
 was too easy to rank the strong models, so A0-7 replaces it with real defects
 from this repository's history (for example the code before the T019 and
 T023d fixes), which is the review work that matters here.
+
+### 7.4 Merging (the user, 2026-10-23; supersedes D27a)
+
+"I want to allow the manager to merge. There are too many PRs for me to keep
+up with, and after one is merged the others need to be updating." The
+manager merges a PR (merge commit, `gh pr merge --merge`) when all of these
+hold:
+
+1. Every CI check on the PR's head is green, and the PR is up to date with
+   its base (a PR behind `master` gets `master` merged in and CI re-run).
+2. Every package in it passed `verify_task.py` and the manager's §7.2
+   judgment, plus the Claude `reviewer` where §4.3 requires one.
+3. Nothing in it is waiting on one of your gates: no golden or `.replay`
+   change, no dependency or `Cargo.lock` change, no `deny.toml`,
+   `.github/workflows/`, `rust-toolchain.toml` or `crpg-contracts` change, no
+   S-set code, no ADR or contract marked accepted or approved without your
+   answer, unless you approved that item. Proposed contracts and decision
+   drafts may merge as documents still marked "proposed".
+
+Stacked PRs merge oldest first; the next is retargeted to `master`. The
+manager never force-pushes, never bypasses branch protection (no admin
+merge), and never deletes a branch that holds unmerged work. A PR that fails
+rule 3 stays open for you, named in the handover.
 
 ## 8. Memory, handover and gates
 
@@ -563,7 +586,7 @@ you say "start working".
 ```text
 You are the manager of the CRPG engine build. You plan, brief, route, judge
 and open PRs. You do not implement, you never read a worker's transcript, and
-you never check by hand what a script checks. You never merge.
+you never check by hand what a script checks. You merge only under §7.4.
 
 Read: docs/agents/MANAGER.md (A0-10, approved 2026-10-21), the handover at
 the top of docs/PROJECT_STATE.md, and the in-flight rows of tasks/BACKLOG.md.
@@ -623,3 +646,4 @@ the table below is kept as asked.
 - 2026-10-16 (UTC) · claude-code + user direction · Added the parallel-by-default and parallel-design rules to §8 with the Go-cap evidence that keeps design drafts off Kimi K3 and Gemini 4 Argon, because the user asked for parallel work and design to be run in parallel.
 - 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Updated the doc-signature check description to state the branch-age date window and the uncommitted-work exception.
 - 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + A0-10 approved · Pointed the §12 kickoff read list at `docs/agents/MANAGER.md` instead of §§1–9 plus MODELS.md and TEMPLATES.md, at the user's approval, so a fresh manager starts smaller.
+- 2026-10-23 (UTC) · claude-code + user's merge decision · Added §7.4: the manager now merges PRs that pass CI, review and every user gate, superseding D27a at the user's request because PRs were queuing behind manual merges; §§3, 6 and 12 now point to it.
