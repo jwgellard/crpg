@@ -42,6 +42,10 @@ A0-3g: a grunt run that changed nothing is ``no-edit`` (never PASS), a
 verified grunt run is committed once by ``oc.py`` with its hash in the
 summary and ``--json``, a failed grunt verification commits nothing, and an
 ``implement`` run still gets no commit from ``oc.py``.
+A0-4c: ``ask --diff/--base`` writes a slot branch's diff beside the run's
+log, appends its path to the question, and records ``diff``; an unresolved
+ref or an empty diff exits ``bad-ref``/``empty-diff`` before OpenCode starts
+and never counts against the model.
 """
 
 from __future__ import annotations
@@ -1838,6 +1842,159 @@ class RecordStatsCase(unittest.TestCase):
         self.assertEqual(row["median_steps"], 0)
         self.assertEqual(row["median_elapsed_s"], 0)
         self.assertEqual(row["total_cost"], 0)
+
+
+class AskDiffCase(unittest.TestCase):
+    """`ask --diff/--base` in a fresh temporary git repository (A0-4c)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="oc ask diff ")
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.repo = root / "repo"
+        self.repo.mkdir()
+        self.prompt_file = root / "prompt.txt"
+        self.calls = root / "calls.jsonl"
+        self.starts = root / "starts.txt"
+        sh(["git", "init", "-b", "master", str(self.repo)], root)
+        sh(["git", "config", "user.email", "test@example.invalid"], self.repo)
+        sh(["git", "config", "user.name", "oc test"], self.repo)
+        (self.repo / "README.md").write_text(
+            "# ask diff repo\n", encoding="utf-8")
+        sh(["git", "add", "README.md"], self.repo)
+        sh(["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"],
+           self.repo)
+        self.env = {
+            "CRPG_REPO": str(self.repo),
+            "CRPG_OPENCODE": str(FAKE_OPENCODE),
+            "CRPG_OC_START_GAP": "0",
+            "CRPG_OC_LOCK_WAIT": "0.05",
+            "FAKE_OC_MODE": "prompt-file,ok",
+            "FAKE_OC_LOG": str(self.calls),
+            "FAKE_OC_STARTS": str(self.starts),
+            "FAKE_OC_PROMPT_FILE": str(self.prompt_file),
+        }
+
+    # -- helpers -----------------------------------------------------
+
+    def branch(self, name: str, text: str | None = None) -> None:
+        """Create a branch off master, with one committed change if asked."""
+        sh(["git", "checkout", "-b", name], self.repo)
+        if text is not None:
+            (self.repo / "CHANGE.md").write_text(text, encoding="utf-8")
+            sh(["git", "add", "CHANGE.md"], self.repo)
+            sh(["git", "-c", "commit.gpgsign=false", "commit", "-m", name],
+               self.repo)
+        sh(["git", "checkout", "master"], self.repo)
+
+    def ask(self, *extra: str, question: str = "What changed?"):
+        merged = dict(os.environ)
+        merged.update(self.env)
+        return subprocess.run(
+            [sys.executable, str(OC), "ask", "--role", "scout",
+             "--model", MODEL, "--timeout", "60", "--idle", "10",
+             *extra, question],
+            cwd=self.repo, capture_output=True, text=True, timeout=90,
+            env=merged,
+        )
+
+    def runs_dir(self) -> Path:
+        return self.repo / ".agents" / "runs" / "ask"
+
+    def record_path(self, attempt: int = 1) -> Path:
+        return self.runs_dir() / f"{attempt}-{MODEL.replace('/', '_')}.result.json"
+
+    def diff_path(self, attempt: int = 1) -> Path:
+        return self.runs_dir() / f"{attempt}-{MODEL.replace('/', '_')}.diff"
+
+    def read_record(self, attempt: int = 1) -> dict:
+        return json.loads(self.record_path(attempt).read_text())
+
+    # -- behaviours --------------------------------------------------
+
+    def test_diff_file_and_question_sentence(self) -> None:
+        self.branch("changed", "a changed line\n")
+        result = self.ask("--diff", "changed", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        diff = self.diff_path()
+        self.assertTrue(diff.is_file())
+        text = diff.read_text(encoding="utf-8")
+        self.assertIn("diff --git a/CHANGE.md b/CHANGE.md", text)
+        self.assertIn("+a changed line", text)
+        rel = diff.relative_to(self.repo).as_posix()
+        sentence = (
+            f"The diff of `changed` against `master` is in `{rel}`; "
+            "read it there."
+        )
+        self.assertEqual(
+            self.prompt_file.read_text(encoding="utf-8"),
+            "What changed?\n\n" + sentence,
+        )
+        record = self.read_record()
+        self.assertEqual(record["diff"], rel)
+        self.assertEqual(json.loads(result.stdout)["diff"], rel)
+
+    def test_bad_ref_exits_before_opencode_and_writes_the_record(self) -> None:
+        result = self.ask("--diff", "no-such-branch")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cause: bad-ref", result.stdout)
+        self.assertFalse(self.starts.exists())
+        self.assertFalse(self.diff_path().exists())
+        record = self.read_record()
+        self.assertEqual((record["verdict"], record["cause"]),
+                         ("INFRA", "bad-ref"))
+        self.assertNotIn("diff", record)
+
+    def test_empty_diff_exits_2(self) -> None:
+        self.branch("same")
+        result = self.ask("--diff", "same")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cause: empty-diff", result.stdout)
+        self.assertFalse(self.starts.exists())
+        self.assertEqual(self.read_record()["cause"], "empty-diff")
+
+    def test_base_without_diff_is_a_usage_error(self) -> None:
+        result = self.ask("--base", "master")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--base requires --diff", result.stderr)
+        self.assertFalse(self.starts.exists())
+
+    def test_ask_without_diff_leaves_the_question_unchanged(self) -> None:
+        question = "On which line is <line number> | & > honoured exactly?"
+        result = self.ask(question=question)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(
+            self.prompt_file.read_text(encoding="utf-8"), question)
+        self.assertNotIn("diff", self.read_record())
+
+    def test_stats_does_not_count_bad_ref_or_empty_diff(self) -> None:
+        self.branch("same")
+        empty = self.ask("--diff", "same")
+        self.assertEqual(empty.returncode, 2, empty.stderr)
+        bad = self.ask("--diff", "no-such-branch")
+        self.assertEqual(bad.returncode, 2, bad.stderr)
+        first, second = self.read_record(1), self.read_record(2)
+        self.assertEqual(first["cause"], "empty-diff")
+        self.assertEqual(second["cause"], "bad-ref")
+        self.assertIn("empty-diff", OCMOD.NON_FAULT_CAUSES)
+        self.assertIn("bad-ref", OCMOD.NON_FAULT_CAUSES)
+        for record in (first, second):
+            self.assertFalse(OCMOD.is_failure(record))
+            self.assertFalse(OCMOD.first_attempt_eligible(record))
+        merged = dict(os.environ)
+        merged.update(self.env)
+        stats = subprocess.run(
+            [sys.executable, str(OC), "stats", "--json"],
+            cwd=self.repo, capture_output=True, text=True, timeout=90,
+            env=merged,
+        )
+        self.assertEqual(stats.returncode, 0, stats.stderr)
+        row = next(r for r in json.loads(stats.stdout)["rows"]
+                   if r["model"] == MODEL and r["role"] == "scout")
+        self.assertEqual(row["infra"], {"bad-ref": 1, "empty-diff": 1})
+        self.assertEqual((row["first_attempt_passes"],
+                          row["first_attempt_eligible"]), (0, 0))
+        self.assertFalse(row["demote"])
 
 
 class SpendGuardCase(unittest.TestCase):

@@ -4,7 +4,8 @@
 Usage:
     python tools/agents/oc.py run --task ID --role ROLE --model MODEL [...]
     python tools/agents/oc.py wave SPEC [SPEC ...] [--timeout SEC] ...
-    python tools/agents/oc.py ask --role scout --model MODEL QUESTION
+    python tools/agents/oc.py ask --role scout --model MODEL [--diff REF]
+                                  [--base BASE] QUESTION
     python tools/agents/oc.py record --task ID --role ROLE --model MODEL ...
     python tools/agents/oc.py stats [--role ROLE] [--since DATE] [--json]
     python tools/agents/oc.py spend [--json]
@@ -59,8 +60,12 @@ PROMOTE_MIN_RUNS = 5
 
 # Infra causes that are not the model's fault: they never count against it.
 # `spend` (the Go spend guard, below) is the manager's budget, not the model's;
-# `verify-timeout` is the verifier's own budget expiring (A0-4b).
-NON_FAULT_CAUSES = frozenset({"quota", "402", "locked", "spend", "verify-timeout"})
+# `verify-timeout` is the verifier's own budget expiring (A0-4b); `bad-ref` and
+# `empty-diff` are the manager's `ask --diff` arguments (A0-4c).
+NON_FAULT_CAUSES = frozenset({
+    "quota", "402", "locked", "spend", "verify-timeout",
+    "bad-ref", "empty-diff",
+})
 # Infra causes that are the model's fault: they count against it.
 MODEL_FAULT_CAUSES = frozenset({"no-edit", "timeout", "hang"})
 
@@ -1292,6 +1297,12 @@ def log_file(task_dir: Path, attempt: int, model: str,
     return task_dir / f"{run_stem(attempt, model, slug)}.jsonl"
 
 
+def diff_path(task_dir: Path, attempt: int, model: str,
+              slug: str | None = None) -> Path:
+    """The `ask --diff` file: the log's stem with a `.diff` suffix."""
+    return task_dir / f"{run_stem(attempt, model, slug)}.diff"
+
+
 def write_record(path: Path, info: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1312,6 +1323,8 @@ def write_record(path: Path, info: dict) -> None:
         "retries": info.get("retries", []),
         "outcomes": info.get("outcomes", []),
     }
+    if info.get("diff"):
+        payload["diff"] = info["diff"]
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1573,7 +1586,7 @@ def commit_grunt(slot: Path, task: str, model: str, verify: dict) -> str | None:
 
 def result_payload(info: dict, verify: dict | None, summary: str) -> dict:
     """The --json / wave-capture object for a finished run."""
-    return {
+    payload = {
         "tool": "oc", "version": RESULT_VERSION, "verdict": info["verdict"],
         "task": info["task"], "role": info["role"], "model": info["model"],
         "attempt": info["attempt"], "cause": info["cause"],
@@ -1585,6 +1598,9 @@ def result_payload(info: dict, verify: dict | None, summary: str) -> dict:
         "checks": (verify or {}).get("checks") or [],
         "summary": summary,
     }
+    if info.get("diff"):
+        payload["diff"] = info["diff"]
+    return payload
 
 
 # -- run -----------------------------------------------------------------------------
@@ -1868,10 +1884,34 @@ def do_run(args: argparse.Namespace) -> int:
 # -- ask -----------------------------------------------------------------------------
 
 
+def ask_diff(repo: Path, task_dir: Path, attempt: int, model: str,
+             ref: str, base: str) -> Path:
+    """Write `<base>...<ref>` beside the ask run's log and return its path.
+
+    Both refs must resolve and the diff must be non-empty; either failure is
+    the manager's argument, so it raises `bad-ref`/`empty-diff` before any
+    OpenCode process starts (do_ask still writes its result record).
+    """
+    for name in (ref, base):
+        if git(["rev-parse", "--verify", name], repo).returncode != 0:
+            raise Exit(2, "bad-ref")
+    proc = git(["diff", f"{base}...{ref}"], repo)
+    if proc.returncode != 0:
+        raise Exit(2, "bad-ref")
+    if not proc.stdout:
+        raise Exit(2, "empty-diff")
+    path = diff_path(task_dir, attempt, model)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(proc.stdout, encoding="utf-8", newline="")
+    return path
+
+
 def do_ask(args: argparse.Namespace) -> int:
     repo = repo_root()
     since_size = log_baseline()
     check_model_id(args.model)
+    if args.base is not None and not args.diff:
+        raise Exit(2, "usage: --base requires --diff")
     task = "ask"
     task_dir = runs_dir(repo) / task
     attempt = next_attempt_number(task_dir)
@@ -1909,6 +1949,17 @@ def do_ask(args: argparse.Namespace) -> int:
         note = spend_note(repo, args.model)
         if note:
             info["spend_note"] = note
+        if args.diff:
+            # The diff is written before the executable is resolved, so a
+            # bad ref never starts OpenCode and still leaves its record.
+            base = args.base or "master"
+            path = ask_diff(repo, task_dir, attempt, args.model,
+                            args.diff, base)
+            info["diff"] = path.relative_to(repo).as_posix()
+            question += (
+                f"\n\nThe diff of `{args.diff}` against `{base}` is in "
+                f"`{info['diff']}`; read it there."
+            )
         # Resolution and version probing happen inside the try: a missing
         # executable (no-exe) must still write its result record, exactly
         # as `run` does (attempt-5 finding 3).
@@ -2320,6 +2371,8 @@ def build_parser() -> argparse.ArgumentParser:
     ask = sub.add_parser("ask", help="ask a question, no slot, no verify")
     ask.add_argument("--role", required=True, choices=ROLES)
     ask.add_argument("--model", required=True)
+    ask.add_argument("--diff", default=None)
+    ask.add_argument("--base", default=None)
     ask.add_argument("--timeout", type=int, default=None)
     ask.add_argument("--idle", type=int, default=None)
     ask.add_argument("--json", action="store_true")

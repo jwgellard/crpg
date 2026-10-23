@@ -19,7 +19,8 @@ python tools/agents/oc.py run  --task ID --role ROLE --model MODEL [--slot K]
                                [--fresh] [--dry-run] [--json] [--full]
 python tools/agents/oc.py wave SPEC [SPEC ...] [--timeout SEC]
                                 [--verify-timeout SEC] [--base REF] [--json]
-python tools/agents/oc.py ask  --role scout --model MODEL [--timeout SEC] [--json] QUESTION
+python tools/agents/oc.py ask  --role scout --model MODEL [--diff REF]
+                               [--base BASE] [--timeout SEC] [--json] QUESTION
 python tools/agents/oc.py record --task ID --role ROLE --model MODEL --outcome OUTCOME
                                [--attempt N] [--note TEXT]
 python tools/agents/oc.py stats [--role ROLE] [--since YYYY-MM-DD] [--json]
@@ -88,6 +89,24 @@ and `GO_CAP_WEEK` = $12.00, overridable with `$CRPG_GO_CAP_5H` and
 `$CRPG_GO_CAP_WEEK`; `CRPG_GO_SPEND_OVERRIDE=1` skips the guard and the
 summary says `spend guard overridden`.
 
+`ask --diff REF` gives a reviewer a slot branch's diff without leaving the
+main checkout. Before OpenCode starts it runs `git diff <BASE>...<REF>` in the
+repository root (branches are shared by every worktree, so a slot branch
+resolves from the main checkout), writes the output to
+`<repo>/.agents/runs/ask/<attempt>-<model>.diff` (the log's stem with a
+`.diff` suffix), and then appends one blank line and exactly:
+
+    The diff of `<REF>` against `<BASE>` is in `<path>`; read it there.
+
+where `<path>` is that file's path relative to the repository root, with
+forward slashes. `--base` defaults to `master` and is only meaningful with
+`--diff`; `--base` alone exits 2 with a usage error. An unresolved `REF` or
+`BASE` exits 2 `bad-ref`; an empty diff exits 2 `empty-diff`. Both happen
+before any OpenCode process starts, still write the cost-0 result record, and
+neither counts against the model. The record and the `--json` payload carry
+the diff path under `diff` (absent without `--diff`). Without `--diff`,
+`ask` behaves exactly as before.
+
 Briefs: `run` takes `--brief`, else `<repo>/.agents/briefs/<ID>.md`
 when filed, else generates one via `brief.py`; `wave` resolves each
 member the same way (it has no `--brief` of its own). A brief that
@@ -120,10 +139,11 @@ before OpenCode starts; an OpenCode event reading `Agent not found`
 classifies as the same cause.
 
 Exit-2 causes: `fetch`, `no-brief`, `no-verify`, `no-slot`, `slot-busy`,
-`no-exe`, `no-agent`, `branch`, `locked`, `402`, `quota`, `spend`,
-`verify-timeout`, `timeout`, `hang`, `no-edit`, `model`, `verify-error`,
-`usage`. Of these, `quota`, `402`, `locked`, `spend` and `verify-timeout`
-never count against the model; `no-edit`, `timeout` and `hang` do.
+`no-exe`, `no-agent`, `branch`, `bad-ref`, `empty-diff`, `locked`, `402`,
+`quota`, `spend`, `verify-timeout`, `timeout`, `hang`, `no-edit`, `model`,
+`verify-error`, `usage`. Of these, `quota`, `402`, `locked`, `spend`,
+`verify-timeout`, `bad-ref` and `empty-diff` never count against the model;
+`no-edit`, `timeout` and `hang` do.
 
 Verification: `implement` and `tests` runs get the full gates; only `grunt`
 passes `--skip gates`. Verification has its own budget,
@@ -200,3 +220,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3g · Documented the `no-edit` rule for grunt runs and the dispatcher's one commit of a verified grunt run (its `committed <hash>` line and `--json` `commit` key), so a grunt run that changed nothing can no longer print PASS and its work is no longer left uncommitted.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b · Documented the `--verify-timeout` budget and its non-fault `verify-timeout` cause, per-slug attempt counting with the slug file names, and the doc-only slot rule, so the guide matches the five session-14 tool fixes.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b attempt 3 · Corrected the doc-only gate rule: no cargo ever, but a tool change still runs the tool unittests (no tool change reports `skipped (no tool change)`), so a tools task's own tests are not silently skipped.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4c · Documented `ask --diff/--base`, the diff file beside the run log, the exact question sentence, the recorded `diff` key, and the non-fault `bad-ref`/`empty-diff` exits, so a reviewer can read a slot branch's diff from the main checkout without loosening a permission.
