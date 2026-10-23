@@ -166,6 +166,19 @@ the breaking API required a user-authorized narrow mechanical fix in the two
 downstream adapters (effects wiring plus one `Option` unwrap, no
 golden/behavior change); B4 owns replay/goldens, B5 the CLI proof.
 
+## Kernel-range bridge (T136c, deleted by T137)
+
+The T136b kernel-range wire surface — non-`Int` kinds and derived formulas,
+rolled initiative, ability bonus stats, constant/actor-stat/opposed defenses,
+damage dice, effect grants, and `Stat` effect targets — has no runtime
+meaning here yet. The adapter refuses any encounter carrying one of them with
+`CombatError::UnsupportedAuthored` (`UnsupportedAuthored at spec/authored`),
+checked after the collection bounds and the two data-owned asserts and before
+the placement loop, so nothing is published and the world is unchanged. The
+two expanded matches mark their new variants unreachable with the same
+reason. T137 implements the shapes and deletes the variant, the check, and
+`tests/unsupported_authored.rs`.
+
 ## Atomic same-pool affordability (T019)
 
 The T018c adjacent defect (same-pool entries passing per-amount validation
@@ -272,3 +285,4 @@ validates the authored area against loaded content and owns viewer grants.
 - 2026-09-30 (UTC) · claude-code + T028 implementation · Recorded the shared validate_action/legal_actions surface (single validation path, pinned enumeration order, whole-failure output bound) so consumers see a read-only query with no persisted or hash change.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Recorded the persisted area identity, liveness-based presence and the atomic two-world transfer producer, naming the net/host consumers that own disclosure.
 - 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total (J1) and world-only staging through `commit`, which keep every mutation O(new envelopes + world clone) with unchanged bytes, hashes, and goldens; the test-only `ENCODINGS` counter is named so the cost guard stays a count.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + T136c · Recorded the temporary kernel-range bridge: `UnsupportedAuthored` refuses every T136b shape before placement with an unchanged world, and T137 deletes the variant, check, and suite.

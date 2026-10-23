@@ -28,9 +28,10 @@ use serde::{Deserialize, Serialize};
 
 use crpg_core::{EntityId, Ulid};
 use crpg_data::{
-    Ability as AuthoredAbility, Creature as AuthoredCreature, Effect as AuthoredEffect,
-    Encounter as AuthoredEncounter, OutcomeTable as AuthoredOutcomeTable,
-    Placement as AuthoredPlacement, RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset,
+    Ability as AuthoredAbility, Creature as AuthoredCreature, DefenseWire,
+    Effect as AuthoredEffect, EffectTargetWire, Encounter as AuthoredEncounter,
+    OutcomeTable as AuthoredOutcomeTable, Placement as AuthoredPlacement,
+    RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset, StatKindWire,
 };
 use crpg_rules::{
     resolve, Against, DiceExpr, DiceRoll, ModTypeId, Modifier, ModifierPipeline, ModifierTarget,
@@ -789,6 +790,8 @@ pub enum CombatError {
         /// The participants' resolved area.
         found: Ulid,
     },
+    /// An authored surface feature the adapter does not execute yet (T137).
+    UnsupportedAuthored,
 }
 
 impl std::fmt::Display for CombatError {
@@ -828,6 +831,7 @@ impl std::fmt::Display for CombatError {
             Self::InvalidNaturalDie { .. } => write!(f, "InvalidNaturalDie at spec/ability"),
             Self::PolicyConflict { .. } => write!(f, "PolicyConflict at spec/effects"),
             Self::AreaMismatch { .. } => write!(f, "AreaMismatch at spec/areas"),
+            Self::UnsupportedAuthored => write!(f, "UnsupportedAuthored at spec/authored"),
         }
     }
 }
@@ -908,13 +912,14 @@ fn map_policy(policy: crpg_data::PolicyWire) -> StackingPolicy {
 /// empty timeline, empty events, unchanged RNG streams).
 ///
 /// Check order (pinned): an already-active encounter; collection bounds;
-/// each participant's placement, then single-area agreement, then each
-/// placement's creature; per creature, per ruleset stat in authored order,
-/// presence, wholeness, and health positivity with checked conversion;
-/// pool templates carried in order; per ruleset-listed ability in authored
-/// order, the spec-map entry, declared-attribute, dice, outcome-table,
-/// per-pool costs in template order, defense, effect, and natural checks;
-/// global effect checks in ascending effect order; then publication.
+/// unsupported authored features; each participant's placement, then
+/// single-area agreement, then each placement's creature; per creature, per
+/// ruleset stat in authored order, presence, wholeness, and health positivity
+/// with checked conversion; pool templates carried in order; per
+/// ruleset-listed ability in authored order, the spec-map entry,
+/// declared-attribute, dice, outcome-table, per-pool costs in template order,
+/// defense, effect, and natural checks; global effect checks in ascending
+/// effect order; then publication.
 ///
 /// Data-owned preconditions (enforced at data read time, asserted here):
 /// participants and the ruleset ability list are nonempty.
@@ -937,7 +942,7 @@ pub(crate) fn start_encounter_tracked(
         DuplicateModifier, EncounterActive, InvalidCost, InvalidDice, InvalidEffect,
         InvalidNaturalDie, InvalidOutcomeTable, InvalidStatValue, MissingCreature, MissingEffect,
         MissingPlacement, MissingPool, MissingStat, MixedArea, PolicyConflict, TooManyParticipants,
-        TooManyStats, UnknownAbility, ValueOverflow,
+        TooManyStats, UnknownAbility, UnsupportedAuthored, ValueOverflow,
     };
 
     let encounter = spec.encounter;
@@ -957,6 +962,27 @@ pub(crate) fn start_encounter_tracked(
     }
     if ruleset.abilities.is_empty() {
         panic!("ruleset abilities are validated nonempty by data read-time checks");
+    }
+    let unsupported = ruleset.stats.iter().any(|declaration| {
+        !matches!(&declaration.kind, StatKindWire::Int) || declaration.derived.is_some()
+    }) || ruleset.initiative.is_some()
+        || spec.abilities.values().any(|ability| {
+            ability.bonus_stats.is_some()
+                || !matches!(
+                    &ability.defense,
+                    DefenseWire::ActorAttribute | DefenseWire::TargetStat { .. }
+                )
+                || ability.damage.iter().any(|entry| entry.dice.is_some())
+        })
+        || spec.effects.values().any(|effect| {
+            effect.grants.is_some()
+                || effect
+                    .modifiers
+                    .iter()
+                    .any(|modifier| matches!(&modifier.target, EffectTargetWire::Stat { .. }))
+        });
+    if unsupported {
+        return Err(UnsupportedAuthored);
     }
 
     let mut areas = Vec::with_capacity(encounter.participants.len());
@@ -1261,6 +1287,15 @@ pub(crate) fn start_encounter_tracked(
             crpg_data::DefenseWire::TargetStat { stat } => {
                 AbilityDefense::TargetStat { stat: stat.clone() }
             }
+            crpg_data::DefenseWire::Constant(_) => {
+                unreachable!("rejected as UnsupportedAuthored at encounter start")
+            }
+            crpg_data::DefenseWire::ActorStat { .. } => {
+                unreachable!("rejected as UnsupportedAuthored at encounter start")
+            }
+            crpg_data::DefenseWire::Opposed { .. } => {
+                unreachable!("rejected as UnsupportedAuthored at encounter start")
+            }
         };
         let damage = entry
             .authored
@@ -1298,6 +1333,9 @@ pub(crate) fn start_encounter_tracked(
                 target: match item.target {
                     crpg_data::EffectTargetWire::Roll => EffectTarget::Roll,
                     crpg_data::EffectTargetWire::Dc => EffectTarget::Dc,
+                    crpg_data::EffectTargetWire::Stat { .. } => {
+                        unreachable!("rejected as UnsupportedAuthored at encounter start")
+                    }
                 },
                 op: match item.op {
                     crpg_data::EffectOpWire::Add => EffectOp::Add,

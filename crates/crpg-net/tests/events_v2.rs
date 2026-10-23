@@ -1571,10 +1571,12 @@ impl HistoryFixture {
             DamageEntry {
                 outcome: OutcomeWire::Success,
                 amount: 99,
+                dice: None,
             },
             DamageEntry {
                 outcome: OutcomeWire::Failure,
                 amount: 0,
+                dice: None,
             },
         ];
         self.tables

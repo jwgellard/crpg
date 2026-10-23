@@ -91,10 +91,12 @@ fn lethal_fixture() -> Fixture {
         DamageEntry {
             outcome: OutcomeWire::Success,
             amount: 99,
+            dice: None,
         },
         DamageEntry {
             outcome: OutcomeWire::Failure,
             amount: 0,
+            dice: None,
         },
     ];
     fixture.tables.get_mut(&table_id()).expect("table").bands = vec![OutcomeBandWire {

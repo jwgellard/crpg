@@ -903,14 +903,17 @@ fn same_seed_repeats_and_mutations_matter() {
         crpg_data::DamageEntry {
             outcome: crpg_data::OutcomeWire::Success,
             amount: 9,
+            dice: None,
         },
         crpg_data::DamageEntry {
             outcome: crpg_data::OutcomeWire::Failure,
             amount: 0,
+            dice: None,
         },
         crpg_data::DamageEntry {
             outcome: crpg_data::OutcomeWire::CriticalSuccess,
             amount: 9,
+            dice: None,
         },
     ];
     let (mut heavy_world, heavy_ids) = heavy.start(9);
@@ -1288,14 +1291,17 @@ fn production_path_stays_generic() {
         crpg_data::DamageEntry {
             outcome: crpg_data::OutcomeWire::Success,
             amount: 7,
+            dice: None,
         },
         crpg_data::DamageEntry {
             outcome: crpg_data::OutcomeWire::Failure,
             amount: 0,
+            dice: None,
         },
         crpg_data::DamageEntry {
             outcome: crpg_data::OutcomeWire::CriticalSuccess,
             amount: 7,
+            dice: None,
         },
     ];
     let (mut altered_world, altered_ids) = altered.start(9);
