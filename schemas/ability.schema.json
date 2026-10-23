@@ -258,6 +258,23 @@
           "$ref": "#/$defs/UlidText",
           "description": "Outcome-table identity."
         },
+        "recovery_ticks": {
+          "description": "Real-time recovery ticks after use, nonzero; absent means round_ticks.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "repeats_in_real_time": {
+          "description": "Whether a real-time standing order repeats; absent means false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "requires_target": {
           "description": "Whether a target is required.",
           "type": "boolean"

@@ -242,6 +242,9 @@ pub struct Ruleset {
     /// Ability identities in authored order.
     #[schemars(with = "Vec<crate::schema::UlidText>")]
     pub abilities: Vec<Ulid>,
+    /// Ticks per real-time round, nonzero; absent means turn-based only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_ticks: Option<u32>,
 }
 
 /// One data-selected outcome label.
@@ -312,6 +315,12 @@ pub struct Ability {
     pub requires_target: bool,
     /// Whether self-targeting is allowed.
     pub allow_self_target: bool,
+    /// Real-time recovery ticks after use, nonzero; absent means round_ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_ticks: Option<u32>,
+    /// Whether a real-time standing order repeats; absent means false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeats_in_real_time: Option<bool>,
 }
 
 /// One margin band: the inclusive lower bound selecting an outcome.
@@ -762,6 +771,9 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
                     return Err(malformed("duplicate ruleset ability"));
                 }
             }
+            if ruleset.round_ticks == Some(0) {
+                return Err(malformed("ruleset round_ticks must be nonzero"));
+            }
             Ok(())
         }
         crate::Document::Ability(ability) => {
@@ -805,6 +817,9 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
                 if stat.is_empty() {
                     return Err(malformed("ability defense stat must be nonempty"));
                 }
+            }
+            if ability.recovery_ticks == Some(0) {
+                return Err(malformed("ability recovery_ticks must be nonzero"));
             }
             Ok(())
         }

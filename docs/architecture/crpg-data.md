@@ -192,6 +192,19 @@ three new files/keys; existing keys are byte-identical. The breaking
 `pools` replacement breaks downstream `crpg-sim` compilation until B3; the
 blocker with options is recorded in `tasks/T017a.md`.
 
+### Real-time fields (T136a)
+
+`Ruleset.round_ticks` (`u32`) and `Ability.recovery_ticks` (`u32`) and
+`repeats_in_real_time` (`bool`) are optional-missing at the current
+`crpg.ruleset/2` and `crpg.ability/2` tags, with no migration edge. Absence is
+turn-based-only, today's only mode, so every existing document decodes and
+encodes unchanged. Read time rejects a zero `round_ticks` or `recovery_ticks`
+as `Malformed`, as the last check of its arm. `validate` has no rule for them;
+defaulting `recovery_ticks` to `round_ticks` is the sim's (T138). T136b takes
+each document's next version once and keeps these fields unchanged.
+
+- 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136a · Documented the three optional real-time fields added at the current tags, their read-time zero checks, and that semantics stay with the sim.
+
 ## Agent log
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established approved module and authority boundaries before source implementation. This opening record does not claim completed implementation or passing gates.
