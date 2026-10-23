@@ -188,13 +188,15 @@ Its T034+ ids are reserved places in that order, not written contracts.
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| A0-4b | in session 15 batch | — | tools (`tools/agents/verify_task.py`, `oc.py`): DeepSeek V4.1 Flash, attempt 1 ran out of steps mid-edit, attempt 2 PASS (`9009375`), fix round (`2b6b66f`); owns-note first-token parsing, doc-only check skipping cargo, `--verify-timeout` (default 1800); 300+ tool tests and 81 lint tests pass |
-| T136b-draft-a | in session 15 batch | — | DeepSeek V4.1 Flash, $0.17, `1207fdb`, `tasks/T136b-draft-a.md` (483 lines, eight D-items); `oc.py` reported `verify-error` (900 s timeout), manual `verify_task.py --skip gates` passed 9/9 |
-| T136b | in session 15 batch | — | exact contract `tasks/T136b.md` (679 lines, Claude `architect`, `1bf00fe`), adjudicated from drafts A and B; companion T136c named; seven open questions, now D32b–D32h |
-| T138-facts | in session 15 batch | — | scout fact sheet `tasks/T138-facts.md` (408 lines, 175 citations; Muse Spark 1.3 Contributor, $0.02, `e9f5a6f`) |
-| T138-draft-a | in session 15 batch | — | Muse Spark 1.3 Contributor, $0.02, `1cc568f`, `tasks/T138-draft-a.md` (504 lines) |
-| T138-draft-b | in session 15 batch | — | MiMo-V2.6-Pro attempt ended `hang` after 15m with no file; rerun on DeepSeek V4.1 Flash, $0.19, wrote 500 lines and hit its step limit before committing; the manager committed it (`ffc10bf`) |
-| T138 | in session 15 batch | — | exact contract `tasks/T138.md` (1012 lines, Claude `architect`, `be81018`), adjudicated from drafts A and B; split T138a/T138b plus companions T138c–e; open questions now D32i–D32p |
+| A0-4b | merged (PR #66, re-land of #65) | — | tools (`tools/agents/verify_task.py`, `oc.py`): DeepSeek V4.1 Flash, attempt 1 ran out of steps mid-edit, attempt 2 PASS (`9009375`), fix round (`2b6b66f`); owns-note first-token parsing, doc-only check skipping cargo, `--verify-timeout` (default 1800); 300+ tool tests and 81 lint tests pass |
+| A0-11 | in session 16 batch | — | docs (`docs/agents/MANAGER.md` §3.5 + new `docs/agents/LESSONS.md`): Muse Spark 1.3 Contributor (Go), attempt 1 PASS (`d265834`), $0.01; re-synced the routing table with `docs/agents/MODELS.md` §4 and started `LESSONS.md` with lesson L1 (retarget a stacked PR to `master` once the lower PR merges); worker reading left as is for follow-up: `MODELS.md` §4 lists "LongCat Free" in its Preference paragraph but its Two-lanes paragraph says LongCat never uses the Zen route |
+| A0-4c | in session 16 batch | — | tools (`tools/agents/oc.py`, `tools/tests/test_oc.py`, `tools/agents/README.md`): DeepSeek V4.1 Flash (Go), attempt 1 PASS (`559c0d6`), $0.04, six new tests (310 tool tests pass); adds `oc.py ask --diff REF [--base BASE]`, writing the diff beside the run log under `.agents/runs/ask/` and pointing the reviewer at it; `bad-ref`/`empty-diff` are non-fault exit-2 causes; closes session 15's tool gap (a) |
+| T136b-draft-a | merged (PR #66, re-land of #65) | — | DeepSeek V4.1 Flash, $0.17, `1207fdb`, `tasks/T136b-draft-a.md` (483 lines, eight D-items); `oc.py` reported `verify-error` (900 s timeout), manual `verify_task.py --skip gates` passed 9/9 |
+| T136b | merged (PR #66, re-land of #65) | — | exact contract `tasks/T136b.md` (679 lines, Claude `architect`, `1bf00fe`), adjudicated from drafts A and B; companion T136c named; seven open questions, now D32b–D32h |
+| T138-facts | merged (PR #66, re-land of #65) | — | scout fact sheet `tasks/T138-facts.md` (408 lines, 175 citations; Muse Spark 1.3 Contributor, $0.02, `e9f5a6f`) |
+| T138-draft-a | merged (PR #66, re-land of #65) | — | Muse Spark 1.3 Contributor, $0.02, `1cc568f`, `tasks/T138-draft-a.md` (504 lines) |
+| T138-draft-b | merged (PR #66, re-land of #65) | — | MiMo-V2.6-Pro attempt ended `hang` after 15m with no file; rerun on DeepSeek V4.1 Flash, $0.19, wrote 500 lines and hit its step limit before committing; the manager committed it (`ffc10bf`) |
+| T138 | merged (PR #66, re-land of #65) | — | exact contract `tasks/T138.md` (1012 lines, Claude `architect`, `be81018`), adjudicated from drafts A and B; split T138a/T138b plus companions T138c–e; open questions now D32i–D32p |
 
 ## ADR-0029 follow-on contracts
 
@@ -381,6 +383,8 @@ Record it here, one line per week.
 | 2026-10-04 | 48 | T058a (PR #24), T058 and T023s step 1 (PR #25), T023 and T023s step 2 (PR #26) merged, CI green on both OSes. Cost per merged task not tracked yet. Next: T023b host QUIC adapter and T039 checkpoint adapter contracts. |
 | 2026-10-05 | 51 | T039 (gate 10), T023c (window limits) and T023v (vendored quinn-proto close fix) merged in PR #27 (`efbfdd8`); `master` Windows CI red since #26 is resolved by T023v. Cost per merged task not tracked yet. Next: amend and implement T023b. |
 | 2026-10-06 | 53 | T023d (`crpg-net-quic` close delivery on an immediate `Closed` poll) and T023b (`crpg-server` QUIC host adapter, ADR-0026) merged in PR #28 (`16f58c8`), CI green on both OSes; T023v's four Windows runs complete. Cost per merged task not tracked yet. Next: T024 snapshot-transfer contract (drafted, awaiting approval). |
+| 2026-10-23 | — | A0-11 docs package in session 16 batch (Muse Spark 1.3 Contributor, attempt 1 PASS, $0.01). |
+| 2026-10-23 | — | A0-4c tools package in session 16 batch (DeepSeek V4.1 Flash, attempt 1 PASS, $0.04, 310 tool tests pass). |
 
 ---
 
@@ -490,3 +494,4 @@ Record it here, one line per week.
 - 2026-10-23 (UTC) · claude-code + D31 answered · Moved T135 and T136a to approved and ready after the user's D31 answer.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S14 bookkeeping · Added the Session 14 batch table and moved the T135/T136 follow-on rows to their in-session-14 statuses, so the index shows the S-set review gate without deciding it.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Added the Session 15 batch table and moved the T136/T138 follow-on rows to their exact-contract-proposed statuses, so the index shows the D32 gate without deciding it.
+- 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S16 bookkeeping · Marked the session 15 batch merged through PR #66 (re-land of #65) and indexed the session 16 A0-11/A0-4c packages, so the index shows the D32 gate without deciding it.
