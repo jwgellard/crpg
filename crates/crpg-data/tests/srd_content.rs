@@ -1066,6 +1066,7 @@ fn duplicate_slugs_and_missing_locale_cover_effects() {
                     name: None,
                 }],
                 duration_rounds: 1,
+                grants: None,
             }),
         );
     });
@@ -1131,6 +1132,7 @@ fn orphan_effects_keep_only_generic_checks_and_no_orphans_shipped() {
                     name: None,
                 }],
                 duration_rounds: 3,
+                grants: None,
             }),
         );
     });
@@ -1151,6 +1153,7 @@ fn orphan_effects_keep_only_generic_checks_and_no_orphans_shipped() {
                 damage: vec![crpg_data::DamageEntry {
                     outcome: crpg_data::OutcomeWire::Success,
                     amount: 0,
+                    dice: None,
                 }],
                 cost: 99,
                 extra_costs: Vec::new(),
@@ -1162,6 +1165,7 @@ fn orphan_effects_keep_only_generic_checks_and_no_orphans_shipped() {
                 allow_self_target: false,
                 recovery_ticks: None,
                 repeats_in_real_time: None,
+                bonus_stats: None,
             }),
         );
     });

@@ -26,10 +26,12 @@ fn lethal_fixture(ends_turn: bool, trio: bool) -> (Fixture, Ulid) {
         DamageEntry {
             outcome: OutcomeWire::Success,
             amount: 100,
+            dice: None,
         },
         DamageEntry {
             outcome: OutcomeWire::Failure,
             amount: 100,
+            dice: None,
         },
     ];
     (fixture, ability)
@@ -210,6 +212,7 @@ fn nonlethal_self_target_behaves_as_before() {
         ab.damage = vec![DamageEntry {
             outcome: OutcomeWire::Success,
             amount: 0,
+            dice: None,
         }];
     }
     let (mut world, ids) = fixture.start(5);

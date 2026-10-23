@@ -24,7 +24,7 @@
     },
     "DamageEntry": {
       "additionalProperties": false,
-      "description": "Flat damage for one outcome label.",
+      "description": "Damage for one outcome label: a flat amount plus optional dice.",
       "properties": {
         "amount": {
           "description": "Nonnegative flat damage amount.",
@@ -32,6 +32,13 @@
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
+        },
+        "dice": {
+          "description": "Optional damage dice notation added to `amount`; absent means flat damage.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "outcome": {
           "$ref": "#/$defs/OutcomeWire",
@@ -76,6 +83,86 @@
               },
               "required": [
                 "stat"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Uses a constant difficulty value.",
+          "properties": {
+            "type": {
+              "const": "constant",
+              "type": "string"
+            },
+            "value": {
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Uses the actor's named stat value, never the health stat.",
+          "properties": {
+            "type": {
+              "const": "actor_stat",
+              "type": "string"
+            },
+            "value": {
+              "properties": {
+                "stat": {
+                  "description": "Declared non-health int stat name read from the actor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "stat"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Uses the target's opposing roll total.",
+          "properties": {
+            "type": {
+              "const": "opposed",
+              "type": "string"
+            },
+            "value": {
+              "properties": {
+                "bonus_stats": {
+                  "description": "Distinct non-health int stat names added to the opposing roll.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "dice": {
+                  "description": "Opposing dice notation, 1..=128 UTF-8 bytes.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "dice",
+                "bonus_stats"
               ],
               "type": "object"
             }
@@ -191,6 +278,16 @@
         "attribute": {
           "description": "Attribute name checked by this ability (a ruleset attribute).",
           "type": "string"
+        },
+        "bonus_stats": {
+          "description": "Distinct non-health int stat names added to this ability's roll; absent means none.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "cost": {
           "description": "Primary-pool cost of one use, spent from the ruleset's first pool.",

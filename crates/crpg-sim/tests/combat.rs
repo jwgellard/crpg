@@ -465,6 +465,7 @@ fn init_too_many_stats_leaves_world_unchanged() {
         fixture.ruleset.stats.push(StatDecl {
             name: format!("extra-{index}"),
             kind: StatKindWire::Int,
+            derived: None,
         });
     }
     let bundle = fixture.bundle();
@@ -981,10 +982,12 @@ fn overkill_floors_at_zero_without_wrapping() {
         DamageEntry {
             outcome: OutcomeWire::Success,
             amount: u32::MAX,
+            dice: None,
         },
         DamageEntry {
             outcome: OutcomeWire::Failure,
             amount: 0,
+            dice: None,
         },
     ];
     // Seed 9: B succeeds against alpha 6.
@@ -1323,10 +1326,12 @@ fn same_seed_repeats_mutation_changes_behavior() {
         DamageEntry {
             outcome: OutcomeWire::Success,
             amount: 9,
+            dice: None,
         },
         DamageEntry {
             outcome: OutcomeWire::Failure,
             amount: 0,
+            dice: None,
         },
     ];
     let (mut heavy_world, heavy_ids) = heavy.start(9);

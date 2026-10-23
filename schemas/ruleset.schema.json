@@ -27,6 +27,267 @@
       ],
       "type": "object"
     },
+    "ExprWire": {
+      "description": "One derived-stat expression node; mirrors the kernel expression tree.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A constant value.",
+          "properties": {
+            "type": {
+              "const": "literal",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/StatValueWire"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The fully modified value of another stat of this ruleset, by name.",
+          "properties": {
+            "type": {
+              "const": "stat",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Saturating integer or fixed-point addition.",
+          "properties": {
+            "type": {
+              "const": "add",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Left operand, evaluated first."
+                },
+                "right": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Right operand."
+                }
+              },
+              "required": [
+                "left",
+                "right"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Saturating integer or fixed-point subtraction.",
+          "properties": {
+            "type": {
+              "const": "subtract",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Left operand, evaluated first."
+                },
+                "right": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Right operand."
+                }
+              },
+              "required": [
+                "left",
+                "right"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Saturating integer or fixed-point multiplication.",
+          "properties": {
+            "type": {
+              "const": "multiply",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Left operand, evaluated first."
+                },
+                "right": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Right operand."
+                }
+              },
+              "required": [
+                "left",
+                "right"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Flooring division; a zero divisor is a kernel error.",
+          "properties": {
+            "type": {
+              "const": "divide",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Left operand, evaluated first."
+                },
+                "right": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Right operand."
+                }
+              },
+              "required": [
+                "left",
+                "right"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The smaller of two same-kind numeric values.",
+          "properties": {
+            "type": {
+              "const": "min",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Left operand, evaluated first."
+                },
+                "right": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Right operand."
+                }
+              },
+              "required": [
+                "left",
+                "right"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The larger of two same-kind numeric values.",
+          "properties": {
+            "type": {
+              "const": "max",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Left operand, evaluated first."
+                },
+                "right": {
+                  "$ref": "#/$defs/ExprWire",
+                  "description": "Right operand."
+                }
+              },
+              "required": [
+                "left",
+                "right"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InitiativeWire": {
+      "additionalProperties": false,
+      "description": "Rolled initiative: dice plus stat values plus the participant's authored key.",
+      "properties": {
+        "bonus_stats": {
+          "description": "Distinct non-health int stat names added to the roll, in authored order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dice": {
+          "description": "Initiative dice notation, 1..=128 UTF-8 bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dice",
+        "bonus_stats"
+      ],
+      "type": "object"
+    },
     "PackageId": {
       "description": "Immutable publication coordinate, distinct from an object ULID or slug.",
       "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
@@ -118,6 +379,17 @@
       "additionalProperties": false,
       "description": "One ruleset stat declaration.",
       "properties": {
+        "derived": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExprWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Formula evaluated before this stat's modifiers; absent means a base stat."
+        },
         "kind": {
           "$ref": "#/$defs/StatKindWire",
           "description": "Declared value category."
@@ -140,6 +412,193 @@
           "const": "int",
           "description": "Whole-number integer stat.",
           "type": "string"
+        },
+        {
+          "const": "fixed",
+          "description": "Fixed-point stat.",
+          "type": "string"
+        },
+        {
+          "const": "bool",
+          "description": "Flag stat.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Enum stat over a named domain.",
+          "properties": {
+            "enum": {
+              "properties": {
+                "enum_id": {
+                  "description": "Nonempty domain identifier shared by every stat of the domain.",
+                  "type": "string"
+                },
+                "variants": {
+                  "description": "Distinct nonempty variant names in authored order.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "enum_id",
+                "variants"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "enum"
+          ],
+          "type": "object"
+        },
+        {
+          "const": "tags",
+          "description": "Tag-set stat.",
+          "type": "string"
+        },
+        {
+          "const": "dice",
+          "description": "Dice-expression stat.",
+          "type": "string"
+        }
+      ]
+    },
+    "StatValueWire": {
+      "description": "One typed literal value; mirrors the kernel's symbolic stat value.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A whole number.",
+          "properties": {
+            "type": {
+              "const": "int",
+              "type": "string"
+            },
+            "value": {
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Core's raw fixed-point integer.",
+          "properties": {
+            "type": {
+              "const": "fixed",
+              "type": "string"
+            },
+            "value": {
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A flag.",
+          "properties": {
+            "type": {
+              "const": "bool",
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A member of a declared enum domain.",
+          "properties": {
+            "type": {
+              "const": "enum",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "enum_id": {
+                  "description": "The enum domain identifier.",
+                  "type": "string"
+                },
+                "variant": {
+                  "description": "The selected variant within the domain.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "enum_id",
+                "variant"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Distinct nonempty tag names.",
+          "properties": {
+            "type": {
+              "const": "tags",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Dice notation, 1..=128 UTF-8 bytes.",
+          "properties": {
+            "type": {
+              "const": "dice",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -194,6 +653,17 @@
         "id": {
           "$ref": "#/$defs/UlidText",
           "description": "Stable authored-object identity."
+        },
+        "initiative": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InitiativeWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rolled initiative rule; absent means each participant's authored key alone."
         },
         "name": {
           "description": "Locale key for the display name.",

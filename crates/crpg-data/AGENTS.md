@@ -32,13 +32,16 @@ prescribed accessors. Do not extend the surface casually.
   Per-type steps are private `fn v1_to_v2` mutations; one sorted registry backs
   both dispatch and `schema_versions`, with no caller registration.
 - Reject unknown fields. Only `_note` (and the optional-missing `effect`,
-  `natural_die`, `round_ticks`, `recovery_ticks`, `repeats_in_real_time`) may
+  `natural_die`, `round_ticks`, `recovery_ticks`, `repeats_in_real_time`,
+  `derived`, `initiative`, `bonus_stats`, damage `dice`, `grants`) may
   be missing; other nullable fields
   need a required-nullable serde helper and matching schema required annotation.
 - A field may join a family at its current version, with no tag change and no
   migration edge, when (i) it is optional-missing, (ii) absence means exactly
   the behaviour before the field existed, and (iii) every existing document
-  decodes to the same value with an unchanged canonical encoding (T136a).
+  decodes to the same value with an unchanged canonical encoding (T136a). An
+  additive enum variant is the same rule: no existing document can hold it, so
+  it joins at the current tag (T136b, D32c).
 - Core ULID aliases and overflow rules govern input; output is uppercase.
   Fixed point is raw signed 32-bit integers. Use data-local schema surrogates
   for core/semver fields, including nested collections; never edit core.
@@ -158,7 +161,7 @@ authored combat families: `Ruleset`, `Ability`, `OutcomeTable`, and
 `Encounter`, plus `StatDecl`/`StatKindWire`, `ActionPoolTemplate`,
 `RefreshWire`, `OutcomeWire`, `DamageEntry`, `OutcomeBandWire`,
 `NaturalEffectWire`, `NaturalRuleWire`, and `EncounterParticipant`.
-`StatKindWire` is currently `Int` only. `OutcomeWire`/`RefreshWire`/
+`StatKindWire` grew past `Int` in T136b (below). `OutcomeWire`/`RefreshWire`/
 `NaturalEffectWire` mirror the T015 adjacent `type`/`value` snake-case
 shapes with hand-written `Deserialize` impls enforcing exact key sets per
 variant, for the same unit-variant reason as `Trigger`/`NodeBody`/`Port`/
@@ -270,6 +273,29 @@ generator only.
   --locked` is 117 passed on Windows/MSVC. The breaking `pools` replacement
   breaks downstream `crpg-sim` compilation until B3; see `tasks/T017a.md`
   for the recorded blocker with options and recommendation.
+
+### Kernel-range vocabulary (T136b)
+
+- `StatKindWire` is `Int`/`Fixed`/`Bool`/`Enum{enum_id, variants}`/`Tags`/
+  `Dice`: strings, except `{"enum":{...}}`. Its `Deserialize` is hand-written
+  because the derived one also accepts `{"int": null}`. `ExprWire` and
+  `StatValueWire` keep derived adjacent `type`/`value` decoding; their
+  rejection tests (extra and missing keys at every level) pin that.
+- `DefenseWire` gains `Constant(i32)`, `ActorStat{stat}`, `Opposed{dice,
+  bonus_stats}`; `EffectTargetWire` gains `Stat{stat}`. Their hand-written
+  impls list every variant in `unknown_variant`, so a new variant is added in
+  the enum, the impl and the list together. `DamageEntry`, `StatKindWire` and
+  `EffectTargetWire` are no longer `Copy`.
+- Derived-stat rules live in `validate_ruleset_kernel` (read time, in the
+  contract's order). Depth is bounded before anything recurses; the node count
+  is iterative. Full binary trees have an odd node count, so 4096 itself is
+  unreachable. "Valid stat" in the semantic rules always means declared,
+  non-health and `Int`; `missing_stat` skips derived and non-numeric stats.
+- `real_time_fields_without_round_ticks` is a `Warning` via `push_warning`;
+  warnings never fail validation. Never add a runtime meaning here: T137 owns
+  every mapping and `crpg-data` still never depends on `crpg-rules`.
+
+- 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136b · Recorded the kernel-range wire vocabulary, the additive-variant rule at the current tag (D32c), the odd-node-count reading of the 4096 bound and the first warning diagnostic.
 
 ## Agent log
 

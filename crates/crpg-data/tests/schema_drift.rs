@@ -201,8 +201,10 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
                 "natural_die",
                 "recovery_ticks",
                 "repeats_in_real_time",
+                "bonus_stats",
             ],
-            "ruleset" => &["_note", "round_ticks"],
+            "ruleset" => &["_note", "round_ticks", "initiative"],
+            "effect" => &["_note", "grants"],
             _ => &["_note"],
         };
         for key in shape["properties"]

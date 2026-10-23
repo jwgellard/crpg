@@ -428,6 +428,20 @@ effects-map wiring plus one `Option` unwrap; no golden/behavior change),
 recorded in `tasks/T017d.md`; B4 still owns replay/goldens and B5 the CLI
 proof.
 
+## Kernel-range bridge (T136c, deleted by T137)
+
+T136b added kernel-range shapes to `crpg-data` that no controller executes
+yet: non-`Int`/derived stats, rolled initiative, ability bonus stats,
+constant/actor-stat/opposed defenses, damage dice, effect grants, and `Stat`
+effect targets. `start_encounter_tracked` refuses any encounter carrying one
+of them with `CombatError::UnsupportedAuthored` (`UnsupportedAuthored at
+spec/authored`), immediately after the two data-owned asserts and before the
+placement loop; a rejection publishes nothing and leaves the world
+unchanged. The two expanded definition matches mark their new variants
+`unreachable!` with the same reason. `tests/unsupported_authored.rs` pins one
+case per trigger plus the Display string. T137 implements the shapes and
+deletes the variant, the check, and that suite; do not extend the bridge.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -447,3 +461,4 @@ proof.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Added the persisted area identity and dual-world transfer surface with its world-owned, immutable-identity invariant, so later components know they must join the move contract rather than vanish on transfer.
 - 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total and world-only staging as invariant 14, named `commit` the only journal/world/sequence writer, added the derived-side-value trap and the source guard that enforces it, and amended rule 8 for the test-only `ENCODINGS` counter; no bytes, hashes, goldens, or public API changed.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + T133 · Restored T097 D2's qualifier that `commit` is the journal's only writer before validation ends, and added the 4095/4096-envelope `ENCODINGS` and journal-in-place regressions next to the existing small-journal tests; no behaviour, public API, or byte changed.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + T136c · Recorded the temporary T136b bridge (`UnsupportedAuthored` before placement, unreachable definition arms, one test per trigger) and that T137 deletes it; no existing error precedence, golden, or hash changed.

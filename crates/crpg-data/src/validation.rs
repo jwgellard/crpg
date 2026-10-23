@@ -98,6 +98,8 @@ pub enum DiagnosticCode {
     InvalidCost,
     /// An ability extra cost names a pool template outside its owning ruleset.
     UnknownPool,
+    /// An ability declares real-time fields under a ruleset with no round_ticks.
+    RealTimeFieldsWithoutRoundTicks,
 }
 
 impl DiagnosticCode {
@@ -135,6 +137,7 @@ impl DiagnosticCode {
             Self::InvalidStatValue => "invalid_stat_value",
             Self::InvalidCost => "invalid_cost",
             Self::UnknownPool => "unknown_pool",
+            Self::RealTimeFieldsWithoutRoundTicks => "real_time_fields_without_round_ticks",
         }
     }
 }
@@ -427,6 +430,25 @@ fn push(
     });
 }
 
+/// Pushes one warning diagnostic with an optional repair hint.
+fn push_warning(
+    out: &mut Vec<Diagnostic>,
+    file: &SourcePath,
+    pointer: String,
+    code: DiagnosticCode,
+    message: String,
+    fix: Option<&str>,
+) {
+    out.push(Diagnostic {
+        file: Some(file.clone()),
+        pointer,
+        severity: Severity::Warning,
+        code,
+        message,
+        suggested_fix: fix.map(str::to_string),
+    });
+}
+
 /// Checks one typed reference at its exact pointer.
 ///
 /// A missing id is dangling, a present id outside `allowed` is the wrong
@@ -534,6 +556,7 @@ fn walk_var(out: &mut Vec<Diagnostic>, file: &SourcePath, base: String, decl: &V
 fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut Vec<Diagnostic>) {
     let mut rulesets: BTreeMap<Ulid, &crate::Ruleset> = BTreeMap::new();
     let mut abilities: BTreeMap<Ulid, (&SourcePath, &crate::Ability)> = BTreeMap::new();
+    let mut effects: BTreeMap<Ulid, (&SourcePath, &crate::Effect)> = BTreeMap::new();
     let mut creatures: BTreeMap<Ulid, &crate::Creature> = BTreeMap::new();
     let mut prefabs: BTreeMap<Ulid, Ulid> = BTreeMap::new();
     for (path, document) in docs {
@@ -543,6 +566,9 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
             }
             Document::Ability(v) => {
                 abilities.entry(v.id).or_insert((path, v));
+            }
+            Document::Effect(v) => {
+                effects.entry(v.id).or_insert((path, v));
             }
             Document::Creature(v) => {
                 creatures.entry(v.id).or_insert(v);
@@ -563,6 +589,14 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
         for pool in &ruleset.pools {
             pool_max.entry(pool.id).or_insert(pool.max);
         }
+        let valid_stat = |name: &str| {
+            name != ruleset.health_stat
+                && ruleset
+                    .stats
+                    .iter()
+                    .any(|decl| decl.name == name && decl.kind == crate::StatKindWire::Int)
+        };
+        let mut reported_effect_stats: BTreeSet<(Ulid, usize)> = BTreeSet::new();
         for ability_id in &ruleset.abilities {
             let resolved = tables.first.get(ability_id);
             if resolved.is_none_or(|entry| entry.kind != ObjectKind::Ability) {
@@ -588,9 +622,11 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
                     Some("use one of the ruleset's declared attributes"),
                 );
             }
-            if let crate::DefenseWire::TargetStat { stat } = &ability.defense {
-                let declared = ruleset.stats.iter().any(|decl| &decl.name == stat);
-                if !declared || *stat == ruleset.health_stat {
+            if let crate::DefenseWire::TargetStat { stat }
+            | crate::DefenseWire::ActorStat { stat } = &ability.defense
+            {
+                let decl = ruleset.stats.iter().find(|decl| &decl.name == stat);
+                if decl.is_none() || *stat == ruleset.health_stat {
                     push(
                         out,
                         file,
@@ -602,7 +638,97 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
                         ),
                         Some("use a declared non-health stat of the ruleset"),
                     );
+                } else if decl.is_some_and(|decl| decl.kind != crate::StatKindWire::Int) {
+                    push(
+                        out,
+                        file,
+                        "/defense".into(),
+                        DiagnosticCode::UnknownStat,
+                        format!(
+                            "defense stat {:?} for ability is not an int stat of ruleset {}",
+                            stat, ruleset.id
+                        ),
+                        Some("use a declared non-health int stat of the ruleset"),
+                    );
                 }
+            }
+            for (i, name) in ability.bonus_stats.iter().flatten().enumerate() {
+                if !valid_stat(name) {
+                    push(
+                        out,
+                        file,
+                        format!("/bonus_stats/{i}"),
+                        DiagnosticCode::UnknownStat,
+                        format!(
+                            "unknown bonus stat {:?} for ability: not a non-health int stat of ruleset {}",
+                            name, ruleset.id
+                        ),
+                        Some("use a declared non-health int stat of the ruleset"),
+                    );
+                }
+            }
+            if let crate::DefenseWire::Opposed { bonus_stats, .. } = &ability.defense {
+                for (i, name) in bonus_stats.iter().enumerate() {
+                    if !valid_stat(name) {
+                        push(
+                            out,
+                            file,
+                            format!("/defense/value/bonus_stats/{i}"),
+                            DiagnosticCode::UnknownStat,
+                            format!(
+                                "unknown opposed bonus stat {:?} for ability: not a non-health int stat of ruleset {}",
+                                name, ruleset.id
+                            ),
+                            Some("use a declared non-health int stat of the ruleset"),
+                        );
+                    }
+                }
+            }
+            if let Some(effect_id) = ability.effect {
+                let is_effect = tables
+                    .first
+                    .get(&effect_id)
+                    .is_some_and(|entry| entry.kind == ObjectKind::Effect);
+                if let (true, Some((effect_file, effect))) = (is_effect, effects.get(&effect_id)) {
+                    for (i, modifier) in effect.modifiers.iter().enumerate() {
+                        let crate::EffectTargetWire::Stat { stat } = &modifier.target else {
+                            continue;
+                        };
+                        if !valid_stat(stat) && reported_effect_stats.insert((effect_id, i)) {
+                            push(
+                                out,
+                                effect_file,
+                                format!("/modifiers/{i}/target"),
+                                DiagnosticCode::UnknownStat,
+                                format!(
+                                    "unknown effect stat {:?} for effect {}: not a non-health int stat of ruleset {}",
+                                    stat, effect_id, ruleset.id
+                                ),
+                                Some("use a declared non-health int stat of the ruleset"),
+                            );
+                        }
+                    }
+                }
+            }
+            if ruleset.round_ticks.is_none()
+                && (ability.recovery_ticks.is_some() || ability.repeats_in_real_time == Some(true))
+            {
+                let pointer = if ability.recovery_ticks.is_some() {
+                    "/recovery_ticks"
+                } else {
+                    "/repeats_in_real_time"
+                };
+                push_warning(
+                    out,
+                    file,
+                    pointer.into(),
+                    DiagnosticCode::RealTimeFieldsWithoutRoundTicks,
+                    format!(
+                        "ability {ability_id} declares real-time fields but ruleset {} has no round_ticks",
+                        ruleset.id
+                    ),
+                    Some("add round_ticks to the ruleset or remove the real-time fields"),
+                );
             }
             if ability.cost == 0 && ability.extra_costs.is_empty() {
                 push(
@@ -700,6 +826,14 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
                 continue;
             };
             for stat in &ruleset.stats {
+                let completeness_applies = stat.derived.is_none()
+                    && matches!(
+                        stat.kind,
+                        crate::StatKindWire::Int | crate::StatKindWire::Fixed
+                    );
+                if !completeness_applies {
+                    continue;
+                }
                 let Some(value) = creature.stats.get(&stat.name) else {
                     push(
                         out,
@@ -712,7 +846,7 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
                     continue;
                 };
                 let raw = value.to_raw();
-                if raw % 65536 != 0 {
+                if raw % 65536 != 0 && stat.kind == crate::StatKindWire::Int {
                     push(
                         out,
                         path,

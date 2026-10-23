@@ -315,8 +315,18 @@ fn t9_validate_emits_no_rt_diagnostics() {
         documents: docs.clone(),
         index: BTreeMap::new(),
     });
-    assert!(findings.is_empty(), "{findings:?}");
-    // The same holds with round_ticks added to the ruleset.
+    // T136b item 11 supersedes the no-diagnostic expectation: exactly two
+    // warnings, one per ability, at /recovery_ticks.
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    for finding in &findings {
+        assert_eq!(finding.severity, crpg_data::Severity::Warning);
+        assert_eq!(
+            finding.code,
+            crpg_data::DiagnosticCode::RealTimeFieldsWithoutRoundTicks
+        );
+        assert_eq!(finding.pointer, "/recovery_ticks");
+    }
+    // With round_ticks added to the ruleset, the result is clean.
     for doc in docs.values_mut() {
         if let Document::Ruleset(ruleset) = doc {
             ruleset.round_ticks = Some(120);
@@ -384,6 +394,7 @@ fn t10_generated_schemas_carry_optional_rt_properties() {
             "attributes",
             "health_stat",
             "id",
+            "initiative",
             "name",
             "package",
             "pools",
@@ -409,6 +420,7 @@ fn t10_generated_schemas_carry_optional_rt_properties() {
             "_note",
             "allow_self_target",
             "attribute",
+            "bonus_stats",
             "cost",
             "damage",
             "defense",

@@ -138,6 +138,32 @@
             "type"
           ],
           "type": "object"
+        },
+        {
+          "description": "Contributes to the named int stat of the aimed combatant.",
+          "properties": {
+            "type": {
+              "const": "stat",
+              "type": "string"
+            },
+            "value": {
+              "properties": {
+                "stat": {
+                  "description": "Declared non-health int stat name.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "stat"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -214,6 +240,16 @@
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
+        },
+        "grants": {
+          "description": "Distinct tag names held by the aimed combatant while attached; absent means none.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "id": {
           "$ref": "#/$defs/UlidText",
