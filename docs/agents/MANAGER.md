@@ -74,10 +74,10 @@ Preference: stretch tokens. Among the OpenCode models strong enough for the job,
 
 | Work | First choice | Second, another lab | When Go limits run out |
 |---|---|---|---|
-| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
-| I outside the S-set, harder or after one failure | `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | Claude `implementer` |
-| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/kimi-k3` | `opencode-go/gemini-4-argon-contributor` | `opencode-go/deepseek-v4.1-flash` |
-| First-pass review | `opencode-go/gemini-4-argon-contributor` | `opencode-go/kimi-k3`, or `opencode-go/glm-5.3` | `opencode-go/deepseek-v4-pro` |
+| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| I outside the S-set, harder or after one failure | `opencode-go/deepseek-v4-pro` | `opencode-go/mimo-v2.6-pro` | Claude `implementer` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
 | Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
@@ -212,3 +212,4 @@ VERDICT: ready-for-pr | fix | reject
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + user: stop using LongCat · Moved free multi-reviews to Beam alone, as the user directed.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + execute-tool escape · Added the standing `execute` deny and the stale-slot caveat.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S14 bookkeeping · Replaced the never-merge rule with merging under plan §7.4 (D27a superseded 2026-10-23), so the role section matches the adopted merge policy.
+- 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-11 · Re-synced §3.5's routing table rows with `MODELS.md` §4 (routine second, harder pair, tests row, first-pass review row); tier, not-routed, free-tier, data-handling and demote/promote lines already said the same thing, so they stay condensed.
