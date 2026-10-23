@@ -373,8 +373,8 @@ thirty reviews.
 
 | Work | First choice | Second, another lab | When Go limits run out |
 |---|---|---|---|
-| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
-| I outside the S-set, harder or after one failure | `opencode-go/mimo-v2.6-pro` | `opencode-go/deepseek-v4-pro` | Claude `implementer` |
+| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| I outside the S-set, harder or after one failure | `opencode-go/deepseek-v4-pro` | `opencode-go/mimo-v2.6-pro` | Claude `implementer` |
 | Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
 | First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
@@ -554,3 +554,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + user routing change · Took Kimi K3 and Gemini 4 Argon off the default routes (§1 item 16, §4) after the Go weekly limit, because their per-request cost spent most of the shared Go budget.
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + session 7 field record · Added the T120–T129 runs, including the Beam upstream rate limit and the free DeepSeek and GLM results that replaced it, so routing reflects how they did on real work.
 - 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Added the session 8 field record and account-wide free Zen outage sentence to capture run outcomes and availability.
+- 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Demoted MiMo-V2.6-Pro from implement after two `hang` runs with no output on doc-only contract drafts (T136b draft A, T138 draft B), removing it from the routine row and moving it to second choice on the harder row.

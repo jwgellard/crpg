@@ -21,10 +21,16 @@ Options:
     --json         print exactly one JSON object instead of the text report
     --full         lift the 12-line per-check and 40-line total caps
 
-Checks, in order: scope, gates, protected, goldens, weakening, unsafe, lints,
-docsig, todo. The test suite overrides the gate and lint commands through
-CRPG_PREFLIGHT and CRPG_LINTS and pins the date through CRPG_TODAY; none of
-these are needed in normal use.
+Checks, in order: scope, gates, doc-only, protected, goldens, weakening, unsafe,
+lints, docsig, todo. In a doc-only slot (`slot-3` … `slot-6`, or a brief whose
+`Route:` line says `doc-only`) the gates never run cargo: with a crate owned
+they report `skipped (doc-only slot)`, and with no crate owned they run the
+tool unittests when `tools/`, `.opencode/` or `opencode.json` changed (else
+`skipped (no tool change)`); `doc-only` fails on any `.rs`, `Cargo.toml` or
+`Cargo.lock` change. The test
+suite overrides the gate and lint commands through CRPG_PREFLIGHT and
+CRPG_LINTS and pins the date through CRPG_TODAY; none of these are needed in
+normal use.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ import time
 CHECKS = [
     "scope",
     "gates",
+    "doc-only",
     "protected",
     "goldens",
     "weakening",
@@ -52,6 +59,15 @@ CHECKS = [
 ]
 
 TOTAL = len(CHECKS)
+
+# Slots 3-6 are doc-only worktrees: their briefs ask for documents, not code,
+# so a cargo gate there only builds a multi-GB `target/` (A0-4b). A brief
+# whose `Route:` line says `doc-only` is one too, whatever the slot is named.
+DOC_ONLY_SLOTS = frozenset({"slot-3", "slot-4", "slot-5", "slot-6"})
+DOC_ONLY_GATE_DETAIL = "skipped (doc-only slot)"
+NO_TOOL_GATE_DETAIL = "skipped (no tool change)"
+TOOL_CHANGE_DIRS = ("tools/", ".opencode/")
+TOOL_CHANGE_FILES = ("opencode.json",)
 
 # Built once per path pattern; glob translation is below.
 _GLOB_CACHE: dict[str, re.Pattern[str]] = {}
@@ -119,12 +135,40 @@ def _looks_like_path(token: str) -> bool:
     return bool(token) and any(char in token for char in "/*?.")
 
 
+# A writer may leave a sentence's punctuation inside the backticks
+# ("`crates/x/tests/a.rs.`") or put the note in them too ("`path (new)`");
+# neither belongs to the path. Globs keep `*`, `?` and a trailing `/`.
+_PATH_EDGES = "()[]{}<>,;:!?'\"`"
+
+
+def _path_token(span: str) -> str:
+    """The path a backticked span names, without note prose or punctuation.
+
+    Only the span's first whitespace-separated token can be a path: a note
+    after it, inside or outside the backticks, never becomes part of the
+    path or hides it. Edge punctuation is dropped, but ``*``, ``?`` and a
+    trailing ``/`` stay because they are glob syntax.
+    """
+    parts = span.split()
+    if not parts:
+        return ""
+    token = parts[0].strip(_PATH_EDGES)
+    while token and token[-1] in ".,;:!":
+        token = token[:-1]
+    cut = re.search(r":(?=\s|$)", token)
+    if cut:
+        token = token[: cut.start()]
+    return token
+
+
 def parse_brief(text: str) -> tuple[list[str], list[str], list[str]]:
     """Return (owned, protected grants, goldens grants) from a brief.
 
-    A ``## Files you own`` bullet owns every backticked token in it that looks
-    like a path or glob, so a bullet may list several paths. A bullet with no
-    backticks keeps the first-token rule, cut at the first ``: `` or end.
+    A ``## Files you own`` bullet owns every backticked path or glob in it,
+    so a bullet may list several paths. A note after a path — in parentheses,
+    after a semicolon, or in the same code span — never changes the path. A
+    bullet with no backticks keeps the first-token rule, cut at the first
+    ``: `` or end.
     """
     owned: list[str] = []
     protected: list[str] = []
@@ -150,11 +194,8 @@ def parse_brief(text: str) -> tuple[list[str], list[str], list[str]]:
             spans = re.findall(r"`([^`]*)`", content)
             if spans:
                 for span in spans:
-                    token = span.strip()
-                    cut = re.search(r":(?=\s|$)", token)
-                    if cut:
-                        token = token[: cut.start()]
-                    if token and not any(ch.isspace() for ch in token) and _looks_like_path(token):
+                    token = _path_token(span)
+                    if token and _looks_like_path(token):
                         owned.append(token)
             else:
                 token = content.split()[0].replace("`", "")
@@ -431,9 +472,35 @@ def check_scope(ctx: Context) -> dict:
     return _ok()
 
 
+def is_doc_only(ctx: Context) -> bool:
+    """A doc-only slot runs the lints but never the cargo gates."""
+    if slot_name(ctx.slot) in DOC_ONLY_SLOTS:
+        return True
+    for line in ctx.brief.splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith("route:") and "doc-only" in stripped:
+            return True
+    return False
+
+
+def has_tool_change(files: dict[str, dict]) -> bool:
+    """Whether the change set touches the agent tooling a doc-only task owns."""
+    return any(
+        path in TOOL_CHANGE_FILES or path.startswith(TOOL_CHANGE_DIRS)
+        for path in files
+    )
+
+
 def check_gates(ctx: Context) -> dict:
-    override = os.environ.get("CRPG_PREFLIGHT", "").strip()
+    doc_only = is_doc_only(ctx)
     crates = owned_crates(ctx.owned, ctx.slot)
+    if doc_only and crates:
+        # The doc-only check already fails any `.rs`/manifest change, so a
+        # crate-owning doc-only brief never needs preflight.
+        return _result("ok", DOC_ONLY_GATE_DETAIL)
+    if doc_only and not has_tool_change(ctx.files):
+        return _result("ok", NO_TOOL_GATE_DETAIL)
+    override = os.environ.get("CRPG_PREFLIGHT", "").strip()
     if override:
         commands = [_split_override(override)]
         labels = [override]
@@ -466,6 +533,23 @@ def preflight_command(crates: list[str]) -> list[str]:
     if len(crates) == 1:
         cmd += ["--crate", crates[0]]
     return cmd + ["--check-only"]
+
+
+def check_doc_only(ctx: Context) -> dict:
+    """A doc-only slot must not change code, a manifest or the lockfile."""
+    if not is_doc_only(ctx):
+        return _ok()
+    offenders = [
+        path
+        for path in sorted(ctx.files)
+        if path.endswith(".rs") or os.path.basename(path) in ("Cargo.toml", "Cargo.lock")
+    ]
+    if offenders:
+        return _fail(
+            f"{len(offenders)} code file(s) changed in a doc-only slot",
+            [f"code: {path}" for path in offenders],
+        )
+    return _ok()
 
 
 def check_protected(ctx: Context) -> dict:
@@ -655,6 +739,7 @@ def check_todo(ctx: Context) -> dict:
 CHECK_FUNCTIONS = {
     "scope": check_scope,
     "gates": check_gates,
+    "doc-only": check_doc_only,
     "protected": check_protected,
     "goldens": check_goldens,
     "weakening": check_weakening,
@@ -800,7 +885,10 @@ def render_text(
         lines.append(f"error: {error}")
     for check in checks:
         if check["status"] == "ok":
-            lines.append(f"{check['name']}: ok")
+            detail = check.get("detail") or ""
+            lines.append(
+                f"{check['name']}: ok ({detail})" if detail else f"{check['name']}: ok"
+            )
         elif check["status"] == "skipped":
             lines.append(f"{check['name']}: skipped")
         else:
