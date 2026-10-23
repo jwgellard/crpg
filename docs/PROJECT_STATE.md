@@ -3,16 +3,25 @@
 Updated: 2026-10-23
 
 ## Handover
-- **In flight.** Session 16 (2026-10-23) is on `mgr/session-16-batch` (PR opened by the manager after this commit): A0-11 docs (`docs/agents/MANAGER.md` §3.5 + new `docs/agents/LESSONS.md`, Muse Spark 1.3 Contributor, attempt 1 PASS, `d265834`, $0.01; routing-table re-sync with `docs/agents/MODELS.md` §4, lesson L1) and A0-4c tools (`tools/agents/oc.py` `ask --diff`, DeepSeek V4.1 Flash, attempt 1 PASS, `559c0d6`, $0.04, six new tests, 310 tool tests pass). Session 15 is on `master` through PR #66 (the re-land of #65, same head `0a18584`, merged 2026-10-23; see lesson L1 in `docs/agents/LESSONS.md`).
+- **In flight.** Session 17 (2026-10-23/24) is on `mgr/session-17-batch` (pushed, no PR yet). It holds:
+  - T137-facts (Muse Spark, PASS) and A0-11b (DeepSeek V4.1 Flash, PASS; LongCat moved to Not routed in `docs/agents/MODELS.md` and `MANAGER.md`).
+  - T137-draft-a (Muse Spark). It ran in Rust slot 1 because of a manager dispatch error and saw T136b's uncommitted shapes as code.
+  - T137-draft-b (DeepSeek V4.1 Flash). It hit its step limit before committing, and the manager committed it.
+  - T136b (Claude `implementer`, `9917dac`/`59be774`, crpg-data gates green, 27 `kernel_surface` tests) and T136c (DeepSeek V4.1 Flash, `304b45c`). Both passed verify except `cargo deny`.
+  - PR #69, opened 2026-10-24: tokio `=1.53.3` for RUSTSEC-2026-0386. It must merge before anything else, because `cargo deny` fails on every branch until it does. The user approved the pin change.
+  - T138a is on `task/T138a-rt-policy` in slot 2 as an unverified WIP commit `ecc616c`; the Claude `implementer` stopped on the Claude session limit.
 - **Next:**
-  1. D32 answered 2026-10-23: every recommendation (a); the T136b and T138 contracts are approved (`[bump]` items in T136b are void, D32c).
-  2. After D32: T136b implementation (Claude `implementer`, two sessions) with T136c in the same batch; T138a then T138b (Claude `implementer`, one session each) with T138c–e (OpenCode O1, single-crate, tiny) in the same batch; two-keys test writers from a lab other than the implementer's; Claude `reviewer` for each S-set package. T136b and T138a are independent (T138 needs only T136a) and can build in slots 1 and 2 in parallel.
-  3. T137 contract (adapter generalization, waits on T136b's approval): fact pack plus two blind drafts on doc slots, then one `architect` pass, as for T138.
-  4. Tool and doc follow-ups: review slot branches with `oc.py ask --role review --diff task/<ID>-<slug>`; Beam reviews returned `402` on 2026-10-23, so try Beam again on the next day; fix the LongCat contradiction in `docs/agents/MODELS.md` §4 (A0-11 reading).
-  5. Carried: A0-7b fixtures against models (`bakeoff.py all`); T099 research fold-in; T100 benchmark contract; A0-5b; A0-8 for the other crates.
-- **Blocked:** nothing. T136b, T138 and the T137 contract are ready.
-- **Running at handover:** nothing.
-- Dispatch facts: the manager works from the main checkout `C:/CRPG/dev/crpg`; prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";` in Git Bash. Briefs are in `.agents/briefs/`. A0-4b is merged into this batch, so doc-only slots no longer run cargo and verify waits 1800 s. Slots 1–2 are free (slot 1 `target/` 9 GB; slot 2 cleaned); slots 3 and 4 hold the merged A0-11 and A0-4c branches and can be reused. MiMo-V2.6-Pro is demoted from implement (two hangs). Go spend this session was about $0.05. Claude: manager only, no subagents.
+  1. Merge PR #69 when CI is green, then merge `origin/master` into the batch branch.
+  2. T138a: start a fresh Claude `implementer` in slot 2 from WIP `ecc616c`, using brief `.agents/briefs/T138a.md`. Tell it the WIP is unverified and that it must finish the T138a1 split first. Then run verify.
+  3. T136b/T136c: run the two-keys `kernel_surface_contract.rs` (OpenCode O1, not Anthropic) in a Rust slot stacked on `task/T136c-bridge`, then one Claude `reviewer` for T136b+T136c as one unit. The workspace clippy/test must be green with both in place.
+  4. T137 contract: one `architect` pass that adjudicates `tasks/T137-draft-a.md` and `tasks/T137-draft-b.md` against `tasks/T137-facts.md`, then the user's gate.
+  5. After T138a: T138b, then T138c–e (OpenCode, one crate each), as in `tasks/T138.md`.
+  6. Lesson to record in `docs/agents/LESSONS.md`: `oc.py wave` picks the first free slots, including Rust slots 1–2 that a Claude worker holds. Always pass `oc.py run --slot 3..6` while Claude workers hold slots. A fix for `oc.py` is a candidate: it should refuse a slot whose task branch is not its own.
+  7. Carried: Beam review retry; A0-7b; T099 fold-in; T100 contract; A0-5b; A0-8.
+- **Blocked:** batch merge waits on PR #69.
+- **Running at handover:** nothing. Slot 1 has `task/T136c-bridge`; slot 2 has `task/T138a-rt-policy` (WIP); slot 3 has `mgr/tokio-rustsec-2026-0386`; slot 6 has `task/T137-draft-b-b2`.
+- Dispatch facts: the manager works from the main checkout `C:/CRPG/dev/crpg`; prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";` in Git Bash. Briefs are in `.agents/briefs/`. Go spend this session was about $0.5. Claude: manager, plus two Sonnet `implementer`s (T136b about 186k tokens; T138a stopped on the limit).
+- Agent log: 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 17 handover · Replaced the session 16 handover with the session 17 state at the 150k context limit.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
