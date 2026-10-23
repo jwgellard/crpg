@@ -297,7 +297,9 @@ impl std::error::Error for BindingError {
 /// The acting entity a proposal names.
 fn proposal_actor(action: &CombatAction) -> EntityId {
     match *action {
-        CombatAction::UseAbility { actor, .. } | CombatAction::EndTurn { actor } => actor,
+        CombatAction::UseAbility { actor, .. }
+        | CombatAction::EndTurn { actor }
+        | CombatAction::Stop { actor } => actor,
     }
 }
 
