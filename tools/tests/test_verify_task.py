@@ -27,6 +27,7 @@ SCRIPT = TOOLS / "agents" / "verify_task.py"
 CHECKS = [
     "scope",
     "gates",
+    "doc-only",
     "protected",
     "goldens",
     "weakening",
@@ -38,6 +39,13 @@ CHECKS = [
 TODAY = "2026-10-16"
 
 STUB = "import sys\nsys.exit(int(sys.argv[1]))\n"
+
+# A gate command that records that it ran; a doc-only slot must never start
+# it, so the marker file is the assertion (no test ever runs cargo).
+MARKER_STUB = (
+    "import sys\nfrom pathlib import Path\n"
+    "Path(sys.argv[1]).write_text('ran', encoding='utf-8')\n"
+)
 
 BASIC_TEST = textwrap.dedent(
     """\
@@ -90,10 +98,12 @@ def run_git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedP
 class VerifyCase(unittest.TestCase):
     """A temp git repo with the brief's layout, plus helpers to run the tool."""
 
+    SLOT_NAME = "slot"
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="verify_task_"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.repo = self.tmp / "slot"
+        self.repo = self.tmp / self.SLOT_NAME
         self.repo.mkdir()
         self.stub = self.tmp / "stub.py"
         self.stub.write_text(STUB, encoding="utf-8")
@@ -166,7 +176,7 @@ class VerifyCase(unittest.TestCase):
         lines = result.stdout.splitlines()
         self.assertTrue(lines, result.stdout)
         self.assertTrue(lines[0].startswith(("PASS", "FAIL", "ERROR")), lines[0])
-        return lines[0], lines[1:10]
+        return lines[0], lines[1 : 1 + len(CHECKS)]
 
     def assert_only_failed(self, result: subprocess.CompletedProcess, target: str) -> None:
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -183,15 +193,101 @@ class VerifyCase(unittest.TestCase):
     def clean_change(self) -> None:
         self.add("crates/demo/src/clean.rs", "pub fn clean() -> i32 { 1 }\n")
 
+    def marker_command(self, name: str) -> tuple[str, Path]:
+        """A command override that records that it ran, and its marker file."""
+        script = self.tmp / f"{name}.py"
+        script.write_text(MARKER_STUB, encoding="utf-8")
+        marker = self.tmp / f"{name}.ran"
+        return f'"{sys.executable}" "{script}" "{marker}"', marker
+
 
 class CleanChange(VerifyCase):
-    def test_clean_change_passes_all_nine(self) -> None:
+    def test_clean_change_passes_every_check(self) -> None:
         self.clean_change()
         result = self.verify()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         _, checks = self.check_lines(result)
         statuses = [line.split(": ", 1)[1] for line in checks]
-        self.assertEqual(statuses, ["ok"] * 9, result.stdout)
+        self.assertEqual(statuses, ["ok"] * len(CHECKS), result.stdout)
+
+
+class DocOnlySlots(VerifyCase):
+    """Slots 3-6 are doc-only: no cargo gates, but the lints still run."""
+
+    SLOT_NAME = "slot-4"
+
+    def test_a_doc_change_passes_without_invoking_the_gates(self) -> None:
+        self.add(
+            "docs/notes.md",
+            "# Notes\n\n- 2026-10-16 (UTC) · test agent + doc-only · signed\n",
+        )
+        gates, gate_marker = self.marker_command("gates")
+        lints, lint_marker = self.marker_command("lints")
+        env = {"CRPG_PREFLIGHT": gates, "CRPG_LINTS": lints}
+        result = self.verify(env_extra=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(gate_marker.exists(), result.stdout)
+        self.assertTrue(lint_marker.exists(), result.stdout)
+        document = json.loads(self.verify("--json", env_extra=env).stdout)
+        checks = {check["name"]: check for check in document["checks"]}
+        self.assertEqual(checks["gates"]["status"], "ok", result.stdout)
+        self.assertEqual(checks["gates"]["detail"], "skipped (doc-only slot)")
+        self.assertEqual(checks["doc-only"]["status"], "ok", result.stdout)
+
+    def test_a_code_change_fails_doc_only(self) -> None:
+        self.clean_change()
+        gates, gate_marker = self.marker_command("gates")
+        result = self.verify(env_extra={"CRPG_PREFLIGHT": gates})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(gate_marker.exists(), result.stdout)
+        document = json.loads(self.verify("--json").stdout)
+        checks = {check["name"]: check for check in document["checks"]}
+        self.assertEqual(checks["doc-only"]["status"], "failed", result.stdout)
+        self.assertIn("code: crates/demo/src/clean.rs", checks["doc-only"]["output"])
+
+    def test_a_manifest_change_fails_doc_only(self) -> None:
+        self.add("Cargo.toml", "[workspace]\nmembers = ['demo']\n")
+        result = self.verify()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Cargo.toml", result.stdout.split("doc-only: ", 1)[1])
+
+    def test_doc_only_is_skippable_like_the_other_checks(self) -> None:
+        self.clean_change()
+        result = self.verify("--skip", "doc-only")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("doc-only: skipped", result.stdout)
+
+
+class RouteDocOnlySlot(VerifyCase):
+    """A slot whose brief says `doc-only` is doc-only whatever it is called."""
+
+    SLOT_NAME = "slot-1"
+
+    def test_the_route_line_makes_a_slot_doc_only(self) -> None:
+        self.write_brief(DEFAULT_BRIEF.replace("Route: x", "Route: doc-only"))
+        self.add(
+            "docs/notes.md",
+            "# Notes\n\n- 2026-10-16 (UTC) · test agent + doc-only · signed\n",
+        )
+        gates, marker = self.marker_command("gates")
+        result = self.verify(env_extra={"CRPG_PREFLIGHT": gates})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(marker.exists(), result.stdout)
+        self.assertIn("skipped (doc-only slot)", result.stdout)
+
+
+class NonDocOnlySlot(VerifyCase):
+    """Slot 1 is not doc-only: its gates command still runs (stubbed)."""
+
+    SLOT_NAME = "slot-1"
+
+    def test_slot_one_still_runs_the_gates(self) -> None:
+        self.clean_change()
+        gates, marker = self.marker_command("gates")
+        result = self.verify(env_extra={"CRPG_PREFLIGHT": gates})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(marker.exists(), result.stdout)
+        self.assertIn("gates: ok", result.stdout)
 
 
 class PlantedFaults(VerifyCase):
@@ -351,6 +447,75 @@ class BriefParsing(VerifyCase):
         result = self.verify()
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_a_long_note_after_the_path_still_owns_it(self) -> None:
+        # The session-14 shape: the note follows the path in parentheses.
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `crates/demo/tests/a.rs` (new; the only file you create or change)\n"
+        )
+        self.add("crates/demo/tests/a.rs", BASIC_TEST)
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_note_inside_the_code_span_does_not_hide_the_path(self) -> None:
+        # Prose in the same backticks as the path is not part of the path.
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `crates/demo/tests/a.rs (new; the only file you create or change)`\n"
+        )
+        self.add("crates/demo/tests/a.rs", BASIC_TEST)
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_full_stop_inside_the_span_does_not_alter_the_path(self) -> None:
+        # A sentence's full stop may land inside the backticks; it is not
+        # part of the path, or scope would see a different filename.
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `crates/demo/tests/a.rs.` (new; the only file you create or change)\n"
+        )
+        self.add("crates/demo/tests/a.rs", BASIC_TEST)
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_the_long_note_bullet_owns_exactly_its_path(self) -> None:
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `crates/demo/tests/a.rs` (new; the only file you create or change)\n"
+        )
+        self.add("crates/demo/tests/a.rs", BASIC_TEST)
+        self.add("crates/demo/tests/b.rs", BASIC_TEST)
+        result = self.verify("--json")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        document = json.loads(result.stdout)
+        scope = next(c for c in document["checks"] if c["name"] == "scope")
+        self.assertIn("unowned: crates/demo/tests/b.rs", scope["output"])
+        self.assertNotIn("unowned: crates/demo/tests/a.rs", scope["output"])
+
+    def test_two_backticked_paths_and_a_note_own_both(self) -> None:
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `crates/demo/tests/a.rs` and `crates/demo/tests/b.rs` "
+            "(new; the only files you create or change)\n"
+        )
+        self.add("crates/demo/tests/a.rs", BASIC_TEST)
+        self.add("crates/demo/tests/b.rs", BASIC_TEST)
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_prose_outside_the_backticks_is_never_owned(self) -> None:
+        # `and/or` in the note reads like a path, but it is prose: a change
+        # to a file actually named `and/or` must stay out of scope.
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `crates/demo/tests/a.rs` (new; see and/or the notes beside it)\n"
+        )
+        self.add("crates/demo/tests/a.rs", BASIC_TEST)
+        self.add("and/or", "not a path\n")
+        result = self.verify()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("unowned: and/or", result.stdout)
+
     def test_a_matching_docsig_signature_passes(self) -> None:
         self.clean_change()
         self.add(
@@ -425,7 +590,7 @@ class SkipAndJson(VerifyCase):
         self.assertEqual(document["task"], "A0-4")
         self.assertEqual(document["verdict"], "PASS")
         self.assertIsNone(document["error"])
-        self.assertEqual(len(document["checks"]), 9)
+        self.assertEqual(len(document["checks"]), len(CHECKS))
         for check in document["checks"]:
             self.assertEqual(set(check), {"name", "status", "detail", "output"})
             self.assertEqual(check["status"], "ok")
