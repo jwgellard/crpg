@@ -1207,6 +1207,9 @@ fn ordered_exactly_once_through_impaired_relay() {
         let relay = UdpRelay::start(server.local_addr(), impaired());
         let (mut client, conn) =
             connect_via_relay(&mut server, &relay, ClientLimits::v1(), welcome);
+        // The handshake and hello ran clean (T098d); impair the frame
+        // exchange, which is what this case measures.
+        relay.set_impaired(true);
         exchange_exactly_once(
             &mut server,
             conn,
@@ -1741,6 +1744,9 @@ fn codec_frames_through(relay_config: RelayConfig) -> UdpRelay {
     let mut server = bind_server(ServerLimits::v1());
     let relay = UdpRelay::start(server.local_addr(), relay_config);
     let (mut client, conn) = connect_via_relay(&mut server, &relay, ClientLimits::v1(), welcome);
+    // The handshake and hello ran clean (T098d); impair the codec exchange,
+    // which is what this case measures.
+    relay.set_impaired(true);
     let client_epoch = client.welcome().epoch;
     assert_eq!(client_epoch, session_epoch, "epoch handoff");
 

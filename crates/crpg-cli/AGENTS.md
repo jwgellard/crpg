@@ -26,10 +26,12 @@ not break.
    payload vocabulary (invariant 8), so the payloads mean what this crate
    says they mean — today, the miniature `spawn_at`/`timeline`/`draw`/
    `despawn` vocabulary the T009a fixture was generated against, applied
-   through public `World` APIs only. It must stay byte-identical* to
+   through public `World` APIs only. It must stay byte-identical to
    `crpg-testkit/tests/support/mod.rs::test_apply` while the fixture is the
-   reference, or the binary and testkit would verify the same fixture to
-   different results. When T014/T016 define real intents, this apply is
+   reference: "byte-identical" covers apply semantics, so the binary and
+   testkit verify the same fixture to the same result. The CLI's diagnostic
+   wording is its own — it says `unknown intent payload` where testkit says
+   `unknown test payload` (pinned by T016d). When T014/T016 define real intents, this apply is
    replaced by theirs; nothing outside this crate may import it.
 5. `#![forbid(unsafe_code)]`. No OS-specific process/filesystem logic below
    the crate boundaries it sits on. No engine dependency — `crpg-godot` is
@@ -143,4 +145,5 @@ Command-specific traps (validate/migrate/T013/lock/LLM trials) moved to
 - 2026-09-27 (UTC) · opencode/muse-spark + T017f crate opening · Extended the contract with the CLI-only second-ruleset proof shape (single end-op decode with error-string parity, unchanged-command black-box suite over both campaigns) under tasks/T017f.md before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017f implementation · Aligned the contract with the as-built proof (end decode with result-shape guard, 10-test srd_replay suite, B4 artifacts read-only); no commit/push/PR.
 - 2026-10-16 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving detailed contracts/invariants/traps into the architecture doc, leaving crate-wide rules, gates, and cross-cutting traps here.
+- 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Clarified invariant 4's byte-identical scope (apply semantics, not diagnostic wording) and pinned the CLI's own `unknown intent payload` wording per D29k; nothing else changed.
 """

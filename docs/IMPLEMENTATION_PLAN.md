@@ -204,7 +204,17 @@ Each I row needs its C row approved first unless it says **ready**.
 | Id | Kind | Crate | Prerequisites | Notes |
 |---|---|---|---|---|
 | T108 | A | `architect` (Opus 5.5) | T099's pause-and-mode report | Kernel range and time model (D28l). (1) Test the seven rules primitives against CRPG system families (d20, dice pool, percentile, action points, classless skill-based) and state what is supported, what is a gap and what is out of scope. (2) Real-time-with-pause and turn-based in one game: the real-time `Timeline` policy, pause, switching modes per encounter or area, split parties, per-session pause authority and auto-pause for multiplayer, and what snapshots and the protocol carry. (3) How a ruleset describes its player UI (character sheet, action bar, spellbook, inventory, level-up, combat HUD) so that any ruleset displays correctly, with T104. H-accept |
-| T109 | G (+ Lua) | `rulesets/` | T108 | A third throwaway ruleset from a family unlike d6/d20 (for example action points with percentile skills), in data and Lua only. A kernel change it needs is an abstraction failure and goes back to T108 |
+| T109 | G | `rulesets/` | T108, T136, T137 | A third throwaway ruleset from a family unlike d6/d20 (for example action points with percentile skills), in data only, after T136 and T137 (ADR-0029 Q2). Lua waits for T055. A kernel change it needs is an abstraction failure and becomes a `crpg-rules` change (ADR-0029 K1, K7) |
+| T134 | C | `crpg-rules` | Accepted; implement with its first consumer (T137) | K3(a) success-count and face-count `DiceExpr` modes; implementation waits for T137 (ADR-0029 follow-on 1) |
+| T135 | C, S | `crpg-rules` | Accepted | K3(b) pool refill amount and validated maximum setter (ADR-0029 follow-on 2) |
+| T136 | C, S | `crpg-data` | Accepted; T134 and T135 if exposed | Surface schema generalization: stats, resolution, damage, effects, tags, RT fields, migrations (ADR-0029 follow-on 3) |
+| T137 | C, S | `crpg-sim` | T136 | Sim adapter generalization on the T136 surface; goldens unchanged (ADR-0029 follow-on 4) |
+| T138 | C, S | `crpg-sim` | T136 (RT fields) | Encounter mode and RT policy T1–T16 with history v2 (ADR-0029 follow-on 5) |
+| T139 | C, S | `crpg-sim` | T137, T138 | Persistent creature state outside encounters; join and leave (ADR-0029 follow-on 6) |
+| T140 | C | `crpg-net` | T024, T027b, T138 | Next protocol version with mode, clock, order and event facts (ADR-0029 follow-on 7) |
+| T141 | C | `crpg-server` | T138, T140 (in-process pause can come first) | Host pause, mode requests, projection and heartbeat (ADR-0029 follow-on 8) |
+| T142 | C, S | `crpg-data` | Accepted; T104 report as input | `crpg.ui/1` schema, validation and generated defaults (ADR-0029 follow-on 9) |
+| T143 | C | `crpg-sim` | T137 | Read-only action preview with bounded integer distributions (ADR-0029 follow-on 10) |
 | T034 | A | — | T024 merged, T108 accepted | Movement and navigation ADR, in both time modes: D13 path format, movement rules, numeric limits, and how sim consumes caller-supplied nav results (sim may not import nav) |
 | T035 | C → I | crpg-nav | T034, D27c | Navigation v1 (spec §19.1 #21). Opens the crate |
 | T036 | C → I, S | crpg-sim | T034 | Authoritative movement; `World`/tick-order touch; new goldens (H-golden) |
@@ -437,3 +447,4 @@ estimates slip.
 - 2026-10-16 (UTC) · claude-code + D28k · Added the other human-facing stages the user approved: an event-authoring angle in T099 with T053 waiting on the T101 draft, player UX (T104) and asset sourcing (T105) before their M5 contracts, and hosting (T106) and distribution (T107) research placeholders.
 - 2026-10-16 (UTC) · claude-code + D28l · Made rule-defining an authoring task and both time modes a design input: T099 gains ruleset and pause/mode angles, T108 (kernel range and time model) gates T034, T109 is a third ruleset family, and T110 places the rules editor after M6.
 - 2026-10-16 (UTC) · claude-code + D28m · Added the four further gaps the user approved: a custom-content angle in T099 and T101, ruleset-driven player UI in T104 and T108 (gating T051), module updates versus player saves (T111), mod combination in T107, and an automated module playtester (T112).
+- 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Re-scoped T109 to data-only after T136/T137 and listed the ten ADR-0029 follow-on contract packages (T134–T143); no contract approved.

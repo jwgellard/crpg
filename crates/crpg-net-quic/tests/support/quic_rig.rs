@@ -447,11 +447,16 @@ struct Counters {
 }
 
 /// A client ↔ server UDP relay. Clients connect to `addr()`.
+///
+/// The configured `RelayConfig` impairment starts off: the relay forwards
+/// every datagram in order until `set_impaired(true)`, so a test can complete
+/// its handshake on a clean path and only then measure loss and reordering.
 pub struct UdpRelay {
     addr: SocketAddr,
     counters: Arc<Counters>,
     blackhole: Arc<AtomicBool>,
     blackhole_to_server: Arc<AtomicBool>,
+    impaired: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -478,12 +483,19 @@ struct Direction {
     blackhole: Arc<AtomicBool>,
     /// Blackholes this direction only.
     one_way: Arc<AtomicBool>,
+    /// Off until `UdpRelay::set_impaired`: forwards in order while off.
+    impaired: Arc<AtomicBool>,
 }
 
 impl Direction {
     fn offer(&mut self, packet: Vec<u8>, send: &mut dyn FnMut(&[u8])) {
         if self.blackhole.load(Ordering::SeqCst) || self.one_way.load(Ordering::SeqCst) {
             self.counters.dropped.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+        if !self.impaired.load(Ordering::SeqCst) {
+            send(&packet);
+            self.counters.forwarded.fetch_add(1, Ordering::SeqCst);
             return;
         }
         if self.config.drop_every > 0 && self.rng.next().is_multiple_of(self.config.drop_every) {
@@ -573,6 +585,7 @@ impl UdpRelay {
         let counters = Arc::new(Counters::default());
         let blackhole = Arc::new(AtomicBool::new(false));
         let blackhole_to_server = Arc::new(AtomicBool::new(false));
+        let impaired = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let client: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
 
@@ -591,6 +604,7 @@ impl UdpRelay {
                 counters: counters.clone(),
                 blackhole: blackhole.clone(),
                 one_way: blackhole_to_server.clone(),
+                impaired: impaired.clone(),
             };
             threads.push(std::thread::spawn(move || {
                 let mut buf = vec![0u8; 65_536];
@@ -621,6 +635,7 @@ impl UdpRelay {
                 counters: counters.clone(),
                 blackhole: blackhole.clone(),
                 one_way: Arc::new(AtomicBool::new(false)),
+                impaired: impaired.clone(),
             };
             let to_client = counters.clone();
             threads.push(std::thread::spawn(move || {
@@ -645,9 +660,16 @@ impl UdpRelay {
             counters,
             blackhole,
             blackhole_to_server,
+            impaired,
             stop,
             threads,
         }
+    }
+
+    /// Enables the configured `RelayConfig` impairment (drop and reorder) in
+    /// both directions. Off at `start`, so a handshake can run clean.
+    pub fn set_impaired(&self, on: bool) {
+        self.impaired.store(on, Ordering::SeqCst);
     }
 
     /// Server → client datagrams forwarded.
