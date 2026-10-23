@@ -21,7 +21,6 @@ Updated: 2026-10-23
 - **Blocked:** batch merge waits on PR #69.
 - **Running at handover:** nothing. Slot 1 has `task/T136c-bridge`; slot 2 has `task/T138a-rt-policy` (WIP); slot 3 has `mgr/tokio-rustsec-2026-0386`; slot 6 has `task/T137-draft-b-b2`.
 - Dispatch facts: the manager works from the main checkout `C:/CRPG/dev/crpg`; prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";` in Git Bash. Briefs are in `.agents/briefs/`. Go spend this session was about $0.5. Claude: manager, plus two Sonnet `implementer`s (T136b about 186k tokens; T138a stopped on the limit).
-- Agent log: 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 17 handover · Replaced the session 16 handover with the session 17 state at the 150k context limit.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -739,3 +738,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Replaced the Handover block with the session 15 facts (PR #65 stacked on PR #64, T136b/T138 contracts awaiting D32, tool gaps and dispatch facts), so the next session starts from the session 15 close-out.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S16 bookkeeping · Replaced the Handover block with the session 16 facts (PR #66 re-land on master, A0-11/A0-4c in the session 16 batch, D32 gate), so the next session starts from the session 16 close-out.
 - 2026-10-23 (UTC) · claude-code (manager, Opus 5.5) + D32 answered · Recorded the D32 answers in the handover, so the next session dispatches T136b and T138 directly.
+- 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 17 handover · Replaced the session 16 handover with the session 17 state at the 150k context limit, naming the PR #69 blocker and the unverified T138a WIP.
