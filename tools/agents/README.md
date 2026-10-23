@@ -176,9 +176,11 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
   (default: the repository holding the script), and exits 2 `no-brief` if
   neither exists. Slots 3–6 (directory basenames `slot-3` … `slot-6`) and any
   slot whose brief `Route:` line contains `doc-only` are doc-only: the gates
-  report `skipped (doc-only slot)` and never run cargo, the Python lints
-  still run, and the `doc-only` check fails on any changed `.rs`,
-  `Cargo.toml` or `Cargo.lock`. Its `docsig` check accepts an added
+  never run cargo — with a crate owned they report `skipped (doc-only slot)`,
+  and with no crate owned they run the tool unittests when `tools/`,
+  `.opencode/` or `opencode.json` changed, else `skipped (no tool change)`.
+  The Python lints still run, and the `doc-only` check fails on any changed
+  `.rs`, `Cargo.toml` or `Cargo.lock`. Its `docsig` check accepts an added
   agent-log entry dated from the UTC day of the oldest commit in
   `base..HEAD` up to today (today only with no commits; `$CRPG_TODAY`
   overrides today).
@@ -197,3 +199,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3f · Documented that `--base` splits a remote only when the slot configures it and that `run` checks out or creates a missing task branch (refusing uncommitted work), so the guide matches the session-10 tool fixes.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3g · Documented the `no-edit` rule for grunt runs and the dispatcher's one commit of a verified grunt run (its `committed <hash>` line and `--json` `commit` key), so a grunt run that changed nothing can no longer print PASS and its work is no longer left uncommitted.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b · Documented the `--verify-timeout` budget and its non-fault `verify-timeout` cause, per-slug attempt counting with the slug file names, and the doc-only slot rule, so the guide matches the five session-14 tool fixes.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b attempt 3 · Corrected the doc-only gate rule: no cargo ever, but a tool change still runs the tool unittests (no tool change reports `skipped (no tool change)`), so a tools task's own tests are not silently skipped.

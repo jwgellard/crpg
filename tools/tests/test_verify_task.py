@@ -47,6 +47,31 @@ MARKER_STUB = (
     "Path(sys.argv[1]).write_text('ran', encoding='utf-8')\n"
 )
 
+# A tiny unittest suite planted in a temp slot: its marker proves the gates'
+# `unittest discover` command really ran, without cargo or the real tools tests.
+PROBE_PASS = (
+    "import unittest\nfrom pathlib import Path\n\n"
+    "class Probe(unittest.TestCase):\n"
+    "    def test_probe(self):\n"
+    "        Path(%r).write_text('ran', encoding='utf-8')\n"
+)
+
+PROBE_FAIL = (
+    "import unittest\n\n"
+    "class Probe(unittest.TestCase):\n"
+    "    def test_probe(self):\n"
+    "        self.fail('planted tool gate fault')\n"
+)
+
+TOOL_BRIEF = """# Brief — TOOLS
+Route: x
+## Files you own
+- `tools/**`
+- `tasks/**`
+## Out of scope
+nothing
+"""
+
 BASIC_TEST = textwrap.dedent(
     """\
     #[test]
@@ -256,6 +281,68 @@ class DocOnlySlots(VerifyCase):
         result = self.verify("--skip", "doc-only")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("doc-only: skipped", result.stdout)
+
+
+class DocOnlyToolTask(VerifyCase):
+    """A doc-only slot with no crate owned still runs the tool unittests."""
+
+    SLOT_NAME = "slot-4"
+
+    def test_a_tool_change_runs_the_unittest_gates(self) -> None:
+        self.write_brief(TOOL_BRIEF)
+        self.add("tools/agents/x.py", "VALUE = 1\n")
+        tests_marker = self.tmp / "tool_tests.ran"
+        lint_marker = self.tmp / "tool_lint.ran"
+        self.add("tools/tests/test_probe.py", PROBE_PASS % str(tests_marker))
+        self.add("tools/lint/test_probe.py", PROBE_PASS % str(lint_marker))
+        # No gate override: the real unittest commands must be the ones run.
+        env = {"CRPG_PREFLIGHT": ""}
+        result = self.verify(env_extra=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(tests_marker.exists(), result.stdout)
+        self.assertTrue(lint_marker.exists(), result.stdout)
+        document = json.loads(self.verify("--json", env_extra=env).stdout)
+        checks = {check["name"]: check for check in document["checks"]}
+        self.assertEqual(checks["gates"]["status"], "ok", result.stdout)
+        self.assertEqual(checks["gates"]["detail"], "", result.stdout)
+
+    def test_a_failing_tool_unittest_fails_the_gates(self) -> None:
+        self.write_brief(TOOL_BRIEF)
+        self.add("tools/agents/x.py", "VALUE = 1\n")
+        self.add("tools/tests/test_probe.py", PROBE_FAIL)
+        self.add("tools/lint/test_probe.py", PROBE_FAIL)
+        env = {"CRPG_PREFLIGHT": ""}
+        result = self.verify(env_extra=env)
+        self.assert_only_failed(result, "gates")
+
+    def test_a_doc_only_change_reports_no_tool_change(self) -> None:
+        self.write_brief(TOOL_BRIEF)
+        self.add(
+            "tasks/x.md",
+            "# Task\n\n- 2026-10-16 (UTC) · test agent + doc-only · signed\n",
+        )
+        gates, gate_marker = self.marker_command("tool_gates")
+        result = self.verify(env_extra={"CRPG_PREFLIGHT": gates})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(gate_marker.exists(), result.stdout)
+        document = json.loads(self.verify("--json", env_extra={"CRPG_PREFLIGHT": gates}).stdout)
+        checks = {check["name"]: check for check in document["checks"]}
+        self.assertEqual(checks["gates"]["status"], "ok", result.stdout)
+        self.assertEqual(checks["gates"]["detail"], "skipped (no tool change)")
+
+    def test_a_crate_owning_doc_only_brief_runs_no_preflight(self) -> None:
+        self.add(
+            "docs/notes.md",
+            "# Notes\n\n- 2026-10-16 (UTC) · test agent + doc-only · signed\n",
+        )
+        gates, gate_marker = self.marker_command("crate_gates")
+        result = self.verify(env_extra={"CRPG_PREFLIGHT": gates})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(gate_marker.exists(), result.stdout)
+        document = json.loads(self.verify("--json", env_extra={"CRPG_PREFLIGHT": gates}).stdout)
+        checks = {check["name"]: check for check in document["checks"]}
+        self.assertEqual(checks["gates"]["status"], "ok", result.stdout)
+        self.assertEqual(checks["gates"]["detail"], "skipped (doc-only slot)")
 
 
 class RouteDocOnlySlot(VerifyCase):

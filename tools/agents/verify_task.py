@@ -23,8 +23,11 @@ Options:
 
 Checks, in order: scope, gates, doc-only, protected, goldens, weakening, unsafe,
 lints, docsig, todo. In a doc-only slot (`slot-3` … `slot-6`, or a brief whose
-`Route:` line says `doc-only`) the gates report `skipped (doc-only slot)` and
-`doc-only` fails on any `.rs`, `Cargo.toml` or `Cargo.lock` change. The test
+`Route:` line says `doc-only`) the gates never run cargo: with a crate owned
+they report `skipped (doc-only slot)`, and with no crate owned they run the
+tool unittests when `tools/`, `.opencode/` or `opencode.json` changed (else
+`skipped (no tool change)`); `doc-only` fails on any `.rs`, `Cargo.toml` or
+`Cargo.lock` change. The test
 suite overrides the gate and lint commands through CRPG_PREFLIGHT and
 CRPG_LINTS and pins the date through CRPG_TODAY; none of these are needed in
 normal use.
@@ -62,6 +65,9 @@ TOTAL = len(CHECKS)
 # whose `Route:` line says `doc-only` is one too, whatever the slot is named.
 DOC_ONLY_SLOTS = frozenset({"slot-3", "slot-4", "slot-5", "slot-6"})
 DOC_ONLY_GATE_DETAIL = "skipped (doc-only slot)"
+NO_TOOL_GATE_DETAIL = "skipped (no tool change)"
+TOOL_CHANGE_DIRS = ("tools/", ".opencode/")
+TOOL_CHANGE_FILES = ("opencode.json",)
 
 # Built once per path pattern; glob translation is below.
 _GLOB_CACHE: dict[str, re.Pattern[str]] = {}
@@ -477,11 +483,24 @@ def is_doc_only(ctx: Context) -> bool:
     return False
 
 
+def has_tool_change(files: dict[str, dict]) -> bool:
+    """Whether the change set touches the agent tooling a doc-only task owns."""
+    return any(
+        path in TOOL_CHANGE_FILES or path.startswith(TOOL_CHANGE_DIRS)
+        for path in files
+    )
+
+
 def check_gates(ctx: Context) -> dict:
-    if is_doc_only(ctx):
-        return _result("ok", DOC_ONLY_GATE_DETAIL)
-    override = os.environ.get("CRPG_PREFLIGHT", "").strip()
+    doc_only = is_doc_only(ctx)
     crates = owned_crates(ctx.owned, ctx.slot)
+    if doc_only and crates:
+        # The doc-only check already fails any `.rs`/manifest change, so a
+        # crate-owning doc-only brief never needs preflight.
+        return _result("ok", DOC_ONLY_GATE_DETAIL)
+    if doc_only and not has_tool_change(ctx.files):
+        return _result("ok", NO_TOOL_GATE_DETAIL)
+    override = os.environ.get("CRPG_PREFLIGHT", "").strip()
     if override:
         commands = [_split_override(override)]
         labels = [override]
