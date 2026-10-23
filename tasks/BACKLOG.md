@@ -184,15 +184,27 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | A0-3g | in session 14 batch | — | `tools/agents/oc.py`: DeepSeek V4.1 Flash, attempt 1, $0.04, `1877bb1`; empty grunt run is `no-edit`, passing verify commits once as `<ID>: grunt edits (<model>)`, grunt steps 80; manager removed a signing override (`05cc089`); 282 tool tests and 81 lint tests pass |
 | T136b-draft-b | in session 14 batch | — | Muse Spark 1.3 Contributor, $0.02, `1bbff41`, `tasks/T136b-draft-b.md` (450 lines, eight D-items, six open questions), proposed, not adjudicated; draft A (MiMo-V2.6-Pro, slot 4) ended `hang` with no file |
 
+## Session 15 batch (PR #65)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| A0-4b | in session 15 batch | — | tools (`tools/agents/verify_task.py`, `oc.py`): DeepSeek V4.1 Flash, attempt 1 ran out of steps mid-edit, attempt 2 PASS (`9009375`), fix round (`2b6b66f`); owns-note first-token parsing, doc-only check skipping cargo, `--verify-timeout` (default 1800); 300+ tool tests and 81 lint tests pass |
+| T136b-draft-a | in session 15 batch | — | DeepSeek V4.1 Flash, $0.17, `1207fdb`, `tasks/T136b-draft-a.md` (483 lines, eight D-items); `oc.py` reported `verify-error` (900 s timeout), manual `verify_task.py --skip gates` passed 9/9 |
+| T136b | in session 15 batch | — | exact contract `tasks/T136b.md` (679 lines, Claude `architect`, `1bf00fe`), adjudicated from drafts A and B; companion T136c named; seven open questions, now D32b–D32h |
+| T138-facts | in session 15 batch | — | scout fact sheet `tasks/T138-facts.md` (408 lines, 175 citations; Muse Spark 1.3 Contributor, $0.02, `e9f5a6f`) |
+| T138-draft-a | in session 15 batch | — | Muse Spark 1.3 Contributor, $0.02, `1cc568f`, `tasks/T138-draft-a.md` (504 lines) |
+| T138-draft-b | in session 15 batch | — | MiMo-V2.6-Pro attempt ended `hang` after 15m with no file; rerun on DeepSeek V4.1 Flash, $0.19, wrote 500 lines and hit its step limit before committing; the manager committed it (`ffc10bf`) |
+| T138 | in session 15 batch | — | exact contract `tasks/T138.md` (1012 lines, Claude `architect`, `be81018`), adjudicated from drafts A and B; split T138a/T138b plus companions T138c–e; open questions now D32i–D32p |
+
 ## ADR-0029 follow-on contracts
 
 | Task | Crate | Status | S-set | Contract to write | Depends on |
 |---|---|---|---|---|---|
 | T134 | `crpg-rules` | contract to write; approved to start (ADR-0029 Q3); implement only with its first consumer, T137 | — | K3(a) success-count and face-count modes on `DiceExpr`; sum default, notation extension, unchanged trace | Accepted; implement with its first consumer (T137) |
 | T135 | `crpg-rules` | implemented, reviewed; in session 14 batch (S-set: awaits the user's review) | Yes | K3(b) pool refill amount and validated maximum setter | Accepted |
-| T136 | `crpg-data` | T136a implemented, reviewed; in session 14 batch (S-set: awaits the user's review); T136b frame only, draft B written | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
+| T136 | `crpg-data` | T136a implemented, reviewed; in session 14 batch (S-set: awaits the user's review); T136b exact contract proposed (`tasks/T136b.md`), awaits D32; companion T136c (`crpg-sim`) named | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
 | T137 | `crpg-sim` | contract to write; waits on T136 | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
-| T138 | `crpg-sim` | contract to write; waits on T136 | Yes | Encounter mode and RT policy (T1–T16); history v2 (N5) | T136 (RT fields) |
+| T138 | `crpg-sim` | exact contract proposed (`tasks/T138.md`, T138a/T138b plus companions T138c–e), awaits D32 | Yes | Encounter mode and RT policy (T1–T16); history v2 (N5) | T136 (RT fields) |
 | T139 | `crpg-sim` | contract to write; waits on T137, T138 | Yes | Persistent creature state outside encounters; join and leave (T13, T14) | T137, T138 |
 | T140 | `crpg-net` | contract to write; waits on T024, T027b, T138 (H-filter; ADR-0029 Q8 roll transparency decided here) | — (H-filter) | Next protocol version: N1–N4 facts, events, intents, snapshot allowlist | T024, T027b, T138 |
 | T141 | `crpg-server` | contract to write; waits on T138, T140 | — | P1–P9; mode requests; projection of the new facts; heartbeat | T138, T140 (in-process pause can come first) |
@@ -477,3 +489,4 @@ Record it here, one line per week.
 - 2026-10-22 (UTC) · opencode-go/muse-spark-1.3-contributor + S13 bookkeeping · Added the Session 13 batch table (PR pending) and moved T144b, T135 and T136 to their session 13 statuses, so the index shows the D31 gate without deciding it.
 - 2026-10-23 (UTC) · claude-code + D31 answered · Moved T135 and T136a to approved and ready after the user's D31 answer.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S14 bookkeeping · Added the Session 14 batch table and moved the T135/T136 follow-on rows to their in-session-14 statuses, so the index shows the S-set review gate without deciding it.
+- 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Added the Session 15 batch table and moved the T136/T138 follow-on rows to their exact-contract-proposed statuses, so the index shows the D32 gate without deciding it.
