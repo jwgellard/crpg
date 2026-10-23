@@ -307,10 +307,20 @@ fn validate_mutated(round_ticks: Option<u32>) -> Vec<crpg_data::Diagnostic> {
     })
 }
 
-// T9 (behaviour 4): validate has no semantic rule for RT fields.
+// T9 (behaviour 4), superseded by T136b item 11: RT fields under a ruleset
+// with no round_ticks give one warning per ability; with round_ticks, none.
 #[test]
-fn validate_emits_nothing_for_any_mix_of_rt_fields() {
-    assert_eq!(validate_mutated(None), Vec::new());
+fn validate_warns_for_rt_fields_without_round_ticks_only() {
+    let findings = validate_mutated(None);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    for finding in &findings {
+        assert_eq!(finding.severity, crpg_data::Severity::Warning);
+        assert_eq!(
+            finding.code,
+            crpg_data::DiagnosticCode::RealTimeFieldsWithoutRoundTicks
+        );
+        assert_eq!(finding.pointer, "/recovery_ticks");
+    }
     assert_eq!(validate_mutated(Some(120)), Vec::new());
 }
 

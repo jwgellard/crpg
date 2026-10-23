@@ -399,10 +399,12 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
                 StatDecl {
                     name: "hp".into(),
                     kind: StatKindWire::Int,
+                    derived: None,
                 },
                 StatDecl {
                     name: "pow".into(),
                     kind: StatKindWire::Int,
+                    derived: None,
                 },
             ],
             health_stat: "hp".into(),
@@ -414,6 +416,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             }],
             abilities: vec![id(21)],
             round_ticks: None,
+            initiative: None,
         }),
         Document::Ability(Ability {
             id: id(21),
@@ -426,6 +429,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             damage: vec![DamageEntry {
                 outcome: OutcomeWire::Success,
                 amount: 1,
+                dice: None,
             }],
             cost: 1,
             extra_costs: Vec::new(),
@@ -437,6 +441,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             allow_self_target: false,
             recovery_ticks: None,
             repeats_in_real_time: None,
+            bonus_stats: None,
         }),
         Document::OutcomeTable(OutcomeTable {
             id: id(22),
@@ -477,6 +482,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
                 name: None,
             }],
             duration_rounds: 2,
+            grants: None,
         }),
     ]);
     docs.iter()
