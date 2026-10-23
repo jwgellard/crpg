@@ -666,6 +666,49 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn("no-verify", result.stderr)
 
+    def test_verify_timeout_is_exit_2_and_not_a_model_fault(self) -> None:
+        # A passing draft once exceeded a fixed 900 s verify budget and was
+        # reported as `verify-error`; the budget is now explicit, and its
+        # expiry is a non-fault cause (A0-4b).
+        task = self.tid()
+        slow = self.fresh_file("slow_verify.py")
+        slow.write_text(
+            "import time\nfrom pathlib import Path\n"
+            "time.sleep(30)\nPath(__file__).with_suffix('.done').write_text('x')\n",
+            encoding="utf-8",
+        )
+        result = self.oc_run(
+            task,
+            extra=["--verify-timeout", "1"],
+            env={"CRPG_VERIFY": str(slow)},
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cause: verify-timeout", result.stdout)
+        record = self.read_record(task)
+        self.assertEqual(record["cause"], "verify-timeout")
+        self.assertEqual(record["verdict"], "INFRA")
+        self.assertFalse(slow.with_suffix(".done").exists())
+        self.assertFalse(OCMOD.is_failure(record))
+
+    def test_wave_passes_its_verify_timeout_to_members(self) -> None:
+        filed_dir = self.repo / ".agents" / "briefs"
+        filed_dir.mkdir(parents=True, exist_ok=True)
+        task = self.tid()
+        (filed_dir / f"{task}.md").write_text(
+            "# Brief\n\n## Files you own\n\n- `crates/wave-timeout/src/lib.rs`\n",
+            encoding="utf-8",
+        )
+        slow = self.fresh_file("slow_wave_verify.py")
+        slow.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+        result = self.oc(
+            "wave", f"{task}:implement:{MODEL}", "--base", "master",
+            "--verify-timeout", "1", timeout=60,
+            env={"CRPG_VERIFY": str(slow)},
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("verify-timeout", result.stdout + result.stderr)
+
     def test_review_role_needs_text_not_verify(self) -> None:
         task = self.tid()
         result = self.oc_run(
@@ -1112,6 +1155,36 @@ class DispatchCase(unittest.TestCase):
         finally:
             sh(["git", "checkout", f"task/{task}"], self.slot1)
             sh(["git", "branch", "-D", "detour"], self.slot1)
+
+    def test_attempt_counter_is_per_slug(self) -> None:
+        # Two drafts of one task are separate pieces of work (T136b's
+        # draft-a and draft-b), so each starts at attempt 1; rerunning one
+        # slug is its attempt 2 (A0-4b).
+        task = self.tid()
+        safe = MODEL.replace("/", "_")
+        first = self.oc_run(task, extra=["--slug", "draft-a"])
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        second = self.oc_run(task, extra=["--slug", "draft-b"])
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        third = self.oc_run(task, extra=["--slug", "draft-a"])
+        self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+        task_dir = self.repo / ".agents" / "runs" / task
+        self.assertEqual(
+            json.loads((task_dir / f"1-draft-a-{safe}.result.json")
+                       .read_text(encoding="utf-8"))["attempt"],
+            1,
+        )
+        self.assertEqual(
+            json.loads((task_dir / f"1-draft-b-{safe}.result.json")
+                       .read_text(encoding="utf-8"))["attempt"],
+            1,
+        )
+        self.assertEqual(
+            json.loads((task_dir / f"2-draft-a-{safe}.result.json")
+                       .read_text(encoding="utf-8"))["attempt"],
+            2,
+        )
+        self.assertFalse((task_dir / f"2-{safe}.result.json").exists())
 
     def test_attempt_creates_a_missing_task_branch(self) -> None:
         task = self.tid()
@@ -1739,6 +1812,33 @@ class RecordStatsCase(unittest.TestCase):
         bad = self.oc("stats", "--since", "October")
         self.assertEqual(bad.returncode, 2)
 
+    def test_stats_does_not_count_a_verify_timeout(self) -> None:
+        self.write_record(
+            "S-vt-1", "m-vt", "implement", 1, "INFRA",
+            "2026-10-16T00:00:00Z", cause="verify-timeout", elapsed=None,
+        )
+        rows = self.rows()
+        row = next(row for row in rows if row["model"] == "m-vt")
+        self.assertEqual(row["first_attempt_eligible"], 0)
+        self.assertEqual(row["first_attempt_passes"], 0)
+        self.assertEqual(row["infra"], {"verify-timeout": 1})
+        self.assertFalse(row["demote"])
+
+    def test_stats_treats_null_numbers_as_absent(self) -> None:
+        # A record can carry `"elapsed_s": null` (an interrupted run); stats
+        # leaves it out of averages and sums instead of crashing on it.
+        self.write_record(
+            "S-null-1", "m-null", "implement", 1, "PASS",
+            "2026-10-16T00:00:00Z", steps=None, elapsed=None, cost=None,
+        )
+        text = self.oc("stats", "--since", "2026-10-16")
+        self.assertEqual(text.returncode, 0, text.stderr + text.stdout)
+        self.assertIn("model x role", text.stdout)
+        row = next(row for row in self.rows() if row["model"] == "m-null")
+        self.assertEqual(row["median_steps"], 0)
+        self.assertEqual(row["median_elapsed_s"], 0)
+        self.assertEqual(row["total_cost"], 0)
+
 
 class SpendGuardCase(unittest.TestCase):
     """The Go spend guard against a fresh temp repo per test.
@@ -2150,6 +2250,25 @@ class FetchBaseCase(unittest.TestCase):
 
 class HarnessUnitCase(unittest.TestCase):
     """Direct unit tests for oc.py helpers: no git, no worker."""
+
+    def test_next_attempt_counts_only_the_same_slug(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="oc attempts ") as tmp:
+            task_dir = Path(tmp)
+            (task_dir / "1-go_m.result.json").write_text(
+                json.dumps({"attempt": 1, "slug": None}), encoding="utf-8"
+            )
+            self.assertEqual(OCMOD.next_attempt_number(task_dir), 2)
+            self.assertEqual(OCMOD.next_attempt_number(task_dir, "draft-a"), 1)
+            (task_dir / "1-draft-a-go_m.result.json").write_text(
+                json.dumps({"attempt": 1, "slug": "draft-a"}), encoding="utf-8"
+            )
+            self.assertEqual(OCMOD.next_attempt_number(task_dir, "draft-a"), 2)
+            self.assertEqual(OCMOD.next_attempt_number(task_dir, "draft-b"), 1)
+            # A record written before the slug field existed is slug-less.
+            (task_dir / "2-go_m.result.json").write_text(
+                json.dumps({"attempt": 2}), encoding="utf-8"
+            )
+            self.assertEqual(OCMOD.next_attempt_number(task_dir), 3)
 
     def test_pid_probe_never_kills(self) -> None:
         sleeper = subprocess.Popen(

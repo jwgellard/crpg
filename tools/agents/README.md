@@ -13,10 +13,12 @@ their result, and prints a verdict-first summary. Stdlib only, Python 3.11+.
 
 ```text
 python tools/agents/oc.py run  --task ID --role ROLE --model MODEL [--slot K]
-                               [--timeout SEC] [--variant V] [--brief PATH]
+                               [--timeout SEC] [--verify-timeout SEC]
+                               [--variant V] [--brief PATH]
                                [--notes PATH] [--slug SLUG] [--base REF]
                                [--fresh] [--dry-run] [--json] [--full]
-python tools/agents/oc.py wave SPEC [SPEC ...] [--timeout SEC] [--base REF] [--json]
+python tools/agents/oc.py wave SPEC [SPEC ...] [--timeout SEC]
+                                [--verify-timeout SEC] [--base REF] [--json]
 python tools/agents/oc.py ask  --role scout --model MODEL [--timeout SEC] [--json] QUESTION
 python tools/agents/oc.py record --task ID --role ROLE --model MODEL --outcome OUTCOME
                                [--attempt N] [--note TEXT]
@@ -31,7 +33,12 @@ python tools/agents/oc.py spend [--json]
 `<repo>/../crpg-slots`); without `--slot`, the lowest-numbered free slot
 wins. Every `run`, `ask` and `wave` member leaves a result record under
 `<repo>/.agents/runs/<ID>/` (the model scorecard `stats` ranks) and an
-event log beside it.
+event log beside it. The attempt number counts earlier runs of the same
+task ID and the same `--slug` only: `--slug draft-a` and `--slug draft-b`
+under T136b both start at attempt 1, while rerunning `draft-a` is attempt
+2, and a run with no slug counts only slug-less runs. A slug run's files
+are named `<attempt>-<slug>-<model>.{jsonl,result.json,report.md}`; a
+slug-less run keeps `<attempt>-<model>…`, so `stats` reads both.
 
 Environment: `$CRPG_REPO` (repo root, default: the main worktree),
 `$CRPG_SLOTS`, `$CRPG_OPENCODE` (executable; a `.py` path runs under
@@ -113,13 +120,17 @@ before OpenCode starts; an OpenCode event reading `Agent not found`
 classifies as the same cause.
 
 Exit-2 causes: `fetch`, `no-brief`, `no-verify`, `no-slot`, `slot-busy`,
-`no-exe`, `no-agent`, `branch`, `locked`, `402`, `quota`, `spend`, `timeout`,
-`hang`, `no-edit`, `model`, `verify-error`, `usage`. Of these, `quota`, `402`,
-`locked` and `spend` never count against the model; `no-edit`, `timeout` and
-`hang` do.
+`no-exe`, `no-agent`, `branch`, `locked`, `402`, `quota`, `spend`,
+`verify-timeout`, `timeout`, `hang`, `no-edit`, `model`, `verify-error`,
+`usage`. Of these, `quota`, `402`, `locked`, `spend` and `verify-timeout`
+never count against the model; `no-edit`, `timeout` and `hang` do.
 
 Verification: `implement` and `tests` runs get the full gates; only `grunt`
-passes `--skip gates`. A PASS from the verifier with no changed file
+passes `--skip gates`. Verification has its own budget,
+`--verify-timeout SEC` on `run` and `wave` (default 1800); when it expires
+the run exits 2 with cause `verify-timeout`, a non-fault cause that `stats`
+does not count, so a slow-but-passing draft is no longer reported as
+`verify-error`. A PASS from the verifier with no changed file
 (`files` empty) is not a PASS for `implement` and `tests`: the run exits 2,
 with the infra cause when the event log holds an `error` event (`quota` for a
 rate limit, `model` for any other `provider.*` error), else `no-edit`.
@@ -163,9 +174,16 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
   unless that file's first line (`# Brief — <ID> ·` or `# Review brief — <ID> ·`)
   names a different task; then it uses `.agents/briefs/<ID>.md` in `$CRPG_REPO`
   (default: the repository holding the script), and exits 2 `no-brief` if
-  neither exists. Its `docsig` check accepts an added agent-log entry dated
-  from the UTC day of the oldest commit in `base..HEAD` up to today (today only
-  with no commits; `$CRPG_TODAY` overrides today).
+  neither exists. Slots 3–6 (directory basenames `slot-3` … `slot-6`) and any
+  slot whose brief `Route:` line contains `doc-only` are doc-only: the gates
+  never run cargo — with a crate owned they report `skipped (doc-only slot)`,
+  and with no crate owned they run the tool unittests when `tools/`,
+  `.opencode/` or `opencode.json` changed, else `skipped (no tool change)`.
+  The Python lints still run, and the `doc-only` check fails on any changed
+  `.rs`, `Cargo.toml` or `Cargo.lock`. Its `docsig` check accepts an added
+  agent-log entry dated from the UTC day of the oldest commit in
+  `base..HEAD` up to today (today only with no commits; `$CRPG_TODAY`
+  overrides today).
 - `tools/agents/brief.py`, `tools/agents/recall.py` — brief generation and
   memory search (A0-5). `oc.py` calls `brief.py` when `--brief` is omitted.
 
@@ -180,3 +198,5 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3c · Documented `spend`, the pre-start Go guard with its `spend` cause, the cap env vars and the override, so the manager can see the account-wide Go budget without a throwaway script.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3f · Documented that `--base` splits a remote only when the slot configures it and that `run` checks out or creates a missing task branch (refusing uncommitted work), so the guide matches the session-10 tool fixes.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3g · Documented the `no-edit` rule for grunt runs and the dispatcher's one commit of a verified grunt run (its `committed <hash>` line and `--json` `commit` key), so a grunt run that changed nothing can no longer print PASS and its work is no longer left uncommitted.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b · Documented the `--verify-timeout` budget and its non-fault `verify-timeout` cause, per-slug attempt counting with the slug file names, and the doc-only slot rule, so the guide matches the five session-14 tool fixes.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b attempt 3 · Corrected the doc-only gate rule: no cargo ever, but a tool change still runs the tool unittests (no tool change reports `skipped (no tool change)`), so a tools task's own tests are not silently skipped.
