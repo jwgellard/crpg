@@ -1515,7 +1515,7 @@ def commit_grunt(slot: Path, task: str, model: str, verify: dict) -> str | None:
     if staged.returncode != 0:
         raise Exit(2, f"verify-error: cannot stage grunt edits: "
                       f"{staged.stderr.strip() or staged.stdout.strip()}")
-    made = git(["-c", "commit.gpgsign=false", "commit", "-m",
+    made = git(["commit", "-m",
                 f"{task}: grunt edits ({model})"], slot)
     if made.returncode != 0:
         raise Exit(2, f"verify-error: cannot commit grunt edits: "
