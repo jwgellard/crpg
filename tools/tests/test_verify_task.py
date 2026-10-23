@@ -251,6 +251,27 @@ class PlantedFaults(VerifyCase):
         self.assert_only_failed(self.verify(), "todo")
 
 
+class TodoScope(VerifyCase):
+    def test_owned_fixture_todo_is_not_checked(self) -> None:
+        # A bake-off fixture's unimplemented stubs are its point: only
+        # crate sources are checked.
+        self.write_brief(
+            "# Brief\n## Files you own\n"
+            "- `tools/agents/bakeoff/fixtures/**`\n"
+        )
+        self.add(
+            "tools/agents/bakeoff/fixtures/x/src/lib.rs",
+            "pub fn stub() { todo!() }\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_owned_crate_todo_still_fails(self) -> None:
+        self.write_brief("# Brief\n## Files you own\n- `crates/crpg-x/**`\n")
+        self.add("crates/crpg-x/src/lib.rs", "pub fn stub() { todo!() }\n")
+        self.assert_only_failed(self.verify(), "todo")
+
+
 class Docsig(VerifyCase):
     def test_deleted_md_file_needs_no_signature(self) -> None:
         self.clean_change()

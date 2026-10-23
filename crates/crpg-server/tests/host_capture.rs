@@ -2733,3 +2733,37 @@ fn checkpoint_rejects_invalid_input() {
         Some(CheckpointError::EpochReused)
     );
 }
+
+/// A live host journals an envelope only for a captured command, so the
+/// second retained record's `history_end` is the authority's last issued
+/// sequence. The range cannot grow, so the gap comes from moving its
+/// `history_start` one past the first's end; the event, which no longer fits
+/// the shortened range, goes with it, leaving the missing evidence as the only
+/// fault. Before the contiguity rule this loaded; now it is `Malformed`.
+#[test]
+fn checkpoint_rejects_history_gap_between_capture_records() {
+    let (saved, text) = saved_checkpoint();
+    assert_eq!(
+        load_checkpoint(&saved, 2, 0).err(),
+        None,
+        "the untampered checkpoint loads"
+    );
+
+    let mut parsed: serde_json::Value = serde_json::from_str(&text).expect("json");
+    let captured = parsed["captured"].as_array_mut().expect("records");
+    assert_eq!(captured.len(), 2, "two captured commands");
+    assert_eq!(captured[0]["history_start"], 4);
+    assert_eq!(captured[0]["history_end"], 6);
+    let second = captured[1].as_object_mut().expect("record");
+    assert_eq!(second["history_start"], 6);
+    assert_eq!(second["history_end"], 7);
+    second["history_start"] = 7.into();
+    second["events"] = serde_json::Value::Array(Vec::new());
+    let gap = serde_json::to_vec(&parsed).expect("encodes");
+
+    assert_eq!(
+        load_checkpoint(&gap, 2, 0).err(),
+        Some(CheckpointError::Malformed),
+        "a record starting after the previous one ended omits evidence"
+    );
+}

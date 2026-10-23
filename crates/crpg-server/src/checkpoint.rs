@@ -202,6 +202,9 @@ pub fn load_checkpoint_from_reader<R: Read>(
 /// Checks the retained capture journal: contiguous `(acknowledged, last]`
 /// numbering, per-record bounds and vocabulary, and history ranges inside
 /// the wrapper's issued sequences that exactly match the retained events.
+/// Adjacent records' history ranges are contiguous: each starts where the
+/// previous one ended, because after the wrap every history envelope comes
+/// from a captured command and a gap would mean omitted evidence.
 fn validate_captures(parsed: &Parsed) -> Result<(), CheckpointError> {
     let malformed = Err(CheckpointError::Malformed);
     let last_history = parsed.history.last_sequence();
@@ -240,7 +243,7 @@ fn validate_captures(parsed: &Parsed) -> Result<(), CheckpointError> {
         if !contiguous {
             return malformed;
         }
-        if previous_end.is_some_and(|end| record.history_start < end) {
+        if previous_end.is_some_and(|end| record.history_start != end) {
             return malformed;
         }
         previous_end = Some(record.history_end);

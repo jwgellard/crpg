@@ -36,6 +36,15 @@ import oc  # noqa: E402
 TRUTH1 = ["crpg-ai", "crpg-cli", "crpg-godot", "crpg-net", "crpg-persist",
           "crpg-script", "crpg-server", "crpg-testkit"]
 
+
+class FixtureError(ValueError):
+    """A fixture's data is not scorable: the fixture is refused, not guessed at."""
+
+
+def review_file(fixture):
+    """The file under review, from the fixture's `score.file` key."""
+    return ((fixture or {}).get("score") or {}).get("file")
+
 BUGS_TEMPLATE = {
     "A": ((10, 12), None),
     "B": ((15, 17), None),
@@ -278,6 +287,14 @@ def cmd_setup(scratch, args=None):
         for spec in fx.get("files", []):
             apply_file_spec(spec, fx_dir, template, REPO, hidden_names)
         rename_txt_tree(template)
+        if fx.get("kind") == "review":
+            rel = review_file(fx)
+            if not rel:
+                print(f"setup: fixture {name}: review fixture has no score.file", file=sys.stderr)
+                return 2
+            if not (template / rel).exists():
+                print(f"setup: fixture {name}: score.file {rel} is not in the template", file=sys.stderr)
+                return 2
         for h in fx.get("hidden", []):
             src_name = hidden_src_name(h)
             src_path = fx_dir / src_name
@@ -425,9 +442,20 @@ def score_review(run_dir, log, scratch=None, fixture=None, **kw):
             name = "review-planted"
         fixture = load_fixture_by_name(name)
     tpl = template_dir_for(run_dir, scratch)
-    combat_path = run_dir / "src" / "combat.rs"
-    tpl_combat = tpl / "src" / "combat.rs" if tpl is not None else None
-    unchanged = sha256_file(combat_path) == sha256_file(tpl_combat) if tpl_combat else True
+    if fixture is not None:
+        rel = review_file(fixture)
+        who = fixture.get("_name") or "?"
+        if not rel:
+            raise FixtureError(f"review fixture {who}: score.file is missing")
+        if tpl is not None and not (tpl / rel).exists():
+            raise FixtureError(f"review fixture {who}: score.file {rel} is not in the template")
+    else:
+        # legacy fallback for direct scorer use without a fixture
+        rel = "src/combat.rs"
+    if tpl is None:
+        unchanged = True
+    else:
+        unchanged = sha256_file(run_dir / rel) == sha256_file(tpl / rel)
     arr = last_json_array(L.get("all_text", "") or L.get("text", ""))
     if not isinstance(arr, list):
         return {"found": 0, "fp": None, "note": "no array", "unchanged": unchanged}
@@ -838,7 +866,11 @@ def cmd_score(scratch, args):
         run_dir = Path(meta["dir"])
         log_path = Path(meta["log"])
         L = parse_log(log_path)
-        sc = score_by_kind(fx, run_dir, L, scratch)
+        try:
+            sc = score_by_kind(fx, run_dir, L, scratch)
+        except FixtureError as e:
+            print(f"score: {e}", file=sys.stderr)
+            return 2
         row = dict(meta)
         row["steps"] = L["steps"]
         row["tools"] = L["tools"]

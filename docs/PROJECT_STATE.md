@@ -1,22 +1,27 @@
 # Project state
 
-Updated: 2026-10-21 (12:30 UTC)
+Updated: 2026-10-21
 
 ## Handover
-- **Session 10 (2026-10-21, about 11:00–12:30 UTC), handed over at the 150k context mark at a quiet point: nothing is running.** Master CI is green at `53aadba`. The user merged nothing by hand: at their word the manager merged **#37 (T097, `d51ba52`)** and **#59 (session 9 batch, `53aadba`; #58 closed with it)**. #59 needed one extra commit, `Cargo.lock` `rustls-webpki` 0.103.15 → 0.103.16, because `deny` failed on the new advisory RUSTSEC-2026-0382 (patch bump, no new dependency). The master ruleset requires up-to-date branches, so merging two PRs means updating the second after the first.
-- **This branch, `mgr/session-10-batch`** (on master), carries:
-  - **T098** investigation (DeepSeek V4 Pro, attempt 9): case 13 fails only under load (0/20 alone, 3/80 at 4× contention). The client's `Flush` gives up at the 2 s bound with frames still queued while the server loop is starved; the test treated that bound as a drain wait. Product defect ruled out by code.
-  - **T098b** fix, approved by the user (DeepSeek V4.1 Flash, attempt 1, $0.02): `client_traffic` waits for `outbound_frames == 0` before `close`. 80/80 with the fix, 5/80 failures with it stashed (negative control).
-  - **A0-3e** spend-window boundary tests (Beam, attempt 1), closing A0-3c's review gap.
-  - **A0-7a** attempts 1–3 (Beam twice, then MiMo-V2.6-Pro). DeepSeek's re-review confirmed all four first-review findings fixed and found **one new medium**: `score_review` hard-codes `src/combat.rs` instead of reading `score.file` (`bakeoff.py:428-429`).
+- **In flight.** Session 11 (2026-10-21, about 12:35–14:30 UTC) added to `mgr/session-11-batch` (PR #61; PR #60, session 10, was merged at 12:41 UTC), every package verified by `verify_task.py` and judged by the manager:
+  - T130 (`crpg-rules`, D29j): `RefreshTrigger` rejects a zero `OnTick` period on decode. DeepSeek V4.1 Flash, attempt 1, $0.01.
+  - T131 (`crpg-server`, D29h): checkpoint loading rejects history gaps between capture records; the test fails with the fix stashed. DeepSeek V4.1 Flash, attempt 1, $0.04. Its one gate failure was a `host_quic` 30 s deadline while T098c ran an 8× load in slot 1; rerun 25/25; not charged.
+  - T132 (docs, D29g/h/i): `tasks/T022.md` (empty host answers `NotAuthorized`; contiguous history ranges) and `docs/architecture/crpg-server.md` (two unreachable v1 caps). Free DeepSeek V4.1 Flash, attempt 1. The worker found no T125 test pinning `NotAuthorized` for `Host::new` under `crates/crpg-server/tests/`.
+  - T133 (`crpg-sim`, T097's two low review findings): 4095/4096-envelope `ENCODINGS` and journal-in-place tests; invariant 14's "before validation ends" qualifier. DeepSeek V4.1 Flash, attempt 1, $0.04.
+  - T098c (measurement, `tasks/T098.md`): `lane0_codec_frames_decode_after_impaired_delivery` fails only at 8× contention (3/320; 0/20 alone, 0/80 at 4×). The server's 5 s hello timeout fires because the handshake runs through the impaired relay (`tests/quic.rs:1190`), and the test's 30 s guard then trips. Verdict: test-side. DeepSeek V4 Pro, $0.17. The fix is D30a.
+  - A0-3f (tools): `verify_task.py` `todo` check limited to `crates/**`; `oc.py --base` accepts a local ref with a slash; `oc.py run` creates a missing task branch. DeepSeek V4.1 Flash, attempt 1, $0.04. Used live this session for `--base task/T108-adr`.
+  - A0-7a (bake-off harness) attempt 4: `score.file` read from the fixture. MiMo-V2.6-Pro, $0.04; DeepSeek V4 Pro re-review `ready-for-pr`. A0-7a is done.
+  - T108: **ADR-0029** "Kernel range and time model" (Proposed), `docs/adr/0029-kernel-range-and-time-model.md`, by the Claude `architect` (Opus 5.5). Numbered 0029 because `tasks/T024.md` reserves 0028. Two Beam fact-checks (39 claims: 0 false, 3 wrong-place) led to four corrections by free DeepSeek. It needs the user's H-accept and has nine open questions (D30c).
 - **Next:**
-  1. **A0-7a attempt 4** on MiMo-V2.6-Pro in slot 3 (branch `task/A0-7a-bakeoff`, already checked out there), with `.agents/briefs/NOTES-A0-7a-4.md`; then a DeepSeek V4 Pro re-review; cherry-pick onto this branch and push it to the open session PR (#60 or the next number, opened at this handover).
-  2. A0-7b (fixtures from history), once A0-7a lands.
-  3. **T098c** (new): `lane0_codec_frames_decode_after_impaired_delivery` failed 2/15 under load with `deadline: server event` at `tests/support/quic_rig.rs:110`, seen by T098b's worker. Probably the same starved-server pattern; measure first, as T098 did.
-  4. Tool fixes, one small O1 package: `verify_task.py`'s `todo` check fires on `tools/agents/bakeoff/fixtures/**` (the fixture's intended `todo!()`; it made `oc.py` print "escalate" on two passing A0-7a attempts), so limit it to `crates/**`; `oc.py --base mgr/<branch>` reads `mgr` as a remote, so pass `origin/<branch>`; `oc.py run` refuses a slot not already on an existing task branch, so `git switch` it first.
-  5. T097's two low review findings: `crates/crpg-sim/AGENTS.md:231` invariant 14 drops the contract's "before validation ends" qualifier; T4/T5 assert on 3–4-envelope journals, not 4095/4096.
-- **Answered by the user after the handover (2026-10-21):** D29g–D29k all (a); A0-10 approved (the §12 read list and `CLAUDE.md` now point to `docs/agents/MANAGER.md`); **T108's `architect` pass approved**: dispatch it in a fresh session (inputs: R13-deep, R14-deep and the Beam T108 draft). Fix tasks to file from D29: D29h (`crpg-server`: reject history-range gaps between checkpoint records, with a regression test) and D29j (`crpg-rules`: `RefreshTrigger` rejects a zero `OnTick` period). D29g, D29i and D29k are doc edits (`tasks/T022.md`, `docs/architecture/crpg-server.md`, `crates/crpg-cli/AGENTS.md`).
-- Dispatch facts: prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg/.claude/worktrees/mgr-a0" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";` in Git Bash. Every brief needs the "Shell" section listing the denied commands. A detached `oc.py ask` or `run` sends no notification, so wait on its `.out` file with a background loop. Go spend at 11:00 UTC: $0.53 of $4.50 (5 h), $1.64 of $12 (week). `../crpg-slots/lockfix` is a detached worktree from the lockfile fix and can be removed.
+  1. **Done:** the user answered D30a–D30c (a) ("Accepted.") and asked for PR #61 to be merged; ADR-0029 is accepted. So: file ADR-0029's ten follow-on contracts (item 2), brief T098d (item 5), and apply D29k on the A0-8 branch and add both to the next batch (item 4).
+  2. After ADR-0029 is accepted: number and file its ten follow-on contracts (its "Follow-on contracts" table), and amend `docs/IMPLEMENTATION_PLAN.md`'s T109 row per its answer to open question 2.
+  3. A0-7b (bake-off fixtures from history), now that A0-7a is done.
+  4. D29k (`crates/crpg-cli/AGENTS.md` invariant 4) goes on top of the unpushed A0-8 trim branch `task/A0-8-cli-agents-trim` (`af2a66f`, in slot 4's history) once the user decides on A0-8 (D30b).
+  5. T098d (the case-23 fix) if the user picks D30a (a).
+  6. Carried: T099 research fold-in; T100 benchmark contract; A0-5b; A0-8 for the other crates.
+- **Blocked:** nothing.
+- **Running at handover:** nothing.
+- Dispatch facts: prefix `oc.py` with `export CRPG_REPO="C:/CRPG/dev/crpg/.claude/worktrees/mgr-a0" CRPG_SLOTS="C:/CRPG/dev/crpg-slots";` in Git Bash. Every brief needs the "Shell" section listing the denied commands. A detached `oc.py ask` or `run` sends no notification, so wait on its `.out` file with a background loop. Go spend at 11:00 UTC: $0.53 of $4.50 (5 h), $1.64 of $12 (week). `../crpg-slots/lockfix` is a detached worktree from the lockfile fix and can be removed. Briefs must list owned files as `- ` bullets under `## Files you own` (T098c's prose list made `verify_task.py` exit with `verify-error`). Slots: `slot-1` `task/T098c-measure`, `slot-2` `task/T133-t097-lows`, `slot-3` `task/A0-7a-bakeoff`, `slot-4` this branch, `slot-5` `task/T108-adr-fix`, `slot-6` `task/A0-3f-tool-fixes`, `doc-1` `task/T108-adr`: all merged into the batch and reusable. The T108 blind drafts are kept in the manager worktree's `.agents/T108/`. Go spend this session: about $0.47.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -723,3 +728,6 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + session 9 handover · Rewrote the handover at the 187k context mark: A0-3c done, A0-7a and three T097 reviews still running with their logs named, and the T098 contention data saved for the next attempt.
 - 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + session 10 handover · Rewrote the handover at the 150k context mark: #37 and #59 merged at the user's word with the advisory lockfile bump, T098/T098b/A0-3e and A0-7a attempts 1–3 on the session-10 batch, A0-7a attempt 4 and the tool fixes next.
 - 2026-10-21 (UTC) · claude-code (manager, Opus 5.5) + user answers · Recorded the user's answers to D29g–D29k, A0-10 and T108 in the handover, with the fix tasks they create.
+- 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S11 bookkeeping · Replaced the handover with the session 11 facts: PR #60 is now "Sessions 10–11" with T130/T131/T132/T133/T098c/A0-3f/A0-7a/T108 judged, and D30 is the next user gate.
+- 2026-10-21 (UTC) · claude-code/opus-5.5 + session 11 PR number · Pointed the handover at PR #61 on `mgr/session-11-batch`, because PR #60 merged before the session's batch was pushed.
+- 2026-10-21 (UTC) · claude-code/opus-5.5 + D30 answered · Recorded the user's D30 answers and ADR-0029's acceptance in the handover's first Next item.

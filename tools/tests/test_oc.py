@@ -1004,14 +1004,61 @@ class DispatchCase(unittest.TestCase):
         self.assertEqual(self.read_record(task, attempt=2)["attempt"], 2)
         sh(["git", "checkout", "-b", "detour"], self.slot1)
         try:
+            # A slot left on another branch is put back on the task branch
+            # instead of refusing and making the manager do it by hand.
             third = self.oc_run(task)
-            self.assertEqual(third.returncode, 2, third.stdout)
-            self.assertIn(f"task/{task}", third.stderr)
+            self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+            self.assertEqual(
+                sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                   self.slot1).stdout.strip(),
+                f"task/{task}",
+            )
             fresh = self.oc_run(task, extra=["--fresh"])
             self.assertEqual(fresh.returncode, 0, fresh.stderr + fresh.stdout)
         finally:
             sh(["git", "checkout", f"task/{task}"], self.slot1)
             sh(["git", "branch", "-D", "detour"], self.slot1)
+
+    def test_attempt_creates_a_missing_task_branch(self) -> None:
+        task = self.tid()
+        first = self.oc_run(task)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        # Drop the branch so attempt 2 finds no task branch in any slot.
+        sh(["git", "checkout", "slot-1"], self.slot1)
+        sh(["git", "branch", "-D", f"task/{task}"], self.slot1)
+        second = self.oc_run(task, extra=["--slot", "2"])
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(
+            sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], self.slot2).stdout.strip(),
+            f"task/{task}",
+        )
+        self.assertEqual(
+            sh(["git", "rev-parse", f"task/{task}"], self.slot2).stdout,
+            sh(["git", "rev-parse", "master"], self.slot2).stdout,
+            "the new branch starts at --base",
+        )
+
+    def test_attempt_refuses_uncommitted_changes(self) -> None:
+        task = self.tid()
+        first = self.oc_run(task)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        sh(["git", "checkout", "slot-1"], self.slot1)
+        dirty = self.slot1 / "dirty-probe.txt"
+        dirty.write_text("uncommitted\n", encoding="utf-8")
+        try:
+            second = self.oc_run(task)
+            self.assertEqual(second.returncode, 2, second.stdout)
+            self.assertIn("uncommitted", second.stdout + second.stderr)
+            self.assertTrue(
+                str(self.read_record(task, attempt=2)["cause"]).startswith("branch")
+            )
+            self.assertEqual(
+                sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                   self.slot1).stdout.strip(),
+                "slot-1",
+            )
+        finally:
+            dirty.unlink()
 
     # -- idle watchdog ---------------------------------------------------
 
@@ -1962,6 +2009,48 @@ class GoSpendWindowCase(unittest.TestCase):
         data_rev = OCMOD.go_spend(list(reversed(records)), now)
         self.assertEqual(data_fwd["scarce"][self.KIMI], latest)
         self.assertEqual(data_rev["scarce"][self.KIMI], latest)
+
+
+class FetchBaseCase(unittest.TestCase):
+    """`--base` names a remote only when the slot configures one."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="oc fetch "))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.remote = self.tmp / "remote"
+        self.slot = self.tmp / "slot"
+        sh(["git", "init", "-q", "-b", "master", str(self.remote)], self.tmp)
+        sh(["git", "config", "user.email", "test@example.invalid"], self.remote)
+        sh(["git", "config", "user.name", "oc test"], self.remote)
+        (self.remote / "README.md").write_text("# remote\n", encoding="utf-8")
+        sh(["git", "add", "README.md"], self.remote)
+        sh(["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"], self.remote)
+        # Clone before the extra branch exists, so its remote-tracking ref
+        # is created only by an actual fetch.
+        sh(["git", "clone", "-q", str(self.remote), str(self.slot)], self.tmp)
+        sh(["git", "branch", "mgr/session-10-batch"], self.remote)
+
+    def remote_ref(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet",
+             "refs/remotes/origin/mgr/session-10-batch"],
+            cwd=self.slot, capture_output=True, text=True,
+        )
+
+    def test_remote_prefixed_base_fetches_the_nested_branch(self) -> None:
+        OCMOD.fetch_base(self.slot, "origin/mgr/session-10-batch")
+        self.assertEqual(self.remote_ref().returncode, 0)
+
+    def test_slash_base_without_a_remote_fetches_nothing(self) -> None:
+        # `mgr` is not a configured remote: the whole value is a local ref.
+        OCMOD.fetch_base(self.slot, "mgr/session-10-batch")
+        self.assertNotEqual(self.remote_ref().returncode, 0)
+
+    def test_a_configured_remote_with_a_missing_branch_still_raises(self) -> None:
+        with self.assertRaises(OCMOD.Exit) as caught:
+            OCMOD.fetch_base(self.slot, "origin/no-such-branch")
+        self.assertEqual(caught.exception.code, 2)
+        self.assertTrue(str(caught.exception.cause).startswith("fetch"))
 
 
 class HarnessUnitCase(unittest.TestCase):

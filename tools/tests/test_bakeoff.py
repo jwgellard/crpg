@@ -333,6 +333,79 @@ class BakeoffCase(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("refused", r.stderr + r.stdout)
 
+    # Attempt-4 finding: the edit check follows the fixture's score.file,
+    # not a hard-coded src/combat.rs
+    def test_review_unchanged_uses_score_file(self):
+        fx_dir = FIXTURES / "throwaway-review-file"
+        (fx_dir / "src").mkdir(parents=True, exist_ok=True)
+        try:
+            (fx_dir / "src" / "engine.rs").write_text("fn a() {}\n", encoding="utf-8")
+            (fx_dir / "fixture.json").write_text(json.dumps({
+                "kind": "review", "prompt": "p", "timeout_s": 10, "edit": False,
+                "files": [{"tree": "."}], "hidden": [],
+                "score": {"file": "src/engine.rs",
+                          "defects": [{"id": "A", "lines": [1, 1], "keywords": None}],
+                          "decoy_lines": [], "decoy_specs": []},
+            }), encoding="utf-8")
+            r = self.run_cli("setup", str(self.scratch))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            fx = bakeoff.load_fixture("throwaway-review-file")
+            run_dir = self.scratch / "bake" / "runs" / "throwaway-review-file" / "m"
+            shutil.copytree(self.scratch / "tpl" / "throwaway-review-file", run_dir)
+            ans = {"all_text": json.dumps([{"line": 1, "summary": "x"}])}
+            sc = bakeoff.score_review(run_dir, ans, scratch=self.scratch, fixture=fx)
+            self.assertTrue(sc["unchanged"])
+            # the worker edits the file the fixture names
+            (run_dir / "src" / "engine.rs").write_text("fn a() { /* edited */ }\n", encoding="utf-8")
+            sc2 = bakeoff.score_review(run_dir, ans, scratch=self.scratch, fixture=fx)
+            self.assertFalse(sc2["unchanged"])
+        finally:
+            shutil.rmtree(fx_dir, ignore_errors=True)
+
+    # Attempt-4 finding: a review fixture whose score.file is missing, or is
+    # not in the template, is refused instead of scoring unchanged=True
+    def test_review_score_file_refused(self):
+        fx_dir = FIXTURES / "throwaway-review-file"
+        (fx_dir / "src").mkdir(parents=True, exist_ok=True)
+        try:
+            (fx_dir / "src" / "engine.rs").write_text("fn a() {}\n", encoding="utf-8")
+            base = {"kind": "review", "prompt": "p", "timeout_s": 10, "edit": False,
+                    "files": [{"tree": "."}], "hidden": [],
+                    "score": {"defects": [{"id": "A", "lines": [1, 1], "keywords": None}],
+                              "decoy_lines": [], "decoy_specs": []}}
+
+            def write(score):
+                fx = json.loads(json.dumps(base))
+                fx["score"].update(score)
+                (fx_dir / "fixture.json").write_text(json.dumps(fx), encoding="utf-8")
+
+            # score.file missing entirely
+            write({})
+            r = self.run_cli("setup", str(self.scratch))
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("score.file", r.stderr + r.stdout)
+            fx = bakeoff.load_fixture("throwaway-review-file")
+            with self.assertRaises(bakeoff.FixtureError):
+                bakeoff.score_review(self.scratch / "bake" / "runs" / "x" / "m",
+                                     {"all_text": "[]"}, scratch=self.scratch, fixture=fx)
+            # a valid fixture builds a template
+            write({"file": "src/engine.rs"})
+            r2 = self.run_cli("setup", str(self.scratch))
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            run_dir = self.scratch / "bake" / "runs" / "throwaway-review-file" / "m"
+            shutil.copytree(self.scratch / "tpl" / "throwaway-review-file", run_dir)
+            # fixture.json now names a file the template does not contain
+            write({"file": "src/missing.rs"})
+            r3 = self.run_cli("setup", str(self.scratch))
+            self.assertEqual(r3.returncode, 2)
+            self.assertIn("score.file", r3.stderr + r3.stdout)
+            fx2 = bakeoff.load_fixture("throwaway-review-file")
+            with self.assertRaises(bakeoff.FixtureError):
+                bakeoff.score_review(run_dir, {"all_text": "[]"},
+                                     scratch=self.scratch, fixture=fx2)
+        finally:
+            shutil.rmtree(fx_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

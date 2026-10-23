@@ -230,3 +230,45 @@ fn invalid_pool_wire_is_rejected() {
     );
     assert!(serde_json::from_str::<RefreshTrigger>("{\"type\":\"on_pause\"}").is_err());
 }
+
+#[test]
+fn zero_tick_period_trigger_wire_is_rejected() {
+    let error =
+        serde_json::from_str::<RefreshTrigger>("{\"type\":\"on_tick\",\"value\":0}").unwrap_err();
+    assert!(error.to_string().contains("nonzero"));
+}
+
+#[test]
+fn nonzero_tick_period_and_other_trigger_wires_round_trip() {
+    for period in [1u64, u64::MAX] {
+        let wire = format!("{{\"type\":\"on_tick\",\"value\":{period}}}");
+        let trigger: RefreshTrigger = serde_json::from_str(&wire).unwrap();
+        assert_eq!(trigger, RefreshTrigger::OnTick(period));
+        assert_eq!(serde_json::to_string(&trigger).unwrap(), wire);
+    }
+    // Every other variant keeps its existing decode and encoding.
+    let rest = rest_id(8);
+    let cases = [
+        (
+            RefreshTrigger::OnTurnStart,
+            String::from("{\"type\":\"on_turn_start\"}"),
+        ),
+        (
+            RefreshTrigger::OnRoundStart,
+            String::from("{\"type\":\"on_round_start\"}"),
+        ),
+        (
+            RefreshTrigger::OnRest(rest),
+            format!(
+                "{{\"type\":\"on_rest\",\"value\":\"{}\"}}",
+                Ulid::from_u128(8)
+            ),
+        ),
+        (RefreshTrigger::Never, String::from("{\"type\":\"never\"}")),
+    ];
+    for (trigger, wire) in &cases {
+        assert_eq!(serde_json::to_string(trigger).unwrap(), *wire);
+        let decoded: RefreshTrigger = serde_json::from_str(wire).unwrap();
+        assert_eq!(&decoded, trigger);
+    }
+}

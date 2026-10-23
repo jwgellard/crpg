@@ -553,18 +553,63 @@ def slot_edited(slot: Path, base: str) -> bool:
 
 
 def fetch_base(slot: Path, base: str) -> None:
-    """Fetch the base's remote; a failed fetch is exit 2."""
+    """Fetch the base's remote; a failed fetch is exit 2.
+
+    A first segment is a remote only when the slot has a remote by that
+    name, so `mgr/session-10-batch` is a local ref and nothing is fetched;
+    `origin/mgr/session-10-batch` fetches remote `origin`, branch
+    `mgr/session-10-batch`.
+    """
     if "/" not in base:
         return
     remote, _, branch = base.partition("/")
-    if not remote or not branch:
-        raise Exit(2, f"fetch: malformed base {base!r}")
+    remotes = remote_names(slot)
+    if not branch:
+        if remote in remotes:
+            raise Exit(2, f"fetch: malformed base {base!r}")
+        return
+    if remote not in remotes:
+        return
     try:
         proc = git(["fetch", remote, branch], slot, timeout=300)
     except subprocess.TimeoutExpired:
         raise Exit(2, "fetch: git fetch timed out")
     if proc.returncode != 0:
         raise Exit(2, f"fetch: {proc.stderr.strip() or proc.stdout.strip()}")
+
+
+def remote_names(slot: Path) -> set[str]:
+    """The remotes configured in the slot's repository."""
+    proc = git(["remote"], slot)
+    if proc.returncode != 0:
+        return set()
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def branch_exists(slot: Path, branch: str) -> bool:
+    proc = git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], slot)
+    return proc.returncode == 0
+
+
+def switch_to_branch(slot: Path, branch: str, base: str) -> None:
+    """Put the slot on `branch`, creating it from `base` when it is new.
+
+    A slot is often reused for a task whose earlier attempt ran elsewhere,
+    so the dispatcher creates the branch instead of making the manager run
+    `git switch -c` by hand. Uncommitted work is never carried across.
+    """
+    if slot_changed(slot):
+        raise Exit(
+            2, f"branch: slot has uncommitted changes; cannot switch to {branch}"
+        )
+    if branch_exists(slot, branch):
+        proc = git(["checkout", branch], slot)
+        action = f"switch to {branch}"
+    else:
+        proc = git(["checkout", "-b", branch, base], slot)
+        action = f"create {branch} from {base}"
+    if proc.returncode != 0:
+        raise Exit(2, f"branch: cannot {action}: {proc.stderr.strip()}")
 
 
 # -- brief -------------------------------------------------------------------
@@ -1616,7 +1661,7 @@ def do_run(args: argparse.Namespace) -> int:
                 raise Exit(2, f"branch: cannot clean the slot: {proc.stderr.strip()}")
         else:
             if current_branch(slot) != branch:
-                raise Exit(2, f"branch: slot is not on {branch}")
+                switch_to_branch(slot, branch, base)
         prepare_brief(repo, slot, args.task, attempt, args.brief, args.notes)
         # The slot must be able to start `crpg-<role>` before OpenCode does;
         # a no-agent setup failure is reported here, not as a fake worker

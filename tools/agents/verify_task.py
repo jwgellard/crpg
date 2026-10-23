@@ -636,6 +636,10 @@ def check_todo(ctx: Context) -> dict:
     for path in sorted(ctx.files):
         if not path.endswith(".rs") or not any_glob(ctx.owned, path):
             continue
+        # Only crate sources count: a bake-off fixture's `todo!()` stubs are
+        # its point, so everything outside crates/ is not checked.
+        if not path.startswith("crates/"):
+            continue
         if "/src/" not in "/" + path:
             continue
         if os.path.basename(path) == "tests.rs" or "tests" in path.split("/"):
