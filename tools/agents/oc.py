@@ -43,6 +43,9 @@ STALL_SENTENCE = (
 STALL_VARIANT = "low"
 DEFAULT_TIMEOUT = 1800
 DEFAULT_IDLE = 600
+# A passing draft once timed out at the old fixed 900 s verify limit and was
+# reported as `verify-error` (A0-4b); verification is its own, longer budget.
+DEFAULT_VERIFY_TIMEOUT = 1800
 START_GAP_DEFAULT = 4.0
 LOCK_RETRIES = 2
 MAX_SUMMARY_LINES = 40
@@ -55,8 +58,9 @@ DEMOTE_FAILURES = 2
 PROMOTE_MIN_RUNS = 5
 
 # Infra causes that are not the model's fault: they never count against it.
-# `spend` (the Go spend guard, below) is the manager's budget, not the model's.
-NON_FAULT_CAUSES = frozenset({"quota", "402", "locked", "spend"})
+# `spend` (the Go spend guard, below) is the manager's budget, not the model's;
+# `verify-timeout` is the verifier's own budget expiring (A0-4b).
+NON_FAULT_CAUSES = frozenset({"quota", "402", "locked", "spend", "verify-timeout"})
 # Infra causes that are the model's fault: they count against it.
 MODEL_FAULT_CAUSES = frozenset({"no-edit", "timeout", "hang"})
 
@@ -1083,11 +1087,28 @@ def empty_run_cause(events: dict) -> str:
     return "no-edit"
 
 
-def next_attempt_number(task_dir: Path) -> int:
-    existing = 0
+def next_attempt_number(task_dir: Path, slug: str | None = None) -> int:
+    """The next attempt number for this task ID *and* slug.
+
+    Two runs of one task under different ``--slug`` values (T136b draft-a and
+    draft-b) are different pieces of work, not retries, so only earlier
+    records with the same slug count; a run with no slug counts only runs
+    with no slug. Records written before the slug field existed count as
+    slug-less, so their attempts are still honoured (A0-4b).
+    """
+    highest = 0
     if task_dir.is_dir():
-        existing = len([p for p in task_dir.glob("*.jsonl") if p.is_file()])
-    return existing + 1
+        for path in task_dir.glob("*.result.json"):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(record, dict) or record.get("slug") != slug:
+                continue
+            attempt = record.get("attempt")
+            if isinstance(attempt, int) and not isinstance(attempt, bool):
+                highest = max(highest, attempt)
+    return highest + 1
 
 
 # -- verify ----------------------------------------------------------------------
@@ -1103,7 +1124,8 @@ def verify_prefix(repo: Path) -> list[str]:
     return [sys.executable, str(candidate)]
 
 
-def run_verify(repo: Path, task: str, slot: Path, role: str, base: str) -> dict:
+def run_verify(repo: Path, task: str, slot: Path, role: str, base: str,
+               verify_timeout: int = DEFAULT_VERIFY_TIMEOUT) -> dict:
     # The changed-set base is the run's base: a slot prepared from
     # `--base origin/setup/A0-config` must not report that base's own
     # commits as out-of-scope changes. Without --base the verifier falls
@@ -1112,7 +1134,13 @@ def run_verify(repo: Path, task: str, slot: Path, role: str, base: str) -> dict:
     if role == "grunt":
         cmd += ["--skip", "gates"]
     try:
-        proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=900)
+        proc = subprocess.run(
+            cmd, cwd=repo, capture_output=True, text=True, timeout=verify_timeout
+        )
+    except subprocess.TimeoutExpired:
+        # The verifier's own budget ran out: not the model's fault, and not a
+        # verifier error either (A0-4b).
+        raise Exit(2, "verify-timeout")
     except (OSError, subprocess.SubprocessError) as error:
         raise Exit(2, f"verify-error: cannot run verifier: {error}")
     try:
@@ -1238,12 +1266,30 @@ def build_summary(info: dict, verify: dict | None, full: bool) -> list[str]:
 # -- result records ------------------------------------------------------------------
 
 
-def record_path(task_dir: Path, attempt: int, model: str) -> Path:
-    return task_dir / f"{attempt}-{sanitize_model(model)}.result.json"
+def run_stem(attempt: int, model: str, slug: str | None = None) -> str:
+    """The shared stem of a run's log, report and record.
+
+    A slug is part of the name so two drafts of one task at the same attempt
+    number cannot overwrite each other; a run with no slug keeps the old
+    ``<attempt>-<model>`` name that `stats` and `record` already read.
+    """
+    safe = sanitize_model(model)
+    return f"{attempt}-{sanitize_model(slug)}-{safe}" if slug else f"{attempt}-{safe}"
 
 
-def report_path(task_dir: Path, attempt: int, model: str) -> Path:
-    return task_dir / f"{attempt}-{sanitize_model(model)}.report.md"
+def record_path(task_dir: Path, attempt: int, model: str,
+                slug: str | None = None) -> Path:
+    return task_dir / f"{run_stem(attempt, model, slug)}.result.json"
+
+
+def report_path(task_dir: Path, attempt: int, model: str,
+                slug: str | None = None) -> Path:
+    return task_dir / f"{run_stem(attempt, model, slug)}.report.md"
+
+
+def log_file(task_dir: Path, attempt: int, model: str,
+             slug: str | None = None) -> Path:
+    return task_dir / f"{run_stem(attempt, model, slug)}.jsonl"
 
 
 def write_record(path: Path, info: dict) -> None:
@@ -1254,6 +1300,7 @@ def write_record(path: Path, info: dict) -> None:
         "role": info["role"],
         "model": info["model"],
         "attempt": info["attempt"],
+        "slug": info.get("slug"),
         "started_utc": info["started_utc"],
         "elapsed_s": round(info["elapsed_s"], 1),
         "verdict": info["verdict"],
@@ -1551,22 +1598,25 @@ def do_run(args: argparse.Namespace) -> int:
     dry = bool(args.dry_run)
 
     task_dir = runs_dir(repo) / args.task
-    attempt = next_attempt_number(task_dir)
-    log_path = task_dir / f"{attempt}-{sanitize_model(args.model)}.jsonl"
+    attempt = next_attempt_number(task_dir, args.slug)
+    log_path = log_file(task_dir, attempt, args.model, args.slug)
     branch = f"task/{args.task}-{args.slug}" if args.slug else f"task/{args.task}"
     base = args.base or "origin/master"
     started = utcnow()
     wall_start = time.time()
     timeout_s = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT
     idle_s = args.idle if args.idle is not None else DEFAULT_IDLE
+    verify_timeout = (args.verify_timeout if args.verify_timeout is not None
+                      else DEFAULT_VERIFY_TIMEOUT)
 
     info = new_info(args.task, args.role, args.model, attempt, started)
+    info["slug"] = args.slug
 
     def finish(code: int, verify: dict | None) -> int:
         info["elapsed_s"] = time.time() - wall_start
         if info.get("last_text") and not dry:
             # The summary shows the head of the report; the file keeps it all.
-            report = report_path(task_dir, attempt, args.model)
+            report = report_path(task_dir, attempt, args.model, args.slug)
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(info["last_text"], encoding="utf-8")
             info["report"] = str(report)
@@ -1575,7 +1625,7 @@ def do_run(args: argparse.Namespace) -> int:
         if slot_number is not None and not dry:
             release_slot(repo, slot_number)
         if not dry:
-            write_record(record_path(task_dir, attempt, args.model), info)
+            write_record(record_path(task_dir, attempt, args.model, args.slug), info)
         capture = getattr(args, "_capture", None)
         if capture is not None:
             # A wave member: hand the payload to the owner thread instead
@@ -1760,7 +1810,7 @@ def do_run(args: argparse.Namespace) -> int:
                 if cause in MODEL_FAULT_CAUSES:
                     info["failed_checks"] = [cause]
                 return finish(2, None)
-            verify = run_verify(repo, args.task, slot, args.role, base)
+            verify = run_verify(repo, args.task, slot, args.role, base, verify_timeout)
             verdict = verify.get("verdict")
             if (verdict == "PASS" and args.role in ("implement", "tests")
                     and not verify.get("files")):
@@ -1825,7 +1875,7 @@ def do_ask(args: argparse.Namespace) -> int:
     task = "ask"
     task_dir = runs_dir(repo) / task
     attempt = next_attempt_number(task_dir)
-    log_path = task_dir / f"{attempt}-{sanitize_model(args.model)}.jsonl"
+    log_path = log_file(task_dir, attempt, args.model)
     started = utcnow()
     wall_start = time.time()
     timeout_s = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT
@@ -1966,6 +2016,7 @@ def do_wave(args: argparse.Namespace) -> int:
                 model=model,
                 slot=number,
                 timeout=timeout_s,
+                verify_timeout=args.verify_timeout,
                 idle=DEFAULT_IDLE,
                 variant=None,
                 brief=brief_files[index],
@@ -2059,7 +2110,19 @@ def find_record(task_dir: Path, model: str, attempt: int | None) -> Path | None:
     name = sanitize_model(model)
     if attempt is not None:
         candidate = task_dir / f"{attempt}-{name}.result.json"
-        return candidate if candidate.is_file() else None
+        if candidate.is_file():
+            return candidate
+        # A slug run's record carries the slug in its name; `--attempt`
+        # still finds it (A0-4b). Only a record that names a slug counts,
+        # so another model's hyphenated name is never mistaken for one.
+        for slotted in sorted(task_dir.glob(f"{attempt}-*-{name}.result.json")):
+            try:
+                record = json.loads(slotted.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(record, dict) and record.get("slug"):
+                return slotted
+        return None
     matches = sorted(task_dir.glob(f"*-{name}.result.json")) if task_dir.is_dir() else []
     return matches[-1] if matches else None
 
@@ -2095,6 +2158,22 @@ def do_record(args: argparse.Namespace) -> int:
 # -- stats ----------------------------------------------------------------------------------
 
 
+def numeric(record: dict, key: str) -> float | None:
+    """A record's numeric field, or None when null, missing or not a number.
+
+    A record can carry `"elapsed_s": null` (an interrupted run); `stats`
+    treats that as absent and leaves it out of averages and sums rather than
+    crashing on it (A0-4b).
+    """
+    value = record.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def stats_table(repo: Path, role: str | None, since: str | None) -> list[dict]:
     records = load_records(repo)
     if role is not None:
@@ -2119,8 +2198,11 @@ def stats_table(repo: Path, role: str | None, since: str | None) -> list[dict]:
             if item.get("verdict") == "INFRA":
                 cause = str(item.get("cause") or "unknown")
                 infra[cause] = infra.get(cause, 0) + 1
-        steps = [int(item.get("steps", 0)) for item in items]
-        elapsed = [float(item.get("elapsed_s", 0.0)) for item in items]
+        steps = [int(v) for v in (numeric(item, "steps") for item in items)
+                 if v is not None]
+        elapsed = [v for v in (numeric(item, "elapsed_s") for item in items)
+                   if v is not None]
+        costs = [v for v in (numeric(item, "cost") for item in items) if v is not None]
         rows.append({
             "model": model,
             "role": group_role,
@@ -2136,7 +2218,7 @@ def stats_table(repo: Path, role: str | None, since: str | None) -> list[dict]:
             "infra": infra,
             "median_steps": statistics.median(steps) if steps else 0,
             "median_elapsed_s": statistics.median(elapsed) if elapsed else 0,
-            "total_cost": round(sum(float(r.get("cost", 0.0)) for r in items), 4),
+            "total_cost": round(sum(costs), 4),
             "demote": failures >= DEMOTE_FAILURES,
             "promote": False,
         })
@@ -2216,6 +2298,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model", required=True)
     run.add_argument("--slot", type=int, default=None)
     run.add_argument("--timeout", type=int, default=None)
+    run.add_argument("--verify-timeout", type=int, default=DEFAULT_VERIFY_TIMEOUT)
     run.add_argument("--idle", type=int, default=None)
     run.add_argument("--variant", default=None)
     run.add_argument("--brief", default=None)
@@ -2230,6 +2313,7 @@ def build_parser() -> argparse.ArgumentParser:
     wave = sub.add_parser("wave", help="run several workers in parallel")
     wave.add_argument("specs", nargs="+", help="ID:ROLE:MODEL")
     wave.add_argument("--timeout", type=int, default=None)
+    wave.add_argument("--verify-timeout", type=int, default=DEFAULT_VERIFY_TIMEOUT)
     wave.add_argument("--base", default=None)
     wave.add_argument("--json", action="store_true")
 
