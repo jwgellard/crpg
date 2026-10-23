@@ -1,10 +1,11 @@
 # Decision D31 — draft
 
-Status: **Draft; not yet put to the user.** Non-blocking questions collected
+Status: **Answered 2026-10-23: every question (a), the recommendation (the user: "DO recommended").** Non-blocking questions collected
 by manager sessions under `docs/AGENT_TEAM_PLAN.md` §6, each with a
 recommendation. Nothing here is decided until the user answers.
 
 ## D31a — approve the T136 contract (T136a exact, T136b frame)?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Status", "T136a exact contract", "T136b frame"):
 the contract proposes T136a as the exact RT-fields addition
@@ -18,6 +19,7 @@ Status: contract proposed — awaits the user's approval.
 - Alternative: (b) do not approve; revise the contract.
 
 ## D31b — approve the T135 contract?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T135.md` ("Status", "Decision"): the contract proposes
 `refill: Option<NonZeroU32>`, the `with_refill` constructor, and the
@@ -29,6 +31,7 @@ human-reviewed. Status: contract proposed — awaits the user's approval.
 - Alternative: (b) do not approve; revise the contract.
 
 ## D31c — T136 Q1: no version bump for additive optional fields (D2)?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Open questions", Q1): "No version bump for additive
 optional fields (D2)?" The file recommends yes: it is the only split that
@@ -38,6 +41,7 @@ gives T138 an early start and still bumps each document once.
 - Alternative: (b) bump `/2 → /3` now, which means `/4` later or an additive-only T136b.
 
 ## D31d — T136 Q2: is T136a S-set?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Open questions", Q2): "Is T136a S-set? It changes the
 shape of two versioned schemas, but not a version or a migration." The file
@@ -48,6 +52,7 @@ and the package is small.
 - Alternative: (b) rule T136a outside the S-set and route it to an OpenCode O1 implementer instead.
 
 ## D31e — T136 Q3: RT ability fields under a TB-only ruleset?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Open questions", Q3): "RT ability fields under a
 TB-only ruleset." The file recommends no diagnostic in T136a; T136b's
@@ -58,6 +63,7 @@ ability needs stays clean.
 - Alternative: (b) emit a diagnostic for that mix already in T136a.
 
 ## D31f — T136 Q4: explicit `null` reads as absent?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Open questions", Q4): "Explicit `null` reads as
 absent (the `natural_die` precedent, not the crate's required-nullable
@@ -68,6 +74,7 @@ fields behave alike.
 - Alternative: (b) follow the crate's required-nullable rule for these keys instead.
 
 ## D31g — T136 Q5: a `/1` source carrying an RT key is accepted?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Open questions", Q5): "A `/1` source carrying an RT
 key is accepted. The `1 → 2` steps do not strip later keys, and the same is
@@ -78,6 +85,7 @@ steps may reject keys their source version lacks.
 - Alternative: (b) strip or reject source-version-unknown RT keys already in T136a.
 
 ## D31h — T136 Q6: T134/T135 exposure?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Open questions", Q6): "T134/T135 exposure. ADR row 3
 does not list success counting, pool `refill` or `set_max`." The file
@@ -88,6 +96,7 @@ recommends leaving them out of T136 and adding each with its first consumer
 - Alternative: (b) expose T134/T135 fields in T136.
 
 ## D31i — T136 Q7: `repeats_in_real_time: Option<bool>`?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T136.md` ("Open questions", Q7):
 "`repeats_in_real_time: Option<bool>` rather than a defaulted `bool`." The
@@ -99,6 +108,7 @@ same, and the sim maps both to `false`.
 - Alternative: (b) a defaulted `bool` with a `skip_serializing_if = is_false` helper.
 
 ## D31j — T135 Q1: is "validated maximum setter" infallible?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T135.md` ("Open questions", Q1): 'Is "validated maximum setter"
 infallible? The ADR's word can read as `Result`.' The file recommends
@@ -109,6 +119,7 @@ would be dead API.
 - Alternative: (b) a fallible `set_max` returning `Result` with an unreachable `Err`.
 
 ## D31k — T135 Q2: raising `max` leaves `current` alone?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T135.md` ("Open questions", Q2): "Raising `max` leaves `current`
 alone?" The file recommends yes: "grant the difference" is a gain operation;
@@ -118,6 +129,7 @@ add it with its first consumer.
 - Alternative: (b) raise `current` together with `max` (grant the difference).
 
 ## D31l — T135 Q3: allow `refill >= max`, and `refill` on a `Never` pool?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T135.md` ("Open questions", Q3): "Allow `refill >= max`, and
 `refill` on a `Never` pool?" The file recommends allowing both: `set_max`
@@ -129,6 +141,7 @@ differ only in hashed bytes.
 - Alternative: (b) ban `refill >= max` or `refill` on a `Never` pool at construction.
 
 ## D31m — T135 Q4: representation?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T135.md` ("Open questions", Q4): "Representation." The file
 recommends `Option<NonZeroU32>`, absent meaning full refill: H1 falls out of
@@ -138,6 +151,7 @@ it, and zero cannot be a second spelling of anything.
 - Alternative: (b) a `RefreshTrigger` payload for the amount, which changes every trigger's wire and the T015 tests.
 
 ## D31n — T135 Q5: wire key name?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T135.md` ("Open questions", Q5): "Wire key name." The file
 recommends `refill`, which pairs with `refresh`.
@@ -146,6 +160,7 @@ recommends `refill`, which pairs with `refresh`.
 - Alternative: (b) `refill_amount`.
 
 ## D31o — T135 Q6: `set_max` return value?
+**Answered 2026-10-23: (a) (the user: "DO recommended").**
 
 From `tasks/T135.md` ("Open questions", Q6): "`set_max` return value." The
 file recommends `bool` ("max changed"), matching `refresh`: a caller that
@@ -157,3 +172,4 @@ needs the clamped amount reads `current()` before and after.
 ## Agent log
 
 - 2026-10-22 (UTC) · opencode-go/muse-spark-1.3-contributor + S13 bookkeeping · Started the D31 draft with the T136/T135 contract approvals and their thirteen open questions, so the user can answer them in one batch.
+- 2026-10-23 (UTC) · claude-code + D31 answered · Recorded the user's answer, every recommendation (a), under each question.
