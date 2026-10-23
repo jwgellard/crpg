@@ -31,8 +31,14 @@ prescribed accessors. Do not extend the surface casually.
   Placement and ActionSignature are embedded schema roots, not document kinds.
   Per-type steps are private `fn v1_to_v2` mutations; one sorted registry backs
   both dispatch and `schema_versions`, with no caller registration.
-- Reject unknown fields. Only `_note` may be missing; other nullable fields
+- Reject unknown fields. Only `_note` (and the optional-missing `effect`,
+  `natural_die`, `round_ticks`, `recovery_ticks`, `repeats_in_real_time`) may
+  be missing; other nullable fields
   need a required-nullable serde helper and matching schema required annotation.
+- A field may join a family at its current version, with no tag change and no
+  migration edge, when (i) it is optional-missing, (ii) absence means exactly
+  the behaviour before the field existed, and (iii) every existing document
+  decodes to the same value with an unchanged canonical encoding (T136a).
 - Core ULID aliases and overflow rules govern input; output is uppercase.
   Fixed point is raw signed 32-bit integers. Use data-local schema surrogates
   for core/semver fields, including nested collections; never edit core.
@@ -212,8 +218,9 @@ generator only.
 
 - The five new adjacent `type`/`value` enums keep hand-written `Deserialize`
   impls enforcing exact key sets per variant (the T016a unit-variant trap);
-  `Serialize`/`JsonSchema` stay derived. `effect`/`natural_die` are
-  optional-missing; other nullable fields stay required-nullable.
+  `Serialize`/`JsonSchema` stay derived. `effect`/`natural_die` and T136a's
+  `round_ticks`/`recovery_ticks`/`repeats_in_real_time` are optional-missing;
+  other nullable fields stay required-nullable.
 - Read-time (`Malformed`) covers the single-document rules: pools nonempty
   with unique ids, every extra amount `>= 1`, `TargetStat` stat nonempty,
   `mod_type` nonempty, modifiers nonempty (`<= MAX_EFFECT_MODIFIERS`, 4096,
@@ -275,6 +282,8 @@ generator only.
 
 - 2026-09-27 (UTC) · opencode/muse-spark + T017a crate opening · Extended the surface with the effect family, primary-pool cost convention with all-local /1→/2 defaults, defense selector, and unknown_pool walk before source implementation; no dependency, ADR, downstream, or re-baseline decision is taken here.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017a implementation · Aligned the surface with the as-built dual-layer empty-spend rule, the PoolTemplate inventory variant, the shared-root migration fixtures, and the 14-test srd_content suite; recorded the downstream sim workspace blocker in tasks/T017a.md with no silent workaround.
+
+- 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136a · Recorded the rule for joining a family at its current version and added the three optional real-time fields to the optional-missing exceptions; zero `round_ticks`/`recovery_ticks` are `Malformed` read-time checks, with no semantic rule.
 
 ## T012a review fixes
 

@@ -59,6 +59,11 @@ failure mode without the network or the real OpenCode:
                                    steps: the message goes through the cause
                                    table (quota), not the plain-quota branch.
                      long-report   normal run whose report is 30 lines.
+                     grunt-edit    behave as ok after writing `src/lib.rs` and
+                                   `tests/t.rs` into the slot (the files the
+                                   fake verifier reports), without committing:
+                                   proves the dispatcher commits a verified
+                                   grunt run and leaves other roles alone.
                      provider-fail three tool-call steps, then a top-level
                                    provider.internal error event, no text, exit 0.
                      rc1           exit 1 with no output at all.
@@ -84,6 +89,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 STEP_COST = 0.0
 
@@ -228,6 +234,14 @@ def emit_markers() -> None:
                    "tokens": {"input": 400, "output": 100, "reasoning": 10,
                               "cache": {"read": 300, "write": 0}},
                    "cost": 0.02}})
+
+
+def write_grunt_edits() -> None:
+    """Write the two files the fake verifier reports, without committing."""
+    for name in ("src/lib.rs", "tests/t.rs"):
+        path = Path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"// fake grunt edit: {name}\n", encoding="utf-8")
 
 
 def check_stdin() -> int:
@@ -393,6 +407,11 @@ def main() -> int:
             with open(logpath, "a", encoding="utf-8") as handle:
                 handle.write(line)
         time.sleep(60)
+        return 0
+
+    if has_token(tokens, "grunt-edit"):
+        write_grunt_edits()
+        emit_ok(prompt, tokens)
         return 0
 
     if has_token(tokens, "silent") or has_token(tokens, "hang-forever"):

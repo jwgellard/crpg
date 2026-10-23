@@ -1160,6 +1160,8 @@ fn orphan_effects_keep_only_generic_checks_and_no_orphans_shipped() {
                 natural_die: None,
                 requires_target: false,
                 allow_self_target: false,
+                recovery_ticks: None,
+                repeats_in_real_time: None,
             }),
         );
     });

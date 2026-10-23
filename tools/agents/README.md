@@ -123,10 +123,25 @@ passes `--skip gates`. A PASS from the verifier with no changed file
 (`files` empty) is not a PASS for `implement` and `tests`: the run exits 2,
 with the infra cause when the event log holds an `error` event (`quota` for a
 rate limit, `model` for any other `provider.*` error), else `no-edit`.
-`review`, `scout` and `grunt` are unaffected. The summary shows the first 14
-lines of the worker's report and a `report: <path>` line; the whole report is
-in `<repo>/.agents/runs/<ID>/<attempt>-<model>.report.md`, beside the event
-log and the result record.
+`grunt` gets the same `no-edit` rule from the slot instead of from `files`:
+a grunt run with no change against `--base`, committed or uncommitted, exits
+2 `no-edit` with `failed_checks` `["no-edit"]` (so it counts against the
+model) and never reaches the verifier. `review` and `scout` are unaffected.
+
+`crpg-grunt` has no `git add`/`git commit` permission, so `oc.py` commits a
+verified grunt run itself: after a grunt PASS it stages exactly the files the
+verifier reported in scope and makes one commit in the slot,
+`<ID>: grunt edits (<model>)`, with no `--no-verify` and no amend. The
+summary then carries a `committed <short hash>` line and `--json` a `commit`
+key (the hash, or `null`). A failed or errored verification commits nothing
+and leaves the files for the manager to inspect; `implement` and `tests`
+commit their own work, and `oc.py` never commits for them. A failed grunt
+commit exits 2 `verify-error`.
+
+The summary shows the first 14 lines of the worker's report and a
+`report: <path>` line; the whole report is in
+`<repo>/.agents/runs/<ID>/<attempt>-<model>.report.md`, beside the event log
+and the result record.
 
 Tests live in `tools/tests/test_oc.py` and run against
 `tools/tests/fake_opencode.py` (every failure mode above, both OpenCode
@@ -164,3 +179,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-17 (UTC) · claude-code/sonnet-5.5 (implementer) + A0-3d · Documented the gates for the tests role, the empty-change `no-edit` rule, the report file, the brief-by-task-ID fallback and the docsig date range so the guide matches the five tool fixes.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3c · Documented `spend`, the pre-start Go guard with its `spend` cause, the cap env vars and the override, so the manager can see the account-wide Go budget without a throwaway script.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3f · Documented that `--base` splits a remote only when the slot configures it and that `run` checks out or creates a missing task branch (refusing uncommitted work), so the guide matches the session-10 tool fixes.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-3g · Documented the `no-edit` rule for grunt runs and the dispatcher's one commit of a verified grunt run (its `committed <hash>` line and `--json` `commit` key), so a grunt run that changed nothing can no longer print PASS and its work is no longer left uncommitted.

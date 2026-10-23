@@ -195,7 +195,14 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
         assert!(!required.contains(&json!("_note")));
         // Ability effect/natural_die are optional-missing by contract.
         let optional: &[&str] = match name {
-            "ability" => &["_note", "effect", "natural_die"],
+            "ability" => &[
+                "_note",
+                "effect",
+                "natural_die",
+                "recovery_ticks",
+                "repeats_in_real_time",
+            ],
+            "ruleset" => &["_note", "round_ticks"],
             _ => &["_note"],
         };
         for key in shape["properties"]

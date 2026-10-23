@@ -265,6 +265,7 @@ fn documents(
                 refresh,
             }],
             abilities: vec![id],
+            round_ticks: None,
         }));
     }
     result.push(Document::Ability(Ability {
@@ -305,6 +306,8 @@ fn documents(
         natural_die: None,
         requires_target: true,
         allow_self_target: false,
+        recovery_ticks: None,
+        repeats_in_real_time: None,
     }));
     result.push(Document::Effect(Effect {
         id,
