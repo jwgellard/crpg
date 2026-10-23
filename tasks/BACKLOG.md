@@ -175,13 +175,22 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T136 | T136a contract approved (D31); T136b frame only | — | `crpg-data` surface-schema contract (`architect`, Opus 5.5, about 159k tokens): proposed, awaits the user's approval; T136a (RT fields only) written exactly, T136b (rest of row 3) frame only |
 | T135 | contract approved (D31) | — | `crpg-rules` pool refill/maximum contract (`architect`, same run): proposed, awaits the user's approval; `refill: Option<NonZeroU32>`, `with_refill`, clamping `set_max`; no golden or hash changes |
 
+## Session 14 batch (PR #64)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T136a | in session 14 batch | — | `crpg-data` S-set: Claude `implementer` (Sonnet 5.5), attempt 1, commit `5a07b94`; three optional RT fields, two read-time zero checks, regenerated `ruleset`/`ability` schemas, `tests/rt_fields.rs` (10 tests); Kimi K3 two-keys tests `tests/rt_fields_contract.rs` (11 tests, `c9e8db`), no defect; Claude `reviewer` ready-for-pr; manager reading on `tests/schema_drift.rs` optional-keys list |
+| T135 | in session 14 batch | — | `crpg-rules` S by ADR-0029 row 2: Claude `implementer` (Sonnet 5.5), commit `27149ee`; `with_refill`, `refill()`, clamping `set_max`, skip-when-absent serde (H1); MiMo-V2.6-Pro two-keys tests `tests/resource_refill_contract.rs` (15 tests, `73e8932`), no defect; Claude `reviewer` fix in two rounds (`d0e98df`, `169532c`); `verify_task.py` PASS |
+| A0-3g | in session 14 batch | — | `tools/agents/oc.py`: DeepSeek V4.1 Flash, attempt 1, $0.04, `1877bb1`; empty grunt run is `no-edit`, passing verify commits once as `<ID>: grunt edits (<model>)`, grunt steps 80; manager removed a signing override (`05cc089`); 282 tool tests and 81 lint tests pass |
+| T136b-draft-b | in session 14 batch | — | Muse Spark 1.3 Contributor, $0.02, `1bbff41`, `tasks/T136b-draft-b.md` (450 lines, eight D-items, six open questions), proposed, not adjudicated; draft A (MiMo-V2.6-Pro, slot 4) ended `hang` with no file |
+
 ## ADR-0029 follow-on contracts
 
 | Task | Crate | Status | S-set | Contract to write | Depends on |
 |---|---|---|---|---|---|
 | T134 | `crpg-rules` | contract to write; approved to start (ADR-0029 Q3); implement only with its first consumer, T137 | — | K3(a) success-count and face-count modes on `DiceExpr`; sum default, notation extension, unchanged trace | Accepted; implement with its first consumer (T137) |
-| T135 | `crpg-rules` | contract approved (D31); ready | Yes | K3(b) pool refill amount and validated maximum setter | Accepted |
-| T136 | `crpg-data` | T136a contract approved (D31), ready; T136b frame only | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
+| T135 | `crpg-rules` | implemented, reviewed; in session 14 batch (S-set: awaits the user's review) | Yes | K3(b) pool refill amount and validated maximum setter | Accepted |
+| T136 | `crpg-data` | T136a implemented, reviewed; in session 14 batch (S-set: awaits the user's review); T136b frame only, draft B written | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
 | T137 | `crpg-sim` | contract to write; waits on T136 | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
 | T138 | `crpg-sim` | contract to write; waits on T136 | Yes | Encounter mode and RT policy (T1–T16); history v2 (N5) | T136 (RT fields) |
 | T139 | `crpg-sim` | contract to write; waits on T137, T138 | Yes | Persistent creature state outside encounters; join and leave (T13, T14) | T137, T138 |
@@ -467,3 +476,4 @@ Record it here, one line per week.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12 bookkeeping · Added the Session 12 batch table (S12-docs, T098d, T144 in PR #62; T144b next), changing no other row.
 - 2026-10-22 (UTC) · opencode-go/muse-spark-1.3-contributor + S13 bookkeeping · Added the Session 13 batch table (PR pending) and moved T144b, T135 and T136 to their session 13 statuses, so the index shows the D31 gate without deciding it.
 - 2026-10-23 (UTC) · claude-code + D31 answered · Moved T135 and T136a to approved and ready after the user's D31 answer.
+- 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S14 bookkeeping · Added the Session 14 batch table and moved the T135/T136 follow-on rows to their in-session-14 statuses, so the index shows the S-set review gate without deciding it.
