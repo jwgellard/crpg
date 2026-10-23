@@ -210,6 +210,16 @@
           },
           "type": "array"
         },
+        "round_ticks": {
+          "description": "Ticks per real-time round, nonzero; absent means turn-based only.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "schema": {
           "const": "crpg.ruleset/2",
           "type": "string"

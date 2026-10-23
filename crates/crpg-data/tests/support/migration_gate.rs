@@ -413,6 +413,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
                 refresh: RefreshWire::OnTurnStart,
             }],
             abilities: vec![id(21)],
+            round_ticks: None,
         }),
         Document::Ability(Ability {
             id: id(21),
@@ -434,6 +435,8 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             natural_die: None,
             requires_target: true,
             allow_self_target: false,
+            recovery_ticks: None,
+            repeats_in_real_time: None,
         }),
         Document::OutcomeTable(OutcomeTable {
             id: id(22),
