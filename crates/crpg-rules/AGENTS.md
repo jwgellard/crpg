@@ -16,7 +16,8 @@ limit constant. Operations added by T015 are `DiceExpr::{new, evaluate}`,
 `ModifierPipeline::query_numeric`, `OutcomeTable::{new, evaluate}`,
 `resolve`, and `ResourcePool::{new, spend, refresh, can_afford}`, plus the
 `StatValue::Dice`/`StatKind::Dice` typing and the four resolution hook
-variants. No new trait except implementations of standard/existing traits;
+variants. T135 adds `ResourcePool::{with_refill, refill, set_max}`. No new
+trait except implementations of standard/existing traits;
 no handler registry or dispatcher, no production JSON writer, no second
 public abstraction.
 
@@ -58,6 +59,14 @@ public abstraction.
   `resolve` draws on a staged clone and commits only after complete success.
   Successful no-roll resolution mutates no RNG state. Resource pools own no
   timeline and subscribe to no hooks; the host delivers each refresh event.
+- A partial-refill pool (`with_refill(.., Some(n))`) gains `n` on every
+  matching delivery, saturating at `max`, so duplicate deliveries are not
+  idempotent for it: the host delivering each logical event exactly once is
+  load-bearing. An absent refill must keep encoding as the four-field object;
+  the key appears only when present.
+- `set_max` is infallible and clamps `current` down; it never raises `current`
+  and leaves `refill` and `refresh` untouched. It returns true only when `max`
+  changed. `current <= max` holds after every public operation and decode.
 
 ## Determinism traps
 
@@ -135,6 +144,7 @@ cargo test -p crpg-rules --test dice --locked
 cargo test -p crpg-rules --test dice_properties --locked
 cargo test -p crpg-rules --test resolution --locked
 cargo test -p crpg-rules --test resources --locked
+cargo test -p crpg-rules --test resource_refill --locked
 cargo test -p crpg-rules --test stats --locked
 cargo test -p crpg-rules --test modifier_table --locked
 cargo test -p crpg-rules --test modifier_properties --locked
@@ -166,3 +176,4 @@ without maintainer instruction.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 crate opening · Created this contract before source implementation so the first agent edit lands under the §15.6 rule, pinning the T014 surface, ordering, determinism, and gate obligations.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 implementation alignment · Recorded the tuple-index lint trap found while gating the table suite; no surface or ordering change.
 - 2026-09-26 (UTC) · opencode/muse-spark + T015 crate opening · Extended the surface, randomness/pool rules, determinism traps (selection tie order, literal exclusion, integer-only distribution coverage), new limits, and new gates before source implementation; T014 ordering and ownership semantics preserved.
+- 2026-10-23 (UTC) · claude-code/Sonnet 5.5 + T135 · Recorded the T135 pool surface (`with_refill`, `refill`, `set_max`), the non-idempotent partial-refill and clamping rules, and the `resource_refill` suite in the command list.

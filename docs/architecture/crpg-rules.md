@@ -116,9 +116,23 @@ success. The margin is an unsaturated `i64` difference and the table decides
 zero-margin ties; natural-face rules inspect the actor's raw selected face.
 
 Resource pools are plain caller-clocked counters: spend fails without
-mutation on insufficient funds, refresh refills to max only on matching
+mutation on insufficient funds, refresh refills only on matching
 host-delivered events (tick `n` matches positive ticks divisible by `n`,
 tick zero never refreshes) and reports whether anything changed.
+
+A pool carries an optional private refill amount (`Option<NonZeroU32>`).
+Absent, a match refills to max. Present as `n`, a match adds `n` saturating
+at max, so a duplicate delivery gains again until the pool is full and the
+host delivering each logical event exactly once becomes load-bearing.
+`set_max` is infallible (every `u32` is a legal maximum): it clamps `current`
+down to a lowered maximum, never raises `current` with a raised one, and
+returns whether the maximum changed. Wire rules: H1, an absent refill encodes
+byte-identically to the four-field object, so no hashed World, save or golden
+moves; H2, a present refill appends `"refill":n` as the fifth field; H3, on
+decode `refill` may be absent or at any key position, must be an integer in
+`1..=u32::MAX` when present (zero, `null`, negatives, strings, fractional
+numbers and duplicates are rejected), and the result passes through
+`with_refill`, so `current <= max` holds after every operation and decode.
 
 ## Governing decisions
 
@@ -136,3 +150,4 @@ OS-specific branches in this crate).
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 crate opening · Created this document before source implementation to satisfy the §15.6 readiness gate, describing the approved T014 kernel boundaries and module flow rather than planned work.
 - 2026-09-26 (UTC) · opencode/muse-spark + T014 implementation alignment · Corrected the module flow: symbolic DTOs and conversions live in `stats`, not a separate module, matching the delivered code; no boundary change.
 - 2026-09-26 (UTC) · opencode/muse-spark + T015 crate opening · Extended scope, module flow, authorities, and arithmetic sections with the dice, resolution, and resource surface before source implementation; T014 boundaries and ownership rules preserved.
+- 2026-10-23 (UTC) · claude-code/Sonnet 5.5 + T135 · Added the pool refill amount, clamping `set_max` and the H1-H3 wire rules to the pools section; skip-when-absent serde keeps every existing hashed byte.
