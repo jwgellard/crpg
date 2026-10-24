@@ -259,6 +259,14 @@ derived) where it tested attributes, and adds the derived-stat, kernel,
 bonus-name (ability, `Opposed` and initiative), `Stat`-target, reserved-type
 and combatant tag-bound checks.
 
+**Surface golden (T137c).** `tests/surface_golden.rs` runs the pinned seed-42
+three-combatant turn-based schedule (`tests/support/surface_schedule.rs`) that
+uses every T137 shape at once, records one `state_hash` per step, and
+compares against the per-target `surface_v1.<target>.txt` baseline after a
+hand-written oracle of the rolled initiative keys, each action's margin and
+each damage total. The authoring example
+(`examples/generate_surface_golden.rs`) shares the schedule source.
+
 ## Atomic same-pool affordability (T019)
 
 The T018c adjacent defect (same-pool entries passing per-amount validation
@@ -393,3 +401,4 @@ One encounter is turn-based (TB) or real-time (RT), chosen by the host and never
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138b · Recorded history v2: the lazy sticky version upgrade, the three new events and facts, the tick emission order, the v1 loader rejections and the v2 golden, so readers know TB-only histories still write version 1.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137a · Replaced the bridge section with the kernel-range section: what executes now, the `Int`-only rule, the per-operation stat reads, the start order and the new mid-fight evaluation stage, so readers know T137b still owns `Opposed`, damage dice, initiative and tags.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the remaining bridge text and recorded the `Opposed` draw order, damage dice, rolled initiative and tag carriage with the `TooManyTags` bound, so the kernel-range section describes the whole executed surface.
+- 2026-10-24 (UTC) · opencode-go/beam-free + T137c · Added the surface golden paragraph and the pinned seed-42 schedule/example/test/baseline, so the generalized surface has a per-target golden with a hand-written value oracle.

@@ -535,6 +535,13 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
   grants, scratch handles) is the contract a condition consumer will read;
   nothing reads it yet. The union bound is `MAX_TAGS` (`TooManyTags`, and the
   `combatant tags exceed their bound` load error).
+- **Surface golden (T137c).** `tests/surface_golden.rs` runs the pinned
+  seed-42 three-combatant turn-based schedule (`tests/support/surface_schedule.rs`)
+  that uses every T137 shape at once, records one `state_hash` per step, and
+  compares against the per-target `surface_v1.<target>.txt` baseline after a
+  hand-written oracle of the rolled initiative keys, each action's margin and
+  each damage total. The authoring example
+  (`examples/generate_surface_golden.rs`) shares the schedule source.
 
 ## Agent log
 
@@ -561,3 +568,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138b · Added the history v2 surface and emission order to the API list, and recorded the lazy sticky wrapper version and the v1 loader rejections, so TB-only histories are known to keep version 1 and their goldens.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137a · Replaced the bridge section with the kernel-range section (public additions, the `Int`-only rule, the scratch-interner trap, the B21 start order) and added the stat evaluation stage to invariant 12, so later tasks extend the one legality source instead of a copy.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the bridge text from the kernel-range section and added the `Opposed`/damage-dice/initiative draw order, the tag carriage rule and the new start-order steps, so the section describes the whole executed surface and warns against a new refusal list.
+- 2026-10-24 (UTC) · opencode-go/beam-free + T137c · Added the surface golden paragraph with the pinned seed-42 schedule, example, test and Windows baseline, so the generalized surface carries a per-target golden with a hand-written value oracle.
