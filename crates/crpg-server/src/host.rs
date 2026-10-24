@@ -1228,7 +1228,7 @@ impl Host {
             if protocol == ProtocolSelection::V2 {
                 let candidates: Vec<EventCandidate> = events
                     .iter()
-                    .map(|envelope| view.candidate(&envelope.payload))
+                    .filter_map(|envelope| view.candidate(&envelope.payload))
                     .collect();
                 let projected = project_events(&candidates)
                     .map_err(|_| HostError::Invariant("projection of sim vocabulary failed"))?;
@@ -1858,7 +1858,7 @@ fn involved_entities(world: &World, action: &CombatAction) -> BTreeSet<EntityId>
             involved.insert(actor);
             involved.insert(target);
         }
-        CombatAction::EndTurn { actor } => {
+        CombatAction::EndTurn { actor } | CombatAction::Stop { actor } => {
             involved.insert(actor);
         }
     }
@@ -1929,21 +1929,22 @@ impl PeerView<'_> {
     }
 
     /// Maps one history fact to a per-field projection candidate. Any
-    /// missing field or grant is `None`/`false`.
-    fn candidate(&self, event: &HistoryEvent) -> EventCandidate {
+    /// missing field or grant is `None`/`false`. The three version 2 events
+    /// are withheld (`None`) until T140/T141 give them a wire form.
+    fn candidate(&self, event: &HistoryEvent) -> Option<EventCandidate> {
         match event {
-            HistoryEvent::Spawned { entity } => EventCandidate::Spawned {
+            HistoryEvent::Spawned { entity } => Some(EventCandidate::Spawned {
                 entity: self.net_if(*entity, |_| true),
                 disclose: self.grant(*entity).is_some_and(|g| g.present && g.spawn),
-            },
-            HistoryEvent::Despawned { entity } => EventCandidate::Despawned {
+            }),
+            HistoryEvent::Despawned { entity } => Some(EventCandidate::Despawned {
                 entity: self.net_if(*entity, |_| true),
                 disclose: self.grant(*entity).is_some_and(|g| g.present && g.despawn),
-            },
-            HistoryEvent::Died { entity } => EventCandidate::Died {
+            }),
+            HistoryEvent::Died { entity } => Some(EventCandidate::Died {
                 entity: self.net_if(*entity, |_| true),
                 disclose: self.grant(*entity).is_some_and(|g| g.present && g.died),
-            },
+            }),
             HistoryEvent::ActionResolved {
                 actor,
                 target,
@@ -1954,7 +1955,7 @@ impl PeerView<'_> {
                 let both = |flag: fn(&EntityDisclosure) -> bool| {
                     self.grant(*actor).is_some_and(flag) && self.grant(*target).is_some_and(flag)
                 };
-                EventCandidate::ActionResolved {
+                Some(EventCandidate::ActionResolved {
                     actor: self.net_if(*actor, |g| g.action_actor),
                     target: self.net_if(*target, |g| g.action_target),
                     ability: self
@@ -1965,21 +1966,26 @@ impl PeerView<'_> {
                         .then_some(*ability),
                     outcome: both(|g| g.action_outcome).then(|| outcome.clone()),
                     damage: both(|g| g.action_damage).then_some(*damage),
-                }
+                })
             }
-            HistoryEvent::TurnStarted { actor, round } => EventCandidate::TurnStarted {
+            HistoryEvent::TurnStarted { actor, round } => Some(EventCandidate::TurnStarted {
                 actor: self.net_if(*actor, |g| g.turn_start),
                 round: self.grants.turn_round.then_some(*round),
-            },
-            HistoryEvent::EncounterEnded { encounter, round } => EventCandidate::EncounterEnded {
-                encounter: self
-                    .grants
-                    .encounters
-                    .binary_search(encounter)
-                    .is_ok()
-                    .then_some(*encounter),
-                round: self.grants.encounter_end.then_some(*round),
-            },
+            }),
+            HistoryEvent::EncounterEnded { encounter, round } => {
+                Some(EventCandidate::EncounterEnded {
+                    encounter: self
+                        .grants
+                        .encounters
+                        .binary_search(encounter)
+                        .is_ok()
+                        .then_some(*encounter),
+                    round: self.grants.encounter_end.then_some(*round),
+                })
+            }
+            HistoryEvent::RoundStarted { .. }
+            | HistoryEvent::ModeChanged { .. }
+            | HistoryEvent::OrderEnded { .. } => None,
         }
     }
 
