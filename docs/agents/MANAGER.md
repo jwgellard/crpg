@@ -76,7 +76,7 @@ Preference: stretch tokens. Among the OpenCode models strong enough for the job,
 |---|---|---|---|
 | I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
 | I outside the S-set, harder or after one failure | `opencode-go/deepseek-v4-pro` | `opencode-go/mimo-v2.6-pro` | Claude `implementer` |
-| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/deepseek-v4-pro` (T136b-tests, T138a-tests attempt 2) or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
 | First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
 | Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
@@ -214,3 +214,4 @@ VERDICT: ready-for-pr | fix | reject
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S14 bookkeeping · Replaced the never-merge rule with merging under plan §7.4 (D27a superseded 2026-10-23), so the role section matches the adopted merge policy.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-11 · Re-synced §3.5's routing table rows with `MODELS.md` §4 (routine second, harder pair, tests row, first-pass review row); tier, not-routed, free-tier, data-handling and demote/promote lines already said the same thing, so they stay condensed.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-11b · Moved LongCat from §3.5's O3 tier to Not routed and reduced the Go-only line to Beam alone, so the manager's summary matches the corrected `MODELS.md` §4 and §1 item 14.
+- 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Re-synced §3.5's tests row with `MODELS.md` §4 (MiMo-V2.6-Pro demoted under §4.1 after 0/2 first-attempt; DeepSeek V4 Pro or DeepSeek V4.1 Flash first), so the manager routes tests away from the demoted model.

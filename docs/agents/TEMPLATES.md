@@ -69,6 +69,22 @@ rebase or switch branches.
 Reply with the report format in docs/agents/TEMPLATES.md §2, copied below. At most 40 lines.
 ```
 
+Two standing rules for briefs (added 2026-10-24, from session 18):
+
+- **Two-keys (tests-role) briefs require a mutation proof.** For each test,
+  the writer breaks the code it guards in a scratch edit (remove the check,
+  reorder the rung, change the bound), confirms the test fails, restores
+  `src/` byte-identical (`git diff --exit-code -- <src paths>`), and lists
+  the mutation per test in the report. A test with no mutation that makes it
+  fail is reported, not kept silently. Evidence: T136b-tests needed a
+  review-fix round for tests passing for the wrong reason; T138a-fix used
+  mutation proofs and passed first time.
+- **Manager brief self-check.** Before dispatch, a brief that adds a rule
+  checks it against the existing tests and fixtures it will meet, and names
+  every code path the rule must cover (e.g. `--dry-run`). Evidence: A0-12
+  attempt 1 (the rule flagged the shared fixtures; the brief forbade the
+  needed test edits) and attempt 3 (dry-run missed).
+
 ## 2. Worker report
 
 ```markdown
@@ -364,3 +380,4 @@ In `.claude/settings.json`, beside the permissions A0-1 adds:
 - 2026-10-16 (UTC) · claude-code + agent-team plan templates · Added the brief, report and review formats and the proposed Claude, OpenCode and hook definitions that setup wave A0 installs, kept apart from the plan so workers and routine sessions never load them.
 - 2026-10-16 (UTC) · claude-code + A0-2 · Recorded where the installed `crpg-tests` agent departs from the template, a read deny on `crates/*/src/**` with explicit `.env` denies, so the template matches what runs. Checked live on OpenCode 1.18.35.
 - 2026-10-16 (UTC) · claude-code + A0-1 spawn check · Gave `architect`, `implementer` and `bookkeeper` a `tools:` allowlist: without one each spawn inherited the session's Artifact, Docs-MCP and worktree tools and cost about 36.6k tokens before its first turn, against 15k for `reviewer`, which already had one. All four spawned on their pinned models.
+- 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Added the §1 two-keys mutation-proof and manager brief self-check rules, so tests-role briefs prove each test fails without its guard and rule-adding briefs are checked against the tests and paths they will meet.

@@ -170,6 +170,14 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    local spend per model; the quota left and the reset time are only on the
    opencode.ai dashboard.
 
+17. **MiMo-V2.6-Pro leaves the tests row (2026-10-24, session 18).** 0/2
+    first-attempt in the tests role (T136a-tests fail, T138a-tests hang), so
+    it is demoted under §4.1 and falls back to its O1 tier place for that
+    role. The tests row's first choice is now `opencode-go/deepseek-v4-pro`
+    (T136b-tests, T138a-tests attempt 2) or `opencode-go/deepseek-v4.1-flash`
+    from a lab other than the implementer's, second
+    `opencode-go/muse-spark-1.3-contributor`.
+
 ## 2. Claude models (subagents in Claude Code)
 
 Prices are Anthropic API rates per million tokens; on a subscription they
@@ -375,7 +383,7 @@ thirty reviews.
 |---|---|---|---|
 | I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
 | I outside the S-set, harder or after one failure | `opencode-go/deepseek-v4-pro` | `opencode-go/mimo-v2.6-pro` | Claude `implementer` |
-| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/deepseek-v4-pro` (T136b-tests, T138a-tests attempt 2) or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
 | First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
 | Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
@@ -494,6 +502,13 @@ Infra exits (rate limit, quota) are listed but do not count.
 
 The free Zen limit is account-wide: with at most three concurrent runs it refused every free model from about 07:00 UTC and had not recovered at 08:06 UTC.
 
+**Record, 2026-10-24 session 18 (tests role).**
+
+| Model | Role | Runs and outcome |
+|---|---|---|
+| `opencode-go/mimo-v2.6-pro` | tests | T136a-tests fail, T138a-tests hang: 0/2 first-attempt, demoted from the tests row under §4.1 |
+| `opencode-go/deepseek-v4-pro` | tests | T136b-tests and T138a-tests attempt 2: first choice for the tests row, with `opencode-go/deepseek-v4.1-flash` as the other-lab alternative |
+
 ## 5. Bake-off method
 
 Run 2026-10-16. The harness, fixtures and scored results are in
@@ -556,3 +571,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Added the session 8 field record and account-wide free Zen outage sentence to capture run outcomes and availability.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Demoted MiMo-V2.6-Pro from implement after two `hang` runs with no output on doc-only contract drafts (T136b draft A, T138 draft B), removing it from the routine row and moving it to second choice on the harder row.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-11b · Removed LongCat from §4's free preference, the Go-only lane and the "first, once proven" paragraph, and moved it from O3 to Not routed, so every current-rule sentence agrees with §1 item 14 (LongCat out of routing, free multi-reviews on Beam alone).
+- 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Demoted MiMo-V2.6-Pro from the tests row under §4.1 (0/2 first-attempt: T136a-tests fail, T138a-tests hang) to first-choice DeepSeek V4 Pro or DeepSeek V4.1 Flash, so the routing table follows the session 18 field record.
