@@ -362,6 +362,13 @@ impl<'de> Deserialize<'de> for World {
                             ));
                         }
                     }
+                    if let AbilityDefense::Opposed { bonus_stats, .. } = &ability.defense {
+                        if bonus_stats.iter().any(|name| !usable(name)) {
+                            return Err(serde::de::Error::custom(
+                                "combat bonus stat names no declared int stat",
+                            ));
+                        }
+                    }
                     if let Some(effect) = ability.effect {
                         if !definition
                             .effects
@@ -557,6 +564,20 @@ impl<'de> Deserialize<'de> for World {
                                         "combatant attachment carries no future expiry",
                                     ));
                                 }
+                            }
+                        }
+                        // L6 (T137): the combatant's tags and every grant of
+                        // the definition's effects fit the kernel bound.
+                        {
+                            let mut union: BTreeSet<&str> =
+                                combatant.tags().iter().map(String::as_str).collect();
+                            for effect in &definition.effects {
+                                union.extend(effect.grants.iter().map(String::as_str));
+                            }
+                            if union.len() > crpg_rules::MAX_TAGS {
+                                return Err(serde::de::Error::custom(
+                                    "combatant tags exceed their bound",
+                                ));
                             }
                         }
                         if !placements.insert(combatant.placement()) {
