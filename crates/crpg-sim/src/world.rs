@@ -752,6 +752,17 @@ impl World {
             .combat
             .as_ref()
             .map(|state| (state.definition.encounter, state.round, state.active));
+        // The mode and the non-dead count are captured before the removal:
+        // an RT despawn ends the encounter when it drops the count from two
+        // or more to below two (T138b, H2).
+        let prior_rt_alive = self.combat.as_ref().and_then(|state| {
+            (state.mode == EncounterMode::RealTime).then(|| {
+                self.combatants
+                    .iter()
+                    .filter(|(_, combatant)| !combatant.dead())
+                    .count()
+            })
+        });
         if self.entities.remove(id).is_none() {
             return (false, TransitionFacts::default());
         }
@@ -775,6 +786,16 @@ impl World {
                 == Some(id)
         {
             facts = crate::combat::advance_tracked(&mut *self);
+        }
+        if let (Some(before), Some((encounter, round, _))) = (prior_rt_alive, prior) {
+            let after = self
+                .combatants
+                .iter()
+                .filter(|(_, combatant)| !combatant.dead())
+                .count();
+            if before >= 2 && after < 2 {
+                facts.encounter_ended = Some((encounter, round));
+            }
         }
         self.events
             .push(self.tick, SimEvent::Despawned { entity: id });
