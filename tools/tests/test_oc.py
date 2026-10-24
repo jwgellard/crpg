@@ -169,6 +169,18 @@ class DispatchCase(unittest.TestCase):
         self.count = 0
         self.case_dir = Path(tempfile.mkdtemp(prefix="oc case "))
         self.addCleanup(shutil.rmtree, self.case_dir, True)
+        self.reset_slots()
+
+    def reset_slots(self) -> None:
+        """Put the shared worktrees back on their own branches, clean, at master.
+
+        One test's leftover WIP or commits must never make the next test's
+        slot look occupied (A0-12), so every test starts from the same two
+        free slots.
+        """
+        for name, slot in (("slot-1", self.slot1), ("slot-2", self.slot2)):
+            sh(["git", "checkout", "-f", "-B", name, "master"], slot)
+            sh(["git", "clean", "-ffdx"], slot)
 
     # -- helpers -----------------------------------------------------
 
@@ -1210,26 +1222,284 @@ class DispatchCase(unittest.TestCase):
         )
 
     def test_attempt_refuses_uncommitted_changes(self) -> None:
+        # A dirty slot is another task's unmerged work (A0-12): the run is
+        # refused before it can read those files, and the refusal leaves the
+        # slot exactly as it found it, with no lock behind.
         task = self.tid()
         first = self.oc_run(task)
         self.assertEqual(first.returncode, 0, first.stderr)
         sh(["git", "checkout", "slot-1"], self.slot1)
         dirty = self.slot1 / "dirty-probe.txt"
         dirty.write_text("uncommitted\n", encoding="utf-8")
+        head = sh(["git", "rev-parse", "HEAD"], self.slot1).stdout
+        lock = self.repo / ".agents" / "slots" / "slot-1.lock"
         try:
-            second = self.oc_run(task)
+            second = self.oc_run(task, extra=["--slot", "1"])
             self.assertEqual(second.returncode, 2, second.stdout)
+            self.assertIn("slot-occupied", second.stdout + second.stderr)
             self.assertIn("uncommitted", second.stdout + second.stderr)
             self.assertTrue(
-                str(self.read_record(task, attempt=2)["cause"]).startswith("branch")
+                str(self.read_record(task, attempt=2)["cause"]).startswith(
+                    "slot-occupied"
+                )
             )
             self.assertEqual(
                 sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                    self.slot1).stdout.strip(),
                 "slot-1",
             )
+            self.assertEqual(dirty.read_text(encoding="utf-8"), "uncommitted\n")
+            self.assertEqual(
+                sh(["git", "rev-parse", "HEAD"], self.slot1).stdout, head
+            )
+            self.assertFalse(lock.exists(), "a refused slot was left locked")
         finally:
             dirty.unlink()
+
+    # -- slot occupancy: another task's work (A0-12) ----------------------
+
+    def foreign_branch(self, slot: Path, branch: str, name: str) -> str:
+        """Leave `slot` on `branch` with one committed change master lacks."""
+        sh(["git", "checkout", "-B", branch, "master"], slot)
+        (slot / name).write_text(f"{branch} work\n", encoding="utf-8")
+        sh(["git", "add", name], slot)
+        sh(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", f"{branch} work"],
+            slot,
+        )
+        return sh(["git", "rev-parse", "HEAD"], slot).stdout.strip()
+
+    def slot_used_by(self, call_log: Path) -> Path:
+        """The slot the fake worker was started in."""
+        calls = [
+            json.loads(line)
+            for line in call_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        return Path(calls[0]["cwd"]).resolve()
+
+    def test_auto_pick_skips_a_foreign_branch_ahead_of_base(self) -> None:
+        # A branch whose commit no other ref holds is another task's unmerged
+        # work, even with a clean tree: the run must not adopt it as base.
+        head = self.foreign_branch(self.slot1, "task/other-work", "other.txt")
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        result = self.oc_run(task, env={"FAKE_OC_LOG": str(call_log)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.slot_used_by(call_log), self.slot2)
+        self.assertEqual(
+            sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+               self.slot1).stdout.strip(),
+            "task/other-work",
+        )
+        self.assertEqual(sh(["git", "rev-parse", "HEAD"], self.slot1).stdout.strip(),
+                         head)
+        self.assertTrue((self.slot1 / "other.txt").is_file())
+        self.assertEqual(self.status_paths(self.slot1), "")
+
+    def test_auto_pick_skips_a_dirty_slot(self) -> None:
+        wip = self.slot1 / "wip.txt"
+        wip.write_text("another task's work\n", encoding="utf-8")
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        result = self.oc_run(task, env={"FAKE_OC_LOG": str(call_log)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.slot_used_by(call_log), self.slot2)
+        self.assertEqual(wip.read_text(encoding="utf-8"), "another task's work\n")
+        self.assertEqual(
+            sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+               self.slot1).stdout.strip(),
+            "slot-1",
+        )
+        # Nothing was prepared in the dirty slot, not even a brief.
+        self.assertFalse((self.slot1 / "BRIEF.md").exists())
+
+    def test_detached_head_counts_only_the_dirty_test(self) -> None:
+        # A detached HEAD has no branch whose commits could be another task's
+        # unmerged work, so only uncommitted changes make it occupied.
+        sh(["git", "checkout", "--detach", "master"], self.slot1)
+        (self.slot1 / "detached.txt").write_text("detached work\n",
+                                                 encoding="utf-8")
+        sh(["git", "add", "detached.txt"], self.slot1)
+        sh(["git", "-c", "commit.gpgsign=false", "commit", "-m", "detached"],
+           self.slot1)
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        result = self.oc_run(task, env={"FAKE_OC_LOG": str(call_log)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.slot_used_by(call_log), self.slot1)
+        # Dirty on a detached HEAD, the refusal names the state, not a
+        # branch literally called HEAD (attempt-3 review fix 2).
+        sh(["git", "checkout", "--detach", "HEAD"], self.slot1)
+        (self.slot1 / "detached-dirty.txt").write_text(
+            "uncommitted\n", encoding="utf-8")
+        second_task = self.tid()
+        refused = self.oc_run(second_task, extra=["--slot", "1"])
+        self.assertEqual(refused.returncode, 2,
+                         refused.stdout + refused.stderr)
+        text = refused.stdout + refused.stderr
+        self.assertIn(
+            "slot-occupied: slot-1 holds detached HEAD (uncommitted changes)",
+            text,
+        )
+        self.assertNotIn("holds HEAD (uncommitted changes)", text)
+        self.assertFalse(
+            (self.repo / ".agents" / "slots" / "slot-1.lock").exists()
+        )
+
+    def test_explicit_slot_on_occupied_slot_is_refused(self) -> None:
+        head = self.foreign_branch(self.slot1, "task/other-work", "other.txt")
+        task = self.tid()
+        result = self.oc_run(task, extra=["--slot", "1"])
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        text = result.stdout + result.stderr
+        self.assertIn("slot-occupied: slot-1 holds task/other-work", text)
+        self.assertIn("1 commits not on master", text)
+        record = self.read_record(task)
+        self.assertTrue(str(record["cause"]).startswith("slot-occupied"))
+        self.assertFalse(OCMOD.is_failure(record), "charged to the model")
+        # The refusal touched nothing: same branch and commit, no brief, and
+        # the lock it took to look was released again.
+        self.assertEqual(sh(["git", "rev-parse", "HEAD"], self.slot1).stdout.strip(),
+                         head)
+        self.assertEqual(
+            sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+               self.slot1).stdout.strip(),
+            "task/other-work",
+        )
+        self.assertTrue((self.slot1 / "other.txt").is_file())
+        self.assertFalse((self.slot1 / "BRIEF.md").exists())
+        self.assertFalse((self.repo / ".agents" / "slots" / "slot-1.lock").exists())
+
+    def test_retry_on_its_own_task_branch_is_allowed(self) -> None:
+        # An attempt 2 finds its own task branch ahead of base: that is this
+        # run's work, not a neighbour's, so the slot is reused.
+        task = self.tid()
+        first = self.oc_run(task, extra=["--slot", "1"])
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        (self.slot1 / "own.txt").write_text("own work\n", encoding="utf-8")
+        sh(["git", "add", "own.txt"], self.slot1)
+        sh(["git", "-c", "commit.gpgsign=false", "commit", "-m", "own work"],
+           self.slot1)
+        self.assertEqual(self.commits_since_base(self.slot1), 1)
+        second = self.oc_run(task, extra=["--slot", "1"])
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(self.read_record(task, attempt=2)["attempt"], 2)
+        self.assertEqual(
+            sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+               self.slot1).stdout.strip(),
+            f"task/{task}",
+        )
+        self.assertEqual(self.commits_since_base(self.slot1), 1)
+
+    def test_stacked_base_on_the_same_branch_is_allowed(self) -> None:
+        # A stacked run: the slot already sits on the run's --base branch,
+        # clean and with no commit beyond it, so nothing is in the way.
+        base_head = self.foreign_branch(self.slot1, "task/T136c-bridge",
+                                        "bridge.txt")
+        task = self.tid()
+        result = self.oc_run(task, base="task/T136c-bridge",
+                             extra=["--slot", "1"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            sh(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+               self.slot1).stdout.strip(),
+            f"task/{task}",
+        )
+        self.assertEqual(
+            sh(["git", "rev-parse", f"task/{task}"], self.slot1).stdout.strip(),
+            base_head,
+            "the run starts at its stacked base",
+        )
+        self.assertEqual(self.commits_since_base(self.slot1, "task/T136c-bridge"),
+                         0)
+
+    def test_commits_reachable_from_another_ref_are_not_occupied(self) -> None:
+        # The slot's branch is ahead of --base, but its commit also lives on
+        # another local branch (as if merged there): no other task is holding
+        # unmerged work, so the slot is free (attempt-3 review fix 3).
+        head = self.foreign_branch(self.slot1, "task/other-work", "other.txt")
+        sh(["git", "branch", "task/landed-elsewhere", head], self.repo)
+        self.assertEqual(self.commits_since_base(self.slot1), 1)
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        try:
+            result = self.oc_run(task, env={"FAKE_OC_LOG": str(call_log)})
+            self.assertEqual(result.returncode, 0,
+                             result.stdout + result.stderr)
+            self.assertEqual(self.slot_used_by(call_log), self.slot1)
+        finally:
+            sh(["git", "branch", "-D", "task/landed-elsewhere"], self.repo)
+
+    def test_dry_run_applies_the_occupancy_rule(self) -> None:
+        # A dry run picks and refuses exactly as a real run would, but takes
+        # no lock and writes nothing (attempt-3 review fix 1).
+        self.foreign_branch(self.slot1, "task/other-work", "other.txt")
+        task = self.tid()
+        picked = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run", env={},
+        )
+        self.assertEqual(picked.returncode, 0, picked.stdout + picked.stderr)
+        self.assertIn("slot-2", picked.stdout)
+        refused = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run",
+            "--slot", "1", env={},
+        )
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        text = refused.stdout + refused.stderr
+        self.assertIn("slot-occupied: slot-1 holds task/other-work", text)
+        self.assertIn("1 commits not on master", text)
+        self.assertFalse(
+            (self.repo / ".agents" / "slots" / "slot-1.lock").exists()
+        )
+        self.assertFalse(self.record_path(task).exists())
+        # All candidates occupied: the dry run names them, as a real wave does.
+        self.foreign_branch(self.slot2, "task/other-two", "two.txt")
+        busy = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run", env={},
+        )
+        self.assertEqual(busy.returncode, 2, busy.stdout)
+        busy_text = busy.stdout + busy.stderr
+        self.assertIn("slot-busy", busy_text)
+        self.assertIn("task/other-work", busy_text)
+        self.assertIn("task/other-two", busy_text)
+        self.assertFalse(self.record_path(task).exists())
+
+    def test_all_slots_occupied_names_each_branch(self) -> None:
+        self.foreign_branch(self.slot1, "task/other-one", "one.txt")
+        self.foreign_branch(self.slot2, "task/other-two", "two.txt")
+        task = self.tid()
+        result = self.oc_run(task)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        text = result.stdout + result.stderr
+        self.assertIn("slot-busy", text)
+        self.assertIn("task/other-one", text)
+        self.assertIn("task/other-two", text)
+        record = self.read_record(task)
+        self.assertEqual(record["verdict"], "INFRA")
+        self.assertTrue(str(record["cause"]).startswith("slot-busy"))
+        for name in ("slot-1.lock", "slot-2.lock"):
+            self.assertFalse((self.repo / ".agents" / "slots" / name).exists())
+
+    def test_wave_refuses_when_every_slot_is_occupied(self) -> None:
+        self.foreign_branch(self.slot1, "task/other-one", "one.txt")
+        self.foreign_branch(self.slot2, "task/other-two", "two.txt")
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        result = self.oc(
+            "wave", f"{task}:implement:{MODEL}", "--base", "master",
+            env={"FAKE_OC_LOG": str(call_log)}, timeout=120,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        text = result.stdout + result.stderr
+        self.assertIn("slot-busy", text)
+        self.assertIn("task/other-one", text)
+        self.assertIn("task/other-two", text)
+        self.assertFalse(call_log.exists(), "a worker started without a free slot")
+        self.assertFalse(self.record_path(task).exists())
 
     # -- idle watchdog ---------------------------------------------------
 
@@ -1407,7 +1677,10 @@ class DispatchCase(unittest.TestCase):
 
     def test_git_clean_failure_is_branch(self) -> None:
         task = self.tid()
-        held = self.slot1 / "oc-clean-probe.txt"
+        # BRIEF.md is the one path the A0-12 occupancy check ignores (the
+        # dispatcher writes it itself), so a held-open brief still reaches
+        # `git clean` and proves its failure is the `branch` cause.
+        held = self.slot1 / "BRIEF.md"
         handle = open(held, "w", encoding="utf-8")
         handle.write("held open so git clean cannot remove it\n")
         handle.flush()
