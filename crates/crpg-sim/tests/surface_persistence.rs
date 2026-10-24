@@ -377,3 +377,174 @@ fn a_reloaded_world_continues_equal() {
     assert_eq!(left, right);
     assert_eq!(world, reloaded);
 }
+
+// ---------------------------------------------------------------------------
+// T137b (R13): every shape at once, the T137b load messages, and replay.
+// ---------------------------------------------------------------------------
+
+/// A fixture using every authored shape: a derived stat, an `Opposed`
+/// defence with a bonus, ability bonus stats, damage dice, a `Stat`-target
+/// effect that grants a tag, rolled initiative and creature tags.
+fn every_shape_fixture() -> Fixture {
+    let mut fixture = Fixture::standard();
+    add_derived(
+        &mut fixture,
+        "half",
+        binary("divide", binary("add", stat("alpha"), stat("beta")), lit(2)),
+    );
+    always_success(&mut fixture);
+    let (a, b) = (fixture.creature_a, fixture.creature_b);
+    support::draws::set_tags(&mut fixture, a, &["pc", "hero"]);
+    support::draws::set_tags(&mut fixture, b, &["foe"]);
+    support::draws::set_initiative_rule(&mut fixture, "1d20", &["half"]);
+    support::draws::defend_opposed(&mut fixture, "1d6", &["half"]);
+    support::draws::set_damage(
+        &mut fixture,
+        json!([{"outcome": {"type": "success"}, "amount": 1, "dice": "1d3"}]),
+    );
+    edit_ability(&mut fixture, |ability| {
+        ability.bonus_stats = Some(vec!["beta".to_owned()]);
+    });
+    attach_to_ability(
+        &mut fixture,
+        support::draws::grant(
+            effect_doc(
+                141,
+                "target",
+                "probe-type",
+                "stack_all",
+                vec![
+                    modifier(142, json!({"type": "roll"}), "add", 1),
+                    modifier(143, stat_target("gamma"), "add", 1),
+                ],
+                2,
+            ),
+            &["hasted"],
+        ),
+    );
+    fixture
+}
+
+/// The state hash after the start and after each step of a fixed script in
+/// which the active combatant hits the other, optionally saving and
+/// reloading the world after `reload_after` steps.
+fn run_script(seed: u64, steps: usize, reload_after: Option<usize>) -> Vec<[u8; 32]> {
+    let fixture = every_shape_fixture();
+    let ability = fixture.ability;
+    let (mut world, ids) = start(&fixture, seed);
+    let mut hashes = vec![crpg_sim::state_hash(&world)];
+    for step in 0..steps {
+        let Some(actor) = world.combat().expect("encounter").active else {
+            break;
+        };
+        let target = if actor == ids[0] { ids[1] } else { ids[0] };
+        act(&mut world, actor, ability, target);
+        hashes.push(crpg_sim::state_hash(&world));
+        if reload_after == Some(step + 1) {
+            let text = serde_json::to_string(&world).expect("serializes");
+            world = serde_json::from_str(&text).expect("the save loads");
+            assert_eq!(crpg_sim::state_hash(&world), *hashes.last().expect("hash"));
+        }
+    }
+    hashes
+}
+
+/// R13 (B1, B21): one start with every shape at once succeeds, and its save
+/// carries each shape in its absence-form bytes.
+#[test]
+fn one_start_with_every_shape_succeeds() {
+    let fixture = every_shape_fixture();
+    let (world, ids) = start(&fixture, 6);
+    let value = save(&world);
+    let combat = &value["combat"]["definition"];
+    assert_eq!(
+        combat["abilities"][0]["defense"],
+        json!({"type": "opposed", "value": {"dice": "1d6", "bonus_stats": ["half"]}})
+    );
+    assert_eq!(
+        combat["abilities"][0]["damage_dice"],
+        json!([[{"type": "success"}, "1d3"]])
+    );
+    assert_eq!(combat["abilities"][0]["bonus_stats"], json!(["beta"]));
+    assert_eq!(
+        combat["initiative"],
+        json!({"dice": "1d20", "bonus_stats": ["half"]})
+    );
+    assert_eq!(combat["derived"][0]["name"], json!("half"));
+    assert_eq!(combat["effects"][0]["grants"], json!(["hasted"]));
+    let a = world.combatants().get(ids[0]).expect("A");
+    assert_eq!(a.tags(), ["hero", "pc"]);
+    let mut expected = support::draws::oracle(6);
+    let key_a = support::draws::draw(&mut expected, "1d20").total + 7 + 10;
+    assert_eq!(a.initiative(), key_a, "half of (8 + 6) is 7, authored 10");
+    assert_eq!(load(value).expect("the save loads"), world);
+}
+
+/// R13 (B23 L3): an `Opposed` bonus name outside the usable names is refused.
+#[test]
+fn an_opposed_bonus_name_outside_the_usable_names_is_refused() {
+    let fixture = every_shape_fixture();
+    let (world, _) = start(&fixture, 6);
+    for name in ["nope", "health"] {
+        let mut value = save(&world);
+        definition(&mut value)["abilities"][0]["defense"] =
+            json!({"type": "opposed", "value": {"dice": "1d6", "bonus_stats": [name]}});
+        let error = load(value).expect_err("refused");
+        assert!(
+            error.contains("combat bonus stat names no declared int stat"),
+            "{error}"
+        );
+    }
+    // A derived name is usable there.
+    let mut value = save(&world);
+    definition(&mut value)["abilities"][0]["defense"] =
+        json!({"type": "opposed", "value": {"dice": "1d6", "bonus_stats": ["half", "beta"]}});
+    load(value).expect("usable names load");
+}
+
+/// R13 (B23 L6): a combatant whose tags and the definition's grants exceed
+/// the kernel bound is refused, and the bound itself loads.
+#[test]
+fn a_combatant_over_the_tag_bound_is_refused() {
+    let fixture = every_shape_fixture();
+    let (world, _) = start(&fixture, 6);
+    let names = |count: usize| -> Vec<String> {
+        (0..count).map(|index| format!("tag-{index:04}")).collect()
+    };
+    let mut at_bound = save(&world);
+    at_bound["combatants"][0][1]["tags"] = json!(names(1023));
+    load(at_bound).expect("1023 tags and one grant load");
+    let mut over = save(&world);
+    over["combatants"][0][1]["tags"] = json!(names(1024));
+    let error = load(over).expect_err("1025 distinct tags are refused");
+    assert!(
+        error.contains("combatant tags exceed their bound"),
+        "{error}"
+    );
+    // A grant already among the tags counts once.
+    let mut repeat = save(&world);
+    let mut tags = names(1023);
+    tags.push("hasted".to_owned());
+    repeat["combatants"][0][1]["tags"] = json!(tags);
+    load(repeat).expect("a repeated grant counts once");
+}
+
+/// R13 (B24): two runs of one same-seed script give equal per-step hashes.
+#[test]
+fn two_same_seed_runs_give_equal_hashes() {
+    let first = run_script(9, 4, None);
+    let second = run_script(9, 4, None);
+    assert!(first.len() >= 3, "the script ran");
+    assert_eq!(first, second);
+    assert_ne!(first, run_script(10, 4, None), "the seed matters");
+}
+
+/// R13 (B24): a run that saves and reloads mid-script continues to the same
+/// hashes.
+#[test]
+fn a_save_and_reload_mid_script_continues_equal() {
+    let straight = run_script(9, 4, None);
+    for at in 0..=3 {
+        assert_eq!(run_script(9, 4, Some(at)), straight, "reload after {at}");
+    }
+}

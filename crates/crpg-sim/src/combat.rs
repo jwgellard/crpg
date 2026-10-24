@@ -26,19 +26,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crpg_core::{EntityId, GenerationalArena, Interners, Tick, Ulid};
+use crpg_core::{DeterministicRng, EntityId, GenerationalArena, Interners, Tick, Ulid};
 use crpg_data::{
-    Ability as AuthoredAbility, Creature as AuthoredCreature, DefenseWire,
-    Effect as AuthoredEffect, Encounter as AuthoredEncounter, ExprWire,
-    OutcomeTable as AuthoredOutcomeTable, Placement as AuthoredPlacement,
-    RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset, StatKindWire, StatValueWire,
+    Ability as AuthoredAbility, Creature as AuthoredCreature, Effect as AuthoredEffect,
+    Encounter as AuthoredEncounter, ExprWire, OutcomeTable as AuthoredOutcomeTable,
+    Placement as AuthoredPlacement, RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset,
+    StatKindWire, StatValueWire,
 };
 use crpg_rules::{
     resolve, Against, DiceExpr, DiceRoll, Expr, ModOp, ModTypeId, Modifier, ModifierPipeline,
     ModifierTarget, NaturalEffect, NaturalRule, Outcome, OutcomeBand, OutcomeTable, OutcomeTableId,
     QueryContext, RefreshEvent, RefreshTrigger, ResolutionContext, ResolutionRequest, ResourcePool,
     ResourcePoolId, RestId as RulesRestId, RollRequest, RollSpec, RollTag, SourceRef,
-    StackingPolicy, StatBlock, StatDefinition, StatKind, StatValue, TagSet,
+    StackingPolicy, StatBlock, StatDefinition, StatKind, StatValue, TagSet, MAX_TAGS,
 };
 
 use crate::event::SimEvent;
@@ -216,6 +216,10 @@ pub struct Combatant {
     /// The RT standing order; always `None` in TB (ADR-0029 T8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     order: Option<StandingOrder>,
+    /// Placement tags, ascending and distinct; carried only when an effect
+    /// of the encounter grants tags. Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
 }
 
 impl Combatant {
@@ -224,7 +228,7 @@ impl Combatant {
         self.placement
     }
 
-    /// The authored initiative key scheduling this combatant.
+    /// The initiative key: authored, or rolled at start (T137).
     pub fn initiative(&self) -> i32 {
         self.initiative
     }
@@ -268,6 +272,11 @@ impl Combatant {
     pub fn order(&self) -> Option<StandingOrder> {
         self.order
     }
+
+    /// Placement tags, ascending and distinct.
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
 }
 
 /// How an ability selects its defense value.
@@ -287,6 +296,13 @@ pub enum AbilityDefense {
     ActorStat {
         /// Non-health `Int` stat name read from the actor.
         stat: String,
+    },
+    /// Uses the target's opposing roll total.
+    Opposed {
+        /// Parsed opposing dice.
+        dice: DiceExpr,
+        /// Non-health `Int` stat names added to the opposing roll.
+        bonus_stats: Vec<String>,
     },
 }
 
@@ -357,6 +373,9 @@ pub struct EffectDefinition {
     pub modifiers: Vec<EffectModifier>,
     /// Lifetime in rounds, always at least one.
     pub duration_rounds: u32,
+    /// Tag names held by the holder while attached, authored order; empty
+    /// means none.
+    pub grants: Vec<String>,
 }
 
 /// One persisted pool template owned by the definition.
@@ -518,19 +537,24 @@ fn policy_from_text(text: &str) -> Option<StackingPolicy> {
 
 impl Serialize for EffectDefinition {
     /// Serializes the `{effect, aim, mod_type, policy, modifiers,
-    /// duration_rounds}` wire object with the policy as stable text.
+    /// duration_rounds[, grants]}` wire object with the policy as stable
+    /// text; `grants` is written only when nonempty.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut shape = serializer.serialize_struct("EffectDefinition", 6)?;
+        let len = 6 + usize::from(!self.grants.is_empty());
+        let mut shape = serializer.serialize_struct("EffectDefinition", len)?;
         shape.serialize_field("effect", &self.effect)?;
         shape.serialize_field("aim", &self.aim)?;
         shape.serialize_field("mod_type", &self.mod_type)?;
         shape.serialize_field("policy", policy_to_text(self.policy))?;
         shape.serialize_field("modifiers", &self.modifiers)?;
         shape.serialize_field("duration_rounds", &self.duration_rounds)?;
+        if !self.grants.is_empty() {
+            shape.serialize_field("grants", &self.grants)?;
+        }
         shape.end()
     }
 }
@@ -544,6 +568,8 @@ struct EffectDefinitionRepr {
     policy: String,
     modifiers: Vec<EffectModifier>,
     duration_rounds: u32,
+    #[serde(default)]
+    grants: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for EffectDefinition {
@@ -563,6 +589,7 @@ impl<'de> Deserialize<'de> for EffectDefinition {
             policy,
             modifiers: repr.modifiers,
             duration_rounds: repr.duration_rounds,
+            grants: repr.grants,
         })
     }
 }
@@ -852,7 +879,8 @@ pub struct ActionOutcome {
     pub margin: i64,
     /// The table-selected outcome.
     pub outcome: Outcome,
-    /// The flat damage applied (zero on failure or unmapped outcomes).
+    /// The damage applied: the flat amount plus any damage dice, clamped
+    /// into `0..=u32::MAX` (zero on unmapped outcomes).
     pub damage: u32,
     /// Whether this action killed the target.
     pub target_died: bool,
@@ -1004,8 +1032,6 @@ pub enum CombatError {
         /// The participants' resolved area.
         found: Ulid,
     },
-    /// An authored surface feature the adapter does not execute yet (T137).
-    UnsupportedAuthored,
     /// RT was requested for an encounter whose ruleset declares no
     /// `round_ticks` (ADR-0029 T2).
     ModeUnsupported,
@@ -1015,6 +1041,9 @@ pub enum CombatError {
         /// The encounter's current mode.
         mode: EncounterMode,
     },
+    /// The union of one participant's tags and every granted tag exceeds
+    /// the kernel tag bound.
+    TooManyTags,
     /// A derived stat the action reads fails to evaluate (a zero divisor).
     StatEvaluation {
         /// The queried stat whose evaluation failed.
@@ -1059,9 +1088,9 @@ impl std::fmt::Display for CombatError {
             Self::InvalidNaturalDie { .. } => write!(f, "InvalidNaturalDie at spec/ability"),
             Self::PolicyConflict { .. } => write!(f, "PolicyConflict at spec/effects"),
             Self::AreaMismatch { .. } => write!(f, "AreaMismatch at spec/areas"),
-            Self::UnsupportedAuthored => write!(f, "UnsupportedAuthored at spec/authored"),
             Self::ModeUnsupported => write!(f, "ModeUnsupported at combat/mode"),
             Self::WrongMode { .. } => write!(f, "WrongMode at combat/mode"),
+            Self::TooManyTags => write!(f, "TooManyTags at spec/tags"),
             Self::StatEvaluation { .. } => write!(f, "StatEvaluation at combat/stats"),
         }
     }
@@ -1168,18 +1197,21 @@ fn map_policy(policy: crpg_data::PolicyWire) -> StackingPolicy {
 /// published; any error leaves `world` unchanged (no entities, no combat,
 /// empty timeline, empty events, unchanged RNG streams).
 ///
-/// Check order (pinned): an already-active encounter; collection bounds;
-/// unsupported authored features; each participant's placement, then
-/// single-area agreement, then each placement's creature; per creature, per
-/// ruleset stat in authored order, presence, wholeness, and health positivity
-/// with checked conversion (only base `Int` stats are read; a base `Fixed`
-/// stat must be present, T137); the derived-stat preflight (`InvalidStatValue`
+/// Check order (pinned): an already-active encounter; collection bounds; each
+/// participant's placement, then single-area agreement, then each placement's
+/// creature; per creature, per ruleset stat in authored order, presence,
+/// wholeness, and health positivity with checked conversion (only base `Int`
+/// stats are read; a base `Fixed` stat must be present, T137); the initiative
+/// rule's dice and bonus names; the derived-stat preflight (`InvalidStatValue`
 /// naming the derived stat); pool templates carried in order; per
 /// ruleset-listed ability in authored order, the spec-map entry,
 /// declared-attribute, dice, outcome-table, per-pool costs in template order,
-/// defense, bonus-stat, effect, and natural checks; global effect checks in
+/// defense (an `Opposed` defense's dice, then its bonus names), bonus-stat,
+/// damage-dice, effect, and natural checks; global effect checks in
 /// ascending effect order (reserved bonus type, then per modifier the policy
-/// checks and the `Stat` target name); then publication.
+/// checks and the `Stat` target name); duplicate modifiers; policy conflicts;
+/// the tag bound (`TooManyTags`); then publication, whose first draws are the
+/// rolled initiative keys.
 ///
 /// Data-owned preconditions (enforced at data read time, asserted here):
 /// participants and the ruleset ability list are nonempty.
@@ -1229,7 +1261,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
         DuplicateModifier, EncounterActive, InvalidCost, InvalidDice, InvalidEffect,
         InvalidNaturalDie, InvalidOutcomeTable, InvalidStatValue, MissingCreature, MissingEffect,
         MissingPlacement, MissingPool, MissingStat, MixedArea, PolicyConflict, TooManyParticipants,
-        TooManyStats, UnknownAbility, UnsupportedAuthored, ValueOverflow,
+        TooManyStats, TooManyTags, UnknownAbility, ValueOverflow,
     };
 
     let encounter = spec.encounter;
@@ -1264,15 +1296,6 @@ pub(crate) fn start_encounter_in_mode_tracked(
                 }
             }
         }
-    }
-    let unsupported = ruleset.initiative.is_some()
-        || spec.abilities.values().any(|ability| {
-            matches!(&ability.defense, DefenseWire::Opposed { .. })
-                || ability.damage.iter().any(|entry| entry.dice.is_some())
-        })
-        || spec.effects.values().any(|effect| effect.grants.is_some());
-    if unsupported {
-        return Err(UnsupportedAuthored);
     }
     // T137 B3, B4: the base usable stats and the derived `Int` formulas.
     let int_names: BTreeSet<&str> = ruleset
@@ -1344,6 +1367,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
         initiative: i32,
         attributes: Vec<(String, i32)>,
         health: u32,
+        tags: Vec<String>,
     }
 
     let mut pending = Vec::with_capacity(encounter.participants.len());
@@ -1395,6 +1419,9 @@ pub(crate) fn start_encounter_in_mode_tracked(
             stats.push((declaration.name.clone(), value));
         }
         let health = health.expect("the health stat names a declared stat");
+        let mut tags = creature.tags.clone();
+        tags.sort();
+        tags.dedup();
         let mut attributes = Vec::with_capacity(stats.len());
         for (name, value) in &stats {
             if *name != ruleset.health_stat {
@@ -1406,8 +1433,26 @@ pub(crate) fn start_encounter_in_mode_tracked(
             initiative: participant.initiative,
             attributes,
             health,
+            tags,
         });
     }
+
+    // T137 B17 checks: the initiative rule's dice, then each bonus name.
+    let initiative_rule = match &ruleset.initiative {
+        Some(wire) => {
+            let dice: DiceExpr = wire.dice.parse().map_err(|_| InvalidDice)?;
+            for name in &wire.bonus_stats {
+                if !usable(name) {
+                    return Err(MissingStat { stat: name.clone() });
+                }
+            }
+            Some(InitiativeRule {
+                dice,
+                bonus_stats: wire.bonus_stats.clone(),
+            })
+        }
+        None => None,
+    };
 
     if !derived.is_empty() {
         let mut scratch = world.interners().clone();
@@ -1470,6 +1515,8 @@ pub(crate) fn start_encounter_in_mode_tracked(
         dice: DiceExpr,
         table: OutcomeTable,
         costs: Vec<(ResourcePoolId, u32)>,
+        opposed: Option<DiceExpr>,
+        damage_dice: Vec<(Outcome, DiceExpr)>,
     }
 
     let mut validated: Vec<ValidatedAbility<'_>> = Vec::with_capacity(ruleset.abilities.len());
@@ -1545,16 +1592,34 @@ pub(crate) fn start_encounter_in_mode_tracked(
                 return Err(InvalidCost { cost: *amount, max });
             }
         }
-        if let crpg_data::DefenseWire::TargetStat { stat }
-        | crpg_data::DefenseWire::ActorStat { stat } = &ability.defense
-        {
-            if !usable(stat) {
-                return Err(MissingStat { stat: stat.clone() });
+        let mut opposed = None;
+        match &ability.defense {
+            crpg_data::DefenseWire::TargetStat { stat }
+            | crpg_data::DefenseWire::ActorStat { stat } => {
+                if !usable(stat) {
+                    return Err(MissingStat { stat: stat.clone() });
+                }
             }
+            crpg_data::DefenseWire::Opposed { dice, bonus_stats } => {
+                opposed = Some(dice.parse::<DiceExpr>().map_err(|_| InvalidDice)?);
+                for name in bonus_stats {
+                    if !usable(name) {
+                        return Err(MissingStat { stat: name.clone() });
+                    }
+                }
+            }
+            crpg_data::DefenseWire::ActorAttribute | crpg_data::DefenseWire::Constant(_) => {}
         }
         for name in ability.bonus_stats.iter().flatten() {
             if !usable(name) {
                 return Err(MissingStat { stat: name.clone() });
+            }
+        }
+        let mut damage_dice = Vec::new();
+        for entry in &ability.damage {
+            if let Some(text) = &entry.dice {
+                let parsed: DiceExpr = text.parse().map_err(|_| InvalidDice)?;
+                damage_dice.push((map_outcome(entry.outcome), parsed));
             }
         }
         if let Some(effect) = ability.effect {
@@ -1573,6 +1638,8 @@ pub(crate) fn start_encounter_in_mode_tracked(
             dice,
             table,
             costs,
+            opposed,
+            damage_dice,
         });
     }
 
@@ -1677,6 +1744,33 @@ pub(crate) fn start_encounter_in_mode_tracked(
         }
     }
 
+    // T137 B19, B20: creature tags are carried only when an effect grants.
+    let carries_grants = referenced.iter().any(|effect| {
+        spec.effects
+            .get(effect)
+            .and_then(|authored| authored.grants.as_ref())
+            .is_some_and(|grants| !grants.is_empty())
+    });
+    if carries_grants {
+        let mut granted: BTreeSet<&str> = BTreeSet::new();
+        for effect in &referenced {
+            if let Some(grants) = spec
+                .effects
+                .get(effect)
+                .and_then(|item| item.grants.as_ref())
+            {
+                granted.extend(grants.iter().map(String::as_str));
+            }
+        }
+        for member in &pending {
+            let mut union = granted.clone();
+            union.extend(member.tags.iter().map(String::as_str));
+            if union.len() > MAX_TAGS {
+                return Err(TooManyTags);
+            }
+        }
+    }
+
     let mut abilities: Vec<AbilityDefinition> = Vec::with_capacity(validated.len());
     for entry in &validated {
         let defense = match &entry.authored.defense {
@@ -1688,9 +1782,13 @@ pub(crate) fn start_encounter_in_mode_tracked(
             crpg_data::DefenseWire::ActorStat { stat } => {
                 AbilityDefense::ActorStat { stat: stat.clone() }
             }
-            crpg_data::DefenseWire::Opposed { .. } => {
-                unreachable!("rejected as UnsupportedAuthored at encounter start")
-            }
+            crpg_data::DefenseWire::Opposed { bonus_stats, .. } => AbilityDefense::Opposed {
+                dice: entry
+                    .opposed
+                    .clone()
+                    .expect("an opposed defense parses its dice above"),
+                bonus_stats: bonus_stats.clone(),
+            },
         };
         let damage = entry
             .authored
@@ -1719,7 +1817,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
             repeats_in_real_time: clock.is_some()
                 && entry.authored.repeats_in_real_time.unwrap_or(false),
             bonus_stats: entry.authored.bonus_stats.clone().unwrap_or_default(),
-            damage_dice: Vec::new(),
+            damage_dice: entry.damage_dice.clone(),
         });
     }
     abilities.sort_by_key(|entry| entry.ability);
@@ -1760,6 +1858,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
             policy: map_policy(authored.policy),
             modifiers,
             duration_rounds: authored.duration_rounds,
+            grants: authored.grants.clone().unwrap_or_default(),
         });
     }
     effects.sort_by_key(|entry| entry.effect);
@@ -1796,8 +1895,53 @@ pub(crate) fn start_encounter_in_mode_tracked(
         pools: templates,
         effects,
         derived,
-        initiative: None,
+        initiative: initiative_rule,
     };
+
+    // T137 B17: roll each participant's key in authored order, after every
+    // check and before the spawn loop.
+    if let Some(rule) = &definition.initiative {
+        let mut scratch = world.interners().clone();
+        let definitions = int_definitions(
+            &definition.health_stat,
+            &definition.attribute_names,
+            &definition.derived,
+            &mut scratch,
+        );
+        let pipeline = ModifierPipeline::new(definitions, BTreeMap::new())
+            .unwrap_or_else(|_| panic!("{DERIVED_PRECONDITION}"));
+        let mut probe_arena: GenerationalArena<()> = GenerationalArena::new();
+        let probe = probe_arena.insert(());
+        let no_tags = TagSet::new();
+        for member in pending.iter_mut() {
+            let block = base_block(
+                &definition.health_stat,
+                member.health,
+                &member.attributes,
+                &mut scratch,
+            );
+            let context = QueryContext {
+                entity: probe,
+                stats: &block,
+                tags: &no_tags,
+                modifiers: &[],
+            };
+            let mut bonus: i32 = 0;
+            for name in &rule.bonus_stats {
+                let value = query_int(&pipeline, probe, name, &scratch, &context)
+                    .expect("the start preflight guarantees the stat evaluates");
+                bonus = bonus.saturating_add(value);
+            }
+            let rolled = rule
+                .dice
+                .evaluate(world.rng_mut(), COMBAT_ROLL_STREAM)
+                .expect("the combat stream name is valid");
+            member.initiative = rolled
+                .total
+                .saturating_add(bonus)
+                .saturating_add(member.initiative);
+        }
+    }
 
     for member in pending {
         let id = world.spawn(EntityMeta {});
@@ -1832,6 +1976,11 @@ pub(crate) fn start_encounter_in_mode_tracked(
                 extra_pools: extra,
                 attached: Vec::new(),
                 order: None,
+                tags: if carries_grants {
+                    member.tags
+                } else {
+                    Vec::new()
+                },
             },
         );
         let key = match mode {
@@ -2144,6 +2293,32 @@ fn view_modifiers(
     out
 }
 
+/// One combatant's tag projection (T137 B19): its placement tags plus the
+/// grants of every unexpired attachment, as handles of `scratch`.
+fn combatant_tags(
+    definition: &CombatDefinition,
+    combatant: &Combatant,
+    round: u32,
+    scratch: &mut Interners,
+) -> TagSet {
+    let mut tags = TagSet::new();
+    for name in &combatant.tags {
+        tags.insert(scratch.intern_tag(name));
+    }
+    for attached in &combatant.attached {
+        if attached.expires_round <= round {
+            continue;
+        }
+        let Some(entry) = effect_entry(definition, attached.effect) else {
+            continue;
+        };
+        for name in &entry.grants {
+            tags.insert(scratch.intern_tag(name));
+        }
+    }
+    tags
+}
+
 /// The synthetic `Roll` modifiers of one view's bonus stats (T137 B14), one
 /// per value in authored order. The k-th takes the k-th smallest `Ulid`
 /// from `1` that no modifier already in `view` uses.
@@ -2187,6 +2362,10 @@ struct ActionPlan {
     roll_tag: RollTag,
     actor_stats: StatBlock,
     target_stats: StatBlock,
+    /// The actor's tag projection (T137 B19).
+    actor_tags: TagSet,
+    /// The target's tag projection.
+    target_tags: TagSet,
     /// The actor's modifiers; the one combined view when self-targeted.
     actor_mods: Vec<Modifier>,
     /// The target's modifiers; empty when self-targeted.
@@ -2195,7 +2374,8 @@ struct ActionPlan {
 }
 
 /// Builds one action's plan, querying in the B15 order: the defence-side
-/// stat, then the actor's bonus stats. The first failed query is
+/// stat, the actor's bonus stats, then an `Opposed` defence's bonus stats on
+/// the target. The first failed query is
 /// `StatEvaluation` naming that stat. Reads the world, writes nothing.
 fn action_plan(
     world: &World,
@@ -2230,7 +2410,11 @@ fn action_plan(
     for effect in &definition.effects {
         policies.insert(ModTypeId(effect.mod_type.clone()), effect.policy);
     }
-    if !entry.bonus_stats.is_empty() {
+    let opposing_bonus: &[String] = match &entry.defense {
+        AbilityDefense::Opposed { bonus_stats, .. } => bonus_stats,
+        _ => &[],
+    };
+    if !entry.bonus_stats.is_empty() || !opposing_bonus.is_empty() {
         policies.insert(
             ModTypeId(COMBAT_BONUS_MOD_TYPE.to_owned()),
             StackingPolicy::StackAll,
@@ -2251,6 +2435,12 @@ fn action_plan(
         &mut scratch,
     );
     let self_targeted = actor == target;
+    let actor_tags = combatant_tags(definition, actor_state, round, &mut scratch);
+    let target_tags = if self_targeted {
+        actor_tags.clone()
+    } else {
+        combatant_tags(definition, target_state, round, &mut scratch)
+    };
     let actor_folds = Folds {
         roll: true,
         dc: self_targeted || matches!(entry.defense, AbilityDefense::ActorStat { .. }),
@@ -2263,7 +2453,7 @@ fn action_plan(
         &mut scratch,
         actor_folds,
     );
-    let target_mods = if self_targeted {
+    let mut target_mods = if self_targeted {
         Vec::new()
     } else {
         view_modifiers(
@@ -2273,33 +2463,32 @@ fn action_plan(
             roll_tag,
             &mut scratch,
             Folds {
-                roll: false,
+                roll: matches!(entry.defense, AbilityDefense::Opposed { .. }),
                 dc: true,
             },
         )
     };
-    let no_tags = TagSet::new();
     let fail = |stat: &str| CombatError::StatEvaluation {
         stat: stat.to_owned(),
     };
     let actor_context = QueryContext {
         entity: actor,
         stats: &actor_stats,
-        tags: &no_tags,
+        tags: &actor_tags,
         modifiers: &actor_mods,
     };
     let target_context = if self_targeted {
         QueryContext {
             entity: target,
             stats: &actor_stats,
-            tags: &no_tags,
+            tags: &actor_tags,
             modifiers: &actor_mods,
         }
     } else {
         QueryContext {
             entity: target,
             stats: &target_stats,
-            tags: &no_tags,
+            tags: &target_tags,
             modifiers: &target_mods,
         }
     };
@@ -2340,6 +2529,14 @@ fn action_plan(
                 modifier_target: roll_tag,
             }
         }
+        AbilityDefense::Opposed { dice, .. } => Against::Opposed(RollRequest {
+            actor: target,
+            roll: RollSpec::Dice(dice.clone()),
+            bonus_target: roll_tag,
+            natural_die: None,
+            stream: COMBAT_ROLL_STREAM.to_owned(),
+            tags: TagSet::new(),
+        }),
     };
     let mut bonus_values = Vec::with_capacity(entry.bonus_stats.len());
     for name in &entry.bonus_stats {
@@ -2347,13 +2544,29 @@ fn action_plan(
             .ok_or_else(|| fail(name))?;
         bonus_values.push(value);
     }
+    let mut opposing_values = Vec::with_capacity(opposing_bonus.len());
+    for name in opposing_bonus {
+        let value = query_int(&pipeline, target, name, &scratch, &target_context)
+            .ok_or_else(|| fail(name))?;
+        opposing_values.push(value);
+    }
     let synthetic = bonus_modifiers(entry.ability, &bonus_values, roll_tag, &actor_mods);
     actor_mods.extend(synthetic);
+    if self_targeted {
+        // One view: the opposing list takes the next ids after the actor's.
+        let opposing = bonus_modifiers(entry.ability, &opposing_values, roll_tag, &actor_mods);
+        actor_mods.extend(opposing);
+    } else {
+        let opposing = bonus_modifiers(entry.ability, &opposing_values, roll_tag, &target_mods);
+        target_mods.extend(opposing);
+    }
     Ok(ActionPlan {
         pipeline,
         roll_tag,
         actor_stats,
         target_stats,
+        actor_tags,
+        target_tags,
         actor_mods,
         target_mods,
         against,
@@ -2831,6 +3044,8 @@ pub(crate) fn resolve_use(
         roll_tag,
         actor_stats,
         target_stats,
+        actor_tags,
+        target_tags,
         actor_mods,
         target_mods,
         against,
@@ -2848,12 +3063,11 @@ pub(crate) fn resolve_use(
         against,
         outcome_table: entry.outcome_table.id(),
     };
-    let empty_tags = TagSet::new();
     let outcome = if actor == target {
         let view = QueryContext {
             entity: actor,
             stats: &actor_stats,
-            tags: &empty_tags,
+            tags: &actor_tags,
             modifiers: &actor_mods,
         };
         let mut entities = BTreeMap::new();
@@ -2869,13 +3083,13 @@ pub(crate) fn resolve_use(
         let actor_view = QueryContext {
             entity: actor,
             stats: &actor_stats,
-            tags: &empty_tags,
+            tags: &actor_tags,
             modifiers: &actor_mods,
         };
         let target_view = QueryContext {
             entity: target,
             stats: &target_stats,
-            tags: &empty_tags,
+            tags: &target_tags,
             modifiers: &target_mods,
         };
         let mut entities = BTreeMap::new();
@@ -2889,12 +3103,7 @@ pub(crate) fn resolve_use(
         resolve(&request, &context, world.rng_mut())
             .expect("combat preflight guarantees resolution success")
     };
-    let damage = entry
-        .damage
-        .iter()
-        .find(|(outcome_kind, _)| *outcome_kind == outcome.decision.outcome)
-        .map(|(_, amount)| *amount)
-        .unwrap_or(0);
+    let damage = damage_for(&entry, outcome.decision.outcome, world.rng_mut());
 
     spend_costs(world, actor, &entry.costs).expect("affordability is checked above");
     let target_died = if damage > 0 {
@@ -2941,6 +3150,27 @@ pub(crate) fn resolve_use(
         damage,
         target_died,
     }
+}
+
+/// The damage of one decided outcome (T137 B16): the first flat entry for
+/// the outcome, or zero, plus the outcome's damage dice when authored. The
+/// sum is taken in `i64` and clamped once into `0..=u32::MAX`; an outcome
+/// without dice draws nothing.
+fn damage_for(entry: &AbilityDefinition, outcome: Outcome, rng: &mut DeterministicRng) -> u32 {
+    let flat = entry
+        .damage
+        .iter()
+        .find(|(kind, _)| *kind == outcome)
+        .map(|(_, amount)| *amount)
+        .unwrap_or(0);
+    let Some((_, dice)) = entry.damage_dice.iter().find(|(kind, _)| *kind == outcome) else {
+        return flat;
+    };
+    let rolled = dice
+        .evaluate(rng, COMBAT_ROLL_STREAM)
+        .expect("the combat stream name is valid");
+    let total = i64::from(flat) + i64::from(rolled.total);
+    u32::try_from(total.clamp(0, i64::from(u32::MAX))).expect("clamped into u32")
 }
 
 /// Spends every pool cost after an accepted resolution.
@@ -3811,6 +4041,7 @@ mod surface_tests {
                     policy: StackingPolicy::StackAll,
                     modifiers: Vec::new(),
                     duration_rounds: 1,
+                    grants: Vec::new(),
                 })
             }),
             ("bonus stats", |d| {
@@ -3878,5 +4109,221 @@ mod surface_tests {
             (None, None, 0)
         );
         assert_eq!(first.target, ModifierTarget::Roll(tag));
+    }
+}
+
+/// R9, R12 (B14, B19): the crate-private plan and projection, which no public
+/// output exposes. A self-targeted view's bonus lists are invisible in the
+/// margin (both rolls fold the same modifiers), so the plan is inspected.
+#[cfg(test)]
+mod draw_tests {
+    use super::support::draws::{defend_opposed, grant, set_tags};
+    use super::support::surface::{
+        act, always_success, attach_to_ability, edit_ability, effect_doc, modifier, start,
+    };
+    use super::support::Fixture;
+    use super::*;
+    use serde_json::json;
+
+    fn plan_of(
+        world: &World,
+        ability: Ulid,
+        actor: EntityId,
+        target: EntityId,
+    ) -> (ActionPlan, Interners) {
+        let definition = &world.combat().expect("encounter").definition;
+        let entry = ability_entry(definition, ability).expect("listed").clone();
+        let scratch = world.interners().clone();
+        let plan = action_plan(world, scratch.clone(), &entry, actor, target).expect("plan");
+        (plan, scratch)
+    }
+
+    fn ids_and_values(view: &[Modifier]) -> Vec<(u128, ModOp)> {
+        view.iter()
+            .map(|modifier| (modifier.id.to_u128(), modifier.op.clone()))
+            .collect()
+    }
+
+    /// B14: one view for a self-targeted use holds the actor list and then
+    /// the opposing list, under consecutive ids; two views otherwise.
+    #[test]
+    fn the_bonus_lists_concatenate_in_one_view_when_self_targeted() {
+        let mut fixture = Fixture::standard();
+        defend_opposed(&mut fixture, "1d8", &["beta"]);
+        edit_ability(&mut fixture, |ability| {
+            ability.allow_self_target = true;
+            ability.bonus_stats = Some(vec!["alpha".to_owned()]);
+        });
+        let ability = fixture.ability;
+        let (world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+        let int = |value: i32| ModOp::Add(StatValue::Int(value));
+
+        let (own, _) = plan_of(&world, ability, b, b);
+        assert_eq!(
+            ids_and_values(&own.actor_mods),
+            vec![(1, int(6)), (2, int(7))],
+            "B's alpha then B's beta, one view"
+        );
+        assert!(own.target_mods.is_empty());
+
+        let (apart, _) = plan_of(&world, ability, b, a);
+        assert_eq!(ids_and_values(&apart.actor_mods), vec![(1, int(6))]);
+        assert_eq!(
+            ids_and_values(&apart.target_mods),
+            vec![(1, int(6))],
+            "A's beta, in A's own view"
+        );
+    }
+
+    /// B19: the projection is the placement tags plus the grants of every
+    /// unexpired attachment, as scratch handles; the placement tags are
+    /// carried sorted and distinct, and only when an effect grants.
+    #[test]
+    fn the_tag_projection_follows_the_attachments() {
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        let creature = fixture.creature_a;
+        set_tags(&mut fixture, creature, &["zed", "ant", "zed"]);
+        attach_to_ability(
+            &mut fixture,
+            grant(
+                effect_doc(
+                    141,
+                    "target",
+                    "probe-type",
+                    "stack_all",
+                    vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+                    2,
+                ),
+                &["hasted", "ant"],
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+        assert_eq!(world.combatants().get(a).expect("A").tags(), ["ant", "zed"]);
+        assert!(world.combatants().get(b).expect("B").tags().is_empty());
+
+        act(&mut world, b, ability, a);
+        let definition = world.combat().expect("encounter").definition.clone();
+        let holder = world.combatants().get(a).expect("A").clone();
+        let expires = holder.attached()[0].expires_round;
+        let names = |round: u32| {
+            let mut scratch = world.interners().clone();
+            let tags = combatant_tags(&definition, &holder, round, &mut scratch);
+            let mut found: Vec<String> = ["ant", "hasted", "zed"]
+                .into_iter()
+                .filter(|name| {
+                    scratch
+                        .tag(name)
+                        .is_some_and(|handle| tags.contains(&handle))
+                })
+                .map(str::to_owned)
+                .collect();
+            found.sort();
+            assert_eq!(found.len(), tags.len(), "no other tag");
+            found
+        };
+        assert_eq!(names(0), ["ant", "hasted", "zed"], "while attached");
+        assert_eq!(names(expires - 1), ["ant", "hasted", "zed"]);
+        assert_eq!(names(expires), ["ant", "zed"], "after its expiry");
+    }
+
+    /// B19: the plan carries the projection for both participants, and the
+    /// self-targeted case shares one projection.
+    #[test]
+    fn plan_carries_the_tag_projection_for_actor_and_target() {
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        let creature_a = fixture.creature_a;
+        let creature_b = fixture.creature_b;
+        set_tags(&mut fixture, creature_a, &["zed", "ant", "zed"]);
+        set_tags(&mut fixture, creature_b, &["solo"]);
+        attach_to_ability(
+            &mut fixture,
+            grant(
+                effect_doc(
+                    141,
+                    "target",
+                    "probe-type",
+                    "stack_all",
+                    vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+                    2,
+                ),
+                &["hasted"],
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+
+        // Attach the granting effect to A: B acts first.
+        act(&mut world, b, ability, a);
+        // A acts on B, attaching the effect to B too.
+        act(&mut world, a, ability, b);
+
+        let (plan, _scratch) = plan_of(&world, ability, b, a);
+        // Actor (B): creature tags {solo} plus grant {hasted}.
+        assert_eq!(plan.actor_tags.len(), 2);
+        // Target (A): creature tags {ant, zed} plus grant {hasted}.
+        assert_eq!(plan.target_tags.len(), 3);
+
+        // Self-targeted case: one projection shared by both.
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        let creature_b = fixture.creature_b;
+        set_tags(&mut fixture, creature_b, &["solo"]);
+        edit_ability(&mut fixture, |ability| ability.allow_self_target = true);
+        attach_to_ability(
+            &mut fixture,
+            grant(
+                effect_doc(
+                    141,
+                    "target",
+                    "probe-type",
+                    "stack_all",
+                    vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+                    2,
+                ),
+                &["hasted"],
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 2);
+        let b = ids[1];
+        act(&mut world, b, ability, b);
+        let (plan, _scratch) = plan_of(&world, ability, b, b);
+        assert_eq!(plan.actor_tags, plan.target_tags);
+        assert_eq!(plan.actor_tags.len(), 2);
+    }
+
+    /// B14: the opposing synthetic bonus id skips ids already present in the
+    /// target view.
+    #[test]
+    fn opposing_synthetic_bonus_ids_skip_the_target_views_ids() {
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        defend_opposed(&mut fixture, "1d8", &["beta"]);
+        attach_to_ability(
+            &mut fixture,
+            effect_doc(
+                141,
+                "target",
+                "probe-type",
+                "stack_all",
+                vec![modifier(1, json!({"type": "dc"}), "add", 5)],
+                3,
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+        act(&mut world, b, ability, a);
+        perform_action(&mut world, &CombatAction::EndTurn { actor: a }).expect("end");
+        let (plan, _) = plan_of(&world, ability, b, a);
+        let target_ids: Vec<u128> = plan.target_mods.iter().map(|m| m.id.to_u128()).collect();
+        assert!(target_ids.contains(&1), "the effect modifier is present");
+        assert!(target_ids.contains(&2), "the opposing synthetic skips id 1");
     }
 }
