@@ -26,11 +26,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crpg_core::{EntityId, Ulid};
+use crpg_core::{EntityId, Tick, Ulid};
 use crpg_data::{
-    Ability as AuthoredAbility, Creature as AuthoredCreature, Effect as AuthoredEffect,
-    Encounter as AuthoredEncounter, OutcomeTable as AuthoredOutcomeTable,
-    Placement as AuthoredPlacement, RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset,
+    Ability as AuthoredAbility, Creature as AuthoredCreature, DefenseWire,
+    Effect as AuthoredEffect, EffectTargetWire, Encounter as AuthoredEncounter,
+    OutcomeTable as AuthoredOutcomeTable, Placement as AuthoredPlacement,
+    RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset, StatKindWire,
 };
 use crpg_rules::{
     resolve, Against, DiceExpr, DiceRoll, ModTypeId, Modifier, ModifierPipeline, ModifierTarget,
@@ -57,6 +58,49 @@ pub const COMBAT_ROLL_STREAM: &str = "combat.roll";
 pub const COMBAT_ROLL_TAG: &str = "roll";
 /// The opaque source kind recorded on rebuilt effect modifiers.
 const EFFECT_SOURCE_KIND: &str = "effect";
+
+/// Encounter time policy (ADR-0029 T1): per encounter, hashed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncounterMode {
+    /// One head acts at a time (ADR-0013 Decision 5, ADR-0016).
+    #[default]
+    TurnBased,
+    /// Due standing orders execute inside the tick (ADR-0029 T5–T8).
+    RealTime,
+}
+
+/// The largest encounter-clock value: `i32::MAX`, the largest
+/// [`InitiativeKey`] (ADR-0029 T5). The clock freezes here.
+pub const RT_CLOCK_MAX: u64 = 2_147_483_647;
+
+/// The clock of one RT-capable encounter (ADR-0029 T2, T3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncounterClock {
+    /// Ticks per round, nonzero, copied from the ruleset's `round_ticks`.
+    pub round_ticks: u32,
+    /// Encounter ticks elapsed, `0..=RT_CLOCK_MAX`.
+    pub elapsed: u64,
+}
+
+/// One real-time standing order (ADR-0029 T8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandingOrder {
+    /// The ordered ability; one listed ability.
+    pub ability: Ulid,
+    /// The ordered target combatant.
+    pub target: EntityId,
+    /// Whether the order survives an execution (the ability's flag).
+    pub repeat: bool,
+}
+
+fn is_turn_based(mode: &EncounterMode) -> bool {
+    *mode == EncounterMode::TurnBased
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// One attached lifetime-bearing effect on a combatant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +129,9 @@ pub struct Combatant {
     /// Attached effects in ascending effect identity order; skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     attached: Vec<AttachedEffect>,
+    /// The RT standing order; always `None` in TB (ADR-0029 T8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    order: Option<StandingOrder>,
 }
 
 impl Combatant {
@@ -131,6 +178,11 @@ impl Combatant {
     /// Attached effects in ascending effect identity order.
     pub fn attached(&self) -> &[AttachedEffect] {
         &self.attached
+    }
+
+    /// The RT standing order, if any.
+    pub fn order(&self) -> Option<StandingOrder> {
+        self.order
     }
 }
 
@@ -249,6 +301,14 @@ pub struct AbilityDefinition {
     pub requires_target: bool,
     /// Whether the ability allows self-targeting.
     pub allow_self_target: bool,
+    /// RT recovery ticks after a use; `None` means `round_ticks`. Always
+    /// `None` in a TB-only encounter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_ticks: Option<u32>,
+    /// Whether an RT order for this ability repeats. Always `false` in a
+    /// TB-only encounter.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub repeats_in_real_time: bool,
 }
 
 /// The immutable, symbolically-serialized combat definition.
@@ -307,6 +367,8 @@ fn ability_is_legacy(entry: &AbilityDefinition, primary: Ulid) -> bool {
         && entry.natural_die.is_none()
         && entry.costs.len() == 1
         && entry.costs[0].0 .0 == primary
+        && entry.recovery_ticks.is_none()
+        && !entry.repeats_in_real_time
 }
 
 /// Reports whether the new vectors describe a legacy-equivalent shape.
@@ -476,6 +538,8 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 natural_die: None,
                 requires_target: repr.requires_target,
                 allow_self_target: repr.allow_self_target,
+                recovery_ticks: None,
+                repeats_in_real_time: false,
             };
             let pools = vec![PoolTemplate {
                 id: repr.pool_id,
@@ -536,6 +600,15 @@ pub struct CombatState {
     pub round: u32,
     /// The entity whose turn it is, or `None` when terminal.
     pub active: Option<EntityId>,
+    /// The encounter's time policy; omitted when turn-based (ADR-0029 T1).
+    #[serde(default, skip_serializing_if = "is_turn_based")]
+    pub mode: EncounterMode,
+    /// Round length and clock; `None` means TB-only (ADR-0029 T2, T3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<EncounterClock>,
+    /// The requested mode, applied at the next round boundary (ADR-0029 T9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_mode: Option<EncounterMode>,
 }
 
 /// One authored participant's resolved references for the adapter.
@@ -618,6 +691,11 @@ pub enum CombatAction {
     /// Complete the active turn without spending, drawing, damage, or effect.
     EndTurn {
         /// The acting combatant; must hold the active turn.
+        actor: EntityId,
+    },
+    /// Clear `actor`'s RT standing order (ADR-0029 T8). RT only.
+    Stop {
+        /// The combatant whose order is cleared.
         actor: EntityId,
     },
 }
@@ -789,6 +867,17 @@ pub enum CombatError {
         /// The participants' resolved area.
         found: Ulid,
     },
+    /// An authored surface feature the adapter does not execute yet (T137).
+    UnsupportedAuthored,
+    /// RT was requested for an encounter whose ruleset declares no
+    /// `round_ticks` (ADR-0029 T2).
+    ModeUnsupported,
+    /// The action does not exist in the encounter's current mode:
+    /// `EndTurn` in RT, `Stop` in TB (ADR-0029 T8).
+    WrongMode {
+        /// The encounter's current mode.
+        mode: EncounterMode,
+    },
 }
 
 impl std::fmt::Display for CombatError {
@@ -828,6 +917,9 @@ impl std::fmt::Display for CombatError {
             Self::InvalidNaturalDie { .. } => write!(f, "InvalidNaturalDie at spec/ability"),
             Self::PolicyConflict { .. } => write!(f, "PolicyConflict at spec/effects"),
             Self::AreaMismatch { .. } => write!(f, "AreaMismatch at spec/areas"),
+            Self::UnsupportedAuthored => write!(f, "UnsupportedAuthored at spec/authored"),
+            Self::ModeUnsupported => write!(f, "ModeUnsupported at combat/mode"),
+            Self::WrongMode { .. } => write!(f, "WrongMode at combat/mode"),
         }
     }
 }
@@ -849,6 +941,32 @@ pub(crate) struct TransitionFacts {
     /// The naturally completed encounter with its round, on the first
     /// transition to terminal.
     pub encounter_ended: Option<(Ulid, u32)>,
+    /// The mode now in force with the round the switch started, when a
+    /// pending mode applied at a boundary or rollover (ADR-0029 T10).
+    pub mode_changed: Option<(EncounterMode, u32)>,
+    /// The real-time round that started (ADR-0029 T6), when one did.
+    pub round_started: Option<u32>,
+}
+
+/// One stage-3 fact, in execution order (T138b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TickEvent {
+    /// One due order resolved through [`resolve_use`].
+    Resolved(ActionOutcome),
+    /// One due order failed validation and was cleared.
+    OrderEnded {
+        /// The combatant whose order ended.
+        actor: EntityId,
+    },
+}
+
+/// Everything one tick observed, for the history wrapper (T138b).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TickFacts {
+    /// The stage-2 transition and the terminal edge of stage 3.
+    pub transitions: TransitionFacts,
+    /// The stage-3 facts in execution order.
+    pub events: Vec<TickEvent>,
 }
 
 /// Initial-turn facts one encounter start actually published.
@@ -908,18 +1026,34 @@ fn map_policy(policy: crpg_data::PolicyWire) -> StackingPolicy {
 /// empty timeline, empty events, unchanged RNG streams).
 ///
 /// Check order (pinned): an already-active encounter; collection bounds;
-/// each participant's placement, then single-area agreement, then each
-/// placement's creature; per creature, per ruleset stat in authored order,
-/// presence, wholeness, and health positivity with checked conversion;
-/// pool templates carried in order; per ruleset-listed ability in authored
-/// order, the spec-map entry, declared-attribute, dice, outcome-table,
-/// per-pool costs in template order, defense, effect, and natural checks;
-/// global effect checks in ascending effect order; then publication.
+/// unsupported authored features; each participant's placement, then
+/// single-area agreement, then each placement's creature; per creature, per
+/// ruleset stat in authored order, presence, wholeness, and health positivity
+/// with checked conversion; pool templates carried in order; per
+/// ruleset-listed ability in authored order, the spec-map entry,
+/// declared-attribute, dice, outcome-table, per-pool costs in template order,
+/// defense, effect, and natural checks; global effect checks in ascending
+/// effect order; then publication.
 ///
 /// Data-owned preconditions (enforced at data read time, asserted here):
 /// participants and the ruleset ability list are nonempty.
 pub fn start_encounter(world: &mut World, spec: &EncounterSpec<'_>) -> Result<(), CombatError> {
     start_encounter_tracked(world, spec).map(|_| ())
+}
+
+/// Validates and publishes one encounter in the host-chosen `mode`
+/// (ADR-0029 T11); otherwise identical to [`start_encounter`].
+///
+/// `RealTime` on a ruleset without `round_ticks` fails `ModeUnsupported`
+/// after `EncounterActive` and before every other check, leaving `world`
+/// unchanged. A real-time publication keys every combatant at `0`, holds no
+/// active turn and refreshes no pool.
+pub fn start_encounter_in_mode(
+    world: &mut World,
+    spec: &EncounterSpec<'_>,
+    mode: EncounterMode,
+) -> Result<(), CombatError> {
+    start_encounter_in_mode_tracked(world, spec, mode).map(|_| ())
 }
 
 /// Validates and publishes one encounter into `world`, reporting the initial
@@ -933,11 +1067,23 @@ pub(crate) fn start_encounter_tracked(
     world: &mut World,
     spec: &EncounterSpec<'_>,
 ) -> Result<StartFacts, CombatError> {
+    start_encounter_in_mode_tracked(world, spec, EncounterMode::TurnBased)
+}
+
+/// [`start_encounter_tracked`] in the host-chosen `mode` (ADR-0029 T11).
+///
+/// Crate-visible only. The turn-based wrapper above keeps its two-argument
+/// signature because `src/history/tests.rs` holds a second caller.
+pub(crate) fn start_encounter_in_mode_tracked(
+    world: &mut World,
+    spec: &EncounterSpec<'_>,
+    mode: EncounterMode,
+) -> Result<StartFacts, CombatError> {
     use CombatError::{
         DuplicateModifier, EncounterActive, InvalidCost, InvalidDice, InvalidEffect,
         InvalidNaturalDie, InvalidOutcomeTable, InvalidStatValue, MissingCreature, MissingEffect,
         MissingPlacement, MissingPool, MissingStat, MixedArea, PolicyConflict, TooManyParticipants,
-        TooManyStats, UnknownAbility, ValueOverflow,
+        TooManyStats, UnknownAbility, UnsupportedAuthored, ValueOverflow,
     };
 
     let encounter = spec.encounter;
@@ -945,6 +1091,9 @@ pub(crate) fn start_encounter_tracked(
 
     if world.combat().is_some() {
         return Err(EncounterActive);
+    }
+    if mode == EncounterMode::RealTime && ruleset.round_ticks.is_none() {
+        return Err(CombatError::ModeUnsupported);
     }
     if encounter.participants.len() > MAX_COMBATANTS {
         return Err(TooManyParticipants);
@@ -958,6 +1107,43 @@ pub(crate) fn start_encounter_tracked(
     if ruleset.abilities.is_empty() {
         panic!("ruleset abilities are validated nonempty by data read-time checks");
     }
+    if ruleset.round_ticks == Some(0) {
+        panic!("ruleset round_ticks is validated nonzero by data read-time checks");
+    }
+    if ruleset.round_ticks.is_some() {
+        for ability_id in &ruleset.abilities {
+            if let Some(ability) = spec.abilities.get(ability_id) {
+                if ability.recovery_ticks == Some(0) {
+                    panic!("ability recovery_ticks is validated nonzero by data read-time checks");
+                }
+            }
+        }
+    }
+    let unsupported = ruleset.stats.iter().any(|declaration| {
+        !matches!(&declaration.kind, StatKindWire::Int) || declaration.derived.is_some()
+    }) || ruleset.initiative.is_some()
+        || spec.abilities.values().any(|ability| {
+            ability.bonus_stats.is_some()
+                || !matches!(
+                    &ability.defense,
+                    DefenseWire::ActorAttribute | DefenseWire::TargetStat { .. }
+                )
+                || ability.damage.iter().any(|entry| entry.dice.is_some())
+        })
+        || spec.effects.values().any(|effect| {
+            effect.grants.is_some()
+                || effect
+                    .modifiers
+                    .iter()
+                    .any(|modifier| matches!(&modifier.target, EffectTargetWire::Stat { .. }))
+        });
+    if unsupported {
+        return Err(UnsupportedAuthored);
+    }
+    let clock = ruleset.round_ticks.map(|round_ticks| EncounterClock {
+        round_ticks,
+        elapsed: 0,
+    });
 
     let mut areas = Vec::with_capacity(encounter.participants.len());
     let mut placements = Vec::with_capacity(encounter.participants.len());
@@ -1261,6 +1447,15 @@ pub(crate) fn start_encounter_tracked(
             crpg_data::DefenseWire::TargetStat { stat } => {
                 AbilityDefense::TargetStat { stat: stat.clone() }
             }
+            crpg_data::DefenseWire::Constant(_) => {
+                unreachable!("rejected as UnsupportedAuthored at encounter start")
+            }
+            crpg_data::DefenseWire::ActorStat { .. } => {
+                unreachable!("rejected as UnsupportedAuthored at encounter start")
+            }
+            crpg_data::DefenseWire::Opposed { .. } => {
+                unreachable!("rejected as UnsupportedAuthored at encounter start")
+            }
         };
         let damage = entry
             .authored
@@ -1281,6 +1476,13 @@ pub(crate) fn start_encounter_tracked(
             natural_die: entry.authored.natural_die,
             requires_target: entry.authored.requires_target,
             allow_self_target: entry.authored.allow_self_target,
+            recovery_ticks: if clock.is_some() {
+                entry.authored.recovery_ticks
+            } else {
+                None
+            },
+            repeats_in_real_time: clock.is_some()
+                && entry.authored.repeats_in_real_time.unwrap_or(false),
         });
     }
     abilities.sort_by_key(|entry| entry.ability);
@@ -1298,6 +1500,9 @@ pub(crate) fn start_encounter_tracked(
                 target: match item.target {
                     crpg_data::EffectTargetWire::Roll => EffectTarget::Roll,
                     crpg_data::EffectTargetWire::Dc => EffectTarget::Dc,
+                    crpg_data::EffectTargetWire::Stat { .. } => {
+                        unreachable!("rejected as UnsupportedAuthored at encounter start")
+                    }
                 },
                 op: match item.op {
                     crpg_data::EffectOpWire::Add => EffectOp::Add,
@@ -1393,14 +1598,20 @@ pub(crate) fn start_encounter_tracked(
                 action_pool: pool,
                 extra_pools: extra,
                 attached: Vec::new(),
+                order: None,
             },
         );
-        world
-            .timeline_mut()
-            .insert(InitiativeKey(member.initiative), id);
+        let key = match mode {
+            EncounterMode::TurnBased => member.initiative,
+            EncounterMode::RealTime => 0,
+        };
+        world.timeline_mut().insert(InitiativeKey(key), id);
     }
     world.interners_mut().intern_tag(COMBAT_ROLL_TAG);
-    let active = world.timeline().iter().next().map(|(_, id)| id);
+    let active = match mode {
+        EncounterMode::TurnBased => world.timeline().iter().next().map(|(_, id)| id),
+        EncounterMode::RealTime => None,
+    };
     if let Some(head) = active {
         let combatant = world
             .combatants_mut()
@@ -1415,6 +1626,9 @@ pub(crate) fn start_encounter_tracked(
         definition,
         round: 0,
         active,
+        mode,
+        clock,
+        pending_mode: None,
     });
     Ok(StartFacts {
         initial_turn: active.map(|actor| (actor, 0)),
@@ -1551,15 +1765,50 @@ fn dc_modifiers(
 /// `DeadActor`; `OutOfTurn`. Validation stops before interning, creating RNG
 /// streams, resolving, spending, or advancing. `Ok` is not a lease: state can
 /// change before execution, which always revalidates.
+///
+/// In a real-time encounter (T138, ADR-0029 T8) only the turn stage changes:
+/// `UseAbility` and `Stop` meet the terminal gate (`OutOfTurn` with no
+/// active, fewer than two alive) where turn-based play checks the head,
+/// `EndTurn` fails `WrongMode`, and `Stop` in turn-based play fails
+/// `WrongMode`. `Stop` checks `NoEncounter`; live nonparticipant actor;
+/// `AbsentActor`; `DeadActor`; then the mode stage.
 pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), CombatError> {
     use CombatError::{
         AbsentActor, AbsentTarget, DeadActor, DeadTarget, InsufficientAction, NoEncounter,
-        NotParticipant, OutOfTurn, SelfTarget, UnknownAbility, ValueOverflow,
+        NotParticipant, OutOfTurn, SelfTarget, UnknownAbility, ValueOverflow, WrongMode,
     };
 
     let combat = world.combat().ok_or(NoEncounter)?;
     let combatants = world.combatants();
     match *action {
+        CombatAction::Stop { actor } => {
+            if world.contains(actor) && !combatants.contains(actor) {
+                return Err(NotParticipant { entity: actor });
+            }
+            if !world.contains(actor) {
+                return Err(AbsentActor { actor });
+            }
+            let actor_state = combatants
+                .get(actor)
+                .expect("the actor is a live combatant");
+            if actor_state.dead {
+                return Err(DeadActor { actor });
+            }
+            match combat.mode {
+                EncounterMode::TurnBased => Err(WrongMode {
+                    mode: EncounterMode::TurnBased,
+                }),
+                EncounterMode::RealTime => {
+                    if rt_alive(world) < 2 {
+                        return Err(OutOfTurn {
+                            actor,
+                            active: None,
+                        });
+                    }
+                    Ok(())
+                }
+            }
+        }
         CombatAction::EndTurn { actor } => {
             if world.contains(actor) && !combatants.contains(actor) {
                 return Err(NotParticipant { entity: actor });
@@ -1572,6 +1821,11 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
                 .expect("the actor is a live combatant");
             if actor_state.dead {
                 return Err(DeadActor { actor });
+            }
+            if combat.mode == EncounterMode::RealTime {
+                return Err(WrongMode {
+                    mode: EncounterMode::RealTime,
+                });
             }
             if combat.active != Some(actor) {
                 return Err(OutOfTurn {
@@ -1611,11 +1865,23 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
             if target_state.dead {
                 return Err(DeadTarget { target });
             }
-            if combat.active != Some(actor) {
-                return Err(OutOfTurn {
-                    actor,
-                    active: combat.active,
-                });
+            match combat.mode {
+                EncounterMode::TurnBased => {
+                    if combat.active != Some(actor) {
+                        return Err(OutOfTurn {
+                            actor,
+                            active: combat.active,
+                        });
+                    }
+                }
+                EncounterMode::RealTime => {
+                    if rt_alive(world) < 2 {
+                        return Err(OutOfTurn {
+                            actor,
+                            active: None,
+                        });
+                    }
+                }
             }
             let Some(entry) = ability_entry(definition, ability) else {
                 return Err(UnknownAbility { ability });
@@ -1677,7 +1943,8 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
 /// Why a [`legal_actions`] query produced no option list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LegalActionsError {
-    /// The actor cannot act at all: the `EndTurn { actor }` validation error.
+    /// The actor cannot act at all: the `EndTurn { actor }` validation error
+    /// (`Stop { actor }` in a real-time encounter).
     Actor(CombatError),
     /// The options would exceed [`MAX_LEGAL_ACTIONS`]; no partial list is
     /// returned.
@@ -1720,6 +1987,10 @@ impl std::error::Error for LegalActionsError {
 /// `UseAbility` names a live combatant target, whatever the ability's
 /// `requires_target` flag; `allow_self_target` alone governs self-targets.
 ///
+/// In a real-time encounter (T138, ADR-0029 T8) `Stop { actor }` takes the
+/// place of `EndTurn { actor }` at both ends: it is validated first and it
+/// closes the list, and `EndTurn` is never listed.
+///
 /// The result is bounded by [`MAX_LEGAL_ACTIONS`], `EndTurn` included: the
 /// query fails as a whole with `TooManyOptions` rather than truncating. The
 /// bound limits output size, not running time. Options confer no
@@ -1728,11 +1999,18 @@ pub fn legal_actions(
     world: &World,
     actor: EntityId,
 ) -> Result<Vec<CombatAction>, LegalActionsError> {
-    let end_turn = CombatAction::EndTurn { actor };
-    validate_action(world, &end_turn).map_err(LegalActionsError::Actor)?;
+    let real_time = world
+        .combat()
+        .is_some_and(|state| state.mode == EncounterMode::RealTime);
+    let closing = if real_time {
+        CombatAction::Stop { actor }
+    } else {
+        CombatAction::EndTurn { actor }
+    };
+    validate_action(world, &closing).map_err(LegalActionsError::Actor)?;
     let combat = world
         .combat()
-        .expect("EndTurn validation checks the encounter");
+        .expect("the closing action's validation checks the encounter");
     let mut abilities: Vec<Ulid> = combat
         .definition
         .abilities
@@ -1766,7 +2044,7 @@ pub fn legal_actions(
             }
         }
     }
-    push(end_turn)?;
+    push(closing)?;
     Ok(options)
 }
 
@@ -1783,6 +2061,10 @@ pub fn legal_actions(
 /// head with no refresh). An accepted `EndTurn` advances with no spend, no
 /// draw, no damage, and no effect. A valid failed attack consumes its
 /// action; an invalid action consumes nothing.
+///
+/// In a real-time encounter (T138, ADR-0029 T8) an accepted `UseAbility`
+/// only stores the actor's standing order and returns `Ok(None)`; `Stop`
+/// clears it. Due orders resolve inside [`tick`](crate::tick).
 pub fn perform_action(
     world: &mut World,
     action: &CombatAction,
@@ -1803,6 +2085,14 @@ pub(crate) fn perform_action_tracked(
 ) -> Result<(Option<ActionOutcome>, TransitionFacts), CombatError> {
     validate_action(world, action)?;
     match *action {
+        CombatAction::Stop { actor } => {
+            world
+                .combatants_mut()
+                .get_mut(actor)
+                .expect("validation checks the actor is a live combatant")
+                .order = None;
+            Ok((None, TransitionFacts::default()))
+        }
         CombatAction::EndTurn { actor } => {
             let dead: Vec<EntityId> = world
                 .combatants()
@@ -1824,199 +2114,30 @@ pub(crate) fn perform_action_tracked(
             target,
         } => {
             let combat = world.combat().expect("validation checks the encounter");
-            let definition = combat.definition.clone();
-            let round = combat.round;
-            let combatants = world.combatants();
-            let actor_state = combatants
-                .get(actor)
-                .expect("validation checks the actor is a live combatant");
-            let target_state = combatants
-                .get(target)
-                .expect("validation checks the target is a live combatant");
-            let entry = ability_entry(&definition, ability)
-                .expect("validation checks the ability is listed")
-                .clone();
-            let tag = world
-                .interners()
-                .tag(COMBAT_ROLL_TAG)
-                .expect("the roll tag is interned at encounter start");
-            let roll_tag = RollTag(tag);
-            let actor_mods = roll_modifiers(&definition, actor_state, round, roll_tag);
-            let target_mods = dc_modifiers(&definition, target_state, round, roll_tag);
-            let mut policies: BTreeMap<ModTypeId, StackingPolicy> = BTreeMap::new();
-            for effect in &definition.effects {
-                policies.insert(ModTypeId(effect.mod_type.clone()), effect.policy);
-            }
-            let self_targeted = actor == target;
-            let defense_stat_value: Option<i32> = match &entry.defense {
-                AbilityDefense::ActorAttribute => None,
-                AbilityDefense::TargetStat { stat } => {
-                    let (_, value) = target_state
-                        .attributes
-                        .iter()
-                        .find(|(name, _)| *name == *stat)
-                        .expect("the defense stat is validated at encounter start");
-                    Some(*value)
-                }
-            };
-            let actor_attribute_value: Option<i32> = match &entry.defense {
-                AbilityDefense::ActorAttribute => {
-                    let (_, value) = actor_state
-                        .attributes
-                        .iter()
-                        .find(|(name, _)| *name == entry.attribute)
-                        .expect("the ability attribute is validated at encounter start");
-                    Some(*value)
-                }
-                AbilityDefense::TargetStat { .. } => None,
-            };
-            let transient_stat: Option<(StatBlock, crpg_core::StatId)> = match &entry.defense {
-                AbilityDefense::ActorAttribute => None,
-                AbilityDefense::TargetStat { stat } => {
-                    let value = defense_stat_value.expect("defense value is read above");
-                    let stat_id = world.interners_mut().intern_stat(stat);
-                    let mut block = StatBlock::new();
-                    block
-                        .insert(stat_id, StatValue::Int(value))
-                        .expect("integer defense values always insert");
-                    Some((block, stat_id))
-                }
-            };
-            let against = match &entry.defense {
-                AbilityDefense::ActorAttribute => Against::Dc {
-                    value: actor_attribute_value.expect("attribute value is read above"),
-                    owner: target,
-                    modifier_target: roll_tag,
-                },
-                AbilityDefense::TargetStat { .. } => {
-                    let (_, stat_id) = transient_stat
-                        .as_ref()
-                        .expect("transient stat is built above");
-                    Against::Stat {
-                        entity: target,
-                        stat: *stat_id,
-                        modifier_target: roll_tag,
-                    }
-                }
-            };
-            let pipeline = if let Some((_, stat_id)) = &transient_stat {
-                ModifierPipeline::new(
-                    vec![StatDefinition {
-                        id: *stat_id,
-                        kind: StatKind::Int,
-                        derived: None,
-                    }],
-                    policies,
-                )
-                .expect("combat preflight guarantees pipeline success")
-            } else {
-                ModifierPipeline::new(Vec::new(), policies)
-                    .expect("combat preflight guarantees pipeline success")
-            };
-            let request = ResolutionRequest {
-                roll: RollRequest {
-                    actor,
-                    roll: RollSpec::Dice(entry.dice.clone()),
-                    bonus_target: roll_tag,
-                    natural_die: entry.natural_die,
-                    stream: COMBAT_ROLL_STREAM.to_owned(),
-                    tags: TagSet::new(),
-                },
-                target: Some(target),
-                against,
-                outcome_table: entry.outcome_table.id(),
-            };
-            let empty_block = StatBlock::new();
-            let empty_tags = TagSet::new();
-            let outcome = if self_targeted {
-                let mut combined = actor_mods.clone();
-                combined.extend(target_mods.clone());
-                let stats_ref: &StatBlock = match &transient_stat {
-                    Some((block, _)) => block,
-                    None => &empty_block,
-                };
-                let view = QueryContext {
-                    entity: actor,
-                    stats: stats_ref,
-                    tags: &empty_tags,
-                    modifiers: &combined,
-                };
-                let mut entities = BTreeMap::new();
-                entities.insert(actor, view);
-                let context = ResolutionContext {
-                    pipeline: &pipeline,
-                    entities: &entities,
-                    outcome_table: &entry.outcome_table,
-                };
-                resolve(&request, &context, world.rng_mut())
-                    .expect("combat preflight guarantees resolution success")
-            } else {
-                let target_stats: &StatBlock = match &transient_stat {
-                    Some((block, _)) => block,
-                    None => &empty_block,
-                };
-                let actor_view = QueryContext {
-                    entity: actor,
-                    stats: &empty_block,
-                    tags: &empty_tags,
-                    modifiers: &actor_mods,
-                };
-                let target_view = QueryContext {
-                    entity: target,
-                    stats: target_stats,
-                    tags: &empty_tags,
-                    modifiers: &target_mods,
-                };
-                let mut entities = BTreeMap::new();
-                entities.insert(actor, actor_view);
-                entities.insert(target, target_view);
-                let context = ResolutionContext {
-                    pipeline: &pipeline,
-                    entities: &entities,
-                    outcome_table: &entry.outcome_table,
-                };
-                resolve(&request, &context, world.rng_mut())
-                    .expect("combat preflight guarantees resolution success")
-            };
-            let damage = entry
-                .damage
-                .iter()
-                .find(|(outcome_kind, _)| *outcome_kind == outcome.decision.outcome)
-                .map(|(_, amount)| *amount)
-                .unwrap_or(0);
-
-            spend_costs(world, actor, &entry.costs).expect("affordability is checked above");
-            let target_died = if damage > 0 {
-                let target_state = world
-                    .combatants_mut()
-                    .get_mut(target)
-                    .expect("the target is a live combatant");
-                target_state.health = target_state.health.saturating_sub(damage);
-                if target_state.health == 0 {
-                    target_state.dead = true;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if target_died {
-                let tick = world.tick();
+            if combat.mode == EncounterMode::RealTime {
+                // ADR-0029 T8: an RT admission stores the order; it
+                // resolves nothing, spends nothing and draws nothing.
+                let repeat = ability_entry(&combat.definition, ability)
+                    .expect("validation checks the ability is listed")
+                    .repeats_in_real_time;
                 world
-                    .events_mut()
-                    .push(tick, SimEvent::Died { entity: target });
+                    .combatants_mut()
+                    .get_mut(actor)
+                    .expect("validation checks the actor is a live combatant")
+                    .order = Some(StandingOrder {
+                    ability,
+                    target,
+                    repeat,
+                });
+                return Ok((None, TransitionFacts::default()));
             }
-            let success = matches!(
-                outcome.decision.outcome,
-                Outcome::Success | Outcome::CriticalSuccess
-            );
-            if success {
-                if let Some(effect) = entry.effect {
-                    attach_effect(world, &definition, effect, actor, target, round);
-                }
-            }
-
+            let outcome = resolve_use(world, actor, ability, target);
+            let (encounter, round, ends_turn) = {
+                let combat = world.combat().expect("validation checks the encounter");
+                let entry = ability_entry(&combat.definition, ability)
+                    .expect("validation checks the ability is listed");
+                (combat.definition.encounter, combat.round, entry.ends_turn)
+            };
             let dead: Vec<EntityId> = world
                 .combatants()
                 .iter()
@@ -2043,10 +2164,10 @@ pub(crate) fn perform_action_tracked(
                     .as_mut()
                     .expect("the encounter is checked above")
                     .active = None;
-                facts.encounter_ended = Some((definition.encounter, round));
+                facts.encounter_ended = Some((encounter, round));
             } else if actor_dead {
                 facts = advance_tracked(world);
-            } else if entry.ends_turn {
+            } else if ends_turn {
                 let popped = end_turn(world);
                 debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
                 facts = advance_tracked(world);
@@ -2060,23 +2181,231 @@ pub(crate) fn perform_action_tracked(
                     .active = Some(actor);
             }
 
-            Ok((
-                Some(ActionOutcome {
-                    actor,
-                    target,
-                    ability,
-                    roll: outcome
-                        .actor
-                        .roll
-                        .expect("combat always rolls its dice expression"),
-                    margin: outcome.margin,
-                    outcome: outcome.decision.outcome,
-                    damage,
-                    target_died,
-                }),
-                facts,
-            ))
+            Ok((Some(outcome), facts))
         }
+    }
+}
+
+/// The resolution half of an accepted `UseAbility`: kernel resolution on
+/// `combat.roll`, cost spend, damage with exactly-once `Died`, and effect
+/// attachment on success (T138, ADR-0029 T6, T7).
+///
+/// Extracted unchanged from [`perform_action_tracked`] so that turn-based
+/// and real-time execution share one resolution, cost, damage and effect
+/// pipeline and one draw order. The caller must have validated the action
+/// and owns everything after it: scheduling, order bookkeeping and advance.
+pub(crate) fn resolve_use(
+    world: &mut World,
+    actor: EntityId,
+    ability: Ulid,
+    target: EntityId,
+) -> ActionOutcome {
+    let combat = world.combat().expect("validation checks the encounter");
+    let definition = combat.definition.clone();
+    let round = combat.round;
+    let combatants = world.combatants();
+    let actor_state = combatants
+        .get(actor)
+        .expect("validation checks the actor is a live combatant");
+    let target_state = combatants
+        .get(target)
+        .expect("validation checks the target is a live combatant");
+    let entry = ability_entry(&definition, ability)
+        .expect("validation checks the ability is listed")
+        .clone();
+    let tag = world
+        .interners()
+        .tag(COMBAT_ROLL_TAG)
+        .expect("the roll tag is interned at encounter start");
+    let roll_tag = RollTag(tag);
+    let actor_mods = roll_modifiers(&definition, actor_state, round, roll_tag);
+    let target_mods = dc_modifiers(&definition, target_state, round, roll_tag);
+    let mut policies: BTreeMap<ModTypeId, StackingPolicy> = BTreeMap::new();
+    for effect in &definition.effects {
+        policies.insert(ModTypeId(effect.mod_type.clone()), effect.policy);
+    }
+    let self_targeted = actor == target;
+    let defense_stat_value: Option<i32> = match &entry.defense {
+        AbilityDefense::ActorAttribute => None,
+        AbilityDefense::TargetStat { stat } => {
+            let (_, value) = target_state
+                .attributes
+                .iter()
+                .find(|(name, _)| *name == *stat)
+                .expect("the defense stat is validated at encounter start");
+            Some(*value)
+        }
+    };
+    let actor_attribute_value: Option<i32> = match &entry.defense {
+        AbilityDefense::ActorAttribute => {
+            let (_, value) = actor_state
+                .attributes
+                .iter()
+                .find(|(name, _)| *name == entry.attribute)
+                .expect("the ability attribute is validated at encounter start");
+            Some(*value)
+        }
+        AbilityDefense::TargetStat { .. } => None,
+    };
+    let transient_stat: Option<(StatBlock, crpg_core::StatId)> = match &entry.defense {
+        AbilityDefense::ActorAttribute => None,
+        AbilityDefense::TargetStat { stat } => {
+            let value = defense_stat_value.expect("defense value is read above");
+            let stat_id = world.interners_mut().intern_stat(stat);
+            let mut block = StatBlock::new();
+            block
+                .insert(stat_id, StatValue::Int(value))
+                .expect("integer defense values always insert");
+            Some((block, stat_id))
+        }
+    };
+    let against = match &entry.defense {
+        AbilityDefense::ActorAttribute => Against::Dc {
+            value: actor_attribute_value.expect("attribute value is read above"),
+            owner: target,
+            modifier_target: roll_tag,
+        },
+        AbilityDefense::TargetStat { .. } => {
+            let (_, stat_id) = transient_stat
+                .as_ref()
+                .expect("transient stat is built above");
+            Against::Stat {
+                entity: target,
+                stat: *stat_id,
+                modifier_target: roll_tag,
+            }
+        }
+    };
+    let pipeline = if let Some((_, stat_id)) = &transient_stat {
+        ModifierPipeline::new(
+            vec![StatDefinition {
+                id: *stat_id,
+                kind: StatKind::Int,
+                derived: None,
+            }],
+            policies,
+        )
+        .expect("combat preflight guarantees pipeline success")
+    } else {
+        ModifierPipeline::new(Vec::new(), policies)
+            .expect("combat preflight guarantees pipeline success")
+    };
+    let request = ResolutionRequest {
+        roll: RollRequest {
+            actor,
+            roll: RollSpec::Dice(entry.dice.clone()),
+            bonus_target: roll_tag,
+            natural_die: entry.natural_die,
+            stream: COMBAT_ROLL_STREAM.to_owned(),
+            tags: TagSet::new(),
+        },
+        target: Some(target),
+        against,
+        outcome_table: entry.outcome_table.id(),
+    };
+    let empty_block = StatBlock::new();
+    let empty_tags = TagSet::new();
+    let outcome = if self_targeted {
+        let mut combined = actor_mods.clone();
+        combined.extend(target_mods.clone());
+        let stats_ref: &StatBlock = match &transient_stat {
+            Some((block, _)) => block,
+            None => &empty_block,
+        };
+        let view = QueryContext {
+            entity: actor,
+            stats: stats_ref,
+            tags: &empty_tags,
+            modifiers: &combined,
+        };
+        let mut entities = BTreeMap::new();
+        entities.insert(actor, view);
+        let context = ResolutionContext {
+            pipeline: &pipeline,
+            entities: &entities,
+            outcome_table: &entry.outcome_table,
+        };
+        resolve(&request, &context, world.rng_mut())
+            .expect("combat preflight guarantees resolution success")
+    } else {
+        let target_stats: &StatBlock = match &transient_stat {
+            Some((block, _)) => block,
+            None => &empty_block,
+        };
+        let actor_view = QueryContext {
+            entity: actor,
+            stats: &empty_block,
+            tags: &empty_tags,
+            modifiers: &actor_mods,
+        };
+        let target_view = QueryContext {
+            entity: target,
+            stats: target_stats,
+            tags: &empty_tags,
+            modifiers: &target_mods,
+        };
+        let mut entities = BTreeMap::new();
+        entities.insert(actor, actor_view);
+        entities.insert(target, target_view);
+        let context = ResolutionContext {
+            pipeline: &pipeline,
+            entities: &entities,
+            outcome_table: &entry.outcome_table,
+        };
+        resolve(&request, &context, world.rng_mut())
+            .expect("combat preflight guarantees resolution success")
+    };
+    let damage = entry
+        .damage
+        .iter()
+        .find(|(outcome_kind, _)| *outcome_kind == outcome.decision.outcome)
+        .map(|(_, amount)| *amount)
+        .unwrap_or(0);
+
+    spend_costs(world, actor, &entry.costs).expect("affordability is checked above");
+    let target_died = if damage > 0 {
+        let target_state = world
+            .combatants_mut()
+            .get_mut(target)
+            .expect("the target is a live combatant");
+        target_state.health = target_state.health.saturating_sub(damage);
+        if target_state.health == 0 {
+            target_state.dead = true;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if target_died {
+        let tick = world.tick();
+        world
+            .events_mut()
+            .push(tick, SimEvent::Died { entity: target });
+    }
+    let success = matches!(
+        outcome.decision.outcome,
+        Outcome::Success | Outcome::CriticalSuccess
+    );
+    if success {
+        if let Some(effect) = entry.effect {
+            attach_effect(world, &definition, effect, actor, target, round);
+        }
+    }
+
+    ActionOutcome {
+        actor,
+        target,
+        ability,
+        roll: outcome
+            .actor
+            .roll
+            .expect("combat always rolls its dice expression"),
+        margin: outcome.margin,
+        outcome: outcome.decision.outcome,
+        damage,
+        target_died,
     }
 }
 
@@ -2140,6 +2469,69 @@ fn attach_effect(
     }
 }
 
+/// The turn-based round start: `round + 1` (saturating), `RoundStart`
+/// refresh of every alive combatant, attachment expiry, every alive
+/// combatant (re)inserted at its stored initiative, one `TurnStart` refresh
+/// for the head, and `active = Some(head)`. Returns the head and the new
+/// round. The caller guarantees two or more alive combatants.
+///
+/// This is the rollover body of [`advance_tracked`] moved without change
+/// (T138); the RT to TB switch runs it too (ADR-0029 T10).
+fn tb_round_start(world: &mut World) -> (EntityId, u32) {
+    let round = world
+        .combat()
+        .expect("the encounter is checked above")
+        .round
+        .saturating_add(1);
+    for (_, state) in world.combatants_mut().iter_mut() {
+        if !state.dead {
+            state.action_pool.refresh(RefreshEvent::RoundStart);
+            for pool in state.extra_pools.iter_mut() {
+                pool.refresh(RefreshEvent::RoundStart);
+            }
+        }
+    }
+    for (_, state) in world.combatants_mut().iter_mut() {
+        state.attached.retain(|item| item.expires_round > round);
+    }
+    let entries: Vec<(InitiativeKey, EntityId)> = world
+        .combatants()
+        .iter()
+        .filter(|(_, state)| !state.dead)
+        .map(|(id, state)| (InitiativeKey(state.initiative), id))
+        .collect();
+    for (key, id) in entries {
+        world.timeline_mut().insert(key, id);
+    }
+    let head = world
+        .timeline()
+        .iter()
+        .next()
+        .expect("live participants are re-added above")
+        .1;
+    {
+        let combatant = world
+            .combatants_mut()
+            .get_mut(head)
+            .expect("scheduled entities are combatants");
+        combatant.action_pool.refresh(RefreshEvent::TurnStart);
+        for pool in combatant.extra_pools.iter_mut() {
+            pool.refresh(RefreshEvent::TurnStart);
+        }
+    }
+    world
+        .combat_mut()
+        .as_mut()
+        .expect("the encounter is checked above")
+        .active = Some(head);
+    world
+        .combat_mut()
+        .as_mut()
+        .expect("the encounter is checked above")
+        .round = round;
+    (head, round)
+}
+
 /// Settles the turn after the scheduled head left the timeline, reporting
 /// the transition the branches actually took.
 ///
@@ -2162,57 +2554,35 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
             .filter(|(_, state)| !state.dead)
             .count();
         if alive >= 2 {
-            let round = world
+            let advanced = world
                 .combat()
                 .expect("the encounter is checked above")
-                .round
-                .saturating_add(1);
-            for (_, state) in world.combatants_mut().iter_mut() {
-                if !state.dead {
-                    state.action_pool.refresh(RefreshEvent::RoundStart);
-                    for pool in state.extra_pools.iter_mut() {
-                        pool.refresh(RefreshEvent::RoundStart);
-                    }
+                .clock
+                .map(|clock| clock.round_ticks);
+            if let Some(round_ticks) = advanced {
+                // ADR-0029 T4: a TB rollover of an RT-capable encounter
+                // advances the clock by one round, bounded.
+                let combat = world
+                    .combat_mut()
+                    .as_mut()
+                    .expect("the encounter is checked above");
+                let clock = combat
+                    .clock
+                    .as_mut()
+                    .expect("the clock presence is checked above");
+                let old = clock.elapsed;
+                let new = old.saturating_add(u64::from(round_ticks)).min(RT_CLOCK_MAX);
+                clock.elapsed = new;
+                let pending = combat.pending_mode.take();
+                deliver_clock_advance(world, old, new);
+                if pending == Some(EncounterMode::RealTime) {
+                    let round = switch_to_real_time(world);
+                    facts.mode_changed = Some((EncounterMode::RealTime, round));
+                    facts.round_started = Some(round);
+                    return facts;
                 }
             }
-            for (_, state) in world.combatants_mut().iter_mut() {
-                state.attached.retain(|item| item.expires_round > round);
-            }
-            let entries: Vec<(InitiativeKey, EntityId)> = world
-                .combatants()
-                .iter()
-                .filter(|(_, state)| !state.dead)
-                .map(|(id, state)| (InitiativeKey(state.initiative), id))
-                .collect();
-            for (key, id) in entries {
-                world.timeline_mut().insert(key, id);
-            }
-            let head = world
-                .timeline()
-                .iter()
-                .next()
-                .expect("live participants are re-added above")
-                .1;
-            {
-                let combatant = world
-                    .combatants_mut()
-                    .get_mut(head)
-                    .expect("scheduled entities are combatants");
-                combatant.action_pool.refresh(RefreshEvent::TurnStart);
-                for pool in combatant.extra_pools.iter_mut() {
-                    pool.refresh(RefreshEvent::TurnStart);
-                }
-            }
-            world
-                .combat_mut()
-                .as_mut()
-                .expect("the encounter is checked above")
-                .active = Some(head);
-            world
-                .combat_mut()
-                .as_mut()
-                .expect("the encounter is checked above")
-                .round = round;
+            let (head, round) = tb_round_start(world);
             facts.turn_started = Some((head, round));
         } else {
             let ended = {
@@ -2275,6 +2645,303 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
     facts
 }
 
+/// The number of combatants with `dead == false`; the RT terminal rule is
+/// "fewer than two" (T138 D15).
+fn rt_alive(world: &World) -> usize {
+    world
+        .combatants()
+        .iter()
+        .filter(|(_, state)| !state.dead)
+        .count()
+}
+
+/// The ids of every alive combatant in ascending [`EntityId`] order.
+fn alive_ids(world: &World) -> Vec<EntityId> {
+    let mut ids: Vec<EntityId> = world
+        .combatants()
+        .iter()
+        .filter(|(_, state)| !state.dead)
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Host-authorized mode request (ADR-0029 T9): sets, replaces or clears
+/// `pending_mode`; never changes `mode` immediately.
+///
+/// Checks `NoEncounter`, then `ModeUnsupported` when real time is requested
+/// of an encounter without a clock. Requesting the mode already in force
+/// clears the pending request; any other mode replaces it. The switch itself
+/// happens only at the next boundary (RT to TB) or rollover (TB to RT), and
+/// never in a terminal encounter. Nothing else changes and nothing is
+/// emitted.
+pub fn request_mode(world: &mut World, mode: EncounterMode) -> Result<(), CombatError> {
+    let state = world
+        .combat_mut()
+        .as_mut()
+        .ok_or(CombatError::NoEncounter)?;
+    if mode == EncounterMode::RealTime && state.clock.is_none() {
+        return Err(CombatError::ModeUnsupported);
+    }
+    state.pending_mode = if mode == state.mode { None } else { Some(mode) };
+    Ok(())
+}
+
+/// Delivers one clock advance `old` to `new` to every `OnTick(p)` pool of
+/// every alive combatant (ascending [`EntityId`], primary pool first, then
+/// extras in template order): exactly one `Tick` refresh when `new / p >
+/// old / p`, carrying the last multiple of `p` the advance crossed because
+/// the kernel matches only ticks divisible by the period (T138 D14).
+fn deliver_clock_advance(world: &mut World, old: u64, new: u64) {
+    for id in alive_ids(world) {
+        let combatant = world
+            .combatants_mut()
+            .get_mut(id)
+            .expect("alive ids are combatants");
+        let pools =
+            std::iter::once(&mut combatant.action_pool).chain(combatant.extra_pools.iter_mut());
+        for pool in pools {
+            let RefreshTrigger::OnTick(period) = pool.refresh_trigger() else {
+                continue;
+            };
+            if period != 0 && new / period > old / period {
+                pool.refresh(RefreshEvent::Tick(Tick::new(new - new % period)));
+            }
+        }
+    }
+}
+
+/// The real-time round start (ADR-0029 T6): `round + 1` (saturating), then
+/// per alive combatant in ascending [`EntityId`] order a `RoundStart` and a
+/// `TurnStart` refresh of its pools (primary first), then attachments keep
+/// only `expires_round > round`. `active` stays `None`. Returns the new
+/// round.
+fn rt_round_start(world: &mut World) -> u32 {
+    let round = world
+        .combat()
+        .expect("the encounter is checked above")
+        .round
+        .saturating_add(1);
+    for id in alive_ids(world) {
+        let combatant = world
+            .combatants_mut()
+            .get_mut(id)
+            .expect("alive ids are combatants");
+        for event in [RefreshEvent::RoundStart, RefreshEvent::TurnStart] {
+            combatant.action_pool.refresh(event);
+            for pool in combatant.extra_pools.iter_mut() {
+                pool.refresh(event);
+            }
+        }
+    }
+    for (_, state) in world.combatants_mut().iter_mut() {
+        state.attached.retain(|item| item.expires_round > round);
+    }
+    world
+        .combat_mut()
+        .as_mut()
+        .expect("the encounter is checked above")
+        .round = round;
+    round
+}
+
+/// Applies a pending TB to RT switch at a TB rollover (ADR-0029 T10): the
+/// mode flips, every alive combatant is keyed at the clock, `active` clears,
+/// and the RT round start runs (no TB refresh, no `TurnStart` fact). Returns
+/// the round the switch started.
+fn switch_to_real_time(world: &mut World) -> u32 {
+    let elapsed = {
+        let combat = world
+            .combat_mut()
+            .as_mut()
+            .expect("the encounter is checked above");
+        combat.mode = EncounterMode::RealTime;
+        combat.active = None;
+        combat.clock.expect("a switch needs a clock").elapsed
+    };
+    let key = i32::try_from(elapsed).expect("the clock is bounded by the largest key");
+    for id in alive_ids(world) {
+        world.timeline_mut().insert(InitiativeKey(key), id);
+    }
+    rt_round_start(world)
+}
+
+/// Applies a pending RT to TB switch at an RT boundary (ADR-0029 T10): every
+/// order clears, the mode flips, and the TB round start runs. Returns the new
+/// turn head and the round the switch started.
+fn switch_to_turn_based(world: &mut World) -> (EntityId, u32) {
+    let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
+    for id in ids {
+        world
+            .combatants_mut()
+            .get_mut(id)
+            .expect("listed ids are combatants")
+            .order = None;
+    }
+    world
+        .combat_mut()
+        .as_mut()
+        .expect("the encounter is checked above")
+        .mode = EncounterMode::TurnBased;
+    tb_round_start(world)
+}
+
+/// Whether stages 2 and 3 act on this world: an RT encounter with two or
+/// more alive combatants and a clock below its bound (ADR-0029 T5, D4).
+fn rt_running(world: &World) -> bool {
+    let Some(combat) = world.combat() else {
+        return false;
+    };
+    combat.mode == EncounterMode::RealTime
+        && combat
+            .clock
+            .is_some_and(|clock| clock.elapsed < RT_CLOCK_MAX)
+        && rt_alive(world) >= 2
+}
+
+/// Tick stage 2 for an RT encounter (ADR-0029 T3, T6, T9, T10).
+///
+/// Advances the clock by one, delivers it to `OnTick` pools, and at a
+/// boundary applies a pending RT to TB switch or runs the RT round start.
+/// The tick that reaches [`RT_CLOCK_MAX`] does nothing else (D4).
+pub(crate) fn clock_stage(world: &mut World, facts: &mut TickFacts) {
+    if !rt_running(world) {
+        return;
+    }
+    let (old, new, round_ticks) = {
+        let clock = world
+            .combat_mut()
+            .as_mut()
+            .and_then(|combat| combat.clock.as_mut())
+            .expect("a running RT encounter has a clock");
+        let old = clock.elapsed;
+        clock.elapsed = old + 1;
+        (old, clock.elapsed, clock.round_ticks)
+    };
+    if new == RT_CLOCK_MAX {
+        return;
+    }
+    deliver_clock_advance(world, old, new);
+    if new % u64::from(round_ticks) != 0 {
+        return;
+    }
+    let pending = world
+        .combat_mut()
+        .as_mut()
+        .expect("the encounter is checked above")
+        .pending_mode
+        .take();
+    if pending == Some(EncounterMode::TurnBased) {
+        let (head, round) = switch_to_turn_based(world);
+        facts.transitions.mode_changed = Some((EncounterMode::TurnBased, round));
+        facts.transitions.turn_started = Some((head, round));
+    } else {
+        facts.transitions.round_started = Some(rt_round_start(world));
+    }
+}
+
+/// Tick stage 3 for an RT encounter (ADR-0029 T7).
+///
+/// Snapshots every entry whose key is at or below the clock in ascending
+/// `(key, EntityId)` order before acting, then executes each stored order
+/// through [`validate_action`] and [`resolve_use`]. A due order that fails
+/// validation is cleared with no other effect. An actor that survives is
+/// re-keyed at `min(elapsed + recovery, RT_CLOCK_MAX)`; a one-shot order
+/// clears. A combatant without an order keeps its key and waits.
+pub(crate) fn execution_stage(world: &mut World, facts: &mut TickFacts) {
+    if !rt_running(world) {
+        return;
+    }
+    let (elapsed, round_ticks) = {
+        let clock = world
+            .combat()
+            .and_then(|combat| combat.clock)
+            .expect("a running RT encounter has a clock");
+        (clock.elapsed, clock.round_ticks)
+    };
+    let due: Vec<EntityId> = world
+        .timeline()
+        .iter()
+        .filter(|(key, _)| u64::try_from(key.0).map_or(true, |key| key <= elapsed))
+        .map(|(_, id)| id)
+        .collect();
+    for actor in due {
+        if rt_alive(world) < 2 {
+            break;
+        }
+        let Some(state) = world.combatants().get(actor) else {
+            continue;
+        };
+        if state.dead || !world.timeline().contains(actor) {
+            continue;
+        }
+        let Some(order) = state.order else {
+            continue;
+        };
+        let action = CombatAction::UseAbility {
+            actor,
+            ability: order.ability,
+            target: order.target,
+        };
+        if validate_action(world, &action).is_err() {
+            world
+                .combatants_mut()
+                .get_mut(actor)
+                .expect("the actor is a live combatant")
+                .order = None;
+            facts.events.push(TickEvent::OrderEnded { actor });
+            continue;
+        }
+        let recovery = {
+            let combat = world.combat().expect("the encounter is checked above");
+            ability_entry(&combat.definition, order.ability)
+                .expect("validation checks the ability is listed")
+                .recovery_ticks
+                .unwrap_or(round_ticks)
+        };
+        let resolved = resolve_use(world, actor, order.ability, order.target);
+        facts.events.push(TickEvent::Resolved(resolved));
+        let dead: Vec<EntityId> = world
+            .combatants()
+            .iter()
+            .filter(|(_, state)| state.dead)
+            .map(|(id, _)| id)
+            .collect();
+        for id in dead {
+            world.timeline_mut().remove(id);
+            world
+                .combatants_mut()
+                .get_mut(id)
+                .expect("listed ids are combatants")
+                .order = None;
+        }
+        let actor_alive = world
+            .combatants()
+            .get(actor)
+            .is_some_and(|state| !state.dead);
+        if actor_alive {
+            let key = elapsed
+                .saturating_add(u64::from(recovery))
+                .min(RT_CLOCK_MAX);
+            let key = i32::try_from(key).expect("the key is bounded by the largest key");
+            world.timeline_mut().insert(InitiativeKey(key), actor);
+            if !order.repeat {
+                world
+                    .combatants_mut()
+                    .get_mut(actor)
+                    .expect("the actor is a live combatant")
+                    .order = None;
+            }
+        }
+    }
+    if rt_alive(world) < 2 {
+        // The pass made the encounter terminal: the first, and only, end.
+        let state = world.combat().expect("the encounter is checked above");
+        facts.transitions.encounter_ended = Some((state.definition.encounter, state.round));
+    }
+}
+
 /// Releases the active encounter, retaining its summary for authoritative
 /// consumers.
 ///
@@ -2309,4 +2976,211 @@ pub fn end_encounter(world: &mut World) -> Result<EncounterSummary, CombatError>
     }
     *world.combat_mut() = None;
     Ok(summary)
+}
+
+// The fixtures are shared with `src/history/tests.rs` and the integration
+// tests by path, so the duplicate-module lint is expected here.
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod support;
+
+/// R12 (B9, B27, T138a): refresh bookkeeping across modes, with partial-refill
+/// pools so a double or missed delivery shows as a wrong count.
+#[cfg(test)]
+mod rt_refresh_tests {
+    use std::num::NonZeroU32;
+
+    use super::support::rt::capable;
+    use super::*;
+
+    fn refill_one(id: Ulid, max: u32, trigger: RefreshTrigger) -> ResourcePool {
+        ResourcePool::with_refill(ResourcePoolId(id), max, 0, trigger, NonZeroU32::new(1))
+            .expect("a valid partial-refill pool")
+    }
+
+    /// Replaces every combatant's pools by empty partial-refill pools with
+    /// the definition's identities and triggers.
+    fn make_partial(world: &mut World, max: u32) {
+        let templates = world.combat().expect("encounter").definition.pools.clone();
+        let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
+        for id in ids {
+            let state = world.combatants_mut().get_mut(id).expect("combatant");
+            state.action_pool = refill_one(templates[0].id, max, templates[0].refresh);
+            for (slot, template) in state.extra_pools.iter_mut().zip(templates.iter().skip(1)) {
+                *slot = refill_one(template.id, max, template.refresh);
+            }
+        }
+    }
+
+    fn zero_all(world: &mut World) {
+        let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
+        for id in ids {
+            let state = world.combatants_mut().get_mut(id).expect("combatant");
+            let current = state.action_pool.current();
+            if current > 0 {
+                state.action_pool.spend(current).expect("spend all");
+            }
+            for pool in state.extra_pools.iter_mut() {
+                let current = pool.current();
+                if current > 0 {
+                    pool.spend(current).expect("spend all");
+                }
+            }
+        }
+    }
+
+    fn balances(world: &World) -> Vec<(u32, u32)> {
+        world
+            .combatants()
+            .iter()
+            .map(|(_, state)| (state.action_pool.current(), state.extra_pools[0].current()))
+            .collect()
+    }
+
+    #[test]
+    fn clock_bound_is_the_largest_initiative_key() {
+        assert_eq!(RT_CLOCK_MAX, i32::MAX as u64);
+    }
+
+    /// Eight rounds with the mode toggled in an irregular pattern: each alive
+    /// combatant's `OnRoundStart` pool rises by exactly one per round, and its
+    /// `OnTurnStart` pool follows the mode's turn-start rule.
+    #[test]
+    fn round_and_turn_start_pools_refresh_exactly_once() {
+        use crpg_data::{ActionPoolTemplate, RefreshWire};
+        let mut fixture = capable(4);
+        fixture.ruleset.pools = vec![
+            ActionPoolTemplate {
+                id: Ulid::from_u128(105),
+                max: 5,
+                refresh: RefreshWire::OnRoundStart,
+            },
+            ActionPoolTemplate {
+                id: Ulid::from_u128(106),
+                max: 5,
+                refresh: RefreshWire::OnTurnStart,
+            },
+        ];
+        let (mut world, _) = fixture.start(1);
+        make_partial(&mut world, 5);
+        let pattern = [
+            EncounterMode::RealTime,
+            EncounterMode::TurnBased,
+            EncounterMode::TurnBased,
+            EncounterMode::RealTime,
+            EncounterMode::RealTime,
+            EncounterMode::RealTime,
+            EncounterMode::TurnBased,
+            EncounterMode::RealTime,
+        ];
+        for (index, wanted) in pattern.into_iter().enumerate() {
+            let current = world.combat().expect("encounter").mode;
+            request_mode(&mut world, wanted).expect("capable");
+            let round = world.combat().expect("encounter").round;
+            zero_all(&mut world);
+            match current {
+                EncounterMode::TurnBased => loop {
+                    let state = world.combat().expect("encounter");
+                    let actor = state.active.expect("a TB head");
+                    if world.timeline().len() == 1 {
+                        // The last turn: its end is the rollover.
+                        zero_all(&mut world);
+                    }
+                    perform_action(&mut world, &CombatAction::EndTurn { actor }).expect("end");
+                    if world.combat().expect("encounter").round != round {
+                        break;
+                    }
+                },
+                EncounterMode::RealTime => {
+                    for _ in 0..4 {
+                        crate::tick::tick(&mut world);
+                    }
+                }
+            }
+            let combat = world.combat().expect("encounter");
+            assert_eq!(combat.round, round + 1, "boundary {index}");
+            assert_eq!(combat.mode, wanted, "boundary {index}");
+            let found = balances(&world);
+            // The OnRoundStart pool: exactly +1 for everyone.
+            assert!(
+                found.iter().all(|(round_pool, _)| *round_pool == 1),
+                "{index}: {found:?}"
+            );
+            // The OnTurnStart pool: everyone in RT, only the head in TB.
+            let turn: Vec<u32> = found.iter().map(|(_, turn)| *turn).collect();
+            match wanted {
+                EncounterMode::RealTime => assert_eq!(turn, vec![1, 1], "boundary {index}"),
+                EncounterMode::TurnBased => {
+                    let head = combat.active.expect("head");
+                    let expected: Vec<u32> = world
+                        .combatants()
+                        .iter()
+                        .map(|(id, _)| u32::from(id == head))
+                        .collect();
+                    assert_eq!(turn, expected, "boundary {index}");
+                }
+            }
+        }
+    }
+
+    /// `OnTick` counts: one delivery per advance that crosses a multiple, in
+    /// RT ticks and in TB rollover jumps.
+    #[test]
+    fn on_tick_deliveries_are_counted_exactly() {
+        use crpg_data::{ActionPoolTemplate, RefreshWire, TickPeriod};
+        let tick_pool = |id: u128, period: u64| ActionPoolTemplate {
+            id: Ulid::from_u128(id),
+            max: 9,
+            refresh: RefreshWire::OnTick(TickPeriod(period)),
+        };
+        let build = |periods: [u64; 3]| {
+            let mut fixture = capable(4);
+            fixture.ruleset.pools = vec![
+                tick_pool(105, periods[0]),
+                tick_pool(106, periods[1]),
+                tick_pool(107, periods[2]),
+            ];
+            fixture
+        };
+        let current = |world: &World| -> Vec<Vec<u32>> {
+            world
+                .combatants()
+                .iter()
+                .map(|(_, state)| {
+                    let mut all = vec![state.action_pool.current()];
+                    all.extend(state.extra_pools.iter().map(|pool| pool.current()));
+                    all
+                })
+                .collect()
+        };
+
+        // RT: periods 1, 3 and 4 over eight ticks.
+        let fixture = build([1, 3, 4]);
+        let (mut world, _) = fixture.start_rt(1, EncounterMode::RealTime);
+        make_partial(&mut world, 9);
+        for t in 1..=8_u32 {
+            crate::tick::tick(&mut world);
+            let expected = vec![t, t / 3, t / 4];
+            for (index, balance) in current(&world).into_iter().enumerate() {
+                assert_eq!(balance, expected, "combatant {index}, tick {t}");
+            }
+        }
+
+        // TB: round_ticks 4 jumps; periods 1, 3 and 5 gain one per crossing
+        // advance, however many multiples a jump passes (0..4, 4..8, 8..12
+        // and 12..16 cross 5 at none, one, one and one of them).
+        let fixture = build([1, 3, 5]);
+        let (mut world, ids) = fixture.start(1);
+        make_partial(&mut world, 9);
+        for rollover in 1..=4_u32 {
+            for actor in [ids[1], ids[0]] {
+                perform_action(&mut world, &CombatAction::EndTurn { actor }).expect("end");
+            }
+            let expected = vec![rollover, rollover, [0, 1, 2, 3][rollover as usize - 1]];
+            for (index, balance) in current(&world).into_iter().enumerate() {
+                assert_eq!(balance, expected, "combatant {index}, rollover {rollover}");
+            }
+        }
+    }
 }

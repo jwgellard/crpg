@@ -39,7 +39,13 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
 `LegalActionsError`, `MAX_LEGAL_ACTIONS`, plus the T027a area surface
 (ADR-0020): `World::new_in_area` / `area` / `area_of`,
 `HistoryWorld::new_in_area`, `AreaError`, `transfer_entity`,
-`transfer_history_entity`, and `CombatError::AreaMismatch`.
+`transfer_history_entity`, and `CombatError::AreaMismatch`, plus the T138a
+encounter-mode surface (ADR-0029): `EncounterMode`, `EncounterClock`,
+`StandingOrder`, `RT_CLOCK_MAX`, `start_encounter_in_mode`, `request_mode`,
+`CombatAction::Stop`, and `CombatError::{ModeUnsupported, WrongMode}`, plus
+the T138b history v2 surface: `HistoryWorld::{version, start_encounter_in_mode,
+request_mode}`, the `HistoryEvent` variants `RoundStarted`, `ModeChanged` and
+`OrderEnded`, and `HISTORY_VERSION` now 2 (1 is still read).
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -80,8 +86,9 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
   empties with two or more alive, terminal (`active = None`) otherwise. A
   rejected action leaves the whole world — resources, RNG, events, event
   sequence — unchanged. A valid failed attack consumes its action; an
-  invalid action consumes nothing. Combat turn logic lives only in these
-  two operations, never in `tick` / `run_systems` / `end_turn`. Affordability
+  invalid action consumes nothing. Turn-based combat turn logic lives
+  only in these two operations, never in `tick` / `run_systems` / `end_turn`
+  (RT stages 2 and 3 execute stored orders only, T138a). Affordability
   sums same-pool entries as one total in authored template order, primary
   first, with checked `u32` addition (`ValueOverflow`) and `InsufficientAction`
   carrying the total and original balance (T019).
@@ -106,8 +113,17 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
   publish only on success. Gameplay errors win before
   history errors; rejection preserves authoritative state, RNG, entity
   allocation, and all counters. Emission order per operation is
-  `ActionResolved`, drained `Died`s, then the actual `TurnStarted` or first
-  `EncounterEnded`; explicit release journals nothing. `read_after` pages at
+  `ActionResolved`, drained `Died`s, then the actual `ModeChanged`,
+  `RoundStarted`, and `TurnStarted` or first `EncounterEnded` (T138b); an RT
+  `tick` journals `ModeChanged`, `RoundStarted`, `TurnStarted`, then each
+  `ActionResolved` followed at once by its `Died` and each `OrderEnded`, then
+  `EncounterEnded`; explicit release, RT order setting, `Stop` and
+  `request_mode` journal nothing. The wrapper `version` is 1 until the first
+  `commit` whose staged world holds a clock or whose events include a v2
+  variant, then 2 for good (`commit` is its only writer); the loader rejects
+  a version-1 wrapper holding a v2 event or a clock, and any version other
+  than 1 or 2. A history change that moves a `history_v2` or `history_v1`
+  golden is a stop, not a re-bless. `read_after` pages at
   most 256 envelopes with `StaleCursor`/`FutureCursor` errors and inert
   reads; `acknowledge` is monotonic and idempotent with no slow-peer cursor.
   `history_hash` covers the complete canonical wrapper (world, version,
@@ -137,6 +153,21 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
   `ScheduledEntity`, `InvalidTransform` in order, then (history pair only)
   `SourceHistory` before `DestinationHistory`; any failure publishes neither
   side.
+
+- Encounter mode (T138a, ADR-0029): `CombatState.mode` (TB or RT; hashed;
+  omitted when TB), `clock` (`None` = TB-only), `pending_mode`, and
+  `Combatant.order`. `start_encounter` is TB (and `start_encounter_tracked` keeps its two-argument
+  form, delegating to the mode-taking `start_encounter_in_mode_tracked`); `start_encounter_in_mode`
+  publishes RT (every key `0`, `active = None`). In RT, `validate_action`
+  swaps only its turn stage (terminal gate for `UseAbility`/`Stop`,
+  `WrongMode` for `EndTurn`; `Stop` in TB is `WrongMode`); an accepted RT
+  `UseAbility` stores a `StandingOrder` and returns `Ok(None)`. `tick`
+  stage 2 runs the clock (+1, `OnTick` delivery, boundary: pending RT-to-TB
+  or RT round start) and stage 3 executes due orders through
+  `validate_action` and the shared `resolve_use`. `request_mode` only sets
+  `pending_mode`; switches apply at an RT boundary or a TB rollover. The
+  clock freezes at `RT_CLOCK_MAX`. TB and TB-only worlds are byte-identical
+  to before.
 
 ## Invariants
 
@@ -328,8 +359,14 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   differently ordered interner reproduces identical behavior (E014).
   Absence-skip (`is_empty` / `is_none`) keeps non-combat worlds
   byte-identical to the T007/T008a skeleton; it is not a hash exclusion.
-- **The combat controller never invents actions.** `tick` / `run_systems`
-  know nothing of combat; `end_turn` stays pop-only. Refresh happens once
+- **The combat controller never invents actions (turn-based).** In TB,
+  `tick` / `run_systems` know nothing of combat; `end_turn` stays pop-only.
+  Since T138a the RT stages are the one exception: stage 2 (clock) and stage 3
+  (`timeline_system`) execute only orders that commands stored earlier, in an
+  RT encounter, and never invent an action. Combat turn logic for TB still
+  lives only in `perform_action` and `despawn`; RT logic lives only in
+  `combat.rs` (`clock_stage`, `execution_stage`) and `tick.rs` merely calls it.
+  Refresh happens once
   per logical turn start via the incoming actor's `TurnStart` (plus
   `RoundStart` on rollover); a rejected action advances nothing.
 - **Death is not despawn; release is neither.** A dead combatant keeps its entity, its
@@ -428,6 +465,20 @@ effects-map wiring plus one `Option` unwrap; no golden/behavior change),
 recorded in `tasks/T017d.md`; B4 still owns replay/goldens and B5 the CLI
 proof.
 
+## Kernel-range bridge (T136c, deleted by T137)
+
+T136b added kernel-range shapes to `crpg-data` that no controller executes
+yet: non-`Int`/derived stats, rolled initiative, ability bonus stats,
+constant/actor-stat/opposed defenses, damage dice, effect grants, and `Stat`
+effect targets. `start_encounter_tracked` refuses any encounter carrying one
+of them with `CombatError::UnsupportedAuthored` (`UnsupportedAuthored at
+spec/authored`), immediately after the two data-owned asserts and before the
+placement loop; a rejection publishes nothing and leaves the world
+unchanged. The two expanded definition matches mark their new variants
+`unreachable!` with the same reason. `tests/unsupported_authored.rs` pins one
+case per trigger plus the Display string. T137 implements the shapes and
+deletes the variant, the check, and that suite; do not extend the bridge.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -447,3 +498,7 @@ proof.
 - 2026-09-30 (UTC) · claude-code + T027a implementation · Added the persisted area identity and dual-world transfer surface with its world-owned, immutable-identity invariant, so later components know they must join the move contract rather than vanish on transfer.
 - 2026-10-17 (UTC) · opencode-go/deepseek-v4.1-flash + T097 implementation · Recorded the cached journal byte total and world-only staging as invariant 14, named `commit` the only journal/world/sequence writer, added the derived-side-value trap and the source guard that enforces it, and amended rule 8 for the test-only `ENCODINGS` counter; no bytes, hashes, goldens, or public API changed.
 - 2026-10-21 (UTC) · opencode-go/deepseek-v4.1-flash + T133 · Restored T097 D2's qualifier that `commit` is the journal's only writer before validation ends, and added the 4095/4096-envelope `ENCODINGS` and journal-in-place regressions next to the existing small-journal tests; no behaviour, public API, or byte changed.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + T136c · Recorded the temporary T136b bridge (`UnsupportedAuthored` before placement, unreachable definition arms, one test per trigger) and that T137 deletes it; no existing error precedence, golden, or hash changed.
+- 2026-10-23 (UTC) · claude-code (Sonnet 5.5) + T138a · Added the encounter-mode surface and RT tick stages to the API list, and amended the "tick knows nothing of combat" trap, which now holds for turn-based play only because RT stages execute stored orders.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138a resume · Re-wrapped the amended trap and recorded that `start_encounter_tracked` keeps its two-argument form, with the mode-taking `start_encounter_in_mode_tracked` beside it, because `src/history/tests.rs` is a second caller outside this package.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138b · Added the history v2 surface and emission order to the API list, and recorded the lazy sticky wrapper version and the v1 loader rejections, so TB-only histories are known to keep version 1 and their goldens.

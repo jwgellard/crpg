@@ -772,6 +772,7 @@ fn duplicate_slugs_and_missing_locale_cover_new_kinds() {
                 damage: vec![crpg_data::DamageEntry {
                     outcome: crpg_data::OutcomeWire::Success,
                     amount: 1,
+                    dice: None,
                 }],
                 cost: 1,
                 extra_costs: Vec::new(),
@@ -783,6 +784,7 @@ fn duplicate_slugs_and_missing_locale_cover_new_kinds() {
                 allow_self_target: false,
                 recovery_ticks: None,
                 repeats_in_real_time: None,
+                bonus_stats: None,
             }),
         );
     });

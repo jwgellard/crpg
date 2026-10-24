@@ -9,6 +9,7 @@
 
 use crpg_core::EntityId;
 
+use crate::combat::TickFacts;
 use crate::timeline::InitiativeKey;
 use crate::world::World;
 
@@ -19,8 +20,19 @@ use crate::world::World;
 /// tick it runs under. `run_systems` is the whole point of the function —
 /// the list, its order, and its stage comments are the contract.
 pub fn tick(world: &mut World) {
+    let _ = tick_tracked(world);
+}
+
+/// [`tick`], reporting the transitions and executions the encounter stages
+/// observed (T138b, ADR-0029 N5).
+///
+/// Crate-visible only: [`tick`] delegates here and discards the facts, so its
+/// behaviour and bytes are unchanged; the history wrapper journals the facts.
+pub(crate) fn tick_tracked(world: &mut World) -> TickFacts {
     world.advance_tick();
-    run_systems(world);
+    let mut facts = TickFacts::default();
+    run_systems(world, &mut facts);
+    facts
 }
 
 /// Turn-based advance primitive: pops and returns the head of the timeline
@@ -37,24 +49,34 @@ pub fn end_turn(world: &mut World) -> Option<(InitiativeKey, EntityId)> {
 
 /// The hand-written ordered system list, spec §10 stage order.
 ///
-/// Today exactly one entry. Each future system appends with its task and its
-/// stage comment; reordering existing entries is a behaviour change and gets
-/// reviewed as one.
-fn run_systems(world: &mut World) {
-    // §10 stage 3 (timeline order) — the only stage with a system yet.
-    timeline_system(world);
+/// Each system appends with its task and its stage comment; reordering
+/// existing entries is a behaviour change and gets reviewed as one.
+fn run_systems(world: &mut World, facts: &mut TickFacts) {
+    // §10 stage 2 (timers, durations, refreshes) — T138: the encounter clock.
+    encounter_clock_system(world, facts);
+    // §10 stage 3 (timeline order) — T138: RT execution of due orders.
+    timeline_system(world, facts);
 }
 
-/// Real-time policy step: the standing queue is processed in order every
-/// tick, and standing order is preserved — no reorder, no rekey.
+/// Encounter-clock step (T138, ADR-0029 T3, T6, T9, T10): advances the clock
+/// of a running real-time encounter, delivers `OnTick` refreshes, and applies
+/// the round boundary. Every other world, including every turn-based
+/// encounter, is untouched.
+fn encounter_clock_system(world: &mut World, facts: &mut TickFacts) {
+    crate::combat::clock_stage(world, facts);
+}
+
+/// Timeline step: the standing queue is walked in order every tick, and
+/// standing order is preserved — no reorder, no rekey — except for the
+/// real-time execution of due orders (T138, ADR-0029 T7).
 ///
-/// The per-entry dispatch loop is already here, applying no effect yet: its
-/// body names the task that plugs the first effect in, so the shape future
-/// systems inherit is the shape tested today. Net observable effect of a
-/// no-input tick: counter +1, everything else bit-identical.
-fn timeline_system(world: &mut World) {
+/// The per-entry dispatch loop is already here, applying no effect itself.
+/// The execution stage only runs the orders that commands stored earlier;
+/// it never invents an action. Net observable effect of a no-input tick:
+/// counter +1, plus the clock of a running real-time encounter.
+fn timeline_system(world: &mut World, facts: &mut TickFacts) {
     for _entity in world.timeline().iter().map(|(_, id)| id) {
-        // No effect yet: the first per-entity system (T014-era stats or
-        // T016-era combat) plugs in here.
+        // No per-entity effect of its own: RT execution follows below.
     }
+    crate::combat::execution_stage(world, facts);
 }

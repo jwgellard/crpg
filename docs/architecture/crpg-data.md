@@ -199,11 +199,41 @@ blocker with options is recorded in `tasks/T017a.md`.
 `crpg.ruleset/2` and `crpg.ability/2` tags, with no migration edge. Absence is
 turn-based-only, today's only mode, so every existing document decodes and
 encodes unchanged. Read time rejects a zero `round_ticks` or `recovery_ticks`
-as `Malformed`, as the last check of its arm. `validate` has no rule for them;
-defaulting `recovery_ticks` to `round_ticks` is the sim's (T138). T136b takes
-each document's next version once and keeps these fields unchanged.
+as `Malformed`, as the last check of its arm. `validate` only warns when they
+appear under a ruleset with no `round_ticks` (T136b); defaulting
+`recovery_ticks` to `round_ticks` is the sim's (T138). The fields are unchanged
+by T136b, which adds no version bump (D32c).
 
 - 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136a · Documented the three optional real-time fields added at the current tags, their read-time zero checks, and that semantics stay with the sim.
+
+### Kernel-range surface (T136b)
+
+D32c: no version bump, no migration and no fixture change. Every addition is
+optional-missing or an additive variant at `crpg.ruleset/2`, `crpg.ability/2`
+and `crpg.effect/1`, so each existing document decodes to today's value and
+re-encodes byte-for-byte. The sim cannot execute any of it yet; T136c makes it
+reject each feature with `UnsupportedAuthored` until T137 maps it.
+
+- Stats: `StatKindWire` gains `Fixed`, `Bool`, `Enum{enum_id, variants}`,
+  `Tags`, `Dice` (externally tagged, hand-written `Deserialize`);
+  `StatDecl.derived` holds an `ExprWire` (adjacent `type`/`value`, six binary
+  operators plus `Literal`/`Stat`) over `StatValueWire` literals.
+- Resolution: `Ability.bonus_stats`, `DefenseWire::{Constant, ActorStat,
+  Opposed}`, `DamageEntry.dice`, `Ruleset.initiative` (`InitiativeWire`).
+- Effects: `EffectTargetWire::Stat{stat}` and `Effect.grants`.
+- Read time (`Malformed`): enum domains, `health_stat` a non-derived `Int`,
+  `attributes` `Int`, expression node/depth/total bounds, literals, references,
+  cycles, chain length and kinds are all judged inside one ruleset, in the
+  order the contract lists; `crpg-data` never depends on `crpg-rules`.
+  Bounds are `MAX_EXPR_NODES` and its siblings in `combat.rs`, mirroring the kernel.
+- Semantic: `unknown_stat` also covers `bonus_stats`, `ActorStat`, `Opposed`
+  and effect `Stat` targets (valid means a declared, non-health `Int` stat);
+  `missing_stat` applies to non-derived `Int`/`Fixed` stats and the whole-number
+  check to `Int` only. `real_time_fields_without_round_ticks` is the crate's
+  first `Warning`: an ability with `recovery_ticks` or `repeats_in_real_time ==
+  Some(true)` under a ruleset with no `round_ticks`.
+
+- 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136b · Documented the kernel-range surface added at the current tags, its read-time and semantic rules, and the first warning; the T136a line that `validate` has no rule for the real-time fields is superseded by the new warning.
 
 ## Agent log
 

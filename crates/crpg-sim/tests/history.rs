@@ -91,10 +91,12 @@ fn lethal_fixture() -> Fixture {
         DamageEntry {
             outcome: OutcomeWire::Success,
             amount: 99,
+            dice: None,
         },
         DamageEntry {
             outcome: OutcomeWire::Failure,
             amount: 0,
+            dice: None,
         },
     ];
     fixture.tables.get_mut(&table_id()).expect("table").bands = vec![OutcomeBandWire {
@@ -827,7 +829,7 @@ fn load_rejects_corrupt_journal() {
 
     // Wrapper shape faults.
     let mut value: serde_json::Value = serde_json::from_str(&base).expect("parses");
-    value["version"] = serde_json::Value::from(2);
+    value["version"] = serde_json::Value::from(3);
     assert!(serde_json::from_value::<HistoryWorld>(value)
         .expect_err("unknown version fails")
         .to_string()

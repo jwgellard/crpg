@@ -20,7 +20,7 @@
 //! derived.
 
 use crate::DataError;
-use crpg_core::Ulid;
+use crpg_core::{Fx16_16, Ulid};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{de, Deserialize, Serialize};
@@ -38,12 +38,40 @@ pub const MAX_DIE_SIDES: u32 = 1_000_000;
 /// Modifiers in one authored effect, mirroring the T014 kernel bound.
 pub const MAX_EFFECT_MODIFIERS: usize = 4096;
 
+/// Nodes in one derived expression, mirroring the rules kernel.
+pub const MAX_EXPR_NODES: usize = 4096;
+/// Derived-expression nodes in one ruleset, mirroring the rules kernel.
+pub const MAX_TOTAL_EXPR_NODES: usize = 65_536;
+/// Derived-expression depth with the root at depth one, mirroring the kernel.
+pub const MAX_EXPR_DEPTH: usize = 32;
+/// Longest derived-stat dependency chain, endpoints included, mirroring the kernel.
+pub const MAX_DERIVED_DEPTH: usize = 128;
+/// Variants in one enum stat domain, mirroring the rules kernel.
+pub const MAX_ENUM_VARIANTS: usize = 1024;
+/// Tags in one tag set, mirroring the rules kernel.
+pub const MAX_TAGS: usize = 1024;
+
 /// Declared value category of one ruleset stat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StatKindWire {
     /// Whole-number integer stat.
     Int,
+    /// Fixed-point stat.
+    Fixed,
+    /// Flag stat.
+    Bool,
+    /// Enum stat over a named domain.
+    Enum {
+        /// Nonempty domain identifier shared by every stat of the domain.
+        enum_id: String,
+        /// Distinct nonempty variant names in authored order.
+        variants: Vec<String>,
+    },
+    /// Tag-set stat.
+    Tags,
+    /// Dice-expression stat.
+    Dice,
 }
 
 /// One ruleset stat declaration.
@@ -54,6 +82,104 @@ pub struct StatDecl {
     pub name: String,
     /// Declared value category.
     pub kind: StatKindWire,
+    /// Formula evaluated before this stat's modifiers; absent means a base stat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<ExprWire>,
+}
+
+/// One typed literal value; mirrors the kernel's symbolic stat value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum StatValueWire {
+    /// A whole number.
+    Int(i32),
+    /// Core's raw fixed-point integer.
+    Fixed(#[schemars(with = "i32")] Fx16_16),
+    /// A flag.
+    Bool(bool),
+    /// A member of a declared enum domain.
+    Enum {
+        /// The enum domain identifier.
+        enum_id: String,
+        /// The selected variant within the domain.
+        variant: String,
+    },
+    /// Distinct nonempty tag names.
+    Tags(Vec<String>),
+    /// Dice notation, 1..=128 UTF-8 bytes.
+    Dice(String),
+}
+
+/// One derived-stat expression node; mirrors the kernel expression tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ExprWire {
+    /// A constant value.
+    Literal(StatValueWire),
+    /// The fully modified value of another stat of this ruleset, by name.
+    Stat(String),
+    /// Saturating integer or fixed-point addition.
+    Add {
+        /// Left operand, evaluated first.
+        left: Box<ExprWire>,
+        /// Right operand.
+        right: Box<ExprWire>,
+    },
+    /// Saturating integer or fixed-point subtraction.
+    Subtract {
+        /// Left operand, evaluated first.
+        left: Box<ExprWire>,
+        /// Right operand.
+        right: Box<ExprWire>,
+    },
+    /// Saturating integer or fixed-point multiplication.
+    Multiply {
+        /// Left operand, evaluated first.
+        left: Box<ExprWire>,
+        /// Right operand.
+        right: Box<ExprWire>,
+    },
+    /// Flooring division; a zero divisor is a kernel error.
+    Divide {
+        /// Left operand, evaluated first.
+        left: Box<ExprWire>,
+        /// Right operand.
+        right: Box<ExprWire>,
+    },
+    /// The smaller of two same-kind numeric values.
+    Min {
+        /// Left operand, evaluated first.
+        left: Box<ExprWire>,
+        /// Right operand.
+        right: Box<ExprWire>,
+    },
+    /// The larger of two same-kind numeric values.
+    Max {
+        /// Left operand, evaluated first.
+        left: Box<ExprWire>,
+        /// Right operand.
+        right: Box<ExprWire>,
+    },
+}
+
+/// Rolled initiative: dice plus stat values plus the participant's authored key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InitiativeWire {
+    /// Initiative dice notation, 1..=128 UTF-8 bytes.
+    pub dice: String,
+    /// Distinct non-health int stat names added to the roll, in authored order.
+    pub bonus_stats: Vec<String>,
 }
 
 /// When an action pool refills to maximum.
@@ -110,6 +236,20 @@ pub enum DefenseWire {
         /// Declared non-health stat name read from the target.
         stat: String,
     },
+    /// Uses a constant difficulty value.
+    Constant(i32),
+    /// Uses the actor's named stat value, never the health stat.
+    ActorStat {
+        /// Declared non-health int stat name read from the actor.
+        stat: String,
+    },
+    /// Uses the target's opposing roll total.
+    Opposed {
+        /// Opposing dice notation, 1..=128 UTF-8 bytes.
+        dice: String,
+        /// Distinct non-health int stat names added to the opposing roll.
+        bonus_stats: Vec<String>,
+    },
 }
 
 /// One non-primary pool cost entry on an ability.
@@ -134,13 +274,18 @@ pub enum EffectAimWire {
 }
 
 /// Which numeric fold an effect modifier contributes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum EffectTargetWire {
     /// Contributes to the Roll fold.
     Roll,
     /// Contributes to the Dc fold.
     Dc,
+    /// Contributes to the named int stat of the aimed combatant.
+    Stat {
+        /// Declared non-health int stat name.
+        stat: String,
+    },
 }
 
 /// How an effect modifier combines with its base.
@@ -210,6 +355,9 @@ pub struct Effect {
     pub modifiers: Vec<EffectModifierWire>,
     /// Lifetime in rounds, always at least one.
     pub duration_rounds: u32,
+    /// Distinct tag names held by the aimed combatant while attached; absent means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants: Option<Vec<String>>,
 }
 
 /// Authored ruleset: stat declarations, health designation, pools, abilities.
@@ -245,6 +393,9 @@ pub struct Ruleset {
     /// Ticks per real-time round, nonzero; absent means turn-based only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_ticks: Option<u32>,
+    /// Rolled initiative rule; absent means each participant's authored key alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative: Option<InitiativeWire>,
 }
 
 /// One data-selected outcome label.
@@ -263,14 +414,17 @@ pub enum OutcomeWire {
     Custom(u8),
 }
 
-/// Flat damage for one outcome label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Damage for one outcome label: a flat amount plus optional dice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DamageEntry {
     /// Outcome label this amount applies to.
     pub outcome: OutcomeWire,
     /// Nonnegative flat damage amount.
     pub amount: u32,
+    /// Optional damage dice notation added to `amount`; absent means flat damage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dice: Option<String>,
 }
 
 /// Authored attack ability.
@@ -321,6 +475,9 @@ pub struct Ability {
     /// Whether a real-time standing order repeats; absent means false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeats_in_real_time: Option<bool>,
+    /// Distinct non-health int stat names added to this ability's roll; absent means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bonus_stats: Option<Vec<String>>,
 }
 
 /// One margin band: the inclusive lower bound selecting an outcome.
@@ -588,9 +745,71 @@ impl<'de> Deserialize<'de> for DefenseWire {
                     serde_json::from_value(inner["stat"].clone()).map_err(de::Error::custom)?;
                 Ok(DefenseWire::TargetStat { stat })
             }
+            "constant" => {
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                let constant: i32 = serde_json::from_value(value).map_err(de::Error::custom)?;
+                Ok(DefenseWire::Constant(constant))
+            }
+            "actor_stat" => {
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                let inner: BTreeMap<String, Value> =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                exact_keys::<D>(&inner, &["stat"])?;
+                let stat: String =
+                    serde_json::from_value(inner["stat"].clone()).map_err(de::Error::custom)?;
+                Ok(DefenseWire::ActorStat { stat })
+            }
+            "opposed" => {
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                let inner: BTreeMap<String, Value> =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                exact_keys::<D>(&inner, &["bonus_stats", "dice"])?;
+                let dice: String =
+                    serde_json::from_value(inner["dice"].clone()).map_err(de::Error::custom)?;
+                let bonus_stats: Vec<String> = serde_json::from_value(inner["bonus_stats"].clone())
+                    .map_err(de::Error::custom)?;
+                Ok(DefenseWire::Opposed { dice, bonus_stats })
+            }
             other => Err(de::Error::unknown_variant(
                 other,
-                &["actor_attribute", "target_stat"],
+                &[
+                    "actor_attribute",
+                    "target_stat",
+                    "constant",
+                    "actor_stat",
+                    "opposed",
+                ],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StatKindWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["int", "fixed", "bool", "enum", "tags", "dice"];
+        match Value::deserialize(deserializer)? {
+            Value::String(name) => match name.as_str() {
+                "int" => Ok(StatKindWire::Int),
+                "fixed" => Ok(StatKindWire::Fixed),
+                "bool" => Ok(StatKindWire::Bool),
+                "tags" => Ok(StatKindWire::Tags),
+                "dice" => Ok(StatKindWire::Dice),
+                other => Err(de::Error::unknown_variant(other, VARIANTS)),
+            },
+            Value::Object(outer) => {
+                let outer: BTreeMap<String, Value> = outer.into_iter().collect();
+                exact_keys::<D>(&outer, &["enum"])?;
+                let inner: BTreeMap<String, Value> =
+                    serde_json::from_value(outer["enum"].clone()).map_err(de::Error::custom)?;
+                exact_keys::<D>(&inner, &["enum_id", "variants"])?;
+                let enum_id: String =
+                    serde_json::from_value(inner["enum_id"].clone()).map_err(de::Error::custom)?;
+                let variants: Vec<String> =
+                    serde_json::from_value(inner["variants"].clone()).map_err(de::Error::custom)?;
+                Ok(StatKindWire::Enum { enum_id, variants })
+            }
+            _ => Err(de::Error::custom(
+                "stat kind must be a kind name or an enum object",
             )),
         }
     }
@@ -639,7 +858,16 @@ impl<'de> Deserialize<'de> for EffectTargetWire {
                 }
                 Ok(EffectTargetWire::Dc)
             }
-            other => Err(de::Error::unknown_variant(other, &["roll", "dc"])),
+            "stat" => {
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                let inner: BTreeMap<String, Value> =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                exact_keys::<D>(&inner, &["stat"])?;
+                let stat: String =
+                    serde_json::from_value(inner["stat"].clone()).map_err(de::Error::custom)?;
+                Ok(EffectTargetWire::Stat { stat })
+            }
+            other => Err(de::Error::unknown_variant(other, &["roll", "dc", "stat"])),
         }
     }
 }
@@ -703,6 +931,351 @@ impl<'de> Deserialize<'de> for PolicyWire {
             )),
         }
     }
+}
+
+/// Value category an expression node produces, for data-side kind checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExprKind<'a> {
+    Int,
+    Fixed,
+    Bool,
+    Tags,
+    Dice,
+    Enum(&'a str),
+}
+
+fn decl_kind(kind: &StatKindWire) -> ExprKind<'_> {
+    match kind {
+        StatKindWire::Int => ExprKind::Int,
+        StatKindWire::Fixed => ExprKind::Fixed,
+        StatKindWire::Bool => ExprKind::Bool,
+        StatKindWire::Tags => ExprKind::Tags,
+        StatKindWire::Dice => ExprKind::Dice,
+        StatKindWire::Enum { enum_id, .. } => ExprKind::Enum(enum_id),
+    }
+}
+
+/// Splits a node into its binary children, if it is a binary operator.
+fn binary_children(expr: &ExprWire) -> Option<(&ExprWire, &ExprWire)> {
+    match expr {
+        ExprWire::Literal(_) | ExprWire::Stat(_) => None,
+        ExprWire::Add { left, right }
+        | ExprWire::Subtract { left, right }
+        | ExprWire::Multiply { left, right }
+        | ExprWire::Divide { left, right }
+        | ExprWire::Min { left, right }
+        | ExprWire::Max { left, right } => Some((left, right)),
+    }
+}
+
+/// Counts nodes iteratively; `None` when the tree exceeds the node or depth
+/// bound. Iterative so that a hostile in-memory tree cannot overflow the stack.
+fn expr_node_count(root: &ExprWire) -> Option<usize> {
+    let mut nodes = 0usize;
+    let mut stack: Vec<(&ExprWire, usize)> = vec![(root, 1)];
+    while let Some((node, depth)) = stack.pop() {
+        nodes += 1;
+        if depth > MAX_EXPR_DEPTH || nodes > MAX_EXPR_NODES {
+            return None;
+        }
+        if let Some((left, right)) = binary_children(node) {
+            stack.push((right, depth + 1));
+            stack.push((left, depth + 1));
+        }
+    }
+    Some(nodes)
+}
+
+/// Distinct nonempty names, at most [`MAX_TAGS`] of them.
+fn tag_names_valid(tags: &[String]) -> bool {
+    if tags.len() > MAX_TAGS {
+        return false;
+    }
+    let mut seen = BTreeSet::new();
+    tags.iter()
+        .all(|tag| !tag.is_empty() && seen.insert(tag.as_str()))
+}
+
+/// Distinct nonempty names; an empty list passes.
+fn distinct_nonempty(names: &[String]) -> bool {
+    let mut seen = BTreeSet::new();
+    names
+        .iter()
+        .all(|name| !name.is_empty() && seen.insert(name.as_str()))
+}
+
+fn dice_len_valid(dice: &str) -> bool {
+    (1..=MAX_DICE_INPUT_BYTES).contains(&dice.len())
+}
+
+/// Checks literals and references of one bounded expression in preorder.
+fn check_expr_nodes(
+    expr: &ExprWire,
+    stats: &BTreeMap<&str, &StatKindWire>,
+    domains: &BTreeMap<&str, BTreeSet<&str>>,
+) -> Result<(), DataError> {
+    match expr {
+        ExprWire::Literal(value) => match value {
+            StatValueWire::Int(_) | StatValueWire::Fixed(_) | StatValueWire::Bool(_) => Ok(()),
+            StatValueWire::Tags(tags) => {
+                if tag_names_valid(tags) {
+                    Ok(())
+                } else {
+                    Err(crate::error::malformed(
+                        "ruleset derived tags literal must hold at most 1024 distinct nonempty tags",
+                    ))
+                }
+            }
+            StatValueWire::Dice(dice) => {
+                if dice_len_valid(dice) {
+                    Ok(())
+                } else {
+                    Err(crate::error::malformed(
+                        "ruleset derived dice literal must be 1..=128 UTF-8 bytes",
+                    ))
+                }
+            }
+            StatValueWire::Enum { enum_id, variant } => {
+                if domains
+                    .get(enum_id.as_str())
+                    .is_some_and(|variants| variants.contains(variant.as_str()))
+                {
+                    Ok(())
+                } else {
+                    Err(crate::error::malformed(
+                        "ruleset derived enum literal must name a declared enum variant",
+                    ))
+                }
+            }
+        },
+        ExprWire::Stat(name) => {
+            if stats.contains_key(name.as_str()) {
+                Ok(())
+            } else {
+                Err(crate::error::malformed(
+                    "ruleset derived expression must reference declared stats",
+                ))
+            }
+        }
+        other => {
+            let (left, right) = binary_children(other).ok_or_else(|| {
+                crate::error::malformed("ruleset derived expression must reference declared stats")
+            })?;
+            check_expr_nodes(left, stats, domains)?;
+            check_expr_nodes(right, stats, domains)
+        }
+    }
+}
+
+/// Collects the stat names one bounded expression references.
+fn collect_expr_refs<'a>(expr: &'a ExprWire, out: &mut Vec<&'a str>) {
+    match expr {
+        ExprWire::Literal(_) => {}
+        ExprWire::Stat(name) => out.push(name.as_str()),
+        other => {
+            if let Some((left, right)) = binary_children(other) {
+                collect_expr_refs(left, out);
+                collect_expr_refs(right, out);
+            }
+        }
+    }
+}
+
+/// Kind of one bounded, reference-checked expression, or `None` on mismatch.
+fn expr_kind<'a>(
+    expr: &'a ExprWire,
+    stats: &BTreeMap<&str, &'a StatKindWire>,
+) -> Option<ExprKind<'a>> {
+    match expr {
+        ExprWire::Literal(value) => Some(match value {
+            StatValueWire::Int(_) => ExprKind::Int,
+            StatValueWire::Fixed(_) => ExprKind::Fixed,
+            StatValueWire::Bool(_) => ExprKind::Bool,
+            StatValueWire::Tags(_) => ExprKind::Tags,
+            StatValueWire::Dice(_) => ExprKind::Dice,
+            StatValueWire::Enum { enum_id, .. } => ExprKind::Enum(enum_id),
+        }),
+        ExprWire::Stat(name) => stats.get(name.as_str()).map(|kind| decl_kind(kind)),
+        other => {
+            let (left, right) = binary_children(other)?;
+            let left = expr_kind(left, stats)?;
+            let right = expr_kind(right, stats)?;
+            match (left, right) {
+                (ExprKind::Int, ExprKind::Int) => Some(ExprKind::Int),
+                (ExprKind::Fixed, ExprKind::Fixed) => Some(ExprKind::Fixed),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// Typed-stat and derived-expression rules of one ruleset (behaviour 5.1-5.11).
+fn validate_ruleset_kernel(ruleset: &Ruleset) -> Result<(), DataError> {
+    fn malformed(message: &'static str) -> DataError {
+        crate::error::malformed(message)
+    }
+    let mut domains: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for stat in &ruleset.stats {
+        let StatKindWire::Enum { enum_id, variants } = &stat.kind else {
+            continue;
+        };
+        if enum_id.is_empty() {
+            return Err(malformed("ruleset enum stat enum_id must be nonempty"));
+        }
+        if variants.is_empty() || variants.len() > MAX_ENUM_VARIANTS {
+            return Err(malformed("ruleset enum stat variants must be 1..=1024"));
+        }
+        let distinct: BTreeSet<&str> = variants.iter().map(String::as_str).collect();
+        if distinct.len() != variants.len() || variants.iter().any(String::is_empty) {
+            return Err(malformed(
+                "ruleset enum stat variants must be distinct and nonempty",
+            ));
+        }
+    }
+    for stat in &ruleset.stats {
+        let StatKindWire::Enum { enum_id, variants } = &stat.kind else {
+            continue;
+        };
+        let set: BTreeSet<&str> = variants.iter().map(String::as_str).collect();
+        match domains.get(enum_id.as_str()) {
+            Some(first) if *first != set => {
+                return Err(malformed(
+                    "ruleset enum stats sharing an enum_id must declare the same variants",
+                ));
+            }
+            Some(_) => {}
+            None => {
+                domains.insert(enum_id.as_str(), set);
+            }
+        }
+    }
+    let kinds: BTreeMap<&str, &StatKindWire> = ruleset
+        .stats
+        .iter()
+        .map(|stat| (stat.name.as_str(), &stat.kind))
+        .collect();
+    let health = ruleset
+        .stats
+        .iter()
+        .find(|stat| stat.name == ruleset.health_stat);
+    if !health.is_some_and(|stat| stat.kind == StatKindWire::Int && stat.derived.is_none()) {
+        return Err(malformed(
+            "ruleset health_stat must name a non-derived int stat",
+        ));
+    }
+    if !ruleset
+        .attributes
+        .iter()
+        .all(|name| kinds.get(name.as_str()) == Some(&&StatKindWire::Int))
+    {
+        return Err(malformed("ruleset attributes must name int stats"));
+    }
+    let mut total = 0usize;
+    for stat in &ruleset.stats {
+        let Some(expr) = &stat.derived else {
+            continue;
+        };
+        let Some(nodes) = expr_node_count(expr) else {
+            return Err(malformed(
+                "ruleset derived expression must be at most 4096 nodes and 32 deep",
+            ));
+        };
+        total += nodes;
+    }
+    if total > MAX_TOTAL_EXPR_NODES {
+        return Err(malformed(
+            "ruleset derived expressions must total at most 65536 nodes",
+        ));
+    }
+    for stat in &ruleset.stats {
+        if let Some(expr) = &stat.derived {
+            check_expr_nodes(expr, &kinds, &domains)?;
+        }
+    }
+    validate_derived_graph(ruleset)?;
+    for stat in &ruleset.stats {
+        let Some(expr) = &stat.derived else {
+            continue;
+        };
+        if expr_kind(expr, &kinds) != Some(decl_kind(&stat.kind)) {
+            return Err(malformed(
+                "ruleset derived expression kind must match its stat",
+            ));
+        }
+    }
+    if let Some(initiative) = &ruleset.initiative {
+        if !dice_len_valid(&initiative.dice) {
+            return Err(malformed(
+                "ruleset initiative dice must be 1..=128 UTF-8 bytes",
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        let valid = initiative.bonus_stats.iter().all(|name| {
+            *name != ruleset.health_stat
+                && kinds.get(name.as_str()) == Some(&&StatKindWire::Int)
+                && seen.insert(name.as_str())
+        });
+        if !valid {
+            return Err(malformed(
+                "ruleset initiative bonus stats must name distinct non-health int stats",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects derived-stat cycles and over-long dependency chains (5.8, 5.9).
+fn validate_derived_graph(ruleset: &Ruleset) -> Result<(), DataError> {
+    let index: BTreeMap<&str, usize> = ruleset
+        .stats
+        .iter()
+        .enumerate()
+        .map(|(i, stat)| (stat.name.as_str(), i))
+        .collect();
+    let count = ruleset.stats.len();
+    let mut pending = vec![0usize; count];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); count];
+    let mut dependencies: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (i, stat) in ruleset.stats.iter().enumerate() {
+        let Some(expr) = &stat.derived else {
+            continue;
+        };
+        let mut names = Vec::new();
+        collect_expr_refs(expr, &mut names);
+        let deps: BTreeSet<usize> = names
+            .iter()
+            .filter_map(|name| index.get(name).copied())
+            .collect();
+        pending[i] = deps.len();
+        for dep in deps {
+            dependents[dep].push(i);
+            dependencies[i].push(dep);
+        }
+    }
+    let mut ready: Vec<usize> = (0..count).filter(|i| pending[*i] == 0).collect();
+    let mut depth = vec![1usize; count];
+    let mut done = 0usize;
+    while let Some(i) = ready.pop() {
+        done += 1;
+        depth[i] = 1 + dependencies[i].iter().map(|d| depth[*d]).max().unwrap_or(0);
+        for next in dependents[i].clone() {
+            pending[next] -= 1;
+            if pending[next] == 0 {
+                ready.push(next);
+            }
+        }
+    }
+    if done != count {
+        return Err(crate::error::malformed(
+            "ruleset derived stats must not form a cycle",
+        ));
+    }
+    if depth.iter().any(|d| *d > MAX_DERIVED_DEPTH) {
+        return Err(crate::error::malformed(
+            "ruleset derived dependency chains must be at most 128 stats",
+        ));
+    }
+    Ok(())
 }
 
 /// Checks single-document combat invariants shared by the byte reader.
@@ -774,7 +1347,7 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
             if ruleset.round_ticks == Some(0) {
                 return Err(malformed("ruleset round_ticks must be nonzero"));
             }
-            Ok(())
+            validate_ruleset_kernel(ruleset)
         }
         crate::Document::Ability(ability) => {
             if ability.slug.is_empty() || ability.name.is_empty() {
@@ -813,13 +1386,41 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
                     "ability must spend something: cost or extra costs",
                 ));
             }
-            if let DefenseWire::TargetStat { stat } = &ability.defense {
+            if let DefenseWire::TargetStat { stat } | DefenseWire::ActorStat { stat } =
+                &ability.defense
+            {
                 if stat.is_empty() {
                     return Err(malformed("ability defense stat must be nonempty"));
                 }
             }
             if ability.recovery_ticks == Some(0) {
                 return Err(malformed("ability recovery_ticks must be nonzero"));
+            }
+            if let Some(bonus_stats) = &ability.bonus_stats {
+                if bonus_stats.is_empty() || !distinct_nonempty(bonus_stats) {
+                    return Err(malformed(
+                        "ability bonus_stats must be a nonempty list of distinct nonempty names",
+                    ));
+                }
+            }
+            if let DefenseWire::Opposed { dice, bonus_stats } = &ability.defense {
+                if !dice_len_valid(dice) {
+                    return Err(malformed(
+                        "ability opposed dice must be 1..=128 UTF-8 bytes",
+                    ));
+                }
+                if !distinct_nonempty(bonus_stats) {
+                    return Err(malformed(
+                        "ability opposed bonus_stats must be distinct nonempty names",
+                    ));
+                }
+            }
+            for entry in &ability.damage {
+                if let Some(dice) = &entry.dice {
+                    if !dice_len_valid(dice) {
+                        return Err(malformed("ability damage dice must be 1..=128 UTF-8 bytes"));
+                    }
+                }
             }
             Ok(())
         }
@@ -886,6 +1487,18 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
             }
             if effect.duration_rounds == 0 {
                 return Err(malformed("effect duration must be at least one round"));
+            }
+            for modifier in &effect.modifiers {
+                if matches!(&modifier.target, EffectTargetWire::Stat { stat } if stat.is_empty()) {
+                    return Err(malformed("effect modifier stat must be nonempty"));
+                }
+            }
+            if let Some(grants) = &effect.grants {
+                if grants.is_empty() || !tag_names_valid(grants) {
+                    return Err(malformed(
+                        "effect grants must hold 1..=1024 distinct nonempty tags",
+                    ));
+                }
             }
             Ok(())
         }

@@ -170,6 +170,14 @@ Found while testing; `tools/agents/oc.py` must handle each one.
    local spend per model; the quota left and the reset time are only on the
    opencode.ai dashboard.
 
+17. **MiMo-V2.6-Pro leaves the tests row (2026-10-24, session 18).** 0/2
+    first-attempt in the tests role (T136a-tests fail, T138a-tests hang), so
+    it is demoted under §4.1 and falls back to its O1 tier place for that
+    role. The tests row's first choice is now `opencode-go/deepseek-v4-pro`
+    (T136b-tests, T138a-tests attempt 2) or `opencode-go/deepseek-v4.1-flash`
+    from a lab other than the implementer's, second
+    `opencode-go/muse-spark-1.3-contributor`.
+
 ## 2. Claude models (subagents in Claude Code)
 
 Prices are Anthropic API rates per million tokens; on a subscription they
@@ -322,14 +330,13 @@ to break ties, never to overrule a bake-off failure.
 
 **Preference (the user, 2026-10-16): stretch tokens.** Among the models
 strong enough for the job, use up the intelligent free models' limits first:
-Muse Spark 1.3 Free, DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat
-Free. Then use cheap Go models, and keep expensive Go models (Kimi K3,
-Gemini 4 Argon) for reviews and escalations. Never take a weaker model only
-because it is free. Claude tokens are
-kept for higher-level thinking: A and C packages, the S-set, which
-`docs/AGENT_TEAM_PLAN.md` §4.2 keeps Claude-only, judgment review, and
-escalations an O1 model failed. "Strongest" means the tier below and the §4.1
-field record. Composite scores only break ties.
+Muse Spark 1.3 Free, DeepSeek V4.1 Flash Free and GLM-5.3-Flash Free. Then
+use cheap Go models, and keep expensive Go models (Kimi K3, Gemini 4 Argon)
+for reviews and escalations. Never take a weaker model only because it is
+free. Claude tokens are kept for higher-level thinking: A and C packages, the
+S-set, which `docs/AGENT_TEAM_PLAN.md` §4.2 keeps Claude-only, judgment
+review, and escalations an O1 model failed. "Strongest" means the tier below
+and the §4.1 field record. Composite scores only break ties.
 
 **Two free lanes, kept apart (the user, 2026-10-16):** "Make sure that, in
 the future, the free Zen tokens go to models like Muse Spark and other good
@@ -337,24 +344,25 @@ models that have a free Zen version." The free Zen tier is one account-wide
 rate limit (§1 item 10), so spend it only on strong models with a free Zen
 variant: `opencode/muse-spark-1.3-contributor-free`,
 `opencode/deepseek-v4.1-flash-free` and `opencode/glm-5.3-flash-free`, at
-most three runs at once. LongCat and Cat Jam never use the Zen route; they
-run on their unlimited `opencode-go/` IDs (§1 item 11). `oc.py` should
-refuse an `opencode/cat-jam-free` or `opencode/longcat-2.5-preview-free`
-model ID and name the Go ID instead.
+most three runs at once. Beam (Cat Jam renamed) never uses the Zen route; it
+runs on its unlimited `opencode-go/beam-free` ID (§1 items 11 and 13), and
+LongCat is out of routing altogether (§1 item 14). `oc.py` should refuse an
+`opencode/beam-free` or `opencode/cat-jam-free` model ID and name the Go ID
+instead.
 
-**LongCat and Cat Jam first, once proven (the user, 2026-10-16):** "Long cat
-and cat jam are free right now. If they can be assessed to be reliable, I
-would like to utilise them heavily." Both scored 21/21 and 5/5 in the
-bake-off, but that fixture was too easy to rank strong models (§3.3). Their
-assessment is the §4.1 field record, run on real work from 2026-10-16:
-research reports citation-checked by the other model, and implementation
-(A0-6 on LongCat, T097-m on Cat Jam) through verify and review. Promote
-either to first choice in a role once it has 5 runs there and a
-first-attempt pass rate at least the incumbent's. Against Cat Jam so far:
-one model-caused 43-minute hang (A0-3); a 10-minute idle watchdog now bounds
-that cost. Higher-allowance Go models come next for implementation: Muse
-Spark 1.3 Contributor (45,300 requests per 5 h), DeepSeek V4.1 Flash
-(34,670), MiMo-V2.6-Flash and MiMo-V2.5 (30,100 each).
+**Beam first, once proven (the user, 2026-10-16):** the user wanted the
+then-free Cat Jam used heavily once it could be assessed as reliable; LongCat
+was named beside it then but is out of routing now (§1 item 14), so this rule
+covers Beam alone. Beam scored 21/21 and 5/5 in the bake-off, but that fixture
+was too easy to rank strong models (§3.3). Its assessment is the §4.1 field
+record, run on real work from 2026-10-16: research reports citation-checked by
+the other model, and implementation (T097-m on Cat Jam) through verify and
+review. Promote it to first choice in a role once it has 5 runs there and a
+first-attempt pass rate at least the incumbent's. Against Beam so far: one
+model-caused 43-minute hang (A0-3); a 10-minute idle watchdog now bounds that
+cost. Higher-allowance Go models come next for implementation: Muse Spark 1.3
+Contributor (45,300 requests per 5 h), DeepSeek V4.1 Flash (34,670),
+MiMo-V2.6-Flash and MiMo-V2.5 (30,100 each).
 
 Not yet benchmarked, from the same Go page: LongCat-2.0 (11,400 per 5 h),
 MiMo-V2.5 and V2.5-Pro, Qwen3.7 Plus, GLM-5.2, Hy3, Grok 4.7, GPT 5.6 Luna
@@ -375,7 +383,7 @@ thirty reviews.
 |---|---|---|---|
 | I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
 | I outside the S-set, harder or after one failure | `opencode-go/deepseek-v4-pro` | `opencode-go/mimo-v2.6-pro` | Claude `implementer` |
-| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/mimo-v2.6-pro` or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/deepseek-v4-pro` (T136b-tests, T138a-tests attempt 2) or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
 | First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
 | Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
 | Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
@@ -398,15 +406,15 @@ Tier membership:
   Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation
   retry), and Beam Free, formerly Cat Jam Free (fast, but a stealth model
   whose terms can change; §1 item 13).
-- **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, LongCat 2.5 Preview
-  Free, Big Pickle, Space Bunny Free (correct
-  but slow and token-hungry), Qwen3.8 Max and Hy4 preview (correct but slow;
-  Qwen3.8 Max is also scarce). O3 is a fallback when O1 and O2 are unavailable,
-  not a first choice.
+- **O3:** DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, Big Pickle, Space
+  Bunny Free (correct but slow and token-hungry), Qwen3.8 Max and Hy4 preview
+  (correct but slow; Qwen3.8 Max is also scarce). O3 is a fallback when O1 and
+  O2 are unavailable, not a first choice.
 - **Not routed:** Nemotron 3.5 Lightning and Nemotron 3 Ultra (timeouts),
   Nemotron 3.5 Super VL and MiMo-V2.6-Flash Free (scouting at most), MiniMax
   M3 (stalled and missed a bug), Step 5 Preview for implementation (gate
-  loop), and GPT-5.6 Terra for scouting or review.
+  loop), GPT-5.6 Terra for scouting or review, and LongCat 2.5 Preview Free
+  (5 failures in 6; §1 item 14).
 
 Data handling: Gemini 4 Argon Contributor, the Muse Spark contributor models,
 Big Pickle and MiMo-V2.6-Flash Free may train on prompts. That is acceptable
@@ -494,6 +502,13 @@ Infra exits (rate limit, quota) are listed but do not count.
 
 The free Zen limit is account-wide: with at most three concurrent runs it refused every free model from about 07:00 UTC and had not recovered at 08:06 UTC.
 
+**Record, 2026-10-24 session 18 (tests role).**
+
+| Model | Role | Runs and outcome |
+|---|---|---|
+| `opencode-go/mimo-v2.6-pro` | tests | T136a-tests fail, T138a-tests hang: 0/2 first-attempt, demoted from the tests row under §4.1 |
+| `opencode-go/deepseek-v4-pro` | tests | T136b-tests and T138a-tests attempt 2: first choice for the tests row, with `opencode-go/deepseek-v4.1-flash` as the other-lab alternative |
+
 ## 5. Bake-off method
 
 Run 2026-10-16. The harness, fixtures and scored results are in
@@ -555,3 +570,5 @@ whenever Zen or Go changes its model list:
 - 2026-10-17 (UTC) · claude-code (manager, Opus 5.5) + session 7 field record · Added the T120–T129 runs, including the Beam upstream rate limit and the free DeepSeek and GLM results that replaced it, so routing reflects how they did on real work.
 - 2026-10-17 (UTC) · opencode/gpt-6-luna (grunt) + session 8 bookkeeping · Added the session 8 field record and account-wide free Zen outage sentence to capture run outcomes and availability.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Demoted MiMo-V2.6-Pro from implement after two `hang` runs with no output on doc-only contract drafts (T136b draft A, T138 draft B), removing it from the routine row and moving it to second choice on the harder row.
+- 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-11b · Removed LongCat from §4's free preference, the Go-only lane and the "first, once proven" paragraph, and moved it from O3 to Not routed, so every current-rule sentence agrees with §1 item 14 (LongCat out of routing, free multi-reviews on Beam alone).
+- 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Demoted MiMo-V2.6-Pro from the tests row under §4.1 (0/2 first-attempt: T136a-tests fail, T138a-tests hang) to first-choice DeepSeek V4 Pro or DeepSeek V4.1 Flash, so the routing table follows the session 18 field record.

@@ -251,10 +251,12 @@ fn documents(
                 StatDecl {
                     name: label.clone(),
                     kind: StatKindWire::Int,
+                    derived: None,
                 },
                 StatDecl {
                     name: format!("{label}-health"),
                     kind: StatKindWire::Int,
+                    derived: None,
                 },
             ],
             health_stat: format!("{label}-health"),
@@ -266,6 +268,7 @@ fn documents(
             }],
             abilities: vec![id],
             round_ticks: None,
+            initiative: None,
         }));
     }
     result.push(Document::Ability(Ability {
@@ -280,22 +283,27 @@ fn documents(
             DamageEntry {
                 outcome: OutcomeWire::CriticalSuccess,
                 amount: ticks as u32,
+                dice: None,
             },
             DamageEntry {
                 outcome: OutcomeWire::Success,
                 amount: ticks as u32,
+                dice: None,
             },
             DamageEntry {
                 outcome: OutcomeWire::Failure,
                 amount: ticks as u32,
+                dice: None,
             },
             DamageEntry {
                 outcome: OutcomeWire::CriticalFailure,
                 amount: ticks as u32,
+                dice: None,
             },
             DamageEntry {
                 outcome: OutcomeWire::Custom(7),
                 amount: ticks as u32,
+                dice: None,
             },
         ],
         cost: 1 + (ticks % 1000) as u32,
@@ -308,6 +316,7 @@ fn documents(
         allow_self_target: false,
         recovery_ticks: None,
         repeats_in_real_time: None,
+        bonus_stats: None,
     }));
     result.push(Document::Effect(Effect {
         id,
@@ -326,6 +335,7 @@ fn documents(
             name: None,
         }],
         duration_rounds: 1,
+        grants: None,
     }));
     result.push(Document::OutcomeTable(OutcomeTable {
         id,

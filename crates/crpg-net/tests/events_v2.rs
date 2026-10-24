@@ -1571,10 +1571,12 @@ impl HistoryFixture {
             DamageEntry {
                 outcome: OutcomeWire::Success,
                 amount: 99,
+                dice: None,
             },
             DamageEntry {
                 outcome: OutcomeWire::Failure,
                 amount: 0,
+                dice: None,
             },
         ];
         self.tables
@@ -1720,6 +1722,15 @@ fn candidate_for(
                 encounter: Some(*event_encounter),
                 round: Some(*round),
             }
+        }
+        HistoryEvent::RoundStarted { .. } => {
+            panic!("the TB fixture journals no v2 event")
+        }
+        HistoryEvent::ModeChanged { .. } => {
+            panic!("the TB fixture journals no v2 event")
+        }
+        HistoryEvent::OrderEnded { .. } => {
+            panic!("the TB fixture journals no v2 event")
         }
     }
 }

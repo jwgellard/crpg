@@ -198,6 +198,17 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T138-draft-b | merged (PR #66, re-land of #65) | — | MiMo-V2.6-Pro attempt ended `hang` after 15m with no file; rerun on DeepSeek V4.1 Flash, $0.19, wrote 500 lines and hit its step limit before committing; the manager committed it (`ffc10bf`) |
 | T138 | merged (PR #66, re-land of #65) | — | exact contract `tasks/T138.md` (1012 lines, Claude `architect`, `be81018`), adjudicated from drafts A and B; split T138a/T138b plus companions T138c–e; open questions now D32i–D32p |
 
+## Session 17 batch (no PR yet)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T136b | in session 17 batch | — | `crpg-data` surface schemas: two-keys tests in review-fix round, attempt 2 on DeepSeek V4 Pro |
+| T136c | in session 17 batch | — | `crpg-sim` bridge: two-keys tests in review-fix round, attempt 2 on DeepSeek V4 Pro |
+| T137 | contract approved (D33) | — | `crpg-sim` adapter generalization: approved by the user 2026-10-24 (every recommendation 1a–6a, plus the bridge-suite deletion); T137a/T137b Claude implementer after T138b, T137c OpenCode; `surface_v1` baselines need the user's golden gate |
+| T138a | in session 17 batch | — | `crpg-sim` encounter mode and RT policy: merged into the batch with two-keys `rt_contract.rs` and review fixes |
+| T138c | in session 17 batch | — | `crpg-script` `Stop` companion: merged into the batch with review fixes |
+| A0-12 | in session 17 batch | — | tools (`tools/agents/oc.py` slot guard): refuses a slot that holds another task's work; merged into the batch |
+
 ## ADR-0029 follow-on contracts
 
 | Task | Crate | Status | S-set | Contract to write | Depends on |
@@ -205,7 +216,7 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T134 | `crpg-rules` | contract to write; approved to start (ADR-0029 Q3); implement only with its first consumer, T137 | — | K3(a) success-count and face-count modes on `DiceExpr`; sum default, notation extension, unchanged trace | Accepted; implement with its first consumer (T137) |
 | T135 | `crpg-rules` | implemented, reviewed; in session 14 batch (S-set: awaits the user's review) | Yes | K3(b) pool refill amount and validated maximum setter | Accepted |
 | T136 | `crpg-data` | T136a implemented, reviewed; merged (PR #64); T136b exact contract approved (`tasks/T136b.md`, D32, every recommendation), ready; companion T136c (`crpg-sim`) named | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
-| T137 | `crpg-sim` | contract to write; waits on T136 | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
+| T137 | `crpg-sim` | contract approved by the user 2026-10-24 (D33, every recommendation 1a–6a, plus the bridge-suite deletion); T137a/T137b Claude implementer after T138b, T137c OpenCode | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
 | T138 | `crpg-sim` | exact contract approved (`tasks/T138.md`, D32, every recommendation), T138a/T138b plus companions T138c–e ready | Yes | Encounter mode and RT policy (T1–T16); history v2 (N5) | T136 (RT fields) |
 | T139 | `crpg-sim` | contract to write; waits on T137, T138 | Yes | Persistent creature state outside encounters; join and leave (T13, T14) | T137, T138 |
 | T140 | `crpg-net` | contract to write; waits on T024, T027b, T138 (H-filter; ADR-0029 Q8 roll transparency decided here) | — (H-filter) | Next protocol version: N1–N4 facts, events, intents, snapshot allowlist | T024, T027b, T138 |
@@ -496,3 +507,4 @@ Record it here, one line per week.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Added the Session 15 batch table and moved the T136/T138 follow-on rows to their exact-contract-proposed statuses, so the index shows the D32 gate without deciding it.
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S16 bookkeeping · Marked the session 15 batch merged through PR #66 (re-land of #65) and indexed the session 16 A0-11/A0-4c packages, so the index shows the D32 gate without deciding it.
 - 2026-10-23 (UTC) · claude-code (manager, Opus 5.5) + D32 answered · Marked the T136b and T138 contracts approved and ready, since the user answered D32 with every recommendation.
+- 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Added the Session 17 batch table (T136b/T136c two-keys tests in review-fix round on DeepSeek V4 Pro; T137 approved D33; T138a/T138c merged into the batch; A0-12 slot guard) and marked the T137 contract row approved, so the index matches the batch branch.

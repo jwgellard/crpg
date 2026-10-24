@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 
 use crpg_core::{DeterministicRng, EntityId, EventQueue, GenerationalArena, Interners, Tick, Ulid};
 
-use crate::combat::{CombatState, Combatant, TransitionFacts, COMBAT_ROLL_TAG};
+use crate::combat::{
+    CombatState, Combatant, EncounterMode, TransitionFacts, COMBAT_ROLL_TAG, RT_CLOCK_MAX,
+};
 use crate::event::SimEvent;
 use crate::store::ComponentStore;
 use crate::timeline::Timeline;
@@ -519,6 +521,111 @@ impl<'de> Deserialize<'de> for World {
                         ));
                     }
                 }
+                // Real-time coherence (T138, ADR-0029 T16): L1-L5. The
+                // sim's stages `expect` these, so an incoherent save fails
+                // here instead of at action time. An order's target is not
+                // checked: a despawned or dead target fails at due time.
+                match state.clock {
+                    None => {
+                        if state.mode == EncounterMode::RealTime {
+                            return Err(serde::de::Error::custom(
+                                "combat real-time mode without a clock",
+                            ));
+                        }
+                        if state.pending_mode.is_some() {
+                            return Err(serde::de::Error::custom(
+                                "combat pending mode without a clock",
+                            ));
+                        }
+                        if definition.abilities.iter().any(|ability| {
+                            ability.recovery_ticks.is_some() || ability.repeats_in_real_time
+                        }) {
+                            return Err(serde::de::Error::custom(
+                                "combat ability carries real-time fields without a clock",
+                            ));
+                        }
+                    }
+                    Some(clock) => {
+                        if clock.round_ticks == 0 {
+                            return Err(serde::de::Error::custom(
+                                "combat clock declares zero round ticks",
+                            ));
+                        }
+                        if clock.elapsed > RT_CLOCK_MAX {
+                            return Err(serde::de::Error::custom("combat clock exceeds its bound"));
+                        }
+                        if definition
+                            .abilities
+                            .iter()
+                            .any(|ability| ability.recovery_ticks == Some(0))
+                        {
+                            return Err(serde::de::Error::custom(
+                                "combat ability declares zero recovery ticks",
+                            ));
+                        }
+                    }
+                }
+                if state.pending_mode == Some(state.mode) {
+                    return Err(serde::de::Error::custom(
+                        "combat pending mode equals its mode",
+                    ));
+                }
+                if state.mode == EncounterMode::RealTime {
+                    if state.active.is_some() {
+                        return Err(serde::de::Error::custom(
+                            "real-time combat holds an active turn",
+                        ));
+                    }
+                    let alive = repr
+                        .combatants
+                        .iter()
+                        .filter(|(_, combatant)| !combatant.dead())
+                        .count();
+                    let scheduled = repr
+                        .timeline
+                        .iter()
+                        .filter(|(_, id)| repr.combatants.contains(*id))
+                        .count();
+                    if scheduled != alive || repr.timeline.len() != alive {
+                        return Err(serde::de::Error::custom(
+                            "real-time timeline disagrees with its live combatants",
+                        ));
+                    }
+                    if repr.timeline.iter().any(|(key, _)| key.0 < 0) {
+                        return Err(serde::de::Error::custom(
+                            "real-time timeline key is negative",
+                        ));
+                    }
+                }
+                for (_, combatant) in repr.combatants.iter() {
+                    let Some(order) = combatant.order() else {
+                        continue;
+                    };
+                    if state.mode == EncounterMode::TurnBased {
+                        return Err(serde::de::Error::custom(
+                            "turn-based combatant holds a standing order",
+                        ));
+                    }
+                    if combatant.dead() {
+                        return Err(serde::de::Error::custom(
+                            "dead combatant holds a standing order",
+                        ));
+                    }
+                    let Some(ability) = definition
+                        .abilities
+                        .iter()
+                        .find(|entry| entry.ability == order.ability)
+                    else {
+                        return Err(serde::de::Error::custom(
+                            "standing order names an unknown ability",
+                        ));
+                    };
+                    if order.repeat != ability.repeats_in_real_time {
+                        return Err(serde::de::Error::custom(
+                            "standing order repeat disagrees with its ability",
+                        ));
+                    }
+                }
             }
             None => {
                 if !repr.combatants.is_empty() {
@@ -645,6 +752,17 @@ impl World {
             .combat
             .as_ref()
             .map(|state| (state.definition.encounter, state.round, state.active));
+        // The mode and the non-dead count are captured before the removal:
+        // an RT despawn ends the encounter when it drops the count from two
+        // or more to below two (T138b, H2).
+        let prior_rt_alive = self.combat.as_ref().and_then(|state| {
+            (state.mode == EncounterMode::RealTime).then(|| {
+                self.combatants
+                    .iter()
+                    .filter(|(_, combatant)| !combatant.dead())
+                    .count()
+            })
+        });
         if self.entities.remove(id).is_none() {
             return (false, TransitionFacts::default());
         }
@@ -668,6 +786,16 @@ impl World {
                 == Some(id)
         {
             facts = crate::combat::advance_tracked(&mut *self);
+        }
+        if let (Some(before), Some((encounter, round, _))) = (prior_rt_alive, prior) {
+            let after = self
+                .combatants
+                .iter()
+                .filter(|(_, combatant)| !combatant.dead())
+                .count();
+            if before >= 2 && after < 2 {
+                facts.encounter_ended = Some((encounter, round));
+            }
         }
         self.events
             .push(self.tick, SimEvent::Despawned { entity: id });
