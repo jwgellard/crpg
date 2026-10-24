@@ -42,8 +42,8 @@ fn rolled_keys(
     init_b: i32,
 ) -> (i32, i32) {
     let mut rng = draws::oracle(seed);
-    let a_roll = draws::draw(&mut rng, dice).total as i32;
-    let b_roll = draws::draw(&mut rng, dice).total as i32;
+    let a_roll = draws::draw(&mut rng, dice).total;
+    let b_roll = draws::draw(&mut rng, dice).total;
     (
         a_roll.saturating_add(alpha_a).saturating_add(init_a),
         b_roll.saturating_add(alpha_b).saturating_add(init_b),
@@ -294,7 +294,7 @@ fn damage_report_matches_health_delta() {
     let before = world.combatants().get(target).expect("target").health();
     let outcome = surface::act(&mut world, actor, ability, target);
     let after = world.combatants().get(target).expect("target").health();
-    assert_eq!((before - after) as u32, outcome.damage);
+    assert_eq!(before - after, outcome.damage);
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +448,7 @@ fn invalid_initiative_dice_rejects_start() {
     let mut world = World::new(3);
     let before = world.clone();
     let err = draws::start_into(&fixture, &mut world);
-    assert!(matches!(err, Err(CombatError::InvalidDice { .. })));
+    assert!(matches!(err, Err(CombatError::InvalidDice)));
     assert_eq!(world, before);
 }
 
@@ -460,7 +460,7 @@ fn opposed_invalid_dice_rejects_start() {
     let mut world = World::new(3);
     let before = world.clone();
     let err = draws::start_into(&fixture, &mut world);
-    assert!(matches!(err, Err(CombatError::InvalidDice { .. })));
+    assert!(matches!(err, Err(CombatError::InvalidDice)));
     assert_eq!(world, before);
 }
 
@@ -475,7 +475,7 @@ fn damage_dice_invalid_rejects_start() {
     let mut world = World::new(3);
     let before = world.clone();
     let err = draws::start_into(&fixture, &mut world);
-    assert!(matches!(err, Err(CombatError::InvalidDice { .. })));
+    assert!(matches!(err, Err(CombatError::InvalidDice)));
     assert_eq!(world, before);
 }
 
