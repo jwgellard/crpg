@@ -285,6 +285,50 @@ fn r10_stop_ladder() {
     );
 }
 
+/// R10 (B20): in TB the actor rungs precede the mode rung, so a live
+/// non-participant is `NotParticipant` and a dead combatant is `DeadActor`
+/// rather than `WrongMode`.
+#[test]
+fn r10_tb_stop_ladder_precedes_wrong_mode() {
+    let mut fixture = capable(4);
+    make_lethal(&mut fixture, 100);
+    let (mut world, ids) = fixture.start(1);
+    let (a, b) = (ids[0], ids[1]);
+
+    // A live non-participant: the not-participant rung, before the mode.
+    let (_, live) = ghosts(&mut world);
+    rejected(
+        &world,
+        CombatAction::Stop { actor: live },
+        CombatError::NotParticipant { entity: live },
+    );
+
+    // B heads the fixture and kills A; a dead actor is `DeadActor` in TB too.
+    assert_eq!(world.combat().expect("encounter").active, Some(b));
+    perform_action(&mut world, &use_action(b, fixture.ability, a)).expect("B's kill");
+    assert!(world.combatants().get(a).expect("A").dead());
+    rejected(
+        &world,
+        CombatAction::Stop { actor: a },
+        CombatError::DeadActor { actor: a },
+    );
+
+    // The remaining rungs hold: absent, then a live participant's mode.
+    let (gone, _) = ghosts(&mut world);
+    rejected(
+        &world,
+        CombatAction::Stop { actor: gone },
+        CombatError::AbsentActor { actor: gone },
+    );
+    rejected(
+        &world,
+        CombatAction::Stop { actor: b },
+        CombatError::WrongMode {
+            mode: EncounterMode::TurnBased,
+        },
+    );
+}
+
 /// R10 (B21): `EndTurn` is `WrongMode` in RT at the turn stage, and exactly
 /// today's in TB.
 #[test]

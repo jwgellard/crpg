@@ -193,6 +193,66 @@ fn r5_clock_freezes_at_the_bound() {
     end_encounter(&mut probe).expect("release applies");
 }
 
+/// R5 (B12, D4): with a unit round and a unit `OnTick` period, the tick that
+/// reaches the bound would deliver a refresh and run a boundary if the freeze
+/// check were missing; neither happens, a due order waits, and the encounter
+/// then stays frozen.
+#[test]
+fn r5_bound_tick_delivers_nothing_with_unit_periods() {
+    let mut fixture = capable(1);
+    tick_pools(&mut fixture, 1, &[1]);
+    let (mut world, ids) = fixture.start_rt(1, EncounterMode::RealTime);
+    let (a, b) = (ids[0], ids[1]);
+
+    // Tick 1 is a boundary: A executes and spends the primary and extra pools.
+    perform_action(&mut world, &use_action(a, fixture.ability, b)).expect("A's order");
+    tick(&mut world);
+    assert_eq!(elapsed(&world), 1);
+    assert_eq!(world.combat().expect("encounter").round, 1);
+    assert_eq!(
+        (pool_of(&world, a), extras(&world, a)),
+        (0, vec![0]),
+        "A spent both pools"
+    );
+
+    // One tick below the bound, with a due order and a pending switch.
+    let mut value = value_of(&world);
+    value["combat"]["clock"]["elapsed"] = serde_json::json!(RT_CLOCK_MAX - 1);
+    let mut world = load(value);
+    perform_action(&mut world, &use_action(b, fixture.ability, a)).expect("B's order");
+    request_mode(&mut world, EncounterMode::TurnBased).expect("a pending switch");
+    let order = world.combatants().get(b).expect("B").order();
+    assert!(order.is_some(), "B holds a due order");
+    let timeline = timeline_of(&world);
+
+    // The tick that reaches the bound: nothing but the clock moves.
+    tick(&mut world);
+    assert_eq!(elapsed(&world), RT_CLOCK_MAX, "the clock reaches the bound");
+    assert_eq!(extras(&world, a), vec![0], "no OnTick(1) delivery");
+    assert_eq!(pool_of(&world, a), 0, "no round-start refresh");
+    assert_eq!(world.combat().expect("encounter").round, 1, "no boundary");
+    assert_eq!(
+        world.combat().expect("encounter").mode,
+        EncounterMode::RealTime,
+        "a boundary would have applied the pending switch"
+    );
+    assert_eq!(
+        world.combat().expect("encounter").pending_mode,
+        Some(EncounterMode::TurnBased),
+        "the request waits"
+    );
+    assert_eq!(pool_of(&world, b), 1, "B did not execute");
+    assert_eq!(world.combatants().get(b).expect("B").order(), order);
+    assert_eq!(timeline_of(&world), timeline, "no re-key");
+
+    // Frozen: every later tick changes nothing in the encounter.
+    let frozen = without_tick(&world);
+    ticks(&mut world, 10);
+    assert_eq!(frozen, without_tick(&world));
+    assert_eq!(elapsed(&world), RT_CLOCK_MAX);
+    assert_eq!(world.tick().get(), 12, "the world tick still advances");
+}
+
 /// R6 (B9): `OnTick` pools refresh exactly when the clock crosses a multiple
 /// of their period, in RT.
 #[test]
@@ -683,6 +743,46 @@ fn r9_self_kill_is_terminal() {
     assert_eq!(pool_of(&world, b), 1, "B never acted");
     assert_eq!(timeline_of(&world), vec![(0, b)], "A's entry is gone");
     assert_eq!(deaths(&world), vec![a]);
+}
+
+/// R9 (B15, B18): a self-kill drops `rt_alive` below two, so the pass stops
+/// before a later due combatant that is still alive: its order stays instead
+/// of being cleared by the terminal gate.
+#[test]
+fn r9_kill_stops_the_pass_before_a_later_live_order() {
+    let mut fixture = capable(4);
+    make_lethal(&mut fixture, 100);
+    edit_ability(&mut fixture, |ability| ability.allow_self_target = true);
+    let (mut world, ids) = fixture.start_rt(1, EncounterMode::RealTime);
+    let (a, b) = (ids[0], ids[1]);
+    // A (lower id, so first in `(key, EntityId)` order) self-kills; B's due
+    // order on A is left for the pass to reach.
+    perform_action(&mut world, &use_action(a, fixture.ability, a)).expect("A's order");
+    perform_action(&mut world, &use_action(b, fixture.ability, a)).expect("B's order");
+    let order = world
+        .combatants()
+        .get(b)
+        .expect("B")
+        .order()
+        .expect("B's order");
+
+    tick(&mut world);
+    assert!(world.combatants().get(a).expect("A").dead());
+    assert!(!world.combatants().get(b).expect("B").dead());
+    assert_eq!(
+        world.combatants().get(b).expect("B").order(),
+        Some(order),
+        "the pass stopped before B"
+    );
+    assert_eq!(pool_of(&world, b), 1, "B did not spend");
+    assert_eq!(timeline_of(&world), vec![(0, b)], "A's entry is gone");
+    assert_eq!(deaths(&world), vec![a]);
+
+    // Terminal: later ticks leave B's order alone too.
+    let frozen = without_tick(&world);
+    ticks(&mut world, 5);
+    assert_eq!(frozen, without_tick(&world));
+    assert_eq!(world.combatants().get(b).expect("B").order(), Some(order));
 }
 
 /// R9 (B18): an RT encounter published with a single participant is terminal
