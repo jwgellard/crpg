@@ -45,8 +45,8 @@ use crpg_core::{EntityId, Tick, Ulid};
 use crpg_rules::Outcome;
 
 use crate::combat::{
-    perform_action_tracked, start_encounter_tracked, ActionOutcome, CombatAction, CombatError,
-    EncounterSpec, EncounterSummary,
+    perform_action_tracked, start_encounter_in_mode_tracked, ActionOutcome, CombatAction,
+    CombatError, EncounterMode, EncounterSpec, EncounterSummary, TickEvent, TransitionFacts,
 };
 use crate::event::SimEvent;
 use crate::transform::Transform;
@@ -60,16 +60,19 @@ pub const MAX_HISTORY_BYTES: usize = 1_048_576;
 pub const MAX_HISTORY_PAGE: usize = 256;
 /// Maximum UTF-8 bytes in one retained history string payload.
 pub const MAX_HISTORY_STRING_BYTES: usize = 256;
-/// The only history wrapper version this implementation reads and writes.
-pub const HISTORY_VERSION: u32 = 1;
+/// The newest history wrapper version this build writes; 1 is still read.
+pub const HISTORY_VERSION: u32 = 2;
+/// The version a new wrapper starts at (T138 D16): it upgrades lazily.
+const HISTORY_VERSION_V1: u32 = 1;
 
 /// One authoritative history fact, in the wrapper's own terms.
 ///
-/// A separate six-variant sim-owned, core-closed vocabulary (T020, ADR-0017):
-/// structural and death facts mirror the drained legacy queue one-for-one
-/// while the three richer variants carry only symbolic outcome strings,
-/// reported damage, and widened rounds — never rolls, margins, DCs, or
-/// interned handles. Serializes with adjacent `type`/`value` tags in snake
+/// A separate sim-owned, core-closed vocabulary (T020, ADR-0017): structural
+/// and death facts mirror the drained legacy queue one-for-one while the
+/// richer variants carry only symbolic outcome strings, reported damage,
+/// widened rounds, modes and entity references — never rolls, margins, DCs,
+/// or interned handles. The last three variants are version 2 (T138b,
+/// ADR-0029 N5). Serializes with adjacent `type`/`value` tags in snake
 /// case; deserialization requires `type` before `value` and rejects the
 /// reverse order before decoding the value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -121,6 +124,33 @@ pub enum HistoryEvent {
         /// The closing combat round widened from the persisted counter.
         round: u64,
     },
+    /// A round started in RT (ADR-0029 T6, D10).
+    RoundStarted {
+        /// The new round, widened from the persisted `u32`.
+        round: u64,
+    },
+    /// A pending mode applied at a round boundary (ADR-0029 T10).
+    ModeChanged {
+        /// The mode now in force.
+        mode: EncounterMode,
+        /// The round the switch started, widened.
+        round: u64,
+    },
+    /// A due order failed validation and was cleared (ADR-0029 T7, D11).
+    OrderEnded {
+        /// The combatant whose order ended.
+        actor: EntityId,
+    },
+}
+
+impl HistoryEvent {
+    /// Whether this is one of the three version 2 variants (T138b).
+    fn is_v2(&self) -> bool {
+        matches!(
+            self,
+            Self::RoundStarted { .. } | Self::ModeChanged { .. } | Self::OrderEnded { .. }
+        )
+    }
 }
 
 /// One journaled event: its payload plus the coordinates that order it.
@@ -376,7 +406,7 @@ impl Serialize for Journal {
 /// after acknowledgement.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryWorld {
-    /// The wrapper version, always [`HISTORY_VERSION`]; first for canonical order.
+    /// The wrapper version, 1 or 2 (T138 D16); first for canonical order.
     version: u32,
     /// The privately owned authoritative world.
     world: World,
@@ -393,7 +423,7 @@ impl HistoryWorld {
     /// empty journal with `acknowledged = 0` and `next_seq = 1`.
     pub fn new(seed: u64) -> Self {
         Self {
-            version: HISTORY_VERSION,
+            version: HISTORY_VERSION_V1,
             world: World::new(seed),
             acknowledged: 0,
             next_seq: 1,
@@ -417,6 +447,11 @@ impl HistoryWorld {
     pub(crate) fn attach_transform(&mut self, entity: EntityId, transform: Transform) {
         debug_assert!(self.world.contains(entity), "attach to a live entity");
         self.world.transforms_mut().insert(entity, transform);
+    }
+
+    /// The wrapper version: 1 until the first RT-capable commit, then 2 (D16).
+    pub fn version(&self) -> u32 {
+        self.version
     }
 
     /// Immutable view of the privately owned authoritative world.
@@ -494,24 +529,56 @@ impl HistoryWorld {
         Ok(removed)
     }
 
-    /// One fixed simulation step on the staged world, journaling nothing.
+    /// One fixed simulation step on the staged world, journaling what the
+    /// real-time encounter stages observed (T138b, ADR-0029 N5).
     ///
-    /// The tick system list currently emits no events; any drained legacy
-    /// event is still translated rather than dropped. Zero-event operations
-    /// need no free journal slot or sequence.
+    /// Order: `ModeChanged`, `RoundStarted`, `TurnStarted` (whichever
+    /// occurred); then, in execution order, each `ActionResolved` followed
+    /// at once by `Died` if that action killed, and each `OrderEnded`; last,
+    /// one `EncounterEnded` if the pass made the encounter terminal. A
+    /// turn-based, turn-based-only or no-encounter tick journals nothing, and
+    /// zero-event operations need no free journal slot or sequence. A tick
+    /// whose events exceed a cap commits nothing, not even the clock.
     pub fn tick(&mut self) -> Result<(), HistoryError> {
         let mut world = self.world.clone();
-        crate::tick::tick(&mut world);
+        let facts = crate::tick::tick_tracked(&mut world);
         let drained = world.events_mut().drain();
         let tick = world.tick();
-        let mut events = Vec::with_capacity(drained.len());
-        for envelope in &drained {
-            events.push(translate_legacy(&envelope.payload));
+        let mut events = Vec::with_capacity(drained.len() + facts.events.len() + 3);
+        push_lead(&mut events, &facts.transitions);
+        if let Some((actor, round)) = facts.transitions.turn_started {
+            events.push(HistoryEvent::TurnStarted {
+                actor,
+                round: u64::from(round),
+            });
         }
-        debug_assert!(
-            events.is_empty(),
-            "the tick system list currently emits no events"
-        );
+        let mut deaths = drained.iter();
+        for fact in &facts.events {
+            match fact {
+                TickEvent::Resolved(produced) => {
+                    events.push(resolved_event(produced));
+                    if produced.target_died {
+                        let died = deaths
+                            .next()
+                            .expect("each killing resolution enqueued exactly one `Died`");
+                        events.push(translate_legacy(&died.payload));
+                    }
+                }
+                TickEvent::OrderEnded { actor } => {
+                    events.push(HistoryEvent::OrderEnded { actor: *actor });
+                }
+            }
+        }
+        for rest in deaths {
+            debug_assert!(false, "every drained `Died` follows a killing resolution");
+            events.push(translate_legacy(&rest.payload));
+        }
+        if let Some((encounter, round)) = facts.transitions.encounter_ended {
+            events.push(HistoryEvent::EncounterEnded {
+                encounter,
+                round: u64::from(round),
+            });
+        }
         self.commit(world, events, tick)?;
         Ok(())
     }
@@ -521,8 +588,19 @@ impl HistoryWorld {
     ///
     /// Gameplay errors win before history errors and commit nothing.
     pub fn start_encounter(&mut self, spec: &EncounterSpec<'_>) -> Result<(), HistoryError> {
+        self.start_encounter_in_mode(spec, EncounterMode::TurnBased)
+    }
+
+    /// [`start_encounter`](Self::start_encounter) in the host-chosen `mode`
+    /// (ADR-0029 T11). A real-time start journals only its `Spawned` events:
+    /// it schedules no initial turn.
+    pub fn start_encounter_in_mode(
+        &mut self,
+        spec: &EncounterSpec<'_>,
+        mode: EncounterMode,
+    ) -> Result<(), HistoryError> {
         let mut world = self.world.clone();
-        let facts = match start_encounter_tracked(&mut world, spec) {
+        let facts = match start_encounter_in_mode_tracked(&mut world, spec, mode) {
             Ok(facts) => facts,
             Err(error) => return Err(HistoryError::Combat(error)),
         };
@@ -565,13 +643,7 @@ impl HistoryWorld {
         let tick = world.tick();
         let mut events = Vec::with_capacity(drained.len() + 2);
         if let Some(ref produced) = outcome {
-            events.push(HistoryEvent::ActionResolved {
-                actor: produced.actor,
-                target: produced.target,
-                ability: produced.ability,
-                outcome: outcome_text(produced.outcome),
-                damage: produced.damage,
-            });
+            events.push(resolved_event(produced));
         }
         for envelope in &drained {
             events.push(translate_legacy(&envelope.payload));
@@ -600,6 +672,23 @@ impl HistoryWorld {
         debug_assert!(events.is_empty(), "release emits no legacy events");
         self.commit(world, events, tick)?;
         Ok(summary)
+    }
+
+    /// A journaled mode request (ADR-0029 T9, T16); emits no event.
+    ///
+    /// Stages the request, runs [`request_mode`](crate::request_mode) and
+    /// commits zero events, so it needs no free journal slot or sequence.
+    /// Gameplay errors win and commit nothing.
+    pub fn request_mode(&mut self, mode: EncounterMode) -> Result<(), HistoryError> {
+        let mut world = self.world.clone();
+        if let Err(error) = crate::combat::request_mode(&mut world, mode) {
+            return Err(HistoryError::Combat(error));
+        }
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
+        debug_assert!(drained.is_empty(), "a mode request emits no legacy events");
+        self.commit(world, Vec::new(), tick)?;
+        Ok(())
     }
 
     /// The acknowledgement watermark: every retained sequence exceeds it.
@@ -746,6 +835,15 @@ impl HistoryWorld {
             envelopes.push(envelope);
             seq = seq.checked_add(1).ok_or(HistoryError::SequenceExhausted)?;
         }
+        // D16: the first commit that stages an RT-capable encounter or
+        // journals a v2 event upgrades the wrapper, for good. Rejected
+        // commits returned above, so a failed operation never upgrades.
+        if self.version < HISTORY_VERSION
+            && (world.combat().is_some_and(|state| state.clock.is_some())
+                || envelopes.iter().any(|envelope| envelope.payload.is_v2()))
+        {
+            self.version = HISTORY_VERSION;
+        }
         self.world = world;
         self.pending.append(envelopes, bytes);
         self.next_seq = end;
@@ -793,9 +891,38 @@ fn translate_legacy(event: &SimEvent) -> HistoryEvent {
     }
 }
 
-/// Appends the branch-observed trailing transition: an actual `TurnStarted`,
-/// else the first `EncounterEnded`, if either occurred.
-fn push_transition(events: &mut Vec<HistoryEvent>, facts: &crate::combat::TransitionFacts) {
+/// The `ActionResolved` event for one resolved ability use.
+fn resolved_event(produced: &ActionOutcome) -> HistoryEvent {
+    HistoryEvent::ActionResolved {
+        actor: produced.actor,
+        target: produced.target,
+        ability: produced.ability,
+        outcome: outcome_text(produced.outcome),
+        damage: produced.damage,
+    }
+}
+
+/// Appends the mode switch and the real-time round start, in that order, when
+/// the operation took them (T138b, H2).
+fn push_lead(events: &mut Vec<HistoryEvent>, facts: &TransitionFacts) {
+    if let Some((mode, round)) = facts.mode_changed {
+        events.push(HistoryEvent::ModeChanged {
+            mode,
+            round: u64::from(round),
+        });
+    }
+    if let Some(round) = facts.round_started {
+        events.push(HistoryEvent::RoundStarted {
+            round: u64::from(round),
+        });
+    }
+}
+
+/// Appends the branch-observed trailing transition: `ModeChanged`,
+/// `RoundStarted`, then an actual `TurnStarted`, else the first
+/// `EncounterEnded`, if any occurred.
+fn push_transition(events: &mut Vec<HistoryEvent>, facts: &TransitionFacts) {
+    push_lead(events, facts);
     if let Some((actor, round)) = facts.turn_started {
         debug_assert!(
             facts.encounter_ended.is_none(),
@@ -1243,6 +1370,176 @@ impl<'de> Visitor<'de> for EncounterEndedVisitor {
     }
 }
 
+/// The decoded `round_started` payload (version 2).
+///
+/// Deserialization is manual so a duplicate key fails instead of silently
+/// keeping the last value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoundStartedFields {
+    /// The widened real-time round.
+    round: u64,
+}
+
+impl<'de> Deserialize<'de> for RoundStartedFields {
+    /// Decodes one payload, rejecting duplicate/unknown/missing keys.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(RoundStartedVisitor)
+    }
+}
+
+/// The [`RoundStartedFields`] map visitor.
+struct RoundStartedVisitor;
+
+impl<'de> Visitor<'de> for RoundStartedVisitor {
+    type Value = RoundStartedFields;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a `round_started` payload with `round`")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<RoundStartedFields, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut round: Option<u64> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "round" => {
+                    if round.is_some() {
+                        return Err(A::Error::custom("duplicate history payload field `round`"));
+                    }
+                    round = Some(map.next_value()?);
+                }
+                _ => {
+                    return Err(A::Error::custom("unknown history payload field"));
+                }
+            }
+        }
+        let round = round.ok_or_else(|| A::Error::custom("history payload misses `round`"))?;
+        Ok(RoundStartedFields { round })
+    }
+}
+
+/// The decoded `mode_changed` payload (version 2).
+///
+/// Deserialization is manual so a duplicate key fails instead of silently
+/// keeping the last value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModeChangedFields {
+    /// The mode now in force.
+    mode: EncounterMode,
+    /// The widened round the switch started.
+    round: u64,
+}
+
+impl<'de> Deserialize<'de> for ModeChangedFields {
+    /// Decodes one payload, rejecting duplicate/unknown/missing keys.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ModeChangedVisitor)
+    }
+}
+
+/// The [`ModeChangedFields`] map visitor.
+struct ModeChangedVisitor;
+
+impl<'de> Visitor<'de> for ModeChangedVisitor {
+    type Value = ModeChangedFields;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a `mode_changed` payload with `mode` and `round`")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<ModeChangedFields, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut mode: Option<EncounterMode> = None;
+        let mut round: Option<u64> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "mode" => {
+                    if mode.is_some() {
+                        return Err(A::Error::custom("duplicate history payload field `mode`"));
+                    }
+                    mode = Some(map.next_value()?);
+                }
+                "round" => {
+                    if round.is_some() {
+                        return Err(A::Error::custom("duplicate history payload field `round`"));
+                    }
+                    round = Some(map.next_value()?);
+                }
+                _ => {
+                    return Err(A::Error::custom("unknown history payload field"));
+                }
+            }
+        }
+        let mode = mode.ok_or_else(|| A::Error::custom("history payload misses `mode`"))?;
+        let round = round.ok_or_else(|| A::Error::custom("history payload misses `round`"))?;
+        Ok(ModeChangedFields { mode, round })
+    }
+}
+
+/// The decoded `order_ended` payload (version 2).
+///
+/// Deserialization is manual so a duplicate key fails instead of silently
+/// keeping the last value. It has its own `actor` visitor: [`EntityRef`]
+/// names its key `entity`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrderEndedFields {
+    /// The combatant whose order ended.
+    actor: EntityId,
+}
+
+impl<'de> Deserialize<'de> for OrderEndedFields {
+    /// Decodes one payload, rejecting duplicate/unknown/missing keys.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(OrderEndedVisitor)
+    }
+}
+
+/// The [`OrderEndedFields`] map visitor.
+struct OrderEndedVisitor;
+
+impl<'de> Visitor<'de> for OrderEndedVisitor {
+    type Value = OrderEndedFields;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an `order_ended` payload with `actor`")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<OrderEndedFields, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut actor: Option<EntityId> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "actor" => {
+                    if actor.is_some() {
+                        return Err(A::Error::custom("duplicate history payload field `actor`"));
+                    }
+                    actor = Some(map.next_value()?);
+                }
+                _ => {
+                    return Err(A::Error::custom("unknown history payload field"));
+                }
+            }
+        }
+        let actor = actor.ok_or_else(|| A::Error::custom("history payload misses `actor`"))?;
+        Ok(OrderEndedFields { actor })
+    }
+}
+
 impl<'de> Deserialize<'de> for HistoryEvent {
     /// Decodes one adjacent-tagged payload, requiring `type` before `value`.
     ///
@@ -1341,6 +1638,25 @@ impl<'de> Visitor<'de> for PayloadVisitor {
                 HistoryEvent::EncounterEnded {
                     encounter: fields.encounter,
                     round: fields.round,
+                }
+            }
+            "round_started" => {
+                let fields: RoundStartedFields = map.next_value()?;
+                HistoryEvent::RoundStarted {
+                    round: fields.round,
+                }
+            }
+            "mode_changed" => {
+                let fields: ModeChangedFields = map.next_value()?;
+                HistoryEvent::ModeChanged {
+                    mode: fields.mode,
+                    round: fields.round,
+                }
+            }
+            "order_ended" => {
+                let fields: OrderEndedFields = map.next_value()?;
+                HistoryEvent::OrderEnded {
+                    actor: fields.actor,
                 }
             }
             _ => return Err(A::Error::custom("unknown history event type")),
@@ -1443,8 +1759,25 @@ impl<'de> Visitor<'de> for WrapperVisitor {
             next_seq.ok_or_else(|| A::Error::custom("history wrapper misses `next_seq`"))?;
         let pending =
             pending.ok_or_else(|| A::Error::custom("history wrapper misses `pending`"))?;
-        if version != HISTORY_VERSION {
+        if version != HISTORY_VERSION_V1 && version != HISTORY_VERSION {
             return Err(A::Error::custom("unknown history version"));
+        }
+        if version == HISTORY_VERSION_V1 {
+            // Payloads decode with both vocabularies whatever the version
+            // (`version` may follow `pending`), so a v1 wrapper is judged
+            // here, after every key is read.
+            if pending
+                .as_slice()
+                .iter()
+                .any(|envelope| envelope.payload.is_v2())
+            {
+                return Err(A::Error::custom("history v1 journal holds a v2 event"));
+            }
+            if world.combat().is_some_and(|state| state.clock.is_some()) {
+                return Err(A::Error::custom(
+                    "history v1 wrapper holds a real-time-capable encounter",
+                ));
+            }
         }
         if next_seq == 0 {
             return Err(A::Error::custom("history next sequence must not be zero"));

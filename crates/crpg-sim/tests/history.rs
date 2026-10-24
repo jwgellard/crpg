@@ -829,7 +829,7 @@ fn load_rejects_corrupt_journal() {
 
     // Wrapper shape faults.
     let mut value: serde_json::Value = serde_json::from_str(&base).expect("parses");
-    value["version"] = serde_json::Value::from(2);
+    value["version"] = serde_json::Value::from(3);
     assert!(serde_json::from_value::<HistoryWorld>(value)
         .expect_err("unknown version fails")
         .to_string()

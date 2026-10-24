@@ -941,6 +941,32 @@ pub(crate) struct TransitionFacts {
     /// The naturally completed encounter with its round, on the first
     /// transition to terminal.
     pub encounter_ended: Option<(Ulid, u32)>,
+    /// The mode now in force with the round the switch started, when a
+    /// pending mode applied at a boundary or rollover (ADR-0029 T10).
+    pub mode_changed: Option<(EncounterMode, u32)>,
+    /// The real-time round that started (ADR-0029 T6), when one did.
+    pub round_started: Option<u32>,
+}
+
+/// One stage-3 fact, in execution order (T138b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TickEvent {
+    /// One due order resolved through [`resolve_use`].
+    Resolved(ActionOutcome),
+    /// One due order failed validation and was cleared.
+    OrderEnded {
+        /// The combatant whose order ended.
+        actor: EntityId,
+    },
+}
+
+/// Everything one tick observed, for the history wrapper (T138b).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TickFacts {
+    /// The stage-2 transition and the terminal edge of stage 3.
+    pub transitions: TransitionFacts,
+    /// The stage-3 facts in execution order.
+    pub events: Vec<TickEvent>,
 }
 
 /// Initial-turn facts one encounter start actually published.
@@ -2550,7 +2576,9 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
                 let pending = combat.pending_mode.take();
                 deliver_clock_advance(world, old, new);
                 if pending == Some(EncounterMode::RealTime) {
-                    switch_to_real_time(world);
+                    let round = switch_to_real_time(world);
+                    facts.mode_changed = Some((EncounterMode::RealTime, round));
+                    facts.round_started = Some(round);
                     return facts;
                 }
             }
@@ -2720,8 +2748,9 @@ fn rt_round_start(world: &mut World) -> u32 {
 
 /// Applies a pending TB to RT switch at a TB rollover (ADR-0029 T10): the
 /// mode flips, every alive combatant is keyed at the clock, `active` clears,
-/// and the RT round start runs (no TB refresh, no `TurnStart` fact).
-fn switch_to_real_time(world: &mut World) {
+/// and the RT round start runs (no TB refresh, no `TurnStart` fact). Returns
+/// the round the switch started.
+fn switch_to_real_time(world: &mut World) -> u32 {
     let elapsed = {
         let combat = world
             .combat_mut()
@@ -2735,12 +2764,13 @@ fn switch_to_real_time(world: &mut World) {
     for id in alive_ids(world) {
         world.timeline_mut().insert(InitiativeKey(key), id);
     }
-    rt_round_start(world);
+    rt_round_start(world)
 }
 
 /// Applies a pending RT to TB switch at an RT boundary (ADR-0029 T10): every
-/// order clears, the mode flips, and the TB round start runs.
-fn switch_to_turn_based(world: &mut World) {
+/// order clears, the mode flips, and the TB round start runs. Returns the new
+/// turn head and the round the switch started.
+fn switch_to_turn_based(world: &mut World) -> (EntityId, u32) {
     let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
     for id in ids {
         world
@@ -2754,7 +2784,7 @@ fn switch_to_turn_based(world: &mut World) {
         .as_mut()
         .expect("the encounter is checked above")
         .mode = EncounterMode::TurnBased;
-    let _ = tb_round_start(world);
+    tb_round_start(world)
 }
 
 /// Whether stages 2 and 3 act on this world: an RT encounter with two or
@@ -2775,7 +2805,7 @@ fn rt_running(world: &World) -> bool {
 /// Advances the clock by one, delivers it to `OnTick` pools, and at a
 /// boundary applies a pending RT to TB switch or runs the RT round start.
 /// The tick that reaches [`RT_CLOCK_MAX`] does nothing else (D4).
-pub(crate) fn clock_stage(world: &mut World) {
+pub(crate) fn clock_stage(world: &mut World, facts: &mut TickFacts) {
     if !rt_running(world) {
         return;
     }
@@ -2803,9 +2833,11 @@ pub(crate) fn clock_stage(world: &mut World) {
         .pending_mode
         .take();
     if pending == Some(EncounterMode::TurnBased) {
-        switch_to_turn_based(world);
+        let (head, round) = switch_to_turn_based(world);
+        facts.transitions.mode_changed = Some((EncounterMode::TurnBased, round));
+        facts.transitions.turn_started = Some((head, round));
     } else {
-        rt_round_start(world);
+        facts.transitions.round_started = Some(rt_round_start(world));
     }
 }
 
@@ -2817,7 +2849,7 @@ pub(crate) fn clock_stage(world: &mut World) {
 /// validation is cleared with no other effect. An actor that survives is
 /// re-keyed at `min(elapsed + recovery, RT_CLOCK_MAX)`; a one-shot order
 /// clears. A combatant without an order keeps its key and waits.
-pub(crate) fn execution_stage(world: &mut World) {
+pub(crate) fn execution_stage(world: &mut World, facts: &mut TickFacts) {
     if !rt_running(world) {
         return;
     }
@@ -2858,6 +2890,7 @@ pub(crate) fn execution_stage(world: &mut World) {
                 .get_mut(actor)
                 .expect("the actor is a live combatant")
                 .order = None;
+            facts.events.push(TickEvent::OrderEnded { actor });
             continue;
         }
         let recovery = {
@@ -2867,7 +2900,8 @@ pub(crate) fn execution_stage(world: &mut World) {
                 .recovery_ticks
                 .unwrap_or(round_ticks)
         };
-        let _ = resolve_use(world, actor, order.ability, order.target);
+        let resolved = resolve_use(world, actor, order.ability, order.target);
+        facts.events.push(TickEvent::Resolved(resolved));
         let dead: Vec<EntityId> = world
             .combatants()
             .iter()
@@ -2901,7 +2935,13 @@ pub(crate) fn execution_stage(world: &mut World) {
             }
         }
     }
+    if rt_alive(world) < 2 {
+        // The pass made the encounter terminal: the first, and only, end.
+        let state = world.combat().expect("the encounter is checked above");
+        facts.transitions.encounter_ended = Some((state.definition.encounter, state.round));
+    }
 }
+
 /// Releases the active encounter, retaining its summary for authoritative
 /// consumers.
 ///
