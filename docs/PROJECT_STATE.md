@@ -3,17 +3,14 @@
 Updated: 2026-10-24
 
 ## Handover
-- **In flight.** Session 18 (2026-10-24) continued `mgr/session-17-batch` (no PR yet). It now holds T136b+T136c, T137 contract (approved D33), T138a+T138c with `rt_contract.rs` and review fixes, A0-12. PR #69 (tokio pin) merged and master is merged in. Workspace clippy fails only in `crpg-server` (`CombatAction::Stop` not covered) until T138d, by design; the batch PR waits for T138b/d/e.
+- **In flight.** PR #70 (`mgr/session-17-batch`, sessions 17–19): T136b+T136b-tests, T136c, T137 contract (D33), T138a–e with both two-keys files and Claude reviews, A0-12. Workspace preflight green on Windows; CI pending. No worker running.
 - **Next:**
-  1. T136b-tests attempt 2 (DeepSeek V4 Pro, slot 1, branch `task/T136b-tests-k1`, log `.agents/runs/T136b-tests/`): verify, merge into the batch, record.
-  2. T138b: Claude `implementer` in slot 2 from the batch head (includes the despawn capture ruling).
-  3. Then T138d (`crpg-server`) and T138e (`crpg-net` tests) on OpenCode, then the T138b two-keys `history_v2_contract.rs` (DeepSeek V4 Pro, mutation proofs) and one Claude reviewer.
-  4. Workspace preflight green, then open the batch PR and merge under §7.4.
-  5. T137a, T137b (Claude implementer, serialized after T138b), T137c (OpenCode; user golden gate).
-  6. Carried: A0-7b; T099 fold-in; T100 contract; A0-5b; A0-8.
-- **Blocked:** batch PR waits on T138b/T138d/T138e for a green workspace.
-- **Running at handover:** T136b-tests attempt 2 in slot 1, if not finished.
-- Dispatch facts: as before. Session 18 Go spend about $1.3; Claude: manager, two Opus/Sonnet reviews, one Sonnet `implementer` (T138a, about 114k), one Opus `architect` (T137, about 323k).
+  1. User golden gate on PR #70: the two new `crates/crpg-sim/tests/goldens/history_v2.*.txt` baselines (Windows native; Linux on WSL Ubuntu 24.04/Rust 1.98.0; byte-identical, SHA-256 `fe6fe953…6f49`). Then CI green → merge under §7.4.
+  2. T137a, T137b (Claude `implementer`, serialized, `crpg-sim`), then T137c (OpenCode; `surface_v1` baselines need the user's golden gate).
+  3. Bookkeeping for session 19 (OpenCode grunt via `implement` doc-only): BACKLOG rows T136b-tests, T138b, T138b-tests, T138d, T138e; throughput.
+  4. Carried: A0-7b; T099 fold-in; T100 contract; A0-5b; A0-8.
+- **Blocked:** PR #70 merge waits on the user's golden approval.
+- Dispatch facts: commit memory is tight; two parallel cargo builds plus a third OOM'd ("paging file too small"); briefs now say rerun with `-j 2`. Brief owns-lists need full repo paths and a `## Permissions` `goldens:` line, or `verify_task.py` fails scope/goldens. Linux goldens: `wsl -d Ubuntu-24.04` has Rust 1.98.0 (`~/.cargo/bin`); run a script file, not an inline `bash -c` (quoting breaks). Stale worktrees and 100+ merged local branches removed 2026-10-24; strays archived in `crpg-slots/manager/archive-2026-10-24/`. Session 19 Claude: manager, one Sonnet `implementer` (T138b, about 228k), one Sonnet `reviewer` (about 121k); Go about $0.27.
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -733,3 +730,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-23 (UTC) · claude-code (manager, Opus 5.5) + D32 answered · Recorded the D32 answers in the handover, so the next session dispatches T136b and T138 directly.
 - 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 17 handover · Replaced the session 16 handover with the session 17 state at the 150k context limit, naming the PR #69 blocker and the unverified T138a WIP.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Replaced the handover with the session 18 state (batch holds T136b+T136c, T137 approved D33, T138a+T138c with review fixes, and A0-12; PR #69 merged; batch PR waits on T138b/d/e), so the next session starts from the current close-out.
+- 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 19 handover · Replaced the handover with the PR #70 state and the golden gate it waits on, so the next session starts from the open PR.
