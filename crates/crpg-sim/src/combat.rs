@@ -4229,4 +4229,101 @@ mod draw_tests {
         assert_eq!(names(expires - 1), ["ant", "hasted", "zed"]);
         assert_eq!(names(expires), ["ant", "zed"], "after its expiry");
     }
+
+    /// B19: the plan carries the projection for both participants, and the
+    /// self-targeted case shares one projection.
+    #[test]
+    fn plan_carries_the_tag_projection_for_actor_and_target() {
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        let creature_a = fixture.creature_a;
+        let creature_b = fixture.creature_b;
+        set_tags(&mut fixture, creature_a, &["zed", "ant", "zed"]);
+        set_tags(&mut fixture, creature_b, &["solo"]);
+        attach_to_ability(
+            &mut fixture,
+            grant(
+                effect_doc(
+                    141,
+                    "target",
+                    "probe-type",
+                    "stack_all",
+                    vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+                    2,
+                ),
+                &["hasted"],
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+
+        // Attach the granting effect to A: B acts first.
+        act(&mut world, b, ability, a);
+        // A acts on B, attaching the effect to B too.
+        act(&mut world, a, ability, b);
+
+        let (plan, _scratch) = plan_of(&world, ability, b, a);
+        // Actor (B): creature tags {solo} plus grant {hasted}.
+        assert_eq!(plan.actor_tags.len(), 2);
+        // Target (A): creature tags {ant, zed} plus grant {hasted}.
+        assert_eq!(plan.target_tags.len(), 3);
+
+        // Self-targeted case: one projection shared by both.
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        let creature_b = fixture.creature_b;
+        set_tags(&mut fixture, creature_b, &["solo"]);
+        edit_ability(&mut fixture, |ability| ability.allow_self_target = true);
+        attach_to_ability(
+            &mut fixture,
+            grant(
+                effect_doc(
+                    141,
+                    "target",
+                    "probe-type",
+                    "stack_all",
+                    vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+                    2,
+                ),
+                &["hasted"],
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 2);
+        let b = ids[1];
+        act(&mut world, b, ability, b);
+        let (plan, _scratch) = plan_of(&world, ability, b, b);
+        assert_eq!(plan.actor_tags, plan.target_tags);
+        assert_eq!(plan.actor_tags.len(), 2);
+    }
+
+    /// B14: the opposing synthetic bonus id skips ids already present in the
+    /// target view.
+    #[test]
+    fn opposing_synthetic_bonus_ids_skip_the_target_views_ids() {
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        defend_opposed(&mut fixture, "1d8", &["beta"]);
+        attach_to_ability(
+            &mut fixture,
+            effect_doc(
+                141,
+                "target",
+                "probe-type",
+                "stack_all",
+                vec![modifier(1, json!({"type": "dc"}), "add", 5)],
+                3,
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+        act(&mut world, b, ability, a);
+        perform_action(&mut world, &CombatAction::EndTurn { actor: a }).expect("end");
+        let (plan, _) = plan_of(&world, ability, b, a);
+        let target_ids: Vec<u128> = plan.target_mods.iter().map(|m| m.id.to_u128()).collect();
+        assert!(target_ids.contains(&1), "the effect modifier is present");
+        assert!(target_ids.contains(&2), "the opposing synthetic skips id 1");
+    }
 }

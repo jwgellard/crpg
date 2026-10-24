@@ -201,3 +201,21 @@ fn too_many_tags_displays_its_location() {
         "TooManyTags at spec/tags"
     );
 }
+
+/// R12 (B20): the tag bound is per participant, so disjoint sets that
+/// together exceed 1024 are accepted.
+#[test]
+fn the_tag_bound_is_per_participant() {
+    let a_tags = names(600);
+    let b_tags: Vec<String> = (0..600).map(|i| format!("other-{i:04}")).collect();
+    let mut fixture = Fixture::standard();
+    let a = fixture.creature_a;
+    let b = fixture.creature_b;
+    set_tags(&mut fixture, a, &refs(&a_tags));
+    set_tags(&mut fixture, b, &refs(&b_tags));
+    attach_to_ability(&mut fixture, granting(141, &["fresh"]));
+    let (world, ids) = start(&fixture, 1);
+    assert!(world.combat().is_some());
+    assert_eq!(world.combatants().get(ids[0]).expect("A").tags().len(), 600);
+    assert_eq!(world.combatants().get(ids[1]).expect("B").tags().len(), 600);
+}

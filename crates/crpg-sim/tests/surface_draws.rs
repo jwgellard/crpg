@@ -21,10 +21,10 @@ use crpg_sim::{
 };
 use serde_json::json;
 use support::draws::{
-    always_failure, defend_opposed, died_events, draw, oracle, set_authored_initiative, set_damage,
-    set_initiative_rule, set_table, start_into,
+    always_failure, defend_opposed, died_events, draw, grant, oracle, set_authored_initiative,
+    set_damage, set_initiative_rule, set_table, set_tags, start_into,
 };
-use support::rt::{capable, ticks, timeline_of};
+use support::rt::{bytes_of, capable, ticks, timeline_of};
 use support::surface::{
     act, add_derived, always_success, attach_to_ability, binary, edit_ability, effect_doc, end,
     lit, modifier, start, stat, stat_target,
@@ -579,4 +579,175 @@ fn the_rolled_key_saturates_at_both_ends() {
         timeline_of(&world).first().map(|entry| entry.0),
         Some(i32::MIN)
     );
+}
+
+/// R11 (B17, B21): a rejected start with a valid initiative rule draws
+/// nothing, leaving bytes, RNG and hash untouched.
+#[test]
+fn a_rejected_start_with_a_valid_initiative_rule_draws_nothing() {
+    // Invalid damage dice.
+    {
+        let mut fixture = Fixture::standard();
+        set_initiative_rule(&mut fixture, "1d20", &["alpha"]);
+        set_damage(
+            &mut fixture,
+            json!([{"outcome": {"type": "success"}, "amount": 1, "dice": "bad"}]),
+        );
+        let mut world = World::new(7);
+        let before_bytes = bytes_of(&world);
+        let before_rng = world.rng_mut().clone();
+        let before_hash = state_hash(&world);
+        assert_eq!(
+            start_into(&fixture, &mut world),
+            Err(CombatError::InvalidDice)
+        );
+        assert_eq!(bytes_of(&world), before_bytes);
+        assert_eq!(*world.rng_mut(), before_rng);
+        assert_eq!(state_hash(&world), before_hash);
+    }
+    // MissingEffect.
+    {
+        let mut fixture = Fixture::standard();
+        set_initiative_rule(&mut fixture, "1d20", &["alpha"]);
+        edit_ability(&mut fixture, |ability| {
+            ability.effect = Some(Ulid::from_u128(999));
+        });
+        let mut world = World::new(7);
+        let before_bytes = bytes_of(&world);
+        let before_rng = world.rng_mut().clone();
+        let before_hash = state_hash(&world);
+        assert_eq!(
+            start_into(&fixture, &mut world),
+            Err(CombatError::MissingEffect {
+                effect: Ulid::from_u128(999)
+            })
+        );
+        assert_eq!(bytes_of(&world), before_bytes);
+        assert_eq!(*world.rng_mut(), before_rng);
+        assert_eq!(state_hash(&world), before_hash);
+    }
+    // DuplicateModifier.
+    {
+        let mut fixture = Fixture::standard();
+        set_initiative_rule(&mut fixture, "1d20", &["alpha"]);
+        let mut effect = effect_doc(
+            141,
+            "target",
+            "probe-type",
+            "stack_all",
+            vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+            2,
+        );
+        effect.modifiers.push(effect.modifiers[0].clone());
+        attach_to_ability(&mut fixture, effect);
+        let mut world = World::new(7);
+        let before_bytes = bytes_of(&world);
+        let before_rng = world.rng_mut().clone();
+        let before_hash = state_hash(&world);
+        assert!(matches!(
+            start_into(&fixture, &mut world),
+            Err(CombatError::DuplicateModifier { .. })
+        ));
+        assert_eq!(bytes_of(&world), before_bytes);
+        assert_eq!(*world.rng_mut(), before_rng);
+        assert_eq!(state_hash(&world), before_hash);
+    }
+    // TooManyTags.
+    {
+        let mut fixture = Fixture::standard();
+        set_initiative_rule(&mut fixture, "1d20", &["alpha"]);
+        let a = fixture.creature_a;
+        let full: Vec<String> = (0..1024).map(|i| format!("tag-{i:04}")).collect();
+        // reuse surface_tags helper? define local
+        let tags: Vec<&str> = full.iter().map(String::as_str).collect();
+        set_tags(&mut fixture, a, &tags);
+        attach_to_ability(
+            &mut fixture,
+            grant(
+                effect_doc(
+                    141,
+                    "target",
+                    "probe-type",
+                    "stack_all",
+                    vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+                    2,
+                ),
+                &["fresh"],
+            ),
+        );
+        let mut world = World::new(7);
+        let before_bytes = bytes_of(&world);
+        let before_rng = world.rng_mut().clone();
+        let before_hash = state_hash(&world);
+        assert_eq!(
+            start_into(&fixture, &mut world),
+            Err(CombatError::TooManyTags)
+        );
+        assert_eq!(bytes_of(&world), before_bytes);
+        assert_eq!(*world.rng_mut(), before_rng);
+        assert_eq!(state_hash(&world), before_hash);
+    }
+}
+
+/// R11 (B17): the bonus sum saturates at both ends.
+#[test]
+fn the_rolled_bonus_sum_saturates_at_both_ends() {
+    // MAX case: two bonus stats of i32::MAX.
+    {
+        let mut fixture = Fixture::standard();
+        add_derived(&mut fixture, "huge1", lit(i32::MAX));
+        add_derived(&mut fixture, "huge2", lit(i32::MAX));
+        set_initiative_rule(&mut fixture, "1d1", &["huge1", "huge2"]);
+        set_authored_initiative(&mut fixture, 0, 0);
+        let (world, ids) = start(&fixture, 3);
+        for id in ids {
+            assert_eq!(
+                world.combatants().get(id).expect("c").initiative(),
+                i32::MAX,
+                "MAX saturation"
+            );
+        }
+    }
+    // MIN case.
+    {
+        let mut fixture = Fixture::standard();
+        add_derived(&mut fixture, "tiny1", lit(i32::MIN));
+        add_derived(&mut fixture, "tiny2", lit(i32::MIN));
+        set_initiative_rule(&mut fixture, "1d4-5", &["tiny1", "tiny2"]);
+        set_authored_initiative(&mut fixture, 0, 0);
+        let (world, ids) = start(&fixture, 3);
+        for id in ids {
+            assert_eq!(
+                world.combatants().get(id).expect("c").initiative(),
+                i32::MIN,
+                "MIN saturation"
+            );
+        }
+    }
+}
+
+/// R9 (B14): opposed actor and opposing bonuses land on their own sides.
+#[test]
+fn opposed_actor_and_opposing_bonuses_land_on_their_own_sides() {
+    let mut fixture = Fixture::standard();
+    always_success(&mut fixture);
+    add_derived(&mut fixture, "actorbonus", lit(10));
+    add_derived(&mut fixture, "oppbonus", lit(3));
+    defend_opposed(&mut fixture, "1d8", &["oppbonus"]);
+    edit_ability(&mut fixture, |ability| {
+        ability.bonus_stats = Some(vec!["actorbonus".to_owned()]);
+    });
+    let ability = fixture.ability;
+    let (mut world, ids) = start(&fixture, 5);
+    let (a, b) = (ids[0], ids[1]);
+    let mut expected = oracle(5);
+    let actor = draw(&mut expected, "2d6");
+    let opposing = draw(&mut expected, "1d8");
+    let outcome = act(&mut world, b, ability, a);
+    assert_eq!(
+        outcome.margin,
+        i64::from(actor.total + 10) - i64::from(opposing.total + 3),
+        "actor bonus 10 on actor side, opposing bonus 3 on opposing side"
+    );
+    assert_eq!(*world.rng_mut(), expected);
 }
