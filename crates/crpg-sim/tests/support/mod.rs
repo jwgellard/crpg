@@ -356,7 +356,8 @@ pub mod rt {
     use crpg_core::{EntityId, Ulid};
     use crpg_data::{AbilityCost, ActionPoolTemplate, RefreshWire, TickPeriod};
     use crpg_sim::{
-        start_encounter_in_mode, CombatAction, CombatError, EncounterMode, EncounterSpec, World,
+        start_encounter_in_mode, CombatAction, CombatError, EncounterMode, EncounterSpec,
+        HistoryError, HistoryWorld, World,
     };
 
     use super::{uid, Fixture};
@@ -449,6 +450,69 @@ pub mod rt {
             self.start_mode(seed, mode)
                 .expect("the fixture starts in the requested mode")
         }
+    }
+
+    impl Fixture {
+        /// Runs `body` with the borrowed [`EncounterSpec`] of this fixture.
+        pub fn with_spec<R>(&self, body: impl FnOnce(&EncounterSpec<'_>) -> R) -> R {
+            let bundle = self.bundle();
+            let spec = EncounterSpec {
+                encounter: &self.encounter,
+                ruleset: &self.ruleset,
+                abilities: &bundle.abilities,
+                outcome_tables: &bundle.tables,
+                placements: &bundle.placements,
+                creatures: &bundle.creatures,
+                effects: &bundle.effects,
+            };
+            body(&spec)
+        }
+
+        /// Starts the fixture's encounter in a fresh history wrapper in
+        /// `mode`, returning the wrapper and the combatant ids in authored
+        /// order (T138b).
+        pub fn start_history(
+            &self,
+            seed: u64,
+            mode: EncounterMode,
+        ) -> Result<(HistoryWorld, Vec<EntityId>), HistoryError> {
+            let mut history = HistoryWorld::new(seed);
+            self.with_spec(|spec| history.start_encounter_in_mode(spec, mode))?;
+            let ids: Vec<EntityId> = history
+                .world()
+                .combatants()
+                .iter()
+                .map(|(id, _)| id)
+                .collect();
+            Ok((history, ids))
+        }
+    }
+
+    /// Adds one more participant, a clone of creature A with fresh identities
+    /// (placement `placement`, creature `creature`) at `initiative`.
+    pub fn add_clone(fixture: &mut Fixture, placement: u128, creature: u128, initiative: i32) {
+        let placement_id = Ulid::from_u128(placement);
+        let creature_id = Ulid::from_u128(creature);
+        let mut document = fixture.placements[&fixture.placement_a].0.clone();
+        document.id = placement_id;
+        document.slug = format!("probe-extra-{placement}");
+        document.name = format!("probe.extra-{placement}");
+        document.prefab = creature_id;
+        fixture
+            .placements
+            .insert(placement_id, (document, fixture.area));
+        let mut clone = fixture.creatures[&fixture.creature_a].clone();
+        clone.id = creature_id;
+        clone.slug = format!("probe-creature-extra-{creature}");
+        clone.name = format!("probe.creature-extra-{creature}");
+        fixture.creatures.insert(creature_id, clone);
+        fixture
+            .encounter
+            .participants
+            .push(crpg_data::EncounterParticipant {
+                placement: placement_id,
+                initiative,
+            });
     }
 
     /// One `UseAbility` action.

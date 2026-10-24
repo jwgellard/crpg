@@ -42,7 +42,10 @@ T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
 `transfer_history_entity`, and `CombatError::AreaMismatch`, plus the T138a
 encounter-mode surface (ADR-0029): `EncounterMode`, `EncounterClock`,
 `StandingOrder`, `RT_CLOCK_MAX`, `start_encounter_in_mode`, `request_mode`,
-`CombatAction::Stop`, and `CombatError::{ModeUnsupported, WrongMode}`.
+`CombatAction::Stop`, and `CombatError::{ModeUnsupported, WrongMode}`, plus
+the T138b history v2 surface: `HistoryWorld::{version, start_encounter_in_mode,
+request_mode}`, the `HistoryEvent` variants `RoundStarted`, `ModeChanged` and
+`OrderEnded`, and `HISTORY_VERSION` now 2 (1 is still read).
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -110,8 +113,17 @@ encounter-mode surface (ADR-0029): `EncounterMode`, `EncounterClock`,
   publish only on success. Gameplay errors win before
   history errors; rejection preserves authoritative state, RNG, entity
   allocation, and all counters. Emission order per operation is
-  `ActionResolved`, drained `Died`s, then the actual `TurnStarted` or first
-  `EncounterEnded`; explicit release journals nothing. `read_after` pages at
+  `ActionResolved`, drained `Died`s, then the actual `ModeChanged`,
+  `RoundStarted`, and `TurnStarted` or first `EncounterEnded` (T138b); an RT
+  `tick` journals `ModeChanged`, `RoundStarted`, `TurnStarted`, then each
+  `ActionResolved` followed at once by its `Died` and each `OrderEnded`, then
+  `EncounterEnded`; explicit release, RT order setting, `Stop` and
+  `request_mode` journal nothing. The wrapper `version` is 1 until the first
+  `commit` whose staged world holds a clock or whose events include a v2
+  variant, then 2 for good (`commit` is its only writer); the loader rejects
+  a version-1 wrapper holding a v2 event or a clock, and any version other
+  than 1 or 2. A history change that moves a `history_v2` or `history_v1`
+  golden is a stop, not a re-bless. `read_after` pages at
   most 256 envelopes with `StaleCursor`/`FutureCursor` errors and inert
   reads; `acknowledge` is monotonic and idempotent with no slow-peer cursor.
   `history_hash` covers the complete canonical wrapper (world, version,
@@ -489,3 +501,4 @@ deletes the variant, the check, and that suite; do not extend the bridge.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + T136c · Recorded the temporary T136b bridge (`UnsupportedAuthored` before placement, unreachable definition arms, one test per trigger) and that T137 deletes it; no existing error precedence, golden, or hash changed.
 - 2026-10-23 (UTC) · claude-code (Sonnet 5.5) + T138a · Added the encounter-mode surface and RT tick stages to the API list, and amended the "tick knows nothing of combat" trap, which now holds for turn-based play only because RT stages execute stored orders.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138a resume · Re-wrapped the amended trap and recorded that `start_encounter_tracked` keeps its two-argument form, with the mode-taking `start_encounter_in_mode_tracked` beside it, because `src/history/tests.rs` is a second caller outside this package.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138b · Added the history v2 surface and emission order to the API list, and recorded the lazy sticky wrapper version and the v1 loader rejections, so TB-only histories are known to keep version 1 and their goldens.
