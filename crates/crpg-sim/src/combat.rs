@@ -22,21 +22,21 @@
 //! holds no ruleset identifier, attribute name, die count, threshold, or
 //! damage value; abilities are addressed by identity and pools by template.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crpg_core::{EntityId, Tick, Ulid};
+use crpg_core::{EntityId, GenerationalArena, Interners, Tick, Ulid};
 use crpg_data::{
     Ability as AuthoredAbility, Creature as AuthoredCreature, DefenseWire,
-    Effect as AuthoredEffect, EffectTargetWire, Encounter as AuthoredEncounter,
+    Effect as AuthoredEffect, Encounter as AuthoredEncounter, ExprWire,
     OutcomeTable as AuthoredOutcomeTable, Placement as AuthoredPlacement,
-    RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset, StatKindWire,
+    RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset, StatKindWire, StatValueWire,
 };
 use crpg_rules::{
-    resolve, Against, DiceExpr, DiceRoll, ModTypeId, Modifier, ModifierPipeline, ModifierTarget,
-    NaturalEffect, NaturalRule, Outcome, OutcomeBand, OutcomeTable, OutcomeTableId, QueryContext,
-    RefreshEvent, RefreshTrigger, ResolutionContext, ResolutionRequest, ResourcePool,
+    resolve, Against, DiceExpr, DiceRoll, Expr, ModOp, ModTypeId, Modifier, ModifierPipeline,
+    ModifierTarget, NaturalEffect, NaturalRule, Outcome, OutcomeBand, OutcomeTable, OutcomeTableId,
+    QueryContext, RefreshEvent, RefreshTrigger, ResolutionContext, ResolutionRequest, ResourcePool,
     ResourcePoolId, RestId as RulesRestId, RollRequest, RollSpec, RollTag, SourceRef,
     StackingPolicy, StatBlock, StatDefinition, StatKind, StatValue, TagSet,
 };
@@ -58,6 +58,13 @@ pub const COMBAT_ROLL_STREAM: &str = "combat.roll";
 pub const COMBAT_ROLL_TAG: &str = "roll";
 /// The opaque source kind recorded on rebuilt effect modifiers.
 const EFFECT_SOURCE_KIND: &str = "effect";
+/// The reserved modifier type of bonus-stat roll contributions (T137). An
+/// encounter whose abilities carry bonus stats rejects an effect using it.
+pub const COMBAT_BONUS_MOD_TYPE: &str = "combat.bonus_stat";
+/// The opaque source kind recorded on bonus-stat modifiers.
+const BONUS_SOURCE_KIND: &str = "bonus_stat";
+/// The panic text of a broken data-owned derived-stat precondition (T137 B4).
+const DERIVED_PRECONDITION: &str = "derived int stats are validated by data read-time checks";
 
 /// Encounter time policy (ADR-0029 T1): per encounter, hashed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +107,83 @@ fn is_turn_based(mode: &EncounterMode) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// One derived `Int` stat formula, symbolic: stat names, never handles (T137).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum IntFormula {
+    /// A constant whole number.
+    Literal(i32),
+    /// The fully modified value of another `Int` stat of the same combatant.
+    Stat(String),
+    /// Saturating addition.
+    Add {
+        /// Left operand, evaluated first.
+        left: Box<IntFormula>,
+        /// Right operand.
+        right: Box<IntFormula>,
+    },
+    /// Saturating subtraction.
+    Subtract {
+        /// Left operand, evaluated first.
+        left: Box<IntFormula>,
+        /// Right operand.
+        right: Box<IntFormula>,
+    },
+    /// Saturating multiplication.
+    Multiply {
+        /// Left operand, evaluated first.
+        left: Box<IntFormula>,
+        /// Right operand.
+        right: Box<IntFormula>,
+    },
+    /// Flooring division; a zero divisor fails the query.
+    Divide {
+        /// Left operand, evaluated first.
+        left: Box<IntFormula>,
+        /// Right operand.
+        right: Box<IntFormula>,
+    },
+    /// The smaller operand.
+    Min {
+        /// Left operand, evaluated first.
+        left: Box<IntFormula>,
+        /// Right operand.
+        right: Box<IntFormula>,
+    },
+    /// The larger operand.
+    Max {
+        /// Left operand, evaluated first.
+        left: Box<IntFormula>,
+        /// Right operand.
+        right: Box<IntFormula>,
+    },
+}
+
+/// One derived `Int` stat, in authored stat order (T137).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedStat {
+    /// The declared stat name.
+    pub name: String,
+    /// The formula evaluated before the stat's modifiers.
+    pub formula: IntFormula,
+}
+
+/// Rolled initiative: dice plus stat values plus each participant's key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitiativeRule {
+    /// Parsed initiative dice.
+    pub dice: DiceExpr,
+    /// Non-health `Int` stat names added to the roll, in authored order.
+    pub bonus_stats: Vec<String>,
 }
 
 /// One attached lifetime-bearing effect on a combatant.
@@ -197,6 +281,13 @@ pub enum AbilityDefense {
         /// Declared non-health stat name read from the target.
         stat: String,
     },
+    /// Uses a constant defence value; the target's DC modifiers apply.
+    Constant(i32),
+    /// Uses the actor's named `Int` stat; the actor's DC modifiers apply.
+    ActorStat {
+        /// Non-health `Int` stat name read from the actor.
+        stat: String,
+    },
 }
 
 /// Who an effect's modifiers apply to.
@@ -210,13 +301,18 @@ pub enum EffectAim {
 }
 
 /// Which numeric fold an effect modifier contributes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum EffectTarget {
     /// Contributes to the Roll fold.
     Roll,
     /// Contributes to the Dc fold.
     Dc,
+    /// Contributes to the named `Int` stat of the holder.
+    Stat {
+        /// Non-health `Int` stat name.
+        stat: String,
+    },
 }
 
 /// How an effect modifier combines with its base.
@@ -309,6 +405,14 @@ pub struct AbilityDefinition {
     /// TB-only encounter.
     #[serde(default, skip_serializing_if = "is_false")]
     pub repeats_in_real_time: bool,
+    /// Non-health `Int` stat names added to this ability's roll. Skipped
+    /// when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bonus_stats: Vec<String>,
+    /// Damage dice per outcome, added to the outcome's flat `damage`.
+    /// Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub damage_dice: Vec<(Outcome, DiceExpr)>,
 }
 
 /// The immutable, symbolically-serialized combat definition.
@@ -333,7 +437,7 @@ pub struct CombatDefinition {
     pub attribute: String,
     /// Name of the health stat.
     pub health_stat: String,
-    /// Declared non-health stat names in authored stat order.
+    /// Non-health, non-derived `Int` stat names in authored stat order.
     pub attribute_names: Vec<String>,
     /// Flat damage per outcome in authored order (legacy copy).
     pub damage: Vec<(Outcome, u32)>,
@@ -357,6 +461,10 @@ pub struct CombatDefinition {
     pub pools: Vec<PoolTemplate>,
     /// Effect definitions in ascending effect identity order.
     pub effects: Vec<EffectDefinition>,
+    /// Derived non-health `Int` stats in authored stat order.
+    pub derived: Vec<DerivedStat>,
+    /// Rolled initiative; `None` means each participant's authored key.
+    pub initiative: Option<InitiativeRule>,
 }
 
 /// Reports whether one ability entry carries only legacy-compatible behavior.
@@ -369,6 +477,8 @@ fn ability_is_legacy(entry: &AbilityDefinition, primary: Ulid) -> bool {
         && entry.costs[0].0 .0 == primary
         && entry.recovery_ticks.is_none()
         && !entry.repeats_in_real_time
+        && entry.bonus_stats.is_empty()
+        && entry.damage_dice.is_empty()
 }
 
 /// Reports whether the new vectors describe a legacy-equivalent shape.
@@ -380,6 +490,13 @@ fn vectors_are_legacy(definition: &CombatDefinition) -> bool {
         return false;
     }
     ability_is_legacy(&definition.abilities[0], definition.pools[0].id)
+}
+
+/// `vectors_are_legacy` plus the two definition-level fields (T137).
+fn definition_is_legacy(definition: &CombatDefinition) -> bool {
+    vectors_are_legacy(definition)
+        && definition.derived.is_empty()
+        && definition.initiative.is_none()
 }
 
 fn policy_to_text(policy: StackingPolicy) -> &'static str {
@@ -459,8 +576,12 @@ impl Serialize for CombatDefinition {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let legacy = vectors_are_legacy(self);
-        let len = if legacy { 15 } else { 18 };
+        let legacy = definition_is_legacy(self);
+        let len = if legacy {
+            15
+        } else {
+            18 + usize::from(!self.derived.is_empty()) + usize::from(self.initiative.is_some())
+        };
         let mut shape = serializer.serialize_struct("CombatDefinition", len)?;
         shape.serialize_field("encounter", &self.encounter)?;
         shape.serialize_field("ruleset", &self.ruleset)?;
@@ -481,6 +602,12 @@ impl Serialize for CombatDefinition {
             shape.serialize_field("abilities", &self.abilities)?;
             shape.serialize_field("pools", &self.pools)?;
             shape.serialize_field("effects", &self.effects)?;
+            if !self.derived.is_empty() {
+                shape.serialize_field("derived", &self.derived)?;
+            }
+            if let Some(initiative) = &self.initiative {
+                shape.serialize_field("initiative", initiative)?;
+            }
         }
         shape.end()
     }
@@ -510,6 +637,10 @@ struct CombatDefinitionRepr {
     pools: Option<Vec<PoolTemplate>>,
     #[serde(default)]
     effects: Option<Vec<EffectDefinition>>,
+    #[serde(default)]
+    derived: Vec<DerivedStat>,
+    #[serde(default)]
+    initiative: Option<InitiativeRule>,
 }
 
 impl<'de> Deserialize<'de> for CombatDefinition {
@@ -540,6 +671,8 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 allow_self_target: repr.allow_self_target,
                 recovery_ticks: None,
                 repeats_in_real_time: false,
+                bonus_stats: Vec::new(),
+                damage_dice: Vec::new(),
             };
             let pools = vec![PoolTemplate {
                 id: repr.pool_id,
@@ -565,6 +698,8 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 abilities: vec![rebuilt],
                 pools,
                 effects: Vec::new(),
+                derived: repr.derived,
+                initiative: repr.initiative,
             })
         } else {
             Ok(Self {
@@ -586,6 +721,8 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 abilities: repr.abilities.unwrap_or_default(),
                 pools: repr.pools.unwrap_or_default(),
                 effects: repr.effects.unwrap_or_default(),
+                derived: repr.derived,
+                initiative: repr.initiative,
             })
         }
     }
@@ -878,6 +1015,11 @@ pub enum CombatError {
         /// The encounter's current mode.
         mode: EncounterMode,
     },
+    /// A derived stat the action reads fails to evaluate (a zero divisor).
+    StatEvaluation {
+        /// The queried stat whose evaluation failed.
+        stat: String,
+    },
 }
 
 impl std::fmt::Display for CombatError {
@@ -920,6 +1062,7 @@ impl std::fmt::Display for CombatError {
             Self::UnsupportedAuthored => write!(f, "UnsupportedAuthored at spec/authored"),
             Self::ModeUnsupported => write!(f, "ModeUnsupported at combat/mode"),
             Self::WrongMode { .. } => write!(f, "WrongMode at combat/mode"),
+            Self::StatEvaluation { .. } => write!(f, "StatEvaluation at combat/stats"),
         }
     }
 }
@@ -1029,11 +1172,14 @@ fn map_policy(policy: crpg_data::PolicyWire) -> StackingPolicy {
 /// unsupported authored features; each participant's placement, then
 /// single-area agreement, then each placement's creature; per creature, per
 /// ruleset stat in authored order, presence, wholeness, and health positivity
-/// with checked conversion; pool templates carried in order; per
+/// with checked conversion (only base `Int` stats are read; a base `Fixed`
+/// stat must be present, T137); the derived-stat preflight (`InvalidStatValue`
+/// naming the derived stat); pool templates carried in order; per
 /// ruleset-listed ability in authored order, the spec-map entry,
 /// declared-attribute, dice, outcome-table, per-pool costs in template order,
-/// defense, effect, and natural checks; global effect checks in ascending
-/// effect order; then publication.
+/// defense, bonus-stat, effect, and natural checks; global effect checks in
+/// ascending effect order (reserved bonus type, then per modifier the policy
+/// checks and the `Stat` target name); then publication.
 ///
 /// Data-owned preconditions (enforced at data read time, asserted here):
 /// participants and the ruleset ability list are nonempty.
@@ -1119,27 +1265,45 @@ pub(crate) fn start_encounter_in_mode_tracked(
             }
         }
     }
-    let unsupported = ruleset.stats.iter().any(|declaration| {
-        !matches!(&declaration.kind, StatKindWire::Int) || declaration.derived.is_some()
-    }) || ruleset.initiative.is_some()
+    let unsupported = ruleset.initiative.is_some()
         || spec.abilities.values().any(|ability| {
-            ability.bonus_stats.is_some()
-                || !matches!(
-                    &ability.defense,
-                    DefenseWire::ActorAttribute | DefenseWire::TargetStat { .. }
-                )
+            matches!(&ability.defense, DefenseWire::Opposed { .. })
                 || ability.damage.iter().any(|entry| entry.dice.is_some())
         })
-        || spec.effects.values().any(|effect| {
-            effect.grants.is_some()
-                || effect
-                    .modifiers
-                    .iter()
-                    .any(|modifier| matches!(&modifier.target, EffectTargetWire::Stat { .. }))
-        });
+        || spec.effects.values().any(|effect| effect.grants.is_some());
     if unsupported {
         return Err(UnsupportedAuthored);
     }
+    // T137 B3, B4: the base usable stats and the derived `Int` formulas.
+    let int_names: BTreeSet<&str> = ruleset
+        .stats
+        .iter()
+        .filter(|declaration| matches!(declaration.kind, StatKindWire::Int))
+        .map(|declaration| declaration.name.as_str())
+        .collect();
+    let mut derived: Vec<DerivedStat> = Vec::new();
+    for declaration in &ruleset.stats {
+        if let (StatKindWire::Int, Some(formula)) = (&declaration.kind, &declaration.derived) {
+            derived.push(DerivedStat {
+                name: declaration.name.clone(),
+                formula: convert_formula(formula, &int_names),
+            });
+        }
+    }
+    let attribute_names: Vec<String> = ruleset
+        .stats
+        .iter()
+        .filter(|declaration| {
+            matches!(declaration.kind, StatKindWire::Int)
+                && declaration.derived.is_none()
+                && declaration.name != ruleset.health_stat
+        })
+        .map(|declaration| declaration.name.clone())
+        .collect();
+    let usable = |name: &str| {
+        attribute_names.iter().any(|entry| entry == name)
+            || derived.iter().any(|entry| entry.name == name)
+    };
     let clock = ruleset.round_ticks.map(|round_ticks| EncounterClock {
         round_ticks,
         elapsed: 0,
@@ -1193,6 +1357,21 @@ pub(crate) fn start_encounter_in_mode_tracked(
         let mut stats = Vec::with_capacity(ruleset.stats.len());
         let mut health = None;
         for declaration in &ruleset.stats {
+            if declaration.derived.is_some() {
+                continue;
+            }
+            match &declaration.kind {
+                StatKindWire::Int => {}
+                StatKindWire::Fixed => {
+                    if !creature.stats.contains_key(&declaration.name) {
+                        return Err(MissingStat {
+                            stat: declaration.name.clone(),
+                        });
+                    }
+                    continue;
+                }
+                _ => continue,
+            }
             let fixed = creature.stats.get(&declaration.name).ok_or(MissingStat {
                 stat: declaration.name.clone(),
             })?;
@@ -1228,6 +1407,42 @@ pub(crate) fn start_encounter_in_mode_tracked(
             attributes,
             health,
         });
+    }
+
+    if !derived.is_empty() {
+        let mut scratch = world.interners().clone();
+        let definitions = int_definitions(
+            &ruleset.health_stat,
+            &attribute_names,
+            &derived,
+            &mut scratch,
+        );
+        let pipeline = ModifierPipeline::new(definitions, BTreeMap::new())
+            .unwrap_or_else(|_| panic!("{DERIVED_PRECONDITION}"));
+        let mut probe_arena: GenerationalArena<()> = GenerationalArena::new();
+        let probe = probe_arena.insert(());
+        let no_tags = TagSet::new();
+        for member in &pending {
+            let block = base_block(
+                &ruleset.health_stat,
+                member.health,
+                &member.attributes,
+                &mut scratch,
+            );
+            let context = QueryContext {
+                entity: probe,
+                stats: &block,
+                tags: &no_tags,
+                modifiers: &[],
+            };
+            for stat in &derived {
+                if query_int(&pipeline, probe, &stat.name, &scratch, &context).is_none() {
+                    return Err(InvalidStatValue {
+                        stat: stat.name.clone(),
+                    });
+                }
+            }
+        }
     }
 
     if ruleset.pools.is_empty() {
@@ -1266,6 +1481,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
             .attributes
             .iter()
             .any(|name| name == &ability.attribute)
+            || !usable(&ability.attribute)
         {
             return Err(MissingStat {
                 stat: ability.attribute.clone(),
@@ -1329,14 +1545,16 @@ pub(crate) fn start_encounter_in_mode_tracked(
                 return Err(InvalidCost { cost: *amount, max });
             }
         }
-        if let crpg_data::DefenseWire::TargetStat { stat } = &ability.defense {
-            let declared = templates.is_empty()
-                || ruleset
-                    .stats
-                    .iter()
-                    .any(|entry| entry.name == *stat && *stat != ruleset.health_stat);
-            if !declared {
+        if let crpg_data::DefenseWire::TargetStat { stat }
+        | crpg_data::DefenseWire::ActorStat { stat } = &ability.defense
+        {
+            if !usable(stat) {
                 return Err(MissingStat { stat: stat.clone() });
+            }
+        }
+        for name in ability.bonus_stats.iter().flatten() {
+            if !usable(name) {
+                return Err(MissingStat { stat: name.clone() });
             }
         }
         if let Some(effect) = ability.effect {
@@ -1367,6 +1585,17 @@ pub(crate) fn start_encounter_in_mode_tracked(
         }
     }
     referenced.sort();
+    let carries_bonus_stats = validated.iter().any(|entry| {
+        entry
+            .authored
+            .bonus_stats
+            .as_ref()
+            .is_some_and(|names| !names.is_empty())
+            || matches!(
+                &entry.authored.defense,
+                crpg_data::DefenseWire::Opposed { bonus_stats, .. } if !bonus_stats.is_empty()
+            )
+    });
     for effect in &referenced {
         let authored = spec
             .effects
@@ -1378,6 +1607,9 @@ pub(crate) fn start_encounter_in_mode_tracked(
         {
             return Err(InvalidEffect { effect: *effect });
         }
+        if carries_bonus_stats && authored.mod_type == COMBAT_BONUS_MOD_TYPE {
+            return Err(InvalidEffect { effect: *effect });
+        }
         let policy = map_policy(authored.policy);
         for modifier in &authored.modifiers {
             let nameless = modifier.name.is_none();
@@ -1387,6 +1619,11 @@ pub(crate) fn start_encounter_in_mode_tracked(
             }
             if nameless && matches!(policy, StackingPolicy::HighestPriorityPerName) {
                 return Err(InvalidEffect { effect: *effect });
+            }
+            if let crpg_data::EffectTargetWire::Stat { stat } = &modifier.target {
+                if !usable(stat) {
+                    return Err(MissingStat { stat: stat.clone() });
+                }
             }
         }
     }
@@ -1447,11 +1684,9 @@ pub(crate) fn start_encounter_in_mode_tracked(
             crpg_data::DefenseWire::TargetStat { stat } => {
                 AbilityDefense::TargetStat { stat: stat.clone() }
             }
-            crpg_data::DefenseWire::Constant(_) => {
-                unreachable!("rejected as UnsupportedAuthored at encounter start")
-            }
-            crpg_data::DefenseWire::ActorStat { .. } => {
-                unreachable!("rejected as UnsupportedAuthored at encounter start")
+            crpg_data::DefenseWire::Constant(value) => AbilityDefense::Constant(*value),
+            crpg_data::DefenseWire::ActorStat { stat } => {
+                AbilityDefense::ActorStat { stat: stat.clone() }
             }
             crpg_data::DefenseWire::Opposed { .. } => {
                 unreachable!("rejected as UnsupportedAuthored at encounter start")
@@ -1483,6 +1718,8 @@ pub(crate) fn start_encounter_in_mode_tracked(
             },
             repeats_in_real_time: clock.is_some()
                 && entry.authored.repeats_in_real_time.unwrap_or(false),
+            bonus_stats: entry.authored.bonus_stats.clone().unwrap_or_default(),
+            damage_dice: Vec::new(),
         });
     }
     abilities.sort_by_key(|entry| entry.ability);
@@ -1497,11 +1734,11 @@ pub(crate) fn start_encounter_in_mode_tracked(
             .iter()
             .map(|item| EffectModifier {
                 id: item.id,
-                target: match item.target {
+                target: match &item.target {
                     crpg_data::EffectTargetWire::Roll => EffectTarget::Roll,
                     crpg_data::EffectTargetWire::Dc => EffectTarget::Dc,
-                    crpg_data::EffectTargetWire::Stat { .. } => {
-                        unreachable!("rejected as UnsupportedAuthored at encounter start")
+                    crpg_data::EffectTargetWire::Stat { stat } => {
+                        EffectTarget::Stat { stat: stat.clone() }
                     }
                 },
                 op: match item.op {
@@ -1539,12 +1776,6 @@ pub(crate) fn start_encounter_in_mode_tracked(
         .iter()
         .map(|item| (map_outcome(item.outcome), item.amount))
         .collect();
-    let mut non_health: Vec<String> = Vec::new();
-    for declaration in &ruleset.stats {
-        if declaration.name != ruleset.health_stat {
-            non_health.push(declaration.name.clone());
-        }
-    }
     let definition = CombatDefinition {
         encounter: encounter.id,
         ruleset: ruleset.id,
@@ -1552,7 +1783,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
         dice: first.dice.clone(),
         attribute: first.authored.attribute.clone(),
         health_stat: ruleset.health_stat.clone(),
-        attribute_names: non_health,
+        attribute_names,
         damage: first_damage,
         cost: first.authored.cost,
         requires_target: first.authored.requires_target,
@@ -1564,6 +1795,8 @@ pub(crate) fn start_encounter_in_mode_tracked(
         abilities,
         pools: templates,
         effects,
+        derived,
+        initiative: None,
     };
 
     for member in pending {
@@ -1663,20 +1896,192 @@ fn pool_balance(combatant: &Combatant, pool: Ulid) -> Option<u32> {
         .map(|entry| entry.current())
 }
 
-/// Rebuilds one kernel modifier from one persisted entry.
+/// Converts one authored derived formula node for node (T137 B4).
+///
+/// Data owns two preconditions, asserted here: an `Int` formula holds only
+/// `Int` literals, and it names only `Int` stats of the ruleset. A violation
+/// panics with the data read-time text.
+fn convert_formula(expr: &ExprWire, int_names: &BTreeSet<&str>) -> IntFormula {
+    let pair = |left: &ExprWire, right: &ExprWire| {
+        (
+            Box::new(convert_formula(left, int_names)),
+            Box::new(convert_formula(right, int_names)),
+        )
+    };
+    match expr {
+        ExprWire::Literal(StatValueWire::Int(value)) => IntFormula::Literal(*value),
+        ExprWire::Literal(_) => panic!("{DERIVED_PRECONDITION}"),
+        ExprWire::Stat(name) => {
+            if !int_names.contains(name.as_str()) {
+                panic!("{DERIVED_PRECONDITION}");
+            }
+            IntFormula::Stat(name.clone())
+        }
+        ExprWire::Add { left, right } => {
+            let (left, right) = pair(left, right);
+            IntFormula::Add { left, right }
+        }
+        ExprWire::Subtract { left, right } => {
+            let (left, right) = pair(left, right);
+            IntFormula::Subtract { left, right }
+        }
+        ExprWire::Multiply { left, right } => {
+            let (left, right) = pair(left, right);
+            IntFormula::Multiply { left, right }
+        }
+        ExprWire::Divide { left, right } => {
+            let (left, right) = pair(left, right);
+            IntFormula::Divide { left, right }
+        }
+        ExprWire::Min { left, right } => {
+            let (left, right) = pair(left, right);
+            IntFormula::Min { left, right }
+        }
+        ExprWire::Max { left, right } => {
+            let (left, right) = pair(left, right);
+            IntFormula::Max { left, right }
+        }
+    }
+}
+
+/// Builds the kernel expression of one symbolic formula; every stat handle
+/// comes from `scratch` (T137 D6).
+fn formula_expr(formula: &IntFormula, scratch: &mut Interners) -> Expr {
+    fn binary(
+        left: &IntFormula,
+        right: &IntFormula,
+        scratch: &mut Interners,
+    ) -> (Box<Expr>, Box<Expr>) {
+        let left = formula_expr(left, scratch);
+        let right = formula_expr(right, scratch);
+        (Box::new(left), Box::new(right))
+    }
+    match formula {
+        IntFormula::Literal(value) => Expr::Literal(StatValue::Int(*value)),
+        IntFormula::Stat(name) => Expr::Stat(scratch.intern_stat(name)),
+        IntFormula::Add { left, right } => {
+            let (left, right) = binary(left, right, scratch);
+            Expr::Add(left, right)
+        }
+        IntFormula::Subtract { left, right } => {
+            let (left, right) = binary(left, right, scratch);
+            Expr::Subtract(left, right)
+        }
+        IntFormula::Multiply { left, right } => {
+            let (left, right) = binary(left, right, scratch);
+            Expr::Multiply(left, right)
+        }
+        IntFormula::Divide { left, right } => {
+            let (left, right) = binary(left, right, scratch);
+            Expr::Divide(left, right)
+        }
+        IntFormula::Min { left, right } => {
+            let (left, right) = binary(left, right, scratch);
+            Expr::Min(left, right)
+        }
+        IntFormula::Max { left, right } => {
+            let (left, right) = binary(left, right, scratch);
+            Expr::Max(left, right)
+        }
+    }
+}
+
+/// The `Int` stat definitions of one operation (T137 B6): health and each
+/// attribute as plain `Int`, then each derived stat with its formula. The
+/// scratch interner issues handles in exactly that order.
+pub(crate) fn int_definitions(
+    health_stat: &str,
+    attribute_names: &[String],
+    derived: &[DerivedStat],
+    scratch: &mut Interners,
+) -> Vec<StatDefinition> {
+    let mut definitions = Vec::with_capacity(1 + attribute_names.len() + derived.len());
+    let health = scratch.intern_stat(health_stat);
+    definitions.push(StatDefinition {
+        id: health,
+        kind: StatKind::Int,
+        derived: None,
+    });
+    for name in attribute_names {
+        let id = scratch.intern_stat(name);
+        definitions.push(StatDefinition {
+            id,
+            kind: StatKind::Int,
+            derived: None,
+        });
+    }
+    let ids: Vec<_> = derived
+        .iter()
+        .map(|stat| scratch.intern_stat(&stat.name))
+        .collect();
+    for (stat, id) in derived.iter().zip(ids) {
+        definitions.push(StatDefinition {
+            id,
+            kind: StatKind::Int,
+            derived: Some(formula_expr(&stat.formula, scratch)),
+        });
+    }
+    definitions
+}
+
+/// One combatant's base values (T137 B6): `health` holds the current health
+/// and every attribute its stored value.
+fn base_block(
+    health_stat: &str,
+    health: u32,
+    attributes: &[(String, i32)],
+    scratch: &mut Interners,
+) -> StatBlock {
+    let mut block = StatBlock::new();
+    let id = scratch.intern_stat(health_stat);
+    block
+        .insert(
+            id,
+            StatValue::Int(i32::try_from(health).unwrap_or(i32::MAX)),
+        )
+        .expect("combat stat counts are bounded");
+    for (name, value) in attributes {
+        let id = scratch.intern_stat(name);
+        block
+            .insert(id, StatValue::Int(*value))
+            .expect("combat stat counts are bounded");
+    }
+    block
+}
+
+/// The fully modified `Int` value of one named stat, or `None` when the
+/// kernel query fails (T137 D5).
+fn query_int(
+    pipeline: &ModifierPipeline,
+    entity: EntityId,
+    name: &str,
+    scratch: &Interners,
+    context: &QueryContext<'_>,
+) -> Option<i32> {
+    let stat = scratch.stat(name)?;
+    match pipeline.query(entity, stat, context) {
+        Ok((StatValue::Int(value), _)) => Some(value),
+        _ => None,
+    }
+}
+
+/// Rebuilds one kernel modifier from one persisted entry; a `Stat` target's
+/// handle comes from `scratch` (T137 B18).
 fn rebuild_modifier(
     effect: Ulid,
     mod_type: &str,
     entry: &EffectModifier,
     tag: RollTag,
+    scratch: &mut Interners,
 ) -> Modifier {
-    let target = match entry.target {
+    let target = match &entry.target {
         EffectTarget::Roll => ModifierTarget::Roll(tag),
         EffectTarget::Dc => ModifierTarget::Dc(tag),
+        EffectTarget::Stat { stat } => ModifierTarget::Stat(scratch.intern_stat(stat)),
     };
     let op = match entry.op {
-        EffectOp::Add => crpg_rules::ModOp::Add(StatValue::Int(entry.value)),
-        EffectOp::Set => crpg_rules::ModOp::Set(StatValue::Int(entry.value)),
+        EffectOp::Add => ModOp::Add(StatValue::Int(entry.value)),
+        EffectOp::Set => ModOp::Set(StatValue::Int(entry.value)),
     };
     Modifier {
         id: entry.id,
@@ -1693,12 +2098,23 @@ fn rebuild_modifier(
     }
 }
 
-/// Collects unexpired Roll modifiers from one combatant's attachments.
-fn roll_modifiers(
+/// The numeric folds a view carries besides `Stat` modifiers (T137 B8).
+#[derive(Debug, Clone, Copy)]
+struct Folds {
+    roll: bool,
+    dc: bool,
+}
+
+/// Collects one combatant's unexpired modifiers of the wanted kinds, in
+/// attachment order and then authored modifier order (T137 B8). `Stat`
+/// modifiers always belong to the view.
+fn view_modifiers(
     definition: &CombatDefinition,
     combatant: &Combatant,
     round: u32,
     tag: RollTag,
+    scratch: &mut Interners,
+    folds: Folds,
 ) -> Vec<Modifier> {
     let mut out = Vec::new();
     for attached in &combatant.attached {
@@ -1709,12 +2125,18 @@ fn roll_modifiers(
             continue;
         };
         for modifier in &entry.modifiers {
-            if matches!(modifier.target, EffectTarget::Roll) {
+            let wanted = match modifier.target {
+                EffectTarget::Roll => folds.roll,
+                EffectTarget::Dc => folds.dc,
+                EffectTarget::Stat { .. } => true,
+            };
+            if wanted {
                 out.push(rebuild_modifier(
                     entry.effect,
                     &entry.mod_type,
                     modifier,
                     tag,
+                    scratch,
                 ));
             }
         }
@@ -1722,33 +2144,220 @@ fn roll_modifiers(
     out
 }
 
-/// Collects unexpired Dc modifiers from one combatant's attachments.
-fn dc_modifiers(
-    definition: &CombatDefinition,
-    combatant: &Combatant,
-    round: u32,
+/// The synthetic `Roll` modifiers of one view's bonus stats (T137 B14), one
+/// per value in authored order. The k-th takes the k-th smallest `Ulid`
+/// from `1` that no modifier already in `view` uses.
+fn bonus_modifiers(
+    ability: Ulid,
+    values: &[i32],
     tag: RollTag,
+    view: &[Modifier],
 ) -> Vec<Modifier> {
-    let mut out = Vec::new();
-    for attached in &combatant.attached {
-        if attached.expires_round <= round {
-            continue;
+    let used: BTreeSet<Ulid> = view.iter().map(|modifier| modifier.id).collect();
+    let mut next: u128 = 1;
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        while used.contains(&Ulid::from_u128(next)) {
+            next += 1;
         }
-        let Some(entry) = effect_entry(definition, attached.effect) else {
-            continue;
-        };
-        for modifier in &entry.modifiers {
-            if matches!(modifier.target, EffectTarget::Dc) {
-                out.push(rebuild_modifier(
-                    entry.effect,
-                    &entry.mod_type,
-                    modifier,
-                    tag,
-                ));
-            }
-        }
+        out.push(Modifier {
+            id: Ulid::from_u128(next),
+            source: SourceRef {
+                kind: BONUS_SOURCE_KIND.to_owned(),
+                id: ability,
+            },
+            target: ModifierTarget::Roll(tag),
+            op: ModOp::Add(StatValue::Int(*value)),
+            mod_type: ModTypeId(COMBAT_BONUS_MOD_TYPE.to_owned()),
+            name: None,
+            condition: None,
+            priority: 0,
+        });
+        next += 1;
     }
     out
+}
+
+/// The pipeline, views and defence one action resolves with (T137 B15).
+///
+/// Built from a scratch interner, so no handle in it reaches the world.
+/// Shared by the validation stage and by execution, which cannot disagree.
+struct ActionPlan {
+    pipeline: ModifierPipeline,
+    roll_tag: RollTag,
+    actor_stats: StatBlock,
+    target_stats: StatBlock,
+    /// The actor's modifiers; the one combined view when self-targeted.
+    actor_mods: Vec<Modifier>,
+    /// The target's modifiers; empty when self-targeted.
+    target_mods: Vec<Modifier>,
+    against: Against,
+}
+
+/// Builds one action's plan, querying in the B15 order: the defence-side
+/// stat, then the actor's bonus stats. The first failed query is
+/// `StatEvaluation` naming that stat. Reads the world, writes nothing.
+fn action_plan(
+    world: &World,
+    mut scratch: Interners,
+    entry: &AbilityDefinition,
+    actor: EntityId,
+    target: EntityId,
+) -> Result<ActionPlan, CombatError> {
+    let combat = world.combat().expect("validation checks the encounter");
+    let definition = &combat.definition;
+    let round = combat.round;
+    let combatants = world.combatants();
+    let actor_state = combatants
+        .get(actor)
+        .expect("validation checks the actor is a live combatant");
+    let target_state = combatants
+        .get(target)
+        .expect("validation checks the target is a live combatant");
+    let roll_tag = RollTag(
+        world
+            .interners()
+            .tag(COMBAT_ROLL_TAG)
+            .expect("the roll tag is interned at encounter start"),
+    );
+    let definitions = int_definitions(
+        &definition.health_stat,
+        &definition.attribute_names,
+        &definition.derived,
+        &mut scratch,
+    );
+    let mut policies: BTreeMap<ModTypeId, StackingPolicy> = BTreeMap::new();
+    for effect in &definition.effects {
+        policies.insert(ModTypeId(effect.mod_type.clone()), effect.policy);
+    }
+    if !entry.bonus_stats.is_empty() {
+        policies.insert(
+            ModTypeId(COMBAT_BONUS_MOD_TYPE.to_owned()),
+            StackingPolicy::StackAll,
+        );
+    }
+    let pipeline = ModifierPipeline::new(definitions, policies)
+        .expect("combat preflight guarantees pipeline success");
+    let actor_stats = base_block(
+        &definition.health_stat,
+        actor_state.health,
+        &actor_state.attributes,
+        &mut scratch,
+    );
+    let target_stats = base_block(
+        &definition.health_stat,
+        target_state.health,
+        &target_state.attributes,
+        &mut scratch,
+    );
+    let self_targeted = actor == target;
+    let actor_folds = Folds {
+        roll: true,
+        dc: self_targeted || matches!(entry.defense, AbilityDefense::ActorStat { .. }),
+    };
+    let mut actor_mods = view_modifiers(
+        definition,
+        actor_state,
+        round,
+        roll_tag,
+        &mut scratch,
+        actor_folds,
+    );
+    let target_mods = if self_targeted {
+        Vec::new()
+    } else {
+        view_modifiers(
+            definition,
+            target_state,
+            round,
+            roll_tag,
+            &mut scratch,
+            Folds {
+                roll: false,
+                dc: true,
+            },
+        )
+    };
+    let no_tags = TagSet::new();
+    let fail = |stat: &str| CombatError::StatEvaluation {
+        stat: stat.to_owned(),
+    };
+    let actor_context = QueryContext {
+        entity: actor,
+        stats: &actor_stats,
+        tags: &no_tags,
+        modifiers: &actor_mods,
+    };
+    let target_context = if self_targeted {
+        QueryContext {
+            entity: target,
+            stats: &actor_stats,
+            tags: &no_tags,
+            modifiers: &actor_mods,
+        }
+    } else {
+        QueryContext {
+            entity: target,
+            stats: &target_stats,
+            tags: &no_tags,
+            modifiers: &target_mods,
+        }
+    };
+    let against = match &entry.defense {
+        AbilityDefense::ActorAttribute => {
+            let value = query_int(&pipeline, actor, &entry.attribute, &scratch, &actor_context)
+                .ok_or_else(|| fail(&entry.attribute))?;
+            Against::Dc {
+                value,
+                owner: target,
+                modifier_target: roll_tag,
+            }
+        }
+        AbilityDefense::TargetStat { stat } => {
+            query_int(&pipeline, target, stat, &scratch, &target_context)
+                .ok_or_else(|| fail(stat))?;
+            Against::Stat {
+                entity: target,
+                stat: scratch
+                    .stat(stat)
+                    .expect("the defense stat is interned with the definitions"),
+                modifier_target: roll_tag,
+            }
+        }
+        AbilityDefense::Constant(value) => Against::Dc {
+            value: *value,
+            owner: target,
+            modifier_target: roll_tag,
+        },
+        AbilityDefense::ActorStat { stat } => {
+            query_int(&pipeline, actor, stat, &scratch, &actor_context)
+                .ok_or_else(|| fail(stat))?;
+            Against::Stat {
+                entity: actor,
+                stat: scratch
+                    .stat(stat)
+                    .expect("the defense stat is interned with the definitions"),
+                modifier_target: roll_tag,
+            }
+        }
+    };
+    let mut bonus_values = Vec::with_capacity(entry.bonus_stats.len());
+    for name in &entry.bonus_stats {
+        let value = query_int(&pipeline, actor, name, &scratch, &actor_context)
+            .ok_or_else(|| fail(name))?;
+        bonus_values.push(value);
+    }
+    let synthetic = bonus_modifiers(entry.ability, &bonus_values, roll_tag, &actor_mods);
+    actor_mods.extend(synthetic);
+    Ok(ActionPlan {
+        pipeline,
+        roll_tag,
+        actor_stats,
+        target_stats,
+        actor_mods,
+        target_mods,
+        against,
+    })
 }
 
 /// Checks one action against the authoritative admission rules without
@@ -1934,6 +2543,11 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
                         current,
                     });
                 }
+            }
+            // T137 B15: a derived formula can fail mid-fight (a zero
+            // divisor), so the last stage runs the action's stat queries.
+            if !definition.derived.is_empty() {
+                action_plan(world, world.interners().clone(), entry, actor, target)?;
             }
             Ok(())
         }
@@ -2203,93 +2817,24 @@ pub(crate) fn resolve_use(
     let combat = world.combat().expect("validation checks the encounter");
     let definition = combat.definition.clone();
     let round = combat.round;
-    let combatants = world.combatants();
-    let actor_state = combatants
-        .get(actor)
-        .expect("validation checks the actor is a live combatant");
-    let target_state = combatants
-        .get(target)
-        .expect("validation checks the target is a live combatant");
     let entry = ability_entry(&definition, ability)
         .expect("validation checks the ability is listed")
         .clone();
-    let tag = world
-        .interners()
-        .tag(COMBAT_ROLL_TAG)
-        .expect("the roll tag is interned at encounter start");
-    let roll_tag = RollTag(tag);
-    let actor_mods = roll_modifiers(&definition, actor_state, round, roll_tag);
-    let target_mods = dc_modifiers(&definition, target_state, round, roll_tag);
-    let mut policies: BTreeMap<ModTypeId, StackingPolicy> = BTreeMap::new();
-    for effect in &definition.effects {
-        policies.insert(ModTypeId(effect.mod_type.clone()), effect.policy);
+    if let AbilityDefense::TargetStat { stat } = &entry.defense {
+        world.interners_mut().intern_stat(stat);
     }
-    let self_targeted = actor == target;
-    let defense_stat_value: Option<i32> = match &entry.defense {
-        AbilityDefense::ActorAttribute => None,
-        AbilityDefense::TargetStat { stat } => {
-            let (_, value) = target_state
-                .attributes
-                .iter()
-                .find(|(name, _)| *name == *stat)
-                .expect("the defense stat is validated at encounter start");
-            Some(*value)
-        }
-    };
-    let actor_attribute_value: Option<i32> = match &entry.defense {
-        AbilityDefense::ActorAttribute => {
-            let (_, value) = actor_state
-                .attributes
-                .iter()
-                .find(|(name, _)| *name == entry.attribute)
-                .expect("the ability attribute is validated at encounter start");
-            Some(*value)
-        }
-        AbilityDefense::TargetStat { .. } => None,
-    };
-    let transient_stat: Option<(StatBlock, crpg_core::StatId)> = match &entry.defense {
-        AbilityDefense::ActorAttribute => None,
-        AbilityDefense::TargetStat { stat } => {
-            let value = defense_stat_value.expect("defense value is read above");
-            let stat_id = world.interners_mut().intern_stat(stat);
-            let mut block = StatBlock::new();
-            block
-                .insert(stat_id, StatValue::Int(value))
-                .expect("integer defense values always insert");
-            Some((block, stat_id))
-        }
-    };
-    let against = match &entry.defense {
-        AbilityDefense::ActorAttribute => Against::Dc {
-            value: actor_attribute_value.expect("attribute value is read above"),
-            owner: target,
-            modifier_target: roll_tag,
-        },
-        AbilityDefense::TargetStat { .. } => {
-            let (_, stat_id) = transient_stat
-                .as_ref()
-                .expect("transient stat is built above");
-            Against::Stat {
-                entity: target,
-                stat: *stat_id,
-                modifier_target: roll_tag,
-            }
-        }
-    };
-    let pipeline = if let Some((_, stat_id)) = &transient_stat {
-        ModifierPipeline::new(
-            vec![StatDefinition {
-                id: *stat_id,
-                kind: StatKind::Int,
-                derived: None,
-            }],
-            policies,
-        )
-        .expect("combat preflight guarantees pipeline success")
-    } else {
-        ModifierPipeline::new(Vec::new(), policies)
-            .expect("combat preflight guarantees pipeline success")
-    };
+    let scratch = world.interners().clone();
+    let plan = action_plan(world, scratch, &entry, actor, target)
+        .expect("validation checks the stat evaluation stage");
+    let ActionPlan {
+        pipeline,
+        roll_tag,
+        actor_stats,
+        target_stats,
+        actor_mods,
+        target_mods,
+        against,
+    } = plan;
     let request = ResolutionRequest {
         roll: RollRequest {
             actor,
@@ -2303,20 +2848,13 @@ pub(crate) fn resolve_use(
         against,
         outcome_table: entry.outcome_table.id(),
     };
-    let empty_block = StatBlock::new();
     let empty_tags = TagSet::new();
-    let outcome = if self_targeted {
-        let mut combined = actor_mods.clone();
-        combined.extend(target_mods.clone());
-        let stats_ref: &StatBlock = match &transient_stat {
-            Some((block, _)) => block,
-            None => &empty_block,
-        };
+    let outcome = if actor == target {
         let view = QueryContext {
             entity: actor,
-            stats: stats_ref,
+            stats: &actor_stats,
             tags: &empty_tags,
-            modifiers: &combined,
+            modifiers: &actor_mods,
         };
         let mut entities = BTreeMap::new();
         entities.insert(actor, view);
@@ -2328,19 +2866,15 @@ pub(crate) fn resolve_use(
         resolve(&request, &context, world.rng_mut())
             .expect("combat preflight guarantees resolution success")
     } else {
-        let target_stats: &StatBlock = match &transient_stat {
-            Some((block, _)) => block,
-            None => &empty_block,
-        };
         let actor_view = QueryContext {
             entity: actor,
-            stats: &empty_block,
+            stats: &actor_stats,
             tags: &empty_tags,
             modifiers: &actor_mods,
         };
         let target_view = QueryContext {
             entity: target,
-            stats: target_stats,
+            stats: &target_stats,
             tags: &empty_tags,
             modifiers: &target_mods,
         };
@@ -3182,5 +3716,167 @@ mod rt_refresh_tests {
                 assert_eq!(balance, expected, "combatant {index}, rollover {rollover}");
             }
         }
+    }
+}
+
+/// R7 (B22) and R5 (B14): the legacy-shape predicates and the synthetic
+/// bonus identities, crate-private.
+#[cfg(test)]
+mod surface_tests {
+    use super::support::Fixture;
+    use super::*;
+
+    /// A legacy-shaped definition from the standard fixture.
+    fn legacy() -> CombatDefinition {
+        let (world, _) = Fixture::standard().start(1);
+        world.combat().expect("encounter").definition.clone()
+    }
+
+    fn dice(text: &str) -> DiceExpr {
+        text.parse().expect("test dice parse")
+    }
+
+    /// Every ability-level departure from the legacy shape is non-legacy.
+    #[test]
+    fn ability_is_legacy_follows_its_table() {
+        let base = legacy();
+        let primary = base.pools[0].id;
+        let entry = base.abilities[0].clone();
+        assert!(ability_is_legacy(&entry, primary), "the baseline");
+        type Edit = fn(&mut AbilityDefinition);
+        let table: [(&str, Edit); 12] = [
+            ("target stat", |e| {
+                e.defense = AbilityDefense::TargetStat { stat: "x".into() }
+            }),
+            ("constant", |e| e.defense = AbilityDefense::Constant(1)),
+            ("actor stat", |e| {
+                e.defense = AbilityDefense::ActorStat { stat: "x".into() }
+            }),
+            ("ends turn", |e| e.ends_turn = false),
+            ("effect", |e| e.effect = Some(Ulid::from_u128(1))),
+            ("natural die", |e| e.natural_die = Some(0)),
+            ("two costs", |e| {
+                let first = e.costs[0];
+                e.costs.push(first)
+            }),
+            ("other pool", |e| {
+                e.costs[0].0 = ResourcePoolId(Ulid::from_u128(7))
+            }),
+            ("recovery", |e| e.recovery_ticks = Some(3)),
+            ("repeats", |e| e.repeats_in_real_time = true),
+            ("bonus stats", |e| e.bonus_stats.push("x".into())),
+            ("damage dice", |e| {
+                e.damage_dice.push((Outcome::Success, dice("1d4")))
+            }),
+        ];
+        for (name, edit) in table {
+            let mut changed = entry.clone();
+            edit(&mut changed);
+            assert!(!ability_is_legacy(&changed, primary), "{name}");
+        }
+    }
+
+    /// Every definition-level departure from the legacy shape is non-legacy.
+    #[test]
+    fn definition_is_legacy_follows_its_table() {
+        let base = legacy();
+        assert!(definition_is_legacy(&base), "the baseline");
+        type Edit = fn(&mut CombatDefinition);
+        let table: [(&str, Edit); 7] = [
+            ("derived", |d| {
+                d.derived.push(DerivedStat {
+                    name: "x".into(),
+                    formula: IntFormula::Literal(1),
+                })
+            }),
+            ("initiative", |d| {
+                d.initiative = Some(InitiativeRule {
+                    dice: dice("1d20"),
+                    bonus_stats: Vec::new(),
+                })
+            }),
+            ("second ability", |d| {
+                let extra = d.abilities[0].clone();
+                d.abilities.push(extra)
+            }),
+            ("second pool", |d| {
+                let extra = d.pools[0];
+                d.pools.push(extra)
+            }),
+            ("effects", |d| {
+                d.effects.push(EffectDefinition {
+                    effect: Ulid::from_u128(1),
+                    aim: EffectAim::Slf,
+                    mod_type: "x".into(),
+                    policy: StackingPolicy::StackAll,
+                    modifiers: Vec::new(),
+                    duration_rounds: 1,
+                })
+            }),
+            ("bonus stats", |d| {
+                d.abilities[0].bonus_stats.push("x".into())
+            }),
+            ("damage dice", |d| {
+                d.abilities[0]
+                    .damage_dice
+                    .push((Outcome::Success, dice("1d4")))
+            }),
+        ];
+        for (name, edit) in table {
+            let mut changed = base.clone();
+            edit(&mut changed);
+            assert!(!definition_is_legacy(&changed), "{name}");
+        }
+    }
+
+    fn view_of(ids: &[u128]) -> Vec<Modifier> {
+        let tag = RollTag(Interners::new().intern_tag("probe"));
+        ids.iter()
+            .map(|id| Modifier {
+                id: Ulid::from_u128(*id),
+                source: SourceRef {
+                    kind: "probe".to_owned(),
+                    id: Ulid::from_u128(0),
+                },
+                target: ModifierTarget::Roll(tag),
+                op: ModOp::Add(StatValue::Int(1)),
+                mod_type: ModTypeId("probe".to_owned()),
+                name: None,
+                condition: None,
+                priority: 0,
+            })
+            .collect()
+    }
+
+    /// B14: the k-th synthetic modifier takes the k-th smallest unused id
+    /// from one.
+    #[test]
+    fn synthetic_bonus_ids_skip_the_ids_a_view_uses() {
+        let tag = RollTag(Interners::new().intern_tag("probe"));
+        let ability = Ulid::from_u128(103);
+        let ids = |view: &[u128], count: usize| -> Vec<u128> {
+            bonus_modifiers(ability, &vec![5; count], tag, &view_of(view))
+                .iter()
+                .map(|modifier| modifier.id.to_u128())
+                .collect()
+        };
+        assert_eq!(ids(&[], 2), [1, 2]);
+        assert_eq!(
+            ids(&[1], 2),
+            [2, 3],
+            "an authored ...01 pushes the first to ...02"
+        );
+        assert_eq!(ids(&[1, 3], 3), [2, 4, 5]);
+        assert_eq!(ids(&[2, 9], 1), [1]);
+        let first = &bonus_modifiers(ability, &[4], tag, &[])[0];
+        assert_eq!(first.mod_type.0, COMBAT_BONUS_MOD_TYPE);
+        assert_eq!(first.source.kind, BONUS_SOURCE_KIND);
+        assert_eq!(first.source.id, ability);
+        assert_eq!(first.op, ModOp::Add(StatValue::Int(4)));
+        assert_eq!(
+            (first.name.clone(), first.condition.clone(), first.priority),
+            (None, None, 0)
+        );
+        assert_eq!(first.target, ModifierTarget::Roll(tag));
     }
 }
