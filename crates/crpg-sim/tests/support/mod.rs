@@ -345,3 +345,202 @@ impl Fixture {
         fixture
     }
 }
+
+/// Real-time fixtures and probes (T138, ADR-0029). Kept apart so that test
+/// binaries that never use them stay free of dead-code warnings.
+pub mod rt {
+    #![allow(dead_code)]
+
+    use std::collections::BTreeSet;
+
+    use crpg_core::{EntityId, Ulid};
+    use crpg_data::{AbilityCost, ActionPoolTemplate, RefreshWire, TickPeriod};
+    use crpg_sim::{
+        start_encounter_in_mode, CombatAction, CombatError, EncounterMode, EncounterSpec, World,
+    };
+
+    use super::{uid, Fixture};
+
+    /// The standard two-combatant fixture with `round_ticks` declared.
+    pub fn capable(round_ticks: u32) -> Fixture {
+        let mut fixture = Fixture::standard();
+        fixture.ruleset.round_ticks = Some(round_ticks);
+        fixture
+    }
+
+    /// The three-combatant fixture with `round_ticks` declared.
+    pub fn capable_trio(round_ticks: u32) -> Fixture {
+        let mut fixture = Fixture::trio();
+        fixture.ruleset.round_ticks = Some(round_ticks);
+        fixture
+    }
+
+    /// Makes every roll succeed and every success deal `damage`.
+    pub fn make_lethal(fixture: &mut Fixture, damage: u32) {
+        fixture.set_alpha(100, 100);
+        let id = fixture.ability;
+        let ability = fixture.abilities.get_mut(&id).expect("ability");
+        for entry in &mut ability.damage {
+            if entry.amount > 0 {
+                entry.amount = damage;
+            }
+        }
+    }
+
+    /// Edits the standard ability in place.
+    pub fn edit_ability(fixture: &mut Fixture, edit: impl FnOnce(&mut crpg_data::Ability)) {
+        let id = fixture.ability;
+        edit(fixture.abilities.get_mut(&id).expect("ability"));
+    }
+
+    /// Replaces the ruleset's pools with the primary pool `105` (max
+    /// `primary_max`, `OnTurnStart`) followed by one extra pool per period,
+    /// ids `106..`, each max 3 and `OnTick(period)`, and makes the standard
+    /// ability cost 3 from every extra pool (and 1 from the primary).
+    pub fn tick_pools(fixture: &mut Fixture, primary_max: u32, periods: &[u64]) {
+        let mut pools = vec![ActionPoolTemplate {
+            id: Ulid::from_u128(105),
+            max: primary_max,
+            refresh: RefreshWire::OnTurnStart,
+        }];
+        let mut costs = Vec::new();
+        for (index, period) in periods.iter().enumerate() {
+            let id = Ulid::from_u128(106 + index as u128);
+            pools.push(ActionPoolTemplate {
+                id,
+                max: 3,
+                refresh: RefreshWire::OnTick(TickPeriod(*period)),
+            });
+            costs.push(AbilityCost {
+                pool: id,
+                amount: 3,
+            });
+        }
+        fixture.ruleset.pools = pools;
+        edit_ability(fixture, |ability| ability.extra_costs = costs);
+    }
+
+    impl Fixture {
+        /// Starts the fixture's encounter in `mode`, returning the world and
+        /// the combatant ids in authored participant order.
+        pub fn start_mode(
+            &self,
+            seed: u64,
+            mode: EncounterMode,
+        ) -> Result<(World, Vec<EntityId>), CombatError> {
+            let bundle = self.bundle();
+            let spec = EncounterSpec {
+                encounter: &self.encounter,
+                ruleset: &self.ruleset,
+                abilities: &bundle.abilities,
+                outcome_tables: &bundle.tables,
+                placements: &bundle.placements,
+                creatures: &bundle.creatures,
+                effects: &bundle.effects,
+            };
+            let mut world = World::new(seed);
+            start_encounter_in_mode(&mut world, &spec, mode)?;
+            let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
+            Ok((world, ids))
+        }
+
+        /// Starts in `mode` and unwraps.
+        pub fn start_rt(&self, seed: u64, mode: EncounterMode) -> (World, Vec<EntityId>) {
+            self.start_mode(seed, mode)
+                .expect("the fixture starts in the requested mode")
+        }
+    }
+
+    /// One `UseAbility` action.
+    pub fn use_action(actor: EntityId, ability: Ulid, target: EntityId) -> CombatAction {
+        CombatAction::UseAbility {
+            actor,
+            ability,
+            target,
+        }
+    }
+
+    /// Every object key in a JSON value, at any depth.
+    pub fn json_keys(value: &serde_json::Value) -> BTreeSet<String> {
+        fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, inner) in map {
+                        out.insert(key.clone());
+                        walk(inner, out);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        walk(item, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = BTreeSet::new();
+        walk(value, &mut out);
+        out
+    }
+
+    /// The six key names a turn-based-only world must never write.
+    pub const RT_KEYS: [&str; 6] = [
+        "mode",
+        "clock",
+        "pending_mode",
+        "order",
+        "recovery_ticks",
+        "repeats_in_real_time",
+    ];
+
+    /// The timeline as `(key, entity)` pairs in ascending order.
+    pub fn timeline_of(world: &World) -> Vec<(i32, EntityId)> {
+        world
+            .timeline()
+            .iter()
+            .map(|(key, id)| (key.0, id))
+            .collect()
+    }
+
+    /// The world as JSON.
+    pub fn value_of(world: &World) -> serde_json::Value {
+        serde_json::to_value(world).expect("the world serializes")
+    }
+
+    /// Whole-world bytes.
+    pub fn bytes_of(world: &World) -> Vec<u8> {
+        serde_json::to_vec(world).expect("the world serializes")
+    }
+
+    /// Runs `count` ticks.
+    pub fn ticks(world: &mut World, count: usize) {
+        for _ in 0..count {
+            crpg_sim::tick(world);
+        }
+    }
+
+    /// The combatant's current primary-pool balance.
+    pub fn pool_of(world: &World, id: EntityId) -> u32 {
+        world
+            .combatants()
+            .get(id)
+            .expect("combatant")
+            .action_pool()
+            .current()
+    }
+
+    /// The encounter clock's elapsed ticks.
+    pub fn elapsed(world: &World) -> u64 {
+        world
+            .combat()
+            .expect("encounter")
+            .clock
+            .expect("clock")
+            .elapsed
+    }
+
+    /// A fresh ULID text for raw-JSON edits.
+    pub fn ulid_text(value: u128) -> String {
+        uid(value)
+    }
+}
