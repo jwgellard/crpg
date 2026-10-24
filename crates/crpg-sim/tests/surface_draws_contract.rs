@@ -33,7 +33,14 @@ fn reload(world: World) -> World {
     serde_json::from_value(value).expect("reload")
 }
 
-fn rolled_keys(seed: u64, dice: &str, alpha_a: i32, alpha_b: i32, init_a: i32, init_b: i32) -> (i32, i32) {
+fn rolled_keys(
+    seed: u64,
+    dice: &str,
+    alpha_a: i32,
+    alpha_b: i32,
+    init_a: i32,
+    init_b: i32,
+) -> (i32, i32) {
     let mut rng = draws::oracle(seed);
     let a_roll = draws::draw(&mut rng, dice).total as i32;
     let b_roll = draws::draw(&mut rng, dice).total as i32;
@@ -118,7 +125,11 @@ fn opposed_target_roll_effect_folds_into_opposing_roll() {
     surface::end(&mut w1, a1);
     let m0 = surface::act(&mut w0, b0, base.ability, a0).margin;
     let m1 = surface::act(&mut w1, b1, with.ability, a1).margin;
-    assert_eq!(m1, m0 - 5, "the target's Roll effect shifts the opposing roll");
+    assert_eq!(
+        m1,
+        m0 - 5,
+        "the target's Roll effect shifts the opposing roll"
+    );
 }
 
 #[test]
@@ -128,12 +139,14 @@ fn opposed_target_dc_effect_does_not_fold() {
     let seed = 11;
     let (mut w0, ids0) = start(&base, seed);
     let (mut w1, ids1) = start(&with, seed);
-    let a0 = w0.combat().expect("encounter").active.expect("active");
-    let a1 = w1.combat().expect("encounter").active.expect("active");
-    surface::act(&mut w0, a0, base.ability, a0);
-    surface::act(&mut w1, a1, with.ability, a1);
-    let m0 = surface::act(&mut w0, a0, base.ability, a0).margin;
-    let m1 = surface::act(&mut w1, a1, with.ability, a1).margin;
+    let (b0, a0) = (ids0[1], ids0[0]);
+    let (b1, a1) = (ids1[1], ids1[0]);
+    surface::act(&mut w0, b0, base.ability, a0);
+    surface::act(&mut w1, b1, with.ability, a1);
+    surface::end(&mut w0, a0);
+    surface::end(&mut w1, a1);
+    let m0 = surface::act(&mut w0, b0, base.ability, a0).margin;
+    let m1 = surface::act(&mut w1, b1, with.ability, a1).margin;
     assert_eq!(m1, m0, "the target's Dc effect does not fold into Opposed");
 }
 
@@ -357,7 +370,10 @@ fn rt_start_keys_zero_and_rebuilds_at_switch() {
 
     request_mode(&mut world, EncounterMode::TurnBased).expect("request");
     rt::ticks(&mut world, 4);
-    assert_eq!(world.combat().expect("encounter").mode, EncounterMode::TurnBased);
+    assert_eq!(
+        world.combat().expect("encounter").mode,
+        EncounterMode::TurnBased
+    );
     let mut expected = vec![(key_a, ids[0]), (key_b, ids[1])];
     expected.sort();
     assert_eq!(rt::timeline_of(&world), expected);
@@ -399,8 +415,19 @@ fn rejected_start_with_initiative_rule_draws_nothing() {
     draws::set_initiative_rule(&mut fixture, "1d20", &["alpha"]);
     let creature_id = fixture.creature_a;
     let tags: Vec<String> = (0..1024).map(|i| format!("tag-{i}")).collect();
-    fixture.creatures.get_mut(&creature_id).expect("creature").tags = tags;
-    let effect = surface::effect_doc(141, "target", "probe-type", "stack_all", vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)], 3);
+    fixture
+        .creatures
+        .get_mut(&creature_id)
+        .expect("creature")
+        .tags = tags;
+    let effect = surface::effect_doc(
+        141,
+        "target",
+        "probe-type",
+        "stack_all",
+        vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)],
+        3,
+    );
     let effect = draws::grant(effect, &["hasted"]);
     surface::attach_to_ability(&mut fixture, effect);
 
@@ -416,9 +443,8 @@ fn rejected_start_with_initiative_rule_draws_nothing() {
 #[test]
 fn invalid_initiative_dice_rejects_start() {
     let mut fixture = Fixture::standard();
-    fixture.ruleset.initiative = Some(
-        serde_json::from_value(json!({"dice": "not-dice", "bonus_stats": []})).unwrap(),
-    );
+    fixture.ruleset.initiative =
+        Some(serde_json::from_value(json!({"dice": "not-dice", "bonus_stats": []})).unwrap());
     let mut world = World::new(3);
     let before = world.clone();
     let err = draws::start_into(&fixture, &mut world);
@@ -468,7 +494,14 @@ fn tags_carried_only_with_a_granting_effect() {
     let mut fixture = Fixture::standard();
     let creature_id = fixture.creature_a;
     draws::set_tags(&mut fixture, creature_id, &["pc", "hero", "hero"]);
-    let effect = surface::effect_doc(141, "target", "probe-type", "stack_all", vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)], 3);
+    let effect = surface::effect_doc(
+        141,
+        "target",
+        "probe-type",
+        "stack_all",
+        vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)],
+        3,
+    );
     let effect = draws::grant(effect, &["hasted"]);
     surface::attach_to_ability(&mut fixture, effect);
     let (world, ids) = start(&fixture, 3);
@@ -486,8 +519,19 @@ fn tag_union_accepted_at_bound_and_rejected_over() {
     // accepted at MAX_TAGS
     let mut fixture = Fixture::standard();
     let tags: Vec<String> = (0..1023).map(|i| format!("tag-{i}")).collect();
-    fixture.creatures.get_mut(&fixture.creature_a).expect("c").tags = tags;
-    let effect = surface::effect_doc(141, "target", "probe-type", "stack_all", vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)], 3);
+    fixture
+        .creatures
+        .get_mut(&fixture.creature_a)
+        .expect("c")
+        .tags = tags;
+    let effect = surface::effect_doc(
+        141,
+        "target",
+        "probe-type",
+        "stack_all",
+        vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)],
+        3,
+    );
     let effect = draws::grant(effect, &["hasted"]);
     surface::attach_to_ability(&mut fixture, effect);
     let (world, _) = start(&fixture, 3);
@@ -496,8 +540,19 @@ fn tag_union_accepted_at_bound_and_rejected_over() {
     // rejected at MAX_TAGS + 1
     let mut fixture = Fixture::standard();
     let tags: Vec<String> = (0..1024).map(|i| format!("tag-{i}")).collect();
-    fixture.creatures.get_mut(&fixture.creature_a).expect("c").tags = tags;
-    let effect = surface::effect_doc(141, "target", "probe-type", "stack_all", vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)], 3);
+    fixture
+        .creatures
+        .get_mut(&fixture.creature_a)
+        .expect("c")
+        .tags = tags;
+    let effect = surface::effect_doc(
+        141,
+        "target",
+        "probe-type",
+        "stack_all",
+        vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)],
+        3,
+    );
     let effect = draws::grant(effect, &["hasted"]);
     surface::attach_to_ability(&mut fixture, effect);
     let mut world = World::new(3);
@@ -515,7 +570,14 @@ fn tag_union_accepted_at_bound_and_rejected_over() {
 #[test]
 fn load_rejects_combatant_over_tag_bound() {
     let mut fixture = Fixture::standard();
-    let effect = surface::effect_doc(141, "target", "probe-type", "stack_all", vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)], 3);
+    let effect = surface::effect_doc(
+        141,
+        "target",
+        "probe-type",
+        "stack_all",
+        vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)],
+        3,
+    );
     let effect = draws::grant(effect, &["hasted"]);
     surface::attach_to_ability(&mut fixture, effect);
     let creature_id = fixture.creature_a;
@@ -531,7 +593,9 @@ fn load_rejects_combatant_over_tag_bound() {
     let names: Vec<String> = (0..1024).map(|i| format!("tag-{i:04}")).collect();
     over["combatants"][0][1]["tags"] = json!(names);
     let err = load(over).expect_err("1025 distinct tags are refused");
-    assert!(err.to_string().contains("combatant tags exceed their bound"));
+    assert!(err
+        .to_string()
+        .contains("combatant tags exceed their bound"));
 
     let mut repeat = save(&world);
     let mut tags = (0..1023).map(|i| format!("tag-{i:04}")).collect::<Vec<_>>();
