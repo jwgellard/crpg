@@ -4111,3 +4111,122 @@ mod surface_tests {
         assert_eq!(first.target, ModifierTarget::Roll(tag));
     }
 }
+
+/// R9, R12 (B14, B19): the crate-private plan and projection, which no public
+/// output exposes. A self-targeted view's bonus lists are invisible in the
+/// margin (both rolls fold the same modifiers), so the plan is inspected.
+#[cfg(test)]
+mod draw_tests {
+    use super::support::draws::{defend_opposed, grant, set_tags};
+    use super::support::surface::{
+        act, always_success, attach_to_ability, edit_ability, effect_doc, modifier, start,
+    };
+    use super::support::Fixture;
+    use super::*;
+    use serde_json::json;
+
+    fn plan_of(
+        world: &World,
+        ability: Ulid,
+        actor: EntityId,
+        target: EntityId,
+    ) -> (ActionPlan, Interners) {
+        let definition = &world.combat().expect("encounter").definition;
+        let entry = ability_entry(definition, ability).expect("listed").clone();
+        let scratch = world.interners().clone();
+        let plan = action_plan(world, scratch.clone(), &entry, actor, target).expect("plan");
+        (plan, scratch)
+    }
+
+    fn ids_and_values(view: &[Modifier]) -> Vec<(u128, ModOp)> {
+        view.iter()
+            .map(|modifier| (modifier.id.to_u128(), modifier.op.clone()))
+            .collect()
+    }
+
+    /// B14: one view for a self-targeted use holds the actor list and then
+    /// the opposing list, under consecutive ids; two views otherwise.
+    #[test]
+    fn the_bonus_lists_concatenate_in_one_view_when_self_targeted() {
+        let mut fixture = Fixture::standard();
+        defend_opposed(&mut fixture, "2d6", &["beta"]);
+        edit_ability(&mut fixture, |ability| {
+            ability.allow_self_target = true;
+            ability.bonus_stats = Some(vec!["alpha".to_owned()]);
+        });
+        let ability = fixture.ability;
+        let (world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+        let int = |value: i32| ModOp::Add(StatValue::Int(value));
+
+        let (own, _) = plan_of(&world, ability, b, b);
+        assert_eq!(
+            ids_and_values(&own.actor_mods),
+            vec![(1, int(6)), (2, int(7))],
+            "B's alpha then B's beta, one view"
+        );
+        assert!(own.target_mods.is_empty());
+
+        let (apart, _) = plan_of(&world, ability, b, a);
+        assert_eq!(ids_and_values(&apart.actor_mods), vec![(1, int(6))]);
+        assert_eq!(
+            ids_and_values(&apart.target_mods),
+            vec![(1, int(6))],
+            "A's beta, in A's own view"
+        );
+    }
+
+    /// B19: the projection is the placement tags plus the grants of every
+    /// unexpired attachment, as scratch handles; the placement tags are
+    /// carried sorted and distinct, and only when an effect grants.
+    #[test]
+    fn the_tag_projection_follows_the_attachments() {
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        let creature = fixture.creature_a;
+        set_tags(&mut fixture, creature, &["zed", "ant", "zed"]);
+        attach_to_ability(
+            &mut fixture,
+            grant(
+                effect_doc(
+                    141,
+                    "target",
+                    "probe-type",
+                    "stack_all",
+                    vec![modifier(142, json!({"type": "roll"}), "add", 1)],
+                    2,
+                ),
+                &["hasted", "ant"],
+            ),
+        );
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 1);
+        let (a, b) = (ids[0], ids[1]);
+        assert_eq!(world.combatants().get(a).expect("A").tags(), ["ant", "zed"]);
+        assert!(world.combatants().get(b).expect("B").tags().is_empty());
+
+        act(&mut world, b, ability, a);
+        let definition = world.combat().expect("encounter").definition.clone();
+        let holder = world.combatants().get(a).expect("A").clone();
+        let expires = holder.attached()[0].expires_round;
+        let names = |round: u32| {
+            let mut scratch = world.interners().clone();
+            let tags = combatant_tags(&definition, &holder, round, &mut scratch);
+            let mut found: Vec<String> = ["ant", "hasted", "zed"]
+                .into_iter()
+                .filter(|name| {
+                    scratch
+                        .tag(name)
+                        .is_some_and(|handle| tags.contains(&handle))
+                })
+                .map(str::to_owned)
+                .collect();
+            found.sort();
+            assert_eq!(found.len(), tags.len(), "no other tag");
+            found
+        };
+        assert_eq!(names(0), ["ant", "hasted", "zed"], "while attached");
+        assert_eq!(names(expires - 1), ["ant", "hasted", "zed"]);
+        assert_eq!(names(expires), ["ant", "zed"], "after its expiry");
+    }
+}

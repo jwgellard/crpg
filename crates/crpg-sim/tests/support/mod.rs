@@ -790,3 +790,130 @@ pub mod surface {
         perform_action(world, &CombatAction::EndTurn { actor }).expect("the turn ends");
     }
 }
+
+/// Draw, initiative and tag fixtures (T137b): `Opposed` defences, damage
+/// dice, rolled initiative and tag grants over the standard fixture. Kept
+/// apart so that test binaries that never use them stay free of dead-code
+/// warnings.
+pub mod draws {
+    #![allow(dead_code)]
+
+    use crpg_core::{DeterministicRng, Ulid};
+    use crpg_data::{DefenseWire, Effect};
+    use crpg_rules::{DiceExpr, DiceRoll};
+    use crpg_sim::{
+        start_encounter, CombatError, EncounterSpec, SimEvent, World, COMBAT_ROLL_STREAM,
+    };
+    use serde_json::{json, Value};
+
+    use super::surface::edit_ability;
+    use super::{uid, Fixture};
+
+    /// Makes the standard ability's defence an `Opposed` roll.
+    pub fn defend_opposed(fixture: &mut Fixture, dice: &str, bonus_stats: &[&str]) {
+        edit_ability(fixture, |ability| {
+            ability.defense = DefenseWire::Opposed {
+                dice: dice.to_owned(),
+                bonus_stats: bonus_stats.iter().map(|name| (*name).to_owned()).collect(),
+            };
+        });
+    }
+
+    /// Replaces the standard ability's damage entries (JSON array of
+    /// `{outcome, amount[, dice]}`).
+    pub fn set_damage(fixture: &mut Fixture, entries: Value) {
+        edit_ability(fixture, |ability| {
+            ability.damage = serde_json::from_value(entries).expect("the damage entries are valid");
+        });
+    }
+
+    /// Replaces the outcome table's bands and natural rules.
+    pub fn set_table(fixture: &mut Fixture, bands: Value, natural_rules: Value) {
+        let id = Ulid::from_u128(104);
+        let table = serde_json::from_value(json!({
+            "id": uid(104),
+            "slug": "probe-table",
+            "name": "probe.table",
+            "bands": bands,
+            "natural_rules": natural_rules
+        }))
+        .expect("the table is valid");
+        fixture.tables.insert(id, table);
+    }
+
+    /// A table whose every roll fails.
+    pub fn always_failure(fixture: &mut Fixture) {
+        set_table(
+            fixture,
+            json!([{"min_margin": i64::MIN, "outcome": {"type": "failure"}}]),
+            json!([]),
+        );
+    }
+
+    /// Declares the ruleset's rolled initiative.
+    pub fn set_initiative_rule(fixture: &mut Fixture, dice: &str, bonus_stats: &[&str]) {
+        fixture.ruleset.initiative = Some(
+            serde_json::from_value(json!({"dice": dice, "bonus_stats": bonus_stats}))
+                .expect("the initiative rule is valid"),
+        );
+    }
+
+    /// Sets the authored initiative keys of participants A and B.
+    pub fn set_authored_initiative(fixture: &mut Fixture, a: i32, b: i32) {
+        fixture.encounter.participants[0].initiative = a;
+        fixture.encounter.participants[1].initiative = b;
+    }
+
+    /// Sets the tags of the creature `which`.
+    pub fn set_tags(fixture: &mut Fixture, which: Ulid, tags: &[&str]) {
+        fixture
+            .creatures
+            .get_mut(&which)
+            .expect("the creature exists")
+            .tags = tags.iter().map(|tag| (*tag).to_owned()).collect();
+    }
+
+    /// Makes `effect` grant `tags`.
+    pub fn grant(mut effect: Effect, tags: &[&str]) -> Effect {
+        effect.grants = Some(tags.iter().map(|tag| (*tag).to_owned()).collect());
+        effect
+    }
+
+    /// A fresh world's RNG for `seed`: the oracle of every start draw.
+    pub fn oracle(seed: u64) -> DeterministicRng {
+        World::new(seed).rng_mut().clone()
+    }
+
+    /// Evaluates `dice` on the combat stream of `rng`.
+    pub fn draw(rng: &mut DeterministicRng, dice: &str) -> DiceRoll {
+        let expr: DiceExpr = dice.parse().expect("the dice parse");
+        expr.evaluate(rng, COMBAT_ROLL_STREAM)
+            .expect("the stream is valid")
+    }
+
+    /// Drains the world's event queue and counts its `Died` events.
+    pub fn died_events(world: &mut World) -> usize {
+        world
+            .events_mut()
+            .drain()
+            .iter()
+            .filter(|envelope| matches!(envelope.payload, SimEvent::Died { .. }))
+            .count()
+    }
+
+    /// Starts the fixture's encounter into the caller's `world`, so that a
+    /// failed start can be compared with the world it left.
+    pub fn start_into(fixture: &Fixture, world: &mut World) -> Result<(), CombatError> {
+        let bundle = fixture.bundle();
+        let spec = EncounterSpec {
+            encounter: &fixture.encounter,
+            ruleset: &fixture.ruleset,
+            abilities: &bundle.abilities,
+            outcome_tables: &bundle.tables,
+            placements: &bundle.placements,
+            creatures: &bundle.creatures,
+            effects: &bundle.effects,
+        };
+        start_encounter(world, &spec)
+    }
+}
