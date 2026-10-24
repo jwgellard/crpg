@@ -17,7 +17,7 @@ use crpg_sim::{legal_actions, perform_action, validate_action, CombatAction, Com
 use serde_json::json;
 use support::surface::{
     act, add_attribute, add_derived, add_stat, always_success, attach_to_ability, binary,
-    edit_ability, effect_doc, end, lit, modifier, start, stat, stat_target, try_start,
+    edit_ability, effect_doc, end, lit, modifier, set_stat, start, stat, stat_target, try_start,
 };
 use support::Fixture;
 
@@ -583,6 +583,196 @@ fn the_defense_stat_is_queried_before_the_bonus_stats() {
         CombatError::StatEvaluation {
             stat: "second".to_owned()
         }
+    );
+}
+
+/// A fixture whose target-stat defence is a derived stat reading health:
+/// `vigour = health - 0`.
+fn current_health_fixture() -> Fixture {
+    let mut fixture = Fixture::standard();
+    add_derived(
+        &mut fixture,
+        "vigour",
+        binary("subtract", stat("health"), lit(0)),
+    );
+    always_success(&mut fixture);
+    defend(
+        &mut fixture,
+        DefenseWire::TargetStat {
+            stat: "vigour".to_owned(),
+        },
+    );
+    fixture
+}
+
+/// R3 (B6, D5, B15): a derived stat reading health is evaluated from the
+/// *current* health, so each hit lowers the next defence by the exact
+/// damage dealt; max or start-time health would repeat the opening value.
+#[test]
+fn a_derived_health_stat_reads_current_health() {
+    let fixture = current_health_fixture();
+    let ability = fixture.ability;
+    let (mut world, ids) = start(&fixture, 31);
+    let (a, b) = (ids[0], ids[1]);
+    let mut seen = Vec::new();
+    for expected in [10, 8, 6] {
+        let health = world.combatants().get(a).expect("A").health();
+        assert_eq!(health, expected, "the hit before this one dealt 2");
+        let outcome = act(&mut world, b, ability, a);
+        assert_eq!(defence(&outcome), i64::from(health), "A's vigour");
+        assert_eq!(
+            world.combatants().get(a).expect("A").health(),
+            health - 2,
+            "one success deals 2"
+        );
+        seen.push(defence(&outcome));
+        end(&mut world, a);
+    }
+    assert_eq!(
+        seen,
+        [10, 8, 6],
+        "each hit's defence is the health it faced"
+    );
+}
+
+/// A fixture whose target-stat defence is `alpha / (health - 6)`, which
+/// reaches zero when A's health falls to 6. B's health is 7 so its divisor
+/// stays nonzero at start. The turn does not end, so the pool funds the
+/// three uses.
+fn health_divisor_fixture() -> Fixture {
+    let mut fixture = Fixture::standard();
+    add_derived(
+        &mut fixture,
+        "ratio",
+        binary(
+            "divide",
+            stat("alpha"),
+            binary("subtract", stat("health"), lit(6)),
+        ),
+    );
+    always_success(&mut fixture);
+    defend(
+        &mut fixture,
+        DefenseWire::TargetStat {
+            stat: "ratio".to_owned(),
+        },
+    );
+    edit_ability(&mut fixture, |ability| ability.ends_turn = false);
+    fixture.ruleset.pools[0].max = 3;
+    let b = fixture.creature_b;
+    set_stat(&mut fixture, b, "health", 7);
+    fixture
+}
+
+/// R6 (B15, B6): a health-driven divisor reaches zero after damage;
+/// `validate_action` returns `StatEvaluation` naming the derived stat,
+/// `legal_actions` omits the candidate, and `perform_action` rejects with
+/// the world unchanged. Max or start-time health would keep the divisor
+/// nonzero and the action legal.
+#[test]
+fn a_health_driven_divisor_fails_the_stage_after_damage() {
+    let fixture = health_divisor_fixture();
+    let ability = fixture.ability;
+    let (mut world, ids) = start(&fixture, 17);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(defence(&act(&mut world, b, ability, a)), 2, "8 / (10 - 6)");
+    assert_eq!(defence(&act(&mut world, b, ability, a)), 4, "8 / (8 - 6)");
+    assert_eq!(world.combatants().get(a).expect("A").health(), 6);
+
+    let blocked = use_ability(b, ability, a);
+    let error = CombatError::StatEvaluation {
+        stat: "ratio".to_owned(),
+    };
+    assert_eq!(validate_action(&world, &blocked), Err(error.clone()));
+    let options = legal_actions(&world, b).expect("B can act");
+    assert!(!options.contains(&blocked), "{options:?}");
+    assert!(
+        options.contains(&CombatAction::EndTurn { actor: b }),
+        "the turn can still end"
+    );
+
+    let before = world.clone();
+    assert_eq!(perform_action(&mut world, &blocked), Err(error));
+    assert_eq!(world, before, "a rejected action changes nothing");
+}
+
+/// R3 (B18 over B12): a `Stat` `Add` effect on the actor shifts an
+/// `ActorStat` defence by the exact delta while attached, and by none after
+/// expiry.
+#[test]
+fn a_stat_add_effect_shifts_an_actor_stat_defence_while_attached() {
+    let mut fixture = Fixture::standard();
+    always_success(&mut fixture);
+    defend(
+        &mut fixture,
+        DefenseWire::ActorStat {
+            stat: "alpha".to_owned(),
+        },
+    );
+    attach_to_ability(
+        &mut fixture,
+        effect_doc(
+            141,
+            "slf",
+            "probe-type",
+            "stack_all",
+            vec![modifier(142, stat_target("alpha"), "add", 4)],
+            2,
+        ),
+    );
+    assert_eq!(
+        three_hits(&fixture),
+        [6, 10, 6],
+        "B's alpha 6, plus the attached 4, back to 6 after expiry"
+    );
+}
+
+/// The pinned three-hit script's margins, each minus its roll total: the
+/// bonus the actor's roll fold carried. The effect lasts two rounds and a
+/// hit refreshes it, so it covers the round-1 hit and lapses before round 3.
+fn three_bonus_folds(fixture: &Fixture) -> Vec<i64> {
+    let ability = fixture.ability;
+    let (mut world, ids) = start(fixture, 27);
+    let (a, b) = (ids[0], ids[1]);
+    let fold = |outcome: &crpg_sim::ActionOutcome| outcome.margin - i64::from(outcome.roll.total);
+    let mut seen = Vec::new();
+    seen.push(fold(&act(&mut world, b, ability, a)));
+    end(&mut world, a);
+    seen.push(fold(&act(&mut world, b, ability, a)));
+    end(&mut world, a);
+    end(&mut world, b);
+    end(&mut world, a);
+    seen.push(fold(&act(&mut world, b, ability, a)));
+    seen
+}
+
+/// R3/R5 (B18 over B14): a `Stat` `Add` effect on a bonus stat shifts the
+/// margin by the exact delta while attached, and by none after expiry. The
+/// constant defence is 0, so a margin minus its roll total is the folded
+/// bonus itself.
+#[test]
+fn a_stat_add_effect_shifts_a_bonus_stat_while_attached() {
+    let mut fixture = Fixture::standard();
+    always_success(&mut fixture);
+    defend(&mut fixture, DefenseWire::Constant(0));
+    edit_ability(&mut fixture, |ability| {
+        ability.bonus_stats = Some(vec!["gamma".to_owned()]);
+    });
+    attach_to_ability(
+        &mut fixture,
+        effect_doc(
+            141,
+            "slf",
+            "probe-type",
+            "stack_all",
+            vec![modifier(142, stat_target("gamma"), "add", 4)],
+            2,
+        ),
+    );
+    assert_eq!(
+        three_bonus_folds(&fixture),
+        [5, 9, 5],
+        "B's gamma 5, plus the attached 4, back to 5 after expiry"
     );
 }
 

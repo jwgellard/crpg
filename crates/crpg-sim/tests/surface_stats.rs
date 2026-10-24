@@ -221,6 +221,54 @@ fn a_zero_divisor_fails_the_preflight_and_changes_nothing() {
     assert!(world.interners().tags().is_empty());
 }
 
+/// R2 (B5, B21): the preflight is participants outer and derived stats
+/// inner, so participant A's failure on its second derived stat wins over
+/// participant B's failure on the first. Swapping the nesting names `first`
+/// instead. The rejected start changes no world byte, interner or RNG.
+#[test]
+fn the_preflight_scans_participants_before_derived_stats() {
+    let mut fixture = Fixture::standard();
+    add_derived(
+        &mut fixture,
+        "first",
+        binary("divide", stat("alpha"), stat("beta")),
+    );
+    add_derived(
+        &mut fixture,
+        "second",
+        binary("divide", stat("alpha"), stat("gamma")),
+    );
+    let (a, b) = (fixture.creature_a, fixture.creature_b);
+    set_stat(&mut fixture, a, "gamma", 0);
+    set_stat(&mut fixture, b, "beta", 0);
+
+    let mut world = World::new(23);
+    let before = world.clone();
+    let bytes = serde_json::to_vec(&world).expect("the world serializes");
+    let hash = state_hash(&world);
+    let interners = world.interners().clone();
+    let error = fixture
+        .with_spec(|spec| start_encounter(&mut world, spec))
+        .expect_err("the preflight fails on A's second derived stat");
+    assert_eq!(
+        error,
+        CombatError::InvalidStatValue {
+            stat: "second".to_owned()
+        },
+        "participants are the outer loop, derived stats the inner"
+    );
+    assert_eq!(error.to_string(), "InvalidStatValue at spec/stats");
+    assert_eq!(world, before);
+    assert_eq!(serde_json::to_vec(&world).expect("serializes"), bytes);
+    assert_eq!(state_hash(&world), hash);
+    assert_eq!(*world.interners(), interners);
+    assert!(world.interners().stats().is_empty());
+    assert!(
+        !world.rng_mut().has_stream(crpg_sim::COMBAT_ROLL_STREAM),
+        "the rejected start creates no RNG stream"
+    );
+}
+
 /// R2 (B21): B2's per-stat errors and a missing creature precede the
 /// preflight.
 #[test]
