@@ -472,23 +472,21 @@ proof.
 
 ## Kernel range (T137)
 
-The T136b authored surface executes through the kernel. T137a carries typed
-and derived `Int` stats, the `Constant`/`ActorStat` defences, ability
-`bonus_stats` and `Stat` effect targets; T137b executes `Opposed`, damage
-dice, rolled initiative and tags. Until then `start_encounter_tracked`
-refuses exactly those four shapes with `UnsupportedAuthored`
-(`UnsupportedAuthored at spec/authored`), after the two data-owned asserts and
-before the placement loop, with an unchanged world;
-`tests/unsupported_authored.rs` pins one case each. Do not extend the bridge,
-and do not delete it before T137b does.
+The T136b authored surface executes through the kernel: typed and derived
+`Int` stats, the `Constant`/`ActorStat`/`Opposed` defences, ability
+`bonus_stats`, damage dice, rolled initiative, `Stat` effect targets and tag
+grants. No start rejects a T136b shape as unsupported; the T136c bridge
+(`UnsupportedAuthored`, its check and its test suite) is deleted, so do not
+reintroduce a refusal list: a new shape gets execution or a precise error.
 
 - **Public additions.** `IntFormula`, `DerivedStat`, `InitiativeRule`,
   `COMBAT_BONUS_MOD_TYPE`, `CombatError::StatEvaluation` (`StatEvaluation at
-  combat/stats`), `AbilityDefense::{Constant, ActorStat}`, `EffectTarget::Stat`
+  combat/stats`) and `CombatError::TooManyTags` (`TooManyTags at spec/tags`),
+  `AbilityDefense::{Constant, ActorStat, Opposed}`, `EffectTarget::Stat`
   (so `EffectTarget` is not `Copy`), and last fields
   `AbilityDefinition::{bonus_stats, damage_dice}`,
-  `CombatDefinition::{derived, initiative}`, all skipped at their absence
-  value. `definition_is_legacy` and `ability_is_legacy` decide the 15-field
+  `CombatDefinition::{derived, initiative}`, `EffectDefinition::grants` and
+  `Combatant::tags`, all skipped at their absence value. `definition_is_legacy` and `ability_is_legacy` decide the 15-field
   shape: a new field that must not move a golden is added to them.
 - **Only `Int` stats execute.** The kernel has no implicit conversion and
   every combat consumer is an `Int`. The adapter carries no `Fixed`, `Bool`,
@@ -514,12 +512,29 @@ and do not delete it before T137b does.
   view. An effect using the reserved type is `InvalidEffect` while a listed
   ability carries bonus stats (and a load error).
 - **Start order (B21).** Opening checks, placements/areas, per-participant
-  creature then stats, derived preflight (`InvalidStatValue` naming the derived
+  creature then stats, initiative rule (dice `InvalidDice`, then bonus names
+  `MissingStat`), derived preflight (`InvalidStatValue` naming the derived
   stat), pools, per-ability checks (spec entry, usable attribute, dice, table,
-  costs, defence name, bonus names, effect, natural), per-effect checks
-  (empty shape, reserved type, per modifier policy checks then `Stat` name),
-  `DuplicateModifier`, `PolicyConflict`, publication. A new start check goes in
-  that order and mutates nothing.
+  costs, defence name or `Opposed` dice then bonus names, bonus names, damage
+  dice, effect, natural), per-effect checks (empty shape, reserved type, per
+  modifier policy checks then `Stat` name), `DuplicateModifier`,
+  `PolicyConflict`, `TooManyTags`, publication. A new start check goes in that
+  order and mutates nothing; the only draws at start are the initiative keys,
+  after the last check.
+- **Draw order (T137b).** `Opposed`: the actor's dice, then the opposing dice
+  (no natural die on it), on `combat.roll`; the margin is the actor total
+  minus the opposing total. Damage dice come after `resolve` and before
+  `spend_costs`; an outcome without dice draws nothing. Initiative is rolled
+  once at start in authored participant order, in TB and RT alike; the key is
+  stored in `Combatant.initiative` (RT timeline keys stay `0`), so rollover
+  and the RT-to-TB rebuild read it and draw nothing. Content without these
+  shapes must draw exactly as before.
+- **Tags.** `Combatant.tags` and `EffectDefinition.grants` are carried only
+  when a referenced effect grants, because creature tags would otherwise move
+  the `srd_lite` goldens. A view's projection (placement tags plus unexpired
+  grants, scratch handles) is the contract a condition consumer will read;
+  nothing reads it yet. The union bound is `MAX_TAGS` (`TooManyTags`, and the
+  `combatant tags exceed their bound` load error).
 
 ## Agent log
 
@@ -545,3 +560,4 @@ and do not delete it before T137b does.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138a resume · Re-wrapped the amended trap and recorded that `start_encounter_tracked` keeps its two-argument form, with the mode-taking `start_encounter_in_mode_tracked` beside it, because `src/history/tests.rs` is a second caller outside this package.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138b · Added the history v2 surface and emission order to the API list, and recorded the lazy sticky wrapper version and the v1 loader rejections, so TB-only histories are known to keep version 1 and their goldens.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137a · Replaced the bridge section with the kernel-range section (public additions, the `Int`-only rule, the scratch-interner trap, the B21 start order) and added the stat evaluation stage to invariant 12, so later tasks extend the one legality source instead of a copy.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the bridge text from the kernel-range section and added the `Opposed`/damage-dice/initiative draw order, the tag carriage rule and the new start-order steps, so the section describes the whole executed surface and warns against a new refusal list.

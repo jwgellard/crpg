@@ -4149,7 +4149,7 @@ mod draw_tests {
     #[test]
     fn the_bonus_lists_concatenate_in_one_view_when_self_targeted() {
         let mut fixture = Fixture::standard();
-        defend_opposed(&mut fixture, "2d6", &["beta"]);
+        defend_opposed(&mut fixture, "1d8", &["beta"]);
         edit_ability(&mut fixture, |ability| {
             ability.allow_self_target = true;
             ability.bonus_stats = Some(vec!["alpha".to_owned()]);

@@ -171,19 +171,19 @@ golden/behavior change); B4 owns replay/goldens, B5 the CLI proof.
 The adapter executes the T136b authored surface through the `crpg-rules`
 kernel. T137a carries typed and derived `Int` stats, the `Constant` and
 `ActorStat` defences alongside `ActorAttribute` and `TargetStat`, ability
-`bonus_stats`, and `Stat` effect targets. The shapes T137b executes
-(`Opposed`, damage dice, rolled initiative, tag grants) are still refused
-with `CombatError::UnsupportedAuthored` at the same pinned place, and
-`tests/unsupported_authored.rs` keeps one case for each; T137b deletes the
-variant, the check and that suite.
+`bonus_stats`, and `Stat` effect targets; T137b adds the `Opposed` defence,
+damage dice, rolled initiative and tag grants. No start rejects a T136b shape
+as unsupported: the T136c bridge (`CombatError::UnsupportedAuthored`, its
+check and `tests/unsupported_authored.rs`) is deleted.
 
 **Public additions.** `IntFormula`, `DerivedStat` and `InitiativeRule` (the
 symbolic sim-owned mirrors; persisted state never holds a `crpg_data` wire
-type); `COMBAT_BONUS_MOD_TYPE`; `CombatError::StatEvaluation`; new last
-variants `AbilityDefense::{Constant, ActorStat}` and `EffectTarget::Stat`
-(`EffectTarget` is no longer `Copy`); new last fields
-`AbilityDefinition::{bonus_stats, damage_dice}` and
-`CombatDefinition::{derived, initiative}`. Every new field is skipped at its
+type); `COMBAT_BONUS_MOD_TYPE`; `CombatError::{StatEvaluation, TooManyTags}`;
+new last variants `AbilityDefense::{Constant, ActorStat, Opposed}` and
+`EffectTarget::Stat` (`EffectTarget` is no longer `Copy`); new last fields
+`AbilityDefinition::{bonus_stats, damage_dice}`,
+`CombatDefinition::{derived, initiative}`, `EffectDefinition::grants` and
+`Combatant::tags`. Every new field is skipped at its
 absence value, and `definition_is_legacy` keeps the 15-field definition for
 every legacy shape, so no existing hash or golden moves.
 
@@ -207,27 +207,57 @@ from `1`), and an effect using that type is refused whenever a listed
 ability carries bonus stats.
 
 **Start order (B21).** `EncounterActive`, `ModeUnsupported`, collection
-bounds, the data-owned asserts and the narrowed bridge; placements, then
-`MixedArea`, then `AreaMismatch`; per participant `MissingCreature` then each
-declared stat (`MissingStat`, `InvalidStatValue`, `ValueOverflow`); the
-derived-stat preflight (`InvalidStatValue` naming the first derived stat that
+bounds and the data-owned asserts; placements, then `MixedArea`, then
+`AreaMismatch`; per participant `MissingCreature` then each declared stat
+(`MissingStat`, `InvalidStatValue`, `ValueOverflow`); the initiative rule's
+dice (`InvalidDice`) and bonus names (`MissingStat`); the derived-stat
+preflight (`InvalidStatValue` naming the first derived stat that
 fails to evaluate); pool templates; per listed ability the spec entry, the
-checked attribute (must be usable), dice, outcome table, costs, defence name,
-bonus names, effect, natural die; per referenced effect (ascending) the
+checked attribute (must be usable), dice, outcome table, costs, defence name
+(for `Opposed` its dice, then its bonus names), bonus names, damage dice,
+effect, natural die; per referenced effect (ascending) the
 empty-shape check, the reserved bonus type, then per modifier the policy
 checks and the `Stat` target name; `DuplicateModifier`; `PolicyConflict`;
-publication. Nothing before publication mutates the world.
+`TooManyTags`; publication, whose first draws are the rolled initiative keys.
+Nothing before publication mutates the world.
 
 **Mid-fight evaluation.** A `Stat` modifier or lost health can zero a divisor
 after a clean start, so `validate_action` gains a last stage, after
 affordability and only for a definition with derived stats: it builds the
 action's plan and queries the defence-side stat, then the actor's bonus
-stats. A failure is `StatEvaluation` naming that stat; execution and
-`legal_actions` inherit it.
+stats, then an `Opposed` defence's bonus stats on the target. A failure is
+`StatEvaluation` naming that stat; execution and `legal_actions` inherit it.
+
+**Draws.** An `Opposed` defence resolves as an opposed total: the actor's
+dice draw first and the opposing dice second, on `combat.roll`, with no
+natural die on the opposing roll. The target's view carries its `Roll`
+effects and the opposing bonus (and its `Dc` effects, which no fold reads);
+a self-targeted use has one view where the actor's bonus list is followed by
+the opposing list, so both rolls fold both. Damage dice are drawn after the
+resolution and before the cost is spent: the first flat `damage` entry for the
+decided outcome (or `0`) plus the outcome's dice, summed in `i64` and clamped
+once into `0..=u32::MAX`; an outcome without dice draws nothing. A ruleset
+initiative rule is rolled once at start, in authored participant order after
+every check and before the spawn loop, in both modes: the key is the dice
+total plus the participants' bonus stats plus the authored key, saturating,
+stored in `Combatant.initiative`. A TB start and every TB rollover insert it,
+an RT start keys `0` and keeps it, and an RT-to-TB switch rebuilds at it.
+Content without these shapes draws exactly as before.
+
+**Tags.** Creature tags are carried (sorted, distinct) in `Combatant.tags`,
+and each effect's `grants`, only in an encounter whose referenced effects
+grant, so every other world keeps its bytes. A view's tag projection is its
+combatant's tags plus the grants of its unexpired attachments, interned into
+the operation's scratch interner. Nothing reads a tag yet (rebuilt modifiers
+carry no condition); the projection is the contract a later condition
+consumer reads. The union of one participant's tags and every grant is
+bounded by the kernel's 1024: over it is `TooManyTags` at start and a load
+error.
 
 **Load coherence.** `World` deserialization tests the usable names (base plus
 derived) where it tested attributes, and adds the derived-stat, kernel,
-bonus-name, `Stat`-target and reserved-type checks.
+bonus-name (ability, `Opposed` and initiative), `Stat`-target, reserved-type
+and combatant tag-bound checks.
 
 ## Atomic same-pool affordability (T019)
 
@@ -362,3 +392,4 @@ One encounter is turn-based (TB) or real-time (RT), chosen by the host and never
 - 2026-10-23 (UTC) · claude-code (Sonnet 5.5) + T138a · Recorded the per-encounter mode, RT clock, standing orders, mode requests and the two RT tick stages with their load checks, so readers know TB-only worlds are byte-identical and where history v2 (T138b) will attach.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138b · Recorded history v2: the lazy sticky version upgrade, the three new events and facts, the tick emission order, the v1 loader rejections and the v2 golden, so readers know TB-only histories still write version 1.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137a · Replaced the bridge section with the kernel-range section: what executes now, the `Int`-only rule, the per-operation stat reads, the start order and the new mid-fight evaluation stage, so readers know T137b still owns `Opposed`, damage dice, initiative and tags.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the remaining bridge text and recorded the `Opposed` draw order, damage dice, rolled initiative and tag carriage with the `TooManyTags` bound, so the kernel-range section describes the whole executed surface.
