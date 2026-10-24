@@ -3,14 +3,14 @@
 Updated: 2026-10-24
 
 ## Handover
-- **In flight.** PR #70 (`mgr/session-17-batch`, sessions 17–19): T136b+T136b-tests, T136c, T137 contract (D33), T138a–e with both two-keys files and Claude reviews, A0-12. Workspace preflight green on Windows; CI pending. No worker running.
+- **In flight.** Session 20 (`mgr/session-20-batch`, from `master` `e680e3c` after PR #70 merged with CI green). T137a (Claude `implementer`, slot 1, branch `task/T137a-surface-stats`) running.
 - **Next:**
-  1. User golden gate on PR #70: the two new `crates/crpg-sim/tests/goldens/history_v2.*.txt` baselines (Windows native; Linux on WSL Ubuntu 24.04/Rust 1.98.0; byte-identical, SHA-256 `fe6fe953…6f49`). Then CI green → merge under §7.4.
-  2. T137a, T137b (Claude `implementer`, serialized, `crpg-sim`), then T137c (OpenCode; `surface_v1` baselines need the user's golden gate).
-  3. Bookkeeping for session 19 (OpenCode grunt via `implement` doc-only): BACKLOG rows T136b-tests, T138b, T138b-tests, T138d, T138e; throughput.
+  1. T137a: verify, Claude review, two-keys `tests/surface_stats_contract.rs` (OpenCode O1, a lab other than Anthropic/Meta, mutation proofs), merge into the batch.
+  2. T137b (Claude `implementer`, serialized after T137a), its review and two-keys `tests/surface_draws_contract.rs`.
+  3. T137c (OpenCode; tests, example and `surface_v1` baselines, Linux file on WSL) → the user's golden gate → batch PR, merge under §7.4.
   4. Carried: A0-7b; T099 fold-in; T100 contract; A0-5b; A0-8.
-- **Blocked:** PR #70 merge waits on the user's golden approval.
-- Dispatch facts: commit memory is tight; two parallel cargo builds plus a third OOM'd ("paging file too small"); briefs now say rerun with `-j 2`. Brief owns-lists need full repo paths and a `## Permissions` `goldens:` line, or `verify_task.py` fails scope/goldens. Linux goldens: `wsl -d Ubuntu-24.04` has Rust 1.98.0 (`~/.cargo/bin`); run a script file, not an inline `bash -c` (quoting breaks). Stale worktrees and 100+ merged local branches removed 2026-10-24; strays archived in `crpg-slots/manager/archive-2026-10-24/`. Session 19 Claude: manager, one Sonnet `implementer` (T138b, about 228k), one Sonnet `reviewer` (about 121k); Go about $0.27.
+- **Blocked:** nothing.
+- Dispatch facts: commit memory is tight; two parallel cargo builds plus a third OOM'd ("paging file too small"); briefs now say rerun with `-j 2`. Brief owns-lists need full repo paths and a `## Permissions` `goldens:` line, or `verify_task.py` fails scope/goldens. Linux goldens: `wsl -d Ubuntu-24.04` has Rust 1.98.0 (`~/.cargo/bin`); run a script file, not an inline `bash -c` (quoting breaks). Stale worktrees and 100+ merged local branches removed 2026-10-24; strays archived in `crpg-slots/manager/archive-2026-10-24/`. PR #70 merged 2026-10-24 after the user approved the history_v2 baselines (D34).
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -731,3 +731,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 17 handover · Replaced the session 16 handover with the session 17 state at the 150k context limit, naming the PR #69 blocker and the unverified T138a WIP.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Replaced the handover with the session 18 state (batch holds T136b+T136c, T137 approved D33, T138a+T138c with review fixes, and A0-12; PR #69 merged; batch PR waits on T138b/d/e), so the next session starts from the current close-out.
 - 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 19 handover · Replaced the handover with the PR #70 state and the golden gate it waits on, so the next session starts from the open PR.
+- 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S20-bookkeeping · Replaced the handover with the session 20 state (from `master` `e680e3c` after PR #70 merged; T137a running in slot 1) and its numbered next steps, so the next session starts from the batch close-out.
