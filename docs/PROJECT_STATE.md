@@ -3,14 +3,10 @@
 Updated: 2026-10-24
 
 ## Handover
-- **In flight.** Session 20 (`mgr/session-20-batch`, from `master` `e680e3c` after PR #70 merged with CI green). T137a (Claude `implementer`, slot 1, branch `task/T137a-surface-stats`) running.
-- **Next:**
-  1. T137a: verify, Claude review, two-keys `tests/surface_stats_contract.rs` (OpenCode O1, a lab other than Anthropic/Meta, mutation proofs), merge into the batch.
-  2. T137b (Claude `implementer`, serialized after T137a), its review and two-keys `tests/surface_draws_contract.rs`.
-  3. T137c (OpenCode; tests, example and `surface_v1` baselines, Linux file on WSL) → the user's golden gate → batch PR, merge under §7.4.
-  4. Carried: A0-7b; T099 fold-in; T100 contract; A0-5b; A0-8.
-- **Blocked:** nothing.
-- Dispatch facts: commit memory is tight; two parallel cargo builds plus a third OOM'd ("paging file too small"); briefs now say rerun with `-j 2`. Brief owns-lists need full repo paths and a `## Permissions` `goldens:` line, or `verify_task.py` fails scope/goldens. Linux goldens: `wsl -d Ubuntu-24.04` has Rust 1.98.0 (`~/.cargo/bin`); run a script file, not an inline `bash -c` (quoting breaks). Stale worktrees and 100+ merged local branches removed 2026-10-24; strays archived in `crpg-slots/manager/archive-2026-10-24/`. PR #70 merged 2026-10-24 after the user approved the history_v2 baselines (D34).
+- **In flight.** Session 20 batch `mgr/session-20-batch`: T137a, T137b (+fix), T137c merged in, with surface_v1 baselines approved (D36). T137b-tests (slot 2, `task/T137b-tests-k1`, WIP `cb71544`) waits on Go quota.
+- **Next:** 1. Finish T137b-tests with `.agents/briefs/T137b-tests-notes-3.md` on `opencode-go/deepseek-v4.1-flash`; merge it; workspace gates; batch PR; merge under §7.4. 2. T024 implementation (contract approved, D35) — route per rubric; T025a contract; T024q/T024h contracts. 3. Carried: A0-7b; T099 fold-in; T100 contract; A0-5b; A0-8.
+- **Blocked:** nothing (T137b-tests waits only on quota).
+- Dispatch facts: commit memory is tight; two parallel cargo builds plus a third OOM'd ("paging file too small"); briefs now say rerun with `-j 2`. Brief owns-lists need full repo paths and a `## Permissions` `goldens:` line, or `verify_task.py` fails scope/goldens. Linux goldens: `wsl -d Ubuntu-24.04` has Rust 1.98.0 (`~/.cargo/bin`); run a script file, not an inline `bash -c` (quoting breaks). Stale worktrees and 100+ merged local branches removed 2026-10-24; strays archived in `crpg-slots/manager/archive-2026-10-24/`. PR #70 merged 2026-10-24 after the user approved the history_v2 baselines (D34). Slot guard: a retry on a slot with uncommitted worker files is refused (slot-occupied); commit the WIP on its task branch first. Clone WSL baselines from the main repo, not a slot worktree (its .git file holds a Windows path).
 
 ## Phase
 Phase 4 — server and networking (T022 host, T023/QUIC chain through T023b,
@@ -732,3 +728,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Replaced the handover with the session 18 state (batch holds T136b+T136c, T137 approved D33, T138a+T138c with review fixes, and A0-12; PR #69 merged; batch PR waits on T138b/d/e), so the next session starts from the current close-out.
 - 2026-10-24 (UTC) · claude-code (manager, Opus 5.5) + session 19 handover · Replaced the handover with the PR #70 state and the golden gate it waits on, so the next session starts from the open PR.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S20-bookkeeping · Replaced the handover with the session 20 state (from `master` `e680e3c` after PR #70 merged; T137a running in slot 1) and its numbered next steps, so the next session starts from the batch close-out.
+- 2026-10-24 (UTC) · opencode-go/beam-free + S20-bookkeeping-2 · Recorded D35 T024 approval, T137b/T137c merge and D36 surface_v1 gate, and the T137b-tests handover.
