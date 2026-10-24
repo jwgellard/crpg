@@ -633,8 +633,11 @@ def slot_occupancy(slot: Path, base: str, task_branch: str) -> str | None:
     """
     try:
         branch = current_branch(slot)
+        # `rev-parse --abbrev-ref HEAD` answers `HEAD` on a detached worktree,
+        # which is a state, not a branch; name it as one in a refusal.
+        label = branch if branch and branch != "HEAD" else "detached HEAD"
         if slot_changed(slot):
-            return f"{branch or 'detached HEAD'} (uncommitted changes)"
+            return f"{label} (uncommitted changes)"
         if branch is None or branch == "HEAD":
             return None
         if branch in (task_branch, base):
@@ -656,6 +659,56 @@ def slot_busy_cause(occupied: dict[int, str]) -> str:
         for number, reason in sorted(occupied.items())
     )
     return f"slot-busy: every candidate slot is locked or occupied ({held})"
+
+
+def slot_locked(repo: Path, number: int) -> bool:
+    """True when a live process holds this slot's lock; read-only probe.
+
+    A dry run only looks, so unlike `acquire_slot` it never reclaims a lock:
+    a dead or unparsable owner is reported as free, which is what a real run
+    would then do with it.
+    """
+    lock = slot_lock_dir(repo) / f"slot-{number}.lock"
+    if not lock.exists():
+        return False
+    pid = _read_lock_pid(lock)
+    return pid is not None and _pid_alive(pid)
+
+
+def dry_run_slot(
+    repo: Path,
+    slots: list[tuple[int, Path]],
+    preferred: int | None,
+    base: str,
+    task_branch: str,
+) -> tuple[int, Path]:
+    """Pick the slot a dry run would use, without taking its lock.
+
+    The same skip/refuse rule as `acquire_slot`: a slot another task left
+    work in is skipped by auto-pick, an explicit `--slot` refuses with
+    `slot-occupied`, and an all-locked-or-occupied pick fails with
+    `slot-busy`. Only the lock is left unwritten.
+    """
+    if not slots:
+        raise Exit(2, "no-slot: no slot worktrees found")
+    by_number = {number: path for number, path in slots}
+    if preferred is not None:
+        if preferred not in by_number:
+            raise Exit(2, f"no-slot: slot-{preferred} does not exist")
+        reason = slot_occupancy(by_number[preferred], base, task_branch)
+        if reason is not None:
+            raise Exit(2, f"slot-occupied: slot-{preferred} holds {reason}")
+        return preferred, by_number[preferred]
+    occupied: dict[int, str] = {}
+    for number, path in slots:
+        if slot_locked(repo, number):
+            continue
+        reason = slot_occupancy(path, base, task_branch)
+        if reason is not None:
+            occupied[number] = reason
+            continue
+        return number, path
+    raise Exit(2, slot_busy_cause(occupied))
 
 
 def slot_edited(slot: Path, base: str) -> bool:
@@ -1785,15 +1838,9 @@ def do_run(args: argparse.Namespace) -> int:
                 return finish(2, None)
             raise
     else:
-        if args.slot is not None:
-            wanted = [entry for entry in slots if entry[0] == args.slot]
-            if not wanted:
-                raise Exit(2, f"no-slot: slot-{args.slot} does not exist")
-            slot_number, slot = wanted[0]
-        elif slots:
-            slot_number, slot = slots[0]
-        else:
-            raise Exit(2, "no-slot: no slot worktrees found")
+        # A dry run takes no lock, but it must not claim a slot a real run
+        # would refuse: the same skip/refuse rule runs here, read-only.
+        slot_number, slot = dry_run_slot(repo, slots, args.slot, base, branch)
 
     variant = args.variant
 

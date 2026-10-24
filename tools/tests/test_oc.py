@@ -1328,6 +1328,24 @@ class DispatchCase(unittest.TestCase):
         result = self.oc_run(task, env={"FAKE_OC_LOG": str(call_log)})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.slot_used_by(call_log), self.slot1)
+        # Dirty on a detached HEAD, the refusal names the state, not a
+        # branch literally called HEAD (attempt-3 review fix 2).
+        sh(["git", "checkout", "--detach", "HEAD"], self.slot1)
+        (self.slot1 / "detached-dirty.txt").write_text(
+            "uncommitted\n", encoding="utf-8")
+        second_task = self.tid()
+        refused = self.oc_run(second_task, extra=["--slot", "1"])
+        self.assertEqual(refused.returncode, 2,
+                         refused.stdout + refused.stderr)
+        text = refused.stdout + refused.stderr
+        self.assertIn(
+            "slot-occupied: slot-1 holds detached HEAD (uncommitted changes)",
+            text,
+        )
+        self.assertNotIn("holds HEAD (uncommitted changes)", text)
+        self.assertFalse(
+            (self.repo / ".agents" / "slots" / "slot-1.lock").exists()
+        )
 
     def test_explicit_slot_on_occupied_slot_is_refused(self) -> None:
         head = self.foreign_branch(self.slot1, "task/other-work", "other.txt")
@@ -1395,6 +1413,60 @@ class DispatchCase(unittest.TestCase):
         )
         self.assertEqual(self.commits_since_base(self.slot1, "task/T136c-bridge"),
                          0)
+
+    def test_commits_reachable_from_another_ref_are_not_occupied(self) -> None:
+        # The slot's branch is ahead of --base, but its commit also lives on
+        # another local branch (as if merged there): no other task is holding
+        # unmerged work, so the slot is free (attempt-3 review fix 3).
+        head = self.foreign_branch(self.slot1, "task/other-work", "other.txt")
+        sh(["git", "branch", "task/landed-elsewhere", head], self.repo)
+        self.assertEqual(self.commits_since_base(self.slot1), 1)
+        task = self.tid()
+        call_log = self.fresh_file("calls.jsonl")
+        try:
+            result = self.oc_run(task, env={"FAKE_OC_LOG": str(call_log)})
+            self.assertEqual(result.returncode, 0,
+                             result.stdout + result.stderr)
+            self.assertEqual(self.slot_used_by(call_log), self.slot1)
+        finally:
+            sh(["git", "branch", "-D", "task/landed-elsewhere"], self.repo)
+
+    def test_dry_run_applies_the_occupancy_rule(self) -> None:
+        # A dry run picks and refuses exactly as a real run would, but takes
+        # no lock and writes nothing (attempt-3 review fix 1).
+        self.foreign_branch(self.slot1, "task/other-work", "other.txt")
+        task = self.tid()
+        picked = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run", env={},
+        )
+        self.assertEqual(picked.returncode, 0, picked.stdout + picked.stderr)
+        self.assertIn("slot-2", picked.stdout)
+        refused = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run",
+            "--slot", "1", env={},
+        )
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        text = refused.stdout + refused.stderr
+        self.assertIn("slot-occupied: slot-1 holds task/other-work", text)
+        self.assertIn("1 commits not on master", text)
+        self.assertFalse(
+            (self.repo / ".agents" / "slots" / "slot-1.lock").exists()
+        )
+        self.assertFalse(self.record_path(task).exists())
+        # All candidates occupied: the dry run names them, as a real wave does.
+        self.foreign_branch(self.slot2, "task/other-two", "two.txt")
+        busy = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run", env={},
+        )
+        self.assertEqual(busy.returncode, 2, busy.stdout)
+        busy_text = busy.stdout + busy.stderr
+        self.assertIn("slot-busy", busy_text)
+        self.assertIn("task/other-work", busy_text)
+        self.assertIn("task/other-two", busy_text)
+        self.assertFalse(self.record_path(task).exists())
 
     def test_all_slots_occupied_names_each_branch(self) -> None:
         self.foreign_branch(self.slot1, "task/other-one", "one.txt")
