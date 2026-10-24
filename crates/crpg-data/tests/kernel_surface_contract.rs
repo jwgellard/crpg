@@ -305,8 +305,8 @@ fn item2_derived_expr_and_value_wire() {
         json!({"type": "literal", "value": {"type": "int", "value": 5, "extra": 0}}),
         json!({"type": "add", "value": {"left": lit(int.clone())}}),
         json!({"type": "add", "value": {"left": lit(int.clone()), "right": lit(int.clone()), "extra": 0}}),
-        json!({"type": "int", "value": 2147483648u64}), // out of i32 range
-        json!({"type": "fixed", "value": 2147483648u64}),
+        lit(json!({"type": "int", "value": 2147483648u64})), // out of i32 range
+        lit(json!({"type": "fixed", "value": 2147483648u64})),
     ] {
         assert!(
             matches!(
@@ -320,6 +320,61 @@ fn item2_derived_expr_and_value_wire() {
             "derived accepted: {bad}"
         );
     }
+
+    // The i32 boundary is accepted: i32::MAX fits in both `int` and raw
+    // `fixed`; one past it is the out-of-range case exercised above.
+    assert!(read(&ruleset(vec![stat_derived(
+        "aux",
+        json!("int"),
+        lit(json!({"type": "int", "value": 2147483647}))
+    )]))
+    .is_ok());
+    assert!(read(&ruleset(vec![stat_derived(
+        "aux",
+        json!("fixed"),
+        lit(json!({"type": "fixed", "value": 2147483647}))
+    )]))
+    .is_ok());
+}
+
+/// A nested `add` expression string, `depth` wraps deep, built as raw text so
+/// `read_document` parses it directly and serde_json's recursion limit applies.
+fn deep_expr_json(depth: usize) -> String {
+    let mut expr = r#"{"type":"literal","value":{"type":"int","value":1}}"#.to_string();
+    for _ in 0..depth {
+        expr = format!(
+            r#"{{"type":"add","value":{{"left":{},"right":{{"type":"literal","value":{{"type":"int","value":1}}}}}}}}"#,
+            expr
+        );
+    }
+    expr
+}
+
+/// A full ruleset document with `derived_json` spliced into one `int` stat.
+fn ruleset_doc_with_derived(derived_json: &str) -> String {
+    format!(
+        r#"{{"schema":"crpg.ruleset/2","id":"{}","slug":"r","name":"fixture.r","package":"test.ruleset","version":"0.1.0","stats":[{{"name":"might","kind":"int"}},{{"name":"health","kind":"int"}},{{"name":"aux","kind":"int","derived":{}}}],"health_stat":"health","attributes":["might"],"pools":[{{"id":"{}","max":1,"refresh":{{"type":"on_turn_start"}}}}],"abilities":["{}"]}}"#,
+        id(100),
+        derived_json,
+        id(105),
+        id(101)
+    )
+}
+
+/// Behaviour 2 (last sentence): a derived tree deeper than serde_json's
+/// recursion limit fails at parse as `Malformed`, before item 5 runs.
+#[test]
+fn item2_deep_tree_fails_at_parse() {
+    let bytes = ruleset_doc_with_derived(&deep_expr_json(256)).into_bytes();
+    let msg = malformed_message(crpg_data::read_document(&bytes));
+    assert_ne!(
+        msg,
+        "ruleset derived expression must be at most 4096 nodes and 32 deep"
+    );
+    assert!(
+        msg.contains("recursion"),
+        "expected a serde recursion failure, got: {msg}"
+    );
 }
 
 fn ruleset_of(doc: &Document) -> crpg_data::Ruleset {
@@ -350,6 +405,20 @@ fn item3_optional_and_defense_target_shapes() {
     assert_eq!(init.dice, "1d20");
     assert!(init.bonus_stats.is_empty());
 
+    // InitiativeWire requires both `dice` and `bonus_stats` and rejects extras.
+    for bad in [
+        json!({"dice": "1d20"}),                                // missing bonus_stats
+        json!({"bonus_stats": []}),                             // missing dice
+        json!({"dice": "1d20", "bonus_stats": [], "extra": 0}), // extra key
+    ] {
+        let mut r = ruleset(vec![]);
+        r["initiative"] = bad;
+        assert!(
+            matches!(read(&r), Err(DataError::Malformed { .. })),
+            "initiative accepted: {r:?}"
+        );
+    }
+
     // Explicit null reads as absent for initiative, bonus_stats, dice, grants.
     let mut r = ruleset(vec![]);
     r["initiative"] = Value::Null;
@@ -375,6 +444,11 @@ fn item3_optional_and_defense_target_shapes() {
         ),
         (
             json!({"type": "opposed", "value": {"bonus_stats": ["might"], "dice": "2d6"}}),
+            true,
+        ),
+        (
+            // The opposed list may be empty (item 3: "the list may be empty").
+            json!({"type": "opposed", "value": {"bonus_stats": [], "dice": "2d6"}}),
             true,
         ),
         // Rejections: extra/missing keys.
@@ -444,6 +518,13 @@ fn item4_absent_optional_omits_key_and_preserves_order() {
     assert!(!written(&doc).contains("bonus_stats"));
     let doc = read_ok(&effect());
     assert!(!written(&doc).contains("grants"));
+
+    // Absent `derived` (per stat) and damage `dice` also write no key.
+    let doc = read_ok(&ruleset(vec![stat("aux", json!("int"))]));
+    assert!(!written(&doc).contains("derived"));
+    let doc = read_ok(&ability());
+    let out = json_value(&written(&doc));
+    assert!(out["damage"][0].get("dice").is_none());
 
     // Enum variants, bonus_stats and grants keep authored order through the
     // canonical writer (it sorts keys, not array elements).
@@ -547,6 +628,19 @@ fn item5_enum_and_health_attribute_checks() {
         malformed_message(read(&r)),
         "ruleset attributes must name int stats"
     );
+
+    // A derived Int stat is not a valid health_stat (must be non-derived).
+    let mut r = ruleset(vec![stat_derived("d", json!("int"), int_lit())]);
+    r["health_stat"] = json!("d");
+    assert_eq!(
+        malformed_message(read(&r)),
+        "ruleset health_stat must name a non-derived int stat"
+    );
+
+    // A derived Int stat is a valid attribute (derived allowed).
+    let mut r = ruleset(vec![stat_derived("d", json!("int"), int_lit())]);
+    r["attributes"] = json!(["d"]);
+    assert!(read(&r).is_ok());
 }
 
 fn int_lit() -> Value {
@@ -589,7 +683,10 @@ fn derived_stats(names: Vec<(String, Value)>) -> Value {
 /// and kind matching.
 #[test]
 fn item5_derived_bounds_references_and_kind() {
-    // 5.5 — depth 32 ok, 33 fails; nodes 4095 ok, 8191 fails.
+    // 5.5 — depth 32 ok, 33 fails. Node count: 4095 (full_tree(11)) is the
+    // largest odd count reachable at or below 4096 and is accepted; 4097 is
+    // one past and is rejected. 4096 itself is unreachable because every
+    // expression tree is a full binary tree, whose node count is always odd.
     assert!(read(&derived_stats(vec![("d".to_string(), left_chain(31))])).is_ok());
     assert_eq!(
         malformed_message(read(&derived_stats(vec![(
@@ -600,15 +697,22 @@ fn item5_derived_bounds_references_and_kind() {
     );
     assert!(read(&derived_stats(vec![("d".to_string(), full_tree(11))])).is_ok());
     assert_eq!(
-        malformed_message(read(&derived_stats(vec![("d".to_string(), full_tree(12))]))),
+        malformed_message(read(&derived_stats(vec![(
+            "d".to_string(),
+            add_node(full_tree(11), int_lit()) // 4095 + 2 = 4097 nodes, depth 13
+        )]))),
         "ruleset derived expression must be at most 4096 nodes and 32 deep"
     );
 
-    // 5.6 — total 65536 (16 x 4095 = 65520 ok, 17 x 4095 = 69615 fails).
+    // 5.6 — total node budget. 16 x 4095 = 65520 is the largest reachable
+    // total at or below 65536 (65536 itself is unreachable: a sum of odd
+    // per-stat counts is odd for an odd number of stats and at most 65520
+    // for an even number). 65537 (16 x 4095 + 17) is one past and reachable.
     let sixteen: Vec<(String, Value)> = (0..16).map(|n| (format!("d{n}"), full_tree(11))).collect();
     assert!(read(&derived_stats(sixteen)).is_ok());
-    let seventeen: Vec<(String, Value)> =
-        (0..17).map(|n| (format!("d{n}"), full_tree(11))).collect();
+    let mut seventeen: Vec<(String, Value)> =
+        (0..16).map(|n| (format!("d{n}"), full_tree(11))).collect();
+    seventeen.push(("d16".to_string(), left_chain(8))); // 17 nodes
     assert_eq!(
         malformed_message(read(&derived_stats(seventeen))),
         "ruleset derived expressions must total at most 65536 nodes"
@@ -632,6 +736,14 @@ fn item5_derived_bounds_references_and_kind() {
         .collect::<Vec<_>>()))]))
     .is_ok());
 
+    // Duplicate and empty tag entries fail the same distinct/nonempty rule.
+    for bad in [json!(["a", "a"]), json!(["a", ""])] {
+        assert_eq!(
+            malformed_message(read(&ruleset(vec![tags_stat(bad)]))),
+            "ruleset derived tags literal must hold at most 1024 distinct nonempty tags"
+        );
+    }
+
     let dice_stat = |dice: &str| {
         stat_derived(
             "aux",
@@ -652,6 +764,17 @@ fn item5_derived_bounds_references_and_kind() {
     );
     assert_eq!(
         malformed_message(read(&ruleset(vec![enum_lit]))),
+        "ruleset derived enum literal must name a declared enum variant"
+    );
+
+    // An in-domain enum_id with an undeclared variant fails the same rule.
+    let undeclared_variant = stat_derived(
+        "aux",
+        json!({"enum": {"enum_id": "color", "variants": ["red"]}}),
+        json!({"type": "literal", "value": {"type": "enum", "value": {"enum_id": "color", "variant": "blue"}}}),
+    );
+    assert_eq!(
+        malformed_message(read(&ruleset(vec![undeclared_variant]))),
         "ruleset derived enum literal must name a declared enum variant"
     );
 
@@ -723,6 +846,51 @@ fn item5_derived_bounds_references_and_kind() {
         malformed_message(read(&ruleset(vec![mixed]))),
         "ruleset derived expression kind must match its stat"
     );
+
+    // An Enum root whose enum_id differs from the stat's own domain.
+    let enum_mismatch = ruleset(vec![
+        stat(
+            "shape",
+            json!({"enum": {"enum_id": "shape", "variants": ["square"]}}),
+        ),
+        stat_derived(
+            "aux",
+            json!({"enum": {"enum_id": "color", "variants": ["red"]}}),
+            json!({"type": "literal", "value": {"type": "enum", "value": {"enum_id": "shape", "variant": "square"}}}),
+        ),
+    ]);
+    assert_eq!(
+        malformed_message(read(&enum_mismatch)),
+        "ruleset derived expression kind must match its stat"
+    );
+
+    // A `stat` node naming a declared Bool stat mismatches an Int root.
+    let bool_stat_ref = ruleset(vec![
+        stat("flag", json!("bool")),
+        stat_derived(
+            "aux",
+            json!("int"),
+            json!({"type": "stat", "value": "flag"}),
+        ),
+    ]);
+    assert_eq!(
+        malformed_message(read(&bool_stat_ref)),
+        "ruleset derived expression kind must match its stat"
+    );
+
+    // A binary operator over non-numeric operands cannot type.
+    let nonnumeric = stat_derived(
+        "aux",
+        json!("int"),
+        add_node(
+            json!({"type": "literal", "value": {"type": "bool", "value": true}}),
+            json!({"type": "literal", "value": {"type": "bool", "value": false}}),
+        ),
+    );
+    assert_eq!(
+        malformed_message(read(&ruleset(vec![nonnumeric]))),
+        "ruleset derived expression kind must match its stat"
+    );
 }
 
 /// Behaviour 5.11: initiative dice and bonus stats.
@@ -730,6 +898,13 @@ fn item5_derived_bounds_references_and_kind() {
 fn item5_initiative_checks() {
     let mut r = ruleset(vec![]);
     r["initiative"] = json!({"dice": "x".repeat(129), "bonus_stats": ["might"]});
+    assert_eq!(
+        malformed_message(read(&r)),
+        "ruleset initiative dice must be 1..=128 UTF-8 bytes"
+    );
+    // An empty dice string is zero bytes and fails the same bound.
+    let mut r = ruleset(vec![]);
+    r["initiative"] = json!({"dice": "", "bonus_stats": ["might"]});
     assert_eq!(
         malformed_message(read(&r)),
         "ruleset initiative dice must be 1..=128 UTF-8 bytes"
@@ -747,6 +922,19 @@ fn item5_initiative_checks() {
             "ruleset initiative bonus stats must name distinct non-health int stats"
         );
     }
+
+    // A declared non-Int stat is rejected (only int stats qualify).
+    let mut r = ruleset(vec![stat("flag", json!("bool"))]);
+    r["initiative"] = json!({"dice": "1d20", "bonus_stats": ["flag"]});
+    assert_eq!(
+        malformed_message(read(&r)),
+        "ruleset initiative bonus stats must name distinct non-health int stats"
+    );
+
+    // A derived Int stat is still an int stat, so it is accepted.
+    let mut r = ruleset(vec![stat_derived("d", json!("int"), int_lit())]);
+    r["initiative"] = json!({"dice": "1d20", "bonus_stats": ["d"]});
+    assert!(read(&r).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +970,17 @@ fn item6_ability_read_time_checks() {
         malformed_message(read(&a)),
         "ability opposed dice must be 1..=128 UTF-8 bytes"
     );
+    // An empty opposed dice string fails the same bound; 128 bytes pass.
+    let mut a = ability();
+    a["defense"] = json!({"type": "opposed", "value": {"dice": "", "bonus_stats": ["might"]}});
+    assert_eq!(
+        malformed_message(read(&a)),
+        "ability opposed dice must be 1..=128 UTF-8 bytes"
+    );
+    let mut a = ability();
+    a["defense"] =
+        json!({"type": "opposed", "value": {"dice": "x".repeat(128), "bonus_stats": ["might"]}});
+    assert!(read(&a).is_ok());
     let mut a = ability();
     a["defense"] = json!({"type": "opposed", "value": {"dice": "2d6", "bonus_stats": ["a", "a"]}});
     assert_eq!(
@@ -864,6 +1063,22 @@ fn item8_earlier_fault_wins() {
     ));
     assert_eq!(malformed_message(read(&r)), "duplicate ruleset stat name");
 
+    // Within the derived checks, the earlier check wins: a too-deep tree that
+    // also references an undeclared stat reports the depth bound (5.5) before
+    // the reference check (5.7).
+    let mut deep_bad = json!({"type": "stat", "value": "nope"});
+    for _ in 0..32 {
+        deep_bad = add_node(deep_bad, int_lit());
+    }
+    assert_eq!(
+        malformed_message(read(&ruleset(vec![stat_derived(
+            "d",
+            json!("int"),
+            deep_bad
+        )]))),
+        "ruleset derived expression must be at most 4096 nodes and 32 deep"
+    );
+
     // Empty mod_type beats an empty stat target.
     let mut e = effect();
     e["mod_type"] = json!("");
@@ -930,26 +1145,40 @@ fn mutate_srd(change: impl FnOnce(&mut BTreeMap<SourcePath, Document>)) -> Vec<D
 /// messages, plus an orphan staying clean.
 #[test]
 fn item9_semantic_unknown_stat() {
-    // (a) unknown bonus stat.
-    let findings = mutate_srd(|docs| {
-        for doc in docs.values_mut() {
-            if let Document::Ability(a) = doc {
-                if a.id == id(39) {
-                    a.bonus_stats = Some(vec!["bogus".into()]);
+    // (a) unknown bonus stat: undeclared, declared-health and declared
+    // non-Int stats are all rejected with the same message.
+    for (name, declare_bool) in [("bogus", false), ("health", false), ("flag", true)] {
+        let findings = mutate_srd(|docs| {
+            if declare_bool {
+                for doc in docs.values_mut() {
+                    if let Document::Ruleset(r) = doc {
+                        r.stats.push(crpg_data::StatDecl {
+                            name: "flag".into(),
+                            kind: StatKindWire::Bool,
+                            derived: None,
+                        });
+                    }
                 }
             }
-        }
-    });
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].code, DiagnosticCode::UnknownStat);
-    assert_eq!(findings[0].pointer, "/bonus_stats/0");
-    assert_eq!(
-        findings[0].message,
-        format!(
-            "unknown bonus stat \"bogus\" for ability: not a non-health int stat of ruleset {}",
-            id(38)
-        )
-    );
+            for doc in docs.values_mut() {
+                if let Document::Ability(a) = doc {
+                    if a.id == id(39) {
+                        a.bonus_stats = Some(vec![name.to_string()]);
+                    }
+                }
+            }
+        });
+        assert_eq!(findings.len(), 1, "{name}: {findings:?}");
+        assert_eq!(findings[0].code, DiagnosticCode::UnknownStat);
+        assert_eq!(findings[0].pointer, "/bonus_stats/0");
+        assert_eq!(
+            findings[0].message,
+            format!(
+                "unknown bonus stat {name:?} for ability: not a non-health int stat of ruleset {}",
+                id(38)
+            )
+        );
+    }
 
     // (b) TargetStat naming an undeclared or health stat keeps the existing
     // message; a declared non-Int stat gives the new message.
@@ -1002,29 +1231,95 @@ fn item9_semantic_unknown_stat() {
         )
     );
 
-    // (c) unknown opposed bonus stat.
+    // (c) unknown opposed bonus stat, for undeclared, health and Bool stats.
+    for (name, declare_bool) in [("bogus", false), ("health", false), ("flag", true)] {
+        let findings = mutate_srd(|docs| {
+            if declare_bool {
+                for doc in docs.values_mut() {
+                    if let Document::Ruleset(r) = doc {
+                        r.stats.push(crpg_data::StatDecl {
+                            name: "flag".into(),
+                            kind: StatKindWire::Bool,
+                            derived: None,
+                        });
+                    }
+                }
+            }
+            for doc in docs.values_mut() {
+                if let Document::Ability(a) = doc {
+                    if a.id == id(39) {
+                        a.defense = crpg_data::DefenseWire::Opposed {
+                            dice: "2d6".into(),
+                            bonus_stats: vec![name.to_string()],
+                        };
+                    }
+                }
+            }
+        });
+        assert_eq!(findings.len(), 1, "{name}: {findings:?}");
+        assert_eq!(findings[0].code, DiagnosticCode::UnknownStat);
+        assert_eq!(findings[0].pointer, "/defense/value/bonus_stats/0");
+        assert_eq!(
+            findings[0].message,
+            format!(
+                "unknown opposed bonus stat {name:?} for ability: not a non-health int stat of ruleset {}",
+                id(38)
+            )
+        );
+    }
+
+    // (d) unknown effect stat, in the effect's file, for undeclared, health
+    // and Bool stats.
+    for (name, declare_bool) in [("bogus", false), ("health", false), ("flag", true)] {
+        let findings = mutate_srd(|docs| {
+            if declare_bool {
+                for doc in docs.values_mut() {
+                    if let Document::Ruleset(r) = doc {
+                        r.stats.push(crpg_data::StatDecl {
+                            name: "flag".into(),
+                            kind: StatKindWire::Bool,
+                            derived: None,
+                        });
+                    }
+                }
+            }
+            for doc in docs.values_mut() {
+                if let Document::Effect(e) = doc {
+                    if e.id == id(43) {
+                        e.modifiers[0].target = EffectTargetWire::Stat {
+                            stat: name.to_string(),
+                        };
+                    }
+                }
+            }
+        });
+        assert_eq!(findings.len(), 1, "{name}: {findings:?}");
+        assert_eq!(findings[0].code, DiagnosticCode::UnknownStat);
+        assert_eq!(
+            findings[0].file.as_ref().map(SourcePath::as_str),
+            Some("effects/focusing.json")
+        );
+        assert_eq!(findings[0].pointer, "/modifiers/0/target");
+        assert_eq!(
+            findings[0].message,
+            format!(
+                "unknown effect stat {name:?} for effect {}: not a non-health int stat of ruleset {}",
+                id(43),
+                id(38)
+            )
+        );
+    }
+
+    // The once-per-(effect, modifier, ruleset) rule: two abilities in the same
+    // ruleset referencing the same effect report its bad modifier once.
     let findings = mutate_srd(|docs| {
         for doc in docs.values_mut() {
             if let Document::Ability(a) = doc {
                 if a.id == id(39) {
-                    a.defense = crpg_data::DefenseWire::Opposed {
-                        dice: "2d6".into(),
-                        bonus_stats: vec!["bogus".into()],
-                    };
+                    a.effect = Some(id(43));
                 }
             }
         }
-    });
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].code, DiagnosticCode::UnknownStat);
-    assert_eq!(findings[0].pointer, "/defense/value/bonus_stats/0");
-    assert_eq!(
-        findings[0].message,
-        format!("unknown opposed bonus stat \"bogus\" for ability: not a non-health int stat of ruleset {}", id(38))
-    );
-
-    // (d) unknown effect stat, in the effect's file.
-    let findings = mutate_srd(|docs| {
         for doc in docs.values_mut() {
             if let Document::Effect(e) = doc {
                 if e.id == id(43) {
@@ -1035,21 +1330,9 @@ fn item9_semantic_unknown_stat() {
             }
         }
     });
-    assert_eq!(findings.len(), 1);
+    assert_eq!(findings.len(), 1, "{findings:?}");
     assert_eq!(findings[0].code, DiagnosticCode::UnknownStat);
-    assert_eq!(
-        findings[0].file.as_ref().map(SourcePath::as_str),
-        Some("effects/focusing.json")
-    );
     assert_eq!(findings[0].pointer, "/modifiers/0/target");
-    assert_eq!(
-        findings[0].message,
-        format!(
-            "unknown effect stat \"bogus\" for effect {}: not a non-health int stat of ruleset {}",
-            id(43),
-            id(38)
-        )
-    );
 
     // An orphan ability/effect is clean of these checks.
     let findings = mutate_srd(|docs| {
@@ -1085,6 +1368,40 @@ fn item9_semantic_unknown_stat() {
     assert!(!findings
         .iter()
         .any(|d| d.code == DiagnosticCode::UnknownStat));
+
+    // An orphan effect (no ability references it) is clean of these checks.
+    let findings = mutate_srd(|docs| {
+        docs.insert(
+            "effects/orphan.json".parse().unwrap(),
+            Document::Effect(crpg_data::Effect {
+                id: id(202),
+                slug: "orphan-effect".into(),
+                name: "fixture.orphan-effect".into(),
+                note: None,
+                aim: crpg_data::EffectAimWire::Slf,
+                mod_type: "focus".into(),
+                policy: crpg_data::PolicyWire::StackAll,
+                modifiers: vec![crpg_data::EffectModifierWire {
+                    id: id(203),
+                    target: EffectTargetWire::Stat {
+                        stat: "bogus".into(),
+                    },
+                    op: crpg_data::EffectOpWire::Add,
+                    value: 1,
+                    priority: 0,
+                    name: None,
+                }],
+                duration_rounds: 1,
+                grants: None,
+            }),
+        );
+    });
+    assert!(
+        !findings
+            .iter()
+            .any(|d| d.code == DiagnosticCode::UnknownStat),
+        "{findings:?}"
+    );
 }
 
 /// Behaviour 10: prefab completeness is narrowed to non-derived Int/Fixed and
@@ -1158,6 +1475,25 @@ fn item10_prefab_completeness_narrowed() {
             .any(|d| d.code == DiagnosticCode::InvalidStatValue),
         "{findings:?}"
     );
+
+    // A missing non-derived Fixed stat still reports missing_stat.
+    let findings = mutate_srd(|docs| {
+        for doc in docs.values_mut() {
+            if let Document::Ruleset(r) = doc {
+                r.stats.push(crpg_data::StatDecl {
+                    name: "weight".into(),
+                    kind: StatKindWire::Fixed,
+                    derived: None,
+                });
+            }
+        }
+    });
+    assert!(
+        findings
+            .iter()
+            .any(|d| d.code == DiagnosticCode::MissingStat && d.message.contains("weight")),
+        "{findings:?}"
+    );
 }
 
 /// Behaviour 11: the real-time-fields warning, its pointer, message and fix.
@@ -1196,6 +1532,18 @@ fn item11_rt_warning() {
         )
     );
 
+    // When both real-time fields are present, the pointer is /recovery_ticks.
+    let findings = mutate_srd(|docs| {
+        for doc in docs.values_mut() {
+            if let Document::Ability(a) = doc {
+                a.recovery_ticks = Some(60);
+                a.repeats_in_real_time = Some(true);
+            }
+        }
+    });
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings.iter().all(|f| f.pointer == "/recovery_ticks"));
+
     // repeats_in_real_time == Some(true) only: pointer is /repeats_in_real_time.
     let findings = mutate_srd(|docs| {
         for doc in docs.values_mut() {
@@ -1230,6 +1578,44 @@ fn item11_rt_warning() {
         }
     });
     assert!(findings.is_empty(), "{findings:?}");
+
+    // An orphan ability (not listed by any ruleset) produces no warning.
+    let findings = mutate_srd(|docs| {
+        docs.insert(
+            "abilities/orphan-rt.json".parse().unwrap(),
+            Document::Ability(crpg_data::Ability {
+                id: id(204),
+                slug: "orphan-rt".into(),
+                name: "fixture.orphan-rt".into(),
+                note: None,
+                dice: "1d6".into(),
+                attribute: "might".into(),
+                outcome_table: id(41),
+                damage: vec![crpg_data::DamageEntry {
+                    outcome: crpg_data::OutcomeWire::Success,
+                    amount: 0,
+                    dice: None,
+                }],
+                cost: 1,
+                extra_costs: Vec::new(),
+                ends_turn: true,
+                effect: None,
+                defense: crpg_data::DefenseWire::ActorAttribute,
+                natural_die: None,
+                requires_target: false,
+                allow_self_target: false,
+                recovery_ticks: Some(60),
+                repeats_in_real_time: None,
+                bonus_stats: None,
+            }),
+        );
+    });
+    assert!(
+        !findings
+            .iter()
+            .any(|d| d.code == DiagnosticCode::RealTimeFieldsWithoutRoundTicks),
+        "{findings:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
