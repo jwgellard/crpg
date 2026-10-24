@@ -397,9 +397,23 @@ _HELD_LOCK = threading.Lock()
 
 
 def acquire_slot(
-    repo: Path, slots: list[tuple[int, Path]], preferred: int | None, wait: bool
+    repo: Path,
+    slots: list[tuple[int, Path]],
+    preferred: int | None,
+    wait: bool,
+    base: str | None = None,
+    task_branch: str | None = None,
 ) -> tuple[int, Path]:
-    """Lock one slot; returns its number and path. Raises Exit(2) when busy."""
+    """Lock one slot; returns its number and path. Raises Exit(2) when busy.
+
+    With `base` and `task_branch`, a slot another task left work in is not
+    used: uncommitted changes other than BRIEF.md, or commits that exist on
+    no other ref (so on no branch, no remote and not on `base`) while the
+    slot sits on a branch that is not this run's own task branch (a retry)
+    and is not `base` itself. Auto-pick skips an occupied slot as if locked;
+    an explicit `--slot K` refuses with `slot-occupied` and releases its lock
+    before raising.
+    """
     if not slots:
         raise Exit(2, "no-slot: no slot worktrees found")
     by_number = {number: path for number, path in slots}
@@ -416,11 +430,14 @@ def acquire_slot(
         if not candidates:
             if not wait:
                 raise Exit(2, "slot-busy: every candidate slot is locked")
+    check_occupancy = base is not None and task_branch is not None
+    occupied: dict[int, str] = {}
     lock_dir = slot_lock_dir(repo)
     deadline = time.time() + (3600.0 if wait else 0.0)
     while True:
         with _HELD_LOCK:
             free = [(n, p) for n, p in candidates if n not in _HELD] if preferred is None else candidates
+        free = [(n, p) for n, p in free if n not in occupied]
         for number, path in free:
             lock_dir.mkdir(parents=True, exist_ok=True)
             lock = lock_dir / f"slot-{number}.lock"
@@ -450,9 +467,24 @@ def acquire_slot(
                 handle.write(f"{os.getpid()}\n")
             with _HELD_LOCK:
                 _HELD[number] = _HELD.get(number, 0) + 1
+            if check_occupancy:
+                assert base is not None and task_branch is not None
+                reason = slot_occupancy(path, base, task_branch)
+                if reason is not None:
+                    # Checked under the lock, so a refused slot is never
+                    # left locked; the manager frees it by hand.
+                    release_slot(repo, number)
+                    if preferred is not None:
+                        raise Exit(2, f"slot-occupied: slot-{number} holds {reason}")
+                    occupied[number] = reason
+                    continue
             return number, path
+        if occupied and len(occupied) == len(candidates):
+            # An occupied slot does not free itself, so waiting cannot help;
+            # this is the same exit as an all-locked wave, naming the work.
+            raise Exit(2, slot_busy_cause(occupied))
         if not wait or time.time() >= deadline:
-            raise Exit(2, "slot-busy: every candidate slot is locked")
+            raise Exit(2, slot_busy_cause(occupied))
         time.sleep(0.5)
 
 
@@ -548,13 +580,82 @@ def slot_changed(slot: Path) -> bool:
 
 
 def slot_committed(slot: Path, base: str) -> bool:
+    return commits_ahead(slot, base) > 0
+
+
+def commits_ahead(slot: Path, base: str) -> int:
+    """Commits reachable from HEAD but not from `base`; 0 if unknown."""
     proc = git(["rev-list", "--count", f"{base}..HEAD"], slot)
     if proc.returncode != 0:
-        return False
+        return 0
     try:
-        return int(proc.stdout.strip()) > 0
+        return int(proc.stdout.strip())
     except ValueError:
-        return False
+        return 0
+
+
+def commits_unmerged(slot: Path, base: str) -> int:
+    """Commits on HEAD that live on no other ref, the run's `base` included.
+
+    `--not --exclude=<current> --branches --remotes <base>` counts what no
+    other branch, no remote and not the base can reach: work only this slot's
+    branch holds. A commit already on master, on a batch branch or on any
+    other branch is safe. `--exclude` matches refnames with their
+    `refs/heads/` prefix removed (git's own rule), so the pattern is the bare
+    branch name. 0 when git cannot answer, so an unreadable slot is left to
+    the dirty test and to the run itself.
+    """
+    branch = current_branch(slot)
+    args = ["rev-list", "--count", "HEAD", "--not"]
+    if branch and branch != "HEAD":
+        args.append(f"--exclude={branch}")
+    args += ["--branches", "--remotes", base]
+    proc = git(args, slot)
+    if proc.returncode != 0:
+        return 0
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return 0
+
+
+def slot_occupancy(slot: Path, base: str, task_branch: str) -> str | None:
+    """What another task left in this slot, or None when the slot is free.
+
+    Uncommitted work other than BRIEF.md is always occupied. Commits are
+    occupied only when no other ref holds them and the slot is neither on
+    this run's own task branch (a retry, whose work is this run's own) nor on
+    `base` itself. A detached HEAD has no branch to be ahead on, so only the
+    dirty test applies to it. The reason names the branch, so a refusal tells
+    the manager which work is in the way. A slot whose git cannot be run at
+    all is left free: the run reports its own cause (such as `no-exe`)
+    instead of blaming the slot.
+    """
+    try:
+        branch = current_branch(slot)
+        if slot_changed(slot):
+            return f"{branch or 'detached HEAD'} (uncommitted changes)"
+        if branch is None or branch == "HEAD":
+            return None
+        if branch in (task_branch, base):
+            return None
+        ahead = commits_ahead(slot, base)
+        if ahead > 0 and commits_unmerged(slot, base) > 0:
+            return f"{branch} ({ahead} commits not on {base})"
+        return None
+    except OSError:
+        return None
+
+
+def slot_busy_cause(occupied: dict[int, str]) -> str:
+    """The exit-2 cause when every candidate is locked or occupied."""
+    if not occupied:
+        return "slot-busy: every candidate slot is locked"
+    held = "; ".join(
+        f"slot-{number} holds {reason}"
+        for number, reason in sorted(occupied.items())
+    )
+    return f"slot-busy: every candidate slot is locked or occupied ({held})"
 
 
 def slot_edited(slot: Path, base: str) -> bool:
@@ -1671,11 +1772,14 @@ def do_run(args: argparse.Namespace) -> int:
         info["spend_note"] = note
     if not dry:
         try:
-            slot_number, slot = acquire_slot(repo, slots, args.slot, wait=False)
+            slot_number, slot = acquire_slot(
+                repo, slots, args.slot, wait=False,
+                base=base, task_branch=branch,
+            )
         except Exit as stop:
             # A run that never got a slot still leaves its result record,
             # so the model scorecard sees the infra exit.
-            if stop.cause and stop.cause.startswith("slot-busy"):
+            if stop.cause and stop.cause.startswith(("slot-busy", "slot-occupied")):
                 info["cause"] = stop.cause
                 eprint(f"oc: {stop.cause}")
                 return finish(2, None)
@@ -2059,7 +2163,27 @@ def do_wave(args: argparse.Namespace) -> int:
     running_models: dict[int, str] = {}
 
     def member_job(index: int, task: str, role: str, model: str) -> None:
-        number, _slot = acquire_slot(repo, slots, None, wait=True)
+        try:
+            number, _slot = acquire_slot(
+                repo, slots, None, wait=True,
+                base=args.base or "origin/master",
+                task_branch=f"task/{task}",
+            )
+        except Exit as stop:
+            # Every slot is locked or holds another task's work. Record it
+            # like a member that never started, so the wave summary names
+            # the occupied slots instead of dying on a thread traceback.
+            with gate_lock:
+                running_models.pop(index, None)
+            results[index] = {
+                "verdict": "INFRA",
+                "cause": stop.cause,
+                "attempt": 0,
+                "failed_checks": [],
+                "summary": stop.cause or "no slot",
+                "code": stop.code,
+            }
+            return
         try:
             sub = argparse.Namespace(
                 task=task,
