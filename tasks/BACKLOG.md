@@ -111,9 +111,9 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T024-tests | merged (PR #72, `953d66e`, 2026-10-25) | 2026-10-25 | `crates/crpg-net/tests/snapshot_transfer_contract.rs`: 46 tests covering the six core-review gaps (notes-3 items 5–10); about 125 scratch mutations, every test killed by at least one; five surviving mutants, all equivalent; `verify_task.py` 10/10. |
 | T024-docs | merged (PR #72, `953d66e`, 2026-10-25) | 2026-10-25 | `crpg-net` docs: S§6 decode precedence and S§10.7 cutover barrier in `crates/crpg-net/AGENTS.md` Invariants, the five S§13 traps, ADR-0028 "Host requirements (T024 S§11)" section; opencode-go/beam-free attempt 1, commit `71fcd21` |
 | T025a-facts | merged (PR #72, `953d66e`, 2026-10-25) | 2026-10-25 | `tasks/T025a-facts.md`: 274-line fact sheet for the T025a contract; opencode-go/beam-free attempt 1, commit `0962f4e` |
-| T024q | contract to write; before T025b | — | `crpg-net-quic` transfer channel on the existing ordered stream with an explicit channel selector under ALPN `crpg-lane0/2` (T024 Q3 follow-on) |
-| T024h | contract to write; before T025b | — | `crpg-server` T024 S§11 sender/host requirements and seamless narrowing (T024 Q5 follow-on) |
-| T025a | blocked | — | `crpg-net` reconnect/resync mechanisms; T024 approved (D35), contract can start; D12; fact sheet `tasks/T025a-facts.md` ready |
+| T024q | contract: fact sheet + draft 1 of 2 (Beam); second-lab draft waits for quota; then architect | — | `crpg-net-quic` transfer channel on the existing ordered stream with an explicit channel selector under ALPN `crpg-lane0/2` (T024 Q3 follow-on) |
+| T024h | contract: fact sheet + draft 1 of 2 (Beam); second-lab draft waits for quota; then architect | — | `crpg-server` T024 S§11 sender/host requirements and seamless narrowing (T024 Q5 follow-on) |
+| T025a | contract: draft 1 of 2 (Beam); second-lab draft waits for quota; then architect | — | `crpg-net` reconnect/resync mechanisms; T024 approved (D35), contract can start; D12; fact sheet `tasks/T025a-facts.md` ready |
 | T025b | blocked | — | `crpg-server` authenticated 30-second same-process grace; exact API + T025a |
 | T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13; movement spec scheduled after T024 (D24); first datagram lane applies the T030 patch (D23) |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
@@ -141,8 +141,11 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T031 | done | 2026-09-30 | `tools/preflight.sh` / `tools/preflight.ps1` gate runners (PR #20, merge `c1bc6ab`). Native Windows run of `tools/tests` supplied by the D26 CI step: `lint-selftest (windows-latest)` green on PR #21 (merge `ac137ac`, 2026-10-01); see [T031](T031.md) |
 | T032 | done | 2026-09-30 | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md` (PR #20, merge `c1bc6ab`); see [T032](T032.md) |
 | T033 | done | 2026-10-01 | Documentation (PR #21, merge `ac137ac`, all nine checks green): remaining E-task wording (E010, E013 README, E017, E018, E019, E022) reconciled with D01–D18 and the as-built code; E023 deferred; see [T033](T033.md) |
+| A0-8 | in session 23 batch; awaiting user approval per crate | — | crate `AGENTS.md` trims: crpg-sim 42,956 → about 13.3 KB (attempt 2 deleted 23 prior agent-log entries, attempt 3 restored them); crpg-data 27,683 → about 7 KB (attempt 1 dropped two prior agent-log entries, attempt 2 restored them; manager text check found 6 removed blocks missing, restored by A0-8-data-restore); crpg-net 20,060 → about 5 KB (attempt 1 failed docsig, attempt 2 passed); crpg-testkit 18,803 → about 9 KB (manager removed a stray trailing `"`; text check found 14 removed blocks missing, restored by A0-8-testkit-restore); all four report 0 missing blocks after restores |
 | A0-13 | ready | — | tools (`oc.py`): attempt lock for parallel `oc.py ask` runs (L5): parallel runs share an attempt number and write one `.jsonl`/report |
 | A0-14 | ready | — | tools (`verify_task.py`): contract-named tests must exist and assert (L6): empty `fn tN() {}` stubs must not report as passing |
+| A0-15 | ready | — | tools (verify_task.py): docsig fails when a dated agent-log line present on the base is deleted, moved or reordered, or a changed .md has a non-UTF-8 separator or a trailing heredoc remnant (L8) |
+| A0-16 | ready | — | tools: promote crpg-slots/manager/lost.py into tools/agents as a doc-move check for trims (L8) |
 
 The delegated path from here to spec Phase 12 — work-package kinds, waves,
 concurrency limits and human gates — is [docs/IMPLEMENTATION_PLAN.md](../docs/IMPLEMENTATION_PLAN.md).
@@ -411,6 +414,7 @@ Record it here, one line per week.
 | 2026-10-23 | — | A0-4c tools package in session 16 batch (DeepSeek V4.1 Flash, attempt 1 PASS, $0.04, 310 tool tests pass). |
 | 2026-10-24 | — | PR #70 (sessions 17–19, merge `e680e3c`): T136b, T136b-tests, T136c, T137 contract, T138a–e with both two-keys files, A0-12. Session 19 Claude: manager, one Sonnet implementer (T138b, about 228k), one Sonnet reviewer (about 121k); Go about $0.27. |
 | 2026-10-25 | — | PR #72 (`mgr/session-21-batch`, sessions 21–22, merge `953d66e`): T024, T024-fix, T024-docs, T024-tests, T137-gaps, T025a-facts, D37. Session 22 Claude: manager; reviewer Sonnet 5.5 (T024 core review, about 216k tokens); implementer Sonnet 5.5 (T024-tests, about 208k tokens). OpenCode: Beam only (free), $0.00. |
+| 2026-10-25 | — | Session 23 batch (`mgr/session-23-batch`, PR pending): T025a blind draft 1, T024q/T024h fact sheets and blind drafts 1, A0-8 crate AGENTS.md trims; Claude: manager only; OpenCode: Beam only, $0.00. |
 
 ---
 
@@ -529,3 +533,4 @@ Record it here, one line per week.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S22-bookkeeping · Updated T024 status for the Claude core review fix (six test gaps → two-keys notes-3), added T024-docs and T025a-facts rows, and noted the T025a fact sheet ready.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S22-bookkeeping-2 · Recorded T024 two-keys landing (46 tests, Sonnet 5.5 attempt 7) and handover before the batch PR.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S22-bookkeeping-3 · PR #72 merged; T024/T024-docs/T024-tests/T137-gaps/T025a-facts rows and throughput row updated.
+- 2026-10-25 (UTC) · opencode-go/beam-free + S23-bookkeeping · Session 23 records: T025a/T024q/T024h contract statuses, A0-8/A0-15/A0-16 rows, throughput row.

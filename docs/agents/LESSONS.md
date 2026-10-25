@@ -11,6 +11,7 @@ This file keeps one line per lesson with ID, evidence, and promotion.
 | L5 | Parallel `oc.py ask` runs on one model share an attempt number and write one `.jsonl`/report, so three reviews return one (session 21, T024 reviews attempt 15). | Parallel `oc.py ask` runs collide: they get the same attempt number and write one jsonl (session 21, T024). | `proposed: oc.py ask attempt lock (A0 tooling follow-up)` |
 | L6 | `verify_task.py` passed a test file of 31 empty `fn tN() {}` stubs that the worker reported as "31 passed" (session 21, T024 attempt 1 on Beam). | Beam may report empty test stubs as passing: check named tests and assertion counts before trusting a pass (session 21, T024 attempt 1 on Beam). | `proposed: verify check that contract-named tests exist and assert (A0 tooling follow-up)` |
 | L7 | Beam's first-pass review of T024 said ready-for-pr; the Claude core review then found six untested contract behaviours (items 5–10 of `.agents/briefs/T024-tests-notes-3.md`). | A Beam ready-for-pr is not test-strength evidence (session 22, T024 Claude core review, Sonnet 5.5, ~216k tokens, VERDICT fix). | `not yet promoted` |
+| L8 | Beam doc trims delete or reorder prior agent-log entries, drop blocks while reporting "no info lost", and leave heredoc remnants (`EOF`, `PY`, `"`) or a corrupted `·`; docsig does not catch a deleted prior entry. | A0-8-sim attempt 2, A0-8-data attempt 1, A0-8-net attempt 1, A0-8-testkit, T024h-facts. | A0-15, A0-16; meanwhile briefs say "never delete, move or reorder a dated agent-log line; use the file edit tool, not heredocs", and the manager runs `lost.py` on every trim. |
 
 ## Agent log
 
@@ -19,3 +20,4 @@ This file keeps one line per lesson with ID, evidence, and promotion.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Appended L3 (two-keys mutation proof) and L4 (brief self-check), both promoted to `TEMPLATES.md` §1, so the session 18 template rules are recalled where briefs can find them.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S21-bookkeeping · Appended L5 (parallel oc.py ask attempt collision) and L6 (empty test stubs reported as passing), both proposed as A0 tooling follow-ups.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S22-bookkeeping · Appended L7 (Beam ready-for-pr is not test-strength evidence), from the T024 Claude core review that found six untested behaviours.
+- 2026-10-25 (UTC) · opencode-go/beam-free + S23-bookkeeping · Appended L8 (Beam doc trims delete/reorder agent-log entries; docsig does not catch a deleted prior entry).
