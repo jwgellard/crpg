@@ -390,6 +390,8 @@ thirty reviews.
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
 | S-set, A, C, core review | Claude only (`docs/AGENT_TEAM_PLAN.md` §§4.2–4.3) | — | — |
 
+Beam (`opencode-go/beam-free`) is limited to doc-only work, fact sheets and first-pass review (D37b). While Go is over quota, implementation and tests go to free Zen models first, then the Claude `implementer` (D37c).
+
 Tier membership:
 
 - **O1:** DeepSeek V4.1 Flash (Go), Kimi K3, MiMo-V2.6-Pro, Gemini 4 Argon
@@ -572,3 +574,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor (grunt) + S15 bookkeeping · Demoted MiMo-V2.6-Pro from implement after two `hang` runs with no output on doc-only contract drafts (T136b draft A, T138 draft B), removing it from the routine row and moving it to second choice on the harder row.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-11b · Removed LongCat from §4's free preference, the Go-only lane and the "first, once proven" paragraph, and moved it from O3 to Not routed, so every current-rule sentence agrees with §1 item 14 (LongCat out of routing, free multi-reviews on Beam alone).
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Demoted MiMo-V2.6-Pro from the tests row under §4.1 (0/2 first-attempt: T136a-tests fail, T138a-tests hang) to first-choice DeepSeek V4 Pro or DeepSeek V4.1 Flash, so the routing table follows the session 18 field record.
+- 2026-10-25 (UTC) · opencode-go/beam-free + D37-record · Recorded D37b/D37c: Beam is limited to doc-only work, fact sheets and first-pass review, and while Go is over quota implementation and tests go to free Zen models first then the Claude implementer, never Beam.
