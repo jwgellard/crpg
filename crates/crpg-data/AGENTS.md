@@ -119,6 +119,8 @@ blesses drift. Retain property regression seeds; never weaken existing tests.
 - Introspection: arch doc §Introspection (T013a)
 - Moved detail: arch doc §"Moved from AGENTS.md (A0-8)"
 
+- 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136b · Recorded the kernel-range wire vocabulary, the additive-variant rule at the current tag (D32c), the odd-node-count reading of the 4096 bound and the first warning diagnostic.
+
 ## Agent log
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established the API, validation, dependency and verification working rules before implementation. The task remains subject to all its acceptance gates.
@@ -127,9 +129,16 @@ blesses drift. Retain property regression seeds; never weaken existing tests.
 - 2026-09-17 (UTC) · opencode/muse-spark + T012a implementation · Recorded the single-registry item-only migration surface, the strict read precedence with clone-then-publish rollback, the three-root fixture and golden-authoring rule, and the migration coverage commands.
 - 2026-09-18 (UTC) · opencode/muse-spark + T013a implementation · Extended the surface with the introspection report API, recorded the single-inventory ownership/subtree/ordering traps with no CLI semantics here, and added the introspection plus migrate regression commands.
 - 2026-09-26 (UTC) · opencode/muse-spark + T016a crate opening · Extended the surface with the four generic combat families, the hand-rolled enum trap, read-time versus semantic rule split, checked Fixed-to-Int conversion, and the combat_content plus gate-representative obligations before source implementation.
+
 - 2026-09-27 (UTC) · opencode/muse-spark + T017a crate opening · Extended the surface with the effect family, primary-pool cost convention with all-local /1→/2 defaults, defense selector, and unknown_pool walk before source implementation; no dependency, ADR, downstream, or re-baseline decision is taken here.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017a implementation · Aligned the surface with the as-built dual-layer empty-spend rule, the PoolTemplate inventory variant, the shared-root migration fixtures, and the 14-test srd_content suite; recorded the downstream sim workspace blocker in tasks/T017a.md with no silent workaround.
-- 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
+
 - 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136a · Recorded the rule for joining a family at its current version and added the three optional real-time fields to the optional-missing exceptions; zero `round_ticks`/`recovery_ticks` are `Malformed` read-time checks, with no semantic rule.
-- 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136b · Recorded the kernel-range wire vocabulary, the additive-variant rule at the current tag (D32c), the odd-node-count reading of the 4096 bound and the first warning diagnostic.
+
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving design/detail blocks to docs/architecture/crpg-data.md §"Moved from AGENTS.md (A0-8)" and condensing duplicate invariants; no rule meaning changed.
+
+- 2026-09-17 (UTC) · opencode/gpt-6-astra + T012a review fixes · Added working rules for checked version parsing, shared negative-test enforcement and actual single-edge oracle coverage. This supersedes the initial gate's weaker checks without changing the migration API or fixture baselines.
+
+- 2026-09-30 (UTC) · claude-code + T029a implementation · Added the declaration-only surface and its working rules (byte-length identifiers, pinned failure orders, exact content-derived identity, bounded traversal) so later edits cannot quietly add execution authority or loosen compatibility.
+
+- 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.

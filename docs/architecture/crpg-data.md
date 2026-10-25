@@ -487,8 +487,6 @@ campaign golden. Extra, missing, malformed or wrong-tag oracles fail.
 The private two-edge inventory test is synthetic in-memory data only, not a
 new production version or permission to regenerate historical fixtures.
 
-- 2026-09-17 (UTC) Â· opencode/gpt-6-astra + T012a review fixes Â· Added working rules for checked version parsing, shared negative-test enforcement and actual single-edge oracle coverage. This supersedes the initial gate's weaker checks without changing the migration API or fixture baselines.
-
 ### Action-signature declarations (T029a)
 
 ## Action-signature declarations (T029a)
@@ -522,8 +520,6 @@ constants. The existing `ActionCall`, `ActionSignature`, `ActionParameter`,
   private canonical views serialize keys lexically; `bundle_revision_is_canonical`
   pins equality with `canonical_json` against a hand-written literal oracle.
 - Rejections are read-only for the store and the caller's call.
-
-- 2026-09-30 (UTC) Â· claude-code + T029a implementation Â· Added the declaration-only surface and its working rules (byte-length identifiers, pinned failure orders, exact content-derived identity, bounded traversal) so later edits cannot quietly add execution authority or loosen compatibility.
 
 ### Pointer edits and in-memory index (T058a)
 
@@ -562,8 +558,6 @@ the named tests, is [T058a](../../tasks/T058a.md).
   arithmetic is checked and nothing on a caller-controlled path is
   unwrapped. Error messages for `Value` and `Document` are the underlying
   `DataError` text and may quote input; callers truncate when logging.
-
-- 2026-10-04 (UTC) Â· claude-code + T058a implementation Â· Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
 
 
 
