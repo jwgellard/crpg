@@ -157,4 +157,3 @@ regression.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e crate opening · Extended the contract with the tests-only second-ruleset replay shape (srd-only adapter, accepted-only inputs with the new end op, pinned probe seed, per-target goldens) under tasks/T017e.md before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the contract with the as-built replay (seed 285, K = 9, 13-test srd_replay suite, per-target goldens, combat_basic untouched); no commit/push/PR.
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work size by moving Public API, dependencies, combat/second-ruleset replay detail, and scope note to the architecture doc; no rule meaning changed.
-"
