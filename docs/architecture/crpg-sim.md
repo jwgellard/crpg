@@ -166,18 +166,106 @@ the breaking API required a user-authorized narrow mechanical fix in the two
 downstream adapters (effects wiring plus one `Option` unwrap, no
 golden/behavior change); B4 owns replay/goldens, B5 the CLI proof.
 
-## Kernel-range bridge (T136c, deleted by T137)
+## Kernel range (T137, ADR-0029 Follow-on 4)
 
-The T136b kernel-range wire surface — non-`Int` kinds and derived formulas,
-rolled initiative, ability bonus stats, constant/actor-stat/opposed defenses,
-damage dice, effect grants, and `Stat` effect targets — has no runtime
-meaning here yet. The adapter refuses any encounter carrying one of them with
-`CombatError::UnsupportedAuthored` (`UnsupportedAuthored at spec/authored`),
-checked after the collection bounds and the two data-owned asserts and before
-the placement loop, so nothing is published and the world is unchanged. The
-two expanded matches mark their new variants unreachable with the same
-reason. T137 implements the shapes and deletes the variant, the check, and
-`tests/unsupported_authored.rs`.
+The adapter executes the T136b authored surface through the `crpg-rules`
+kernel. T137a carries typed and derived `Int` stats, the `Constant` and
+`ActorStat` defences alongside `ActorAttribute` and `TargetStat`, ability
+`bonus_stats`, and `Stat` effect targets; T137b adds the `Opposed` defence,
+damage dice, rolled initiative and tag grants. No start rejects a T136b shape
+as unsupported: the T136c bridge (`CombatError::UnsupportedAuthored`, its
+check and `tests/unsupported_authored.rs`) is deleted.
+
+**Public additions.** `IntFormula`, `DerivedStat` and `InitiativeRule` (the
+symbolic sim-owned mirrors; persisted state never holds a `crpg_data` wire
+type); `COMBAT_BONUS_MOD_TYPE`; `CombatError::{StatEvaluation, TooManyTags}`;
+new last variants `AbilityDefense::{Constant, ActorStat, Opposed}` and
+`EffectTarget::Stat` (`EffectTarget` is no longer `Copy`); new last fields
+`AbilityDefinition::{bonus_stats, damage_dice}`,
+`CombatDefinition::{derived, initiative}`, `EffectDefinition::grants` and
+`Combatant::tags`. Every new field is skipped at its
+absence value, and `definition_is_legacy` keeps the 15-field definition for
+every legacy shape, so no existing hash or golden moves.
+
+**Only `Int` stats execute.** The kernel has no implicit conversion and every
+combat consumer (health, attributes, defences, bonus stats, `Stat` targets)
+is an `Int`, so no other kind can reach a margin, a key or a fold. A
+non-derived `Fixed` stat must be present on a creature and is never read;
+`Bool`, `Enum`, `Tags` and `Dice` stats and every derived stat of another
+kind are not read at all. `CombatDefinition.attribute_names` is the base
+`Int` stats, `derived` the derived `Int` stats in authored order.
+
+**Stat reads.** Every read is one kernel query per operation over the `Int`
+definitions (health, each attribute, each derived formula), never cached, so
+a `Stat` effect or lost health changes the next read. A combatant's block is
+its current health plus each attribute. Each view holds the combatant's
+unexpired modifiers: the actor's `Roll` and `Stat` (and `Dc` for
+`ActorStat`), the target's `Dc` and `Stat`, one combined view when
+self-targeted. Bonus stats become synthetic `Roll` `Add` modifiers under the
+reserved type `combat.bonus_stat` (policy `StackAll`, ids the smallest unused
+from `1`), and an effect using that type is refused whenever a listed
+ability carries bonus stats.
+
+**Start order (B21).** `EncounterActive`, `ModeUnsupported`, collection
+bounds and the data-owned asserts; placements, then `MixedArea`, then
+`AreaMismatch`; per participant `MissingCreature` then each declared stat
+(`MissingStat`, `InvalidStatValue`, `ValueOverflow`); the initiative rule's
+dice (`InvalidDice`) and bonus names (`MissingStat`); the derived-stat
+preflight (`InvalidStatValue` naming the first derived stat that
+fails to evaluate); pool templates; per listed ability the spec entry, the
+checked attribute (must be usable), dice, outcome table, costs, defence name
+(for `Opposed` its dice, then its bonus names), bonus names, damage dice,
+effect, natural die; per referenced effect (ascending) the
+empty-shape check, the reserved bonus type, then per modifier the policy
+checks and the `Stat` target name; `DuplicateModifier`; `PolicyConflict`;
+`TooManyTags`; publication, whose first draws are the rolled initiative keys.
+Nothing before publication mutates the world.
+
+**Mid-fight evaluation.** A `Stat` modifier or lost health can zero a divisor
+after a clean start, so `validate_action` gains a last stage, after
+affordability and only for a definition with derived stats: it builds the
+action's plan and queries the defence-side stat, then the actor's bonus
+stats, then an `Opposed` defence's bonus stats on the target. A failure is
+`StatEvaluation` naming that stat; execution and `legal_actions` inherit it.
+
+**Draws.** An `Opposed` defence resolves as an opposed total: the actor's
+dice draw first and the opposing dice second, on `combat.roll`, with no
+natural die on the opposing roll. The target's view carries its `Roll`
+effects and the opposing bonus (and its `Dc` effects, which no fold reads);
+a self-targeted use has one view where the actor's bonus list is followed by
+the opposing list, so both rolls fold both. Damage dice are drawn after the
+resolution and before the cost is spent: the first flat `damage` entry for the
+decided outcome (or `0`) plus the outcome's dice, summed in `i64` and clamped
+once into `0..=u32::MAX`; an outcome without dice draws nothing. A ruleset
+initiative rule is rolled once at start, in authored participant order after
+every check and before the spawn loop, in both modes: the key is the dice
+total plus the participants' bonus stats plus the authored key, saturating,
+stored in `Combatant.initiative`. A TB start and every TB rollover insert it,
+an RT start keys `0` and keeps it, and an RT-to-TB switch rebuilds at it.
+Content without these shapes draws exactly as before.
+
+**Tags.** Creature tags are carried (sorted, distinct) in `Combatant.tags`,
+and each effect's `grants`, only in an encounter whose referenced effects
+grant, so every other world keeps its bytes. A view's tag projection is its
+combatant's tags plus the grants of its unexpired attachments, interned into
+the operation's scratch interner. Nothing reads a tag yet (rebuilt modifiers
+carry no condition); the projection is the contract a later condition
+consumer reads. The union of one participant's tags and every grant is
+bounded by the kernel's 1024: over it is `TooManyTags` at start and a load
+error.
+
+**Load coherence.** `World` deserialization tests the usable names (base plus
+derived) where it tested attributes, and adds the derived-stat, kernel,
+bonus-name (ability, `Opposed` and initiative), `Stat`-target, reserved-type
+and combatant tag-bound checks.
+
+**Surface golden (T137c).** `tests/surface_golden.rs` runs the pinned seed-42
+three-combatant turn-based schedule (`tests/support/surface_schedule.rs`) that
+uses every T137 shape at once, records one `state_hash` per step, and
+compares against the per-target `surface_v1.<target>.txt` baseline after a
+hand-written oracle of the rolled initiative keys, each action's margin and
+each damage total. The authoring example
+(`examples/generate_surface_golden.rs`) shares the schedule source.
 
 ## Atomic same-pool affordability (T019)
 
@@ -311,3 +399,6 @@ One encounter is turn-based (TB) or real-time (RT), chosen by the host and never
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + T136c · Recorded the temporary kernel-range bridge: `UnsupportedAuthored` refuses every T136b shape before placement with an unchanged world, and T137 deletes the variant, check, and suite.
 - 2026-10-23 (UTC) · claude-code (Sonnet 5.5) + T138a · Recorded the per-encounter mode, RT clock, standing orders, mode requests and the two RT tick stages with their load checks, so readers know TB-only worlds are byte-identical and where history v2 (T138b) will attach.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T138b · Recorded history v2: the lazy sticky version upgrade, the three new events and facts, the tick emission order, the v1 loader rejections and the v2 golden, so readers know TB-only histories still write version 1.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137a · Replaced the bridge section with the kernel-range section: what executes now, the `Int`-only rule, the per-operation stat reads, the start order and the new mid-fight evaluation stage, so readers know T137b still owns `Opposed`, damage dice, initiative and tags.
+- 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the remaining bridge text and recorded the `Opposed` draw order, damage dice, rolled initiative and tag carriage with the `TooManyTags` bound, so the kernel-range section describes the whole executed surface.
+- 2026-10-24 (UTC) · opencode-go/beam-free + T137c · Added the surface golden paragraph and the pinned seed-42 schedule/example/test/baseline, so the generalized surface has a per-target golden with a hand-written value oracle.

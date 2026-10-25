@@ -34,7 +34,8 @@ use serde::{Deserialize, Serialize};
 use crpg_core::{DeterministicRng, EntityId, EventQueue, GenerationalArena, Interners, Tick, Ulid};
 
 use crate::combat::{
-    CombatState, Combatant, EncounterMode, TransitionFacts, COMBAT_ROLL_TAG, RT_CLOCK_MAX,
+    int_definitions, AbilityDefense, CombatState, Combatant, EffectTarget, EncounterMode,
+    TransitionFacts, COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_TAG, RT_CLOCK_MAX,
 };
 use crate::event::SimEvent;
 use crate::store::ComponentStore;
@@ -173,7 +174,13 @@ impl<'de> Deserialize<'de> for World {
                     ));
                 }
                 let definition = &state.definition;
-                if definition.attribute_names.is_empty() {
+                // T137 B23: the usable stat names are the base attributes
+                // plus the derived names.
+                let usable = |name: &String| {
+                    definition.attribute_names.contains(name)
+                        || definition.derived.iter().any(|entry| entry.name == *name)
+                };
+                if definition.attribute_names.is_empty() && definition.derived.is_empty() {
                     return Err(serde::de::Error::custom(
                         "combat definition declares no attributes",
                     ));
@@ -188,7 +195,7 @@ impl<'de> Deserialize<'de> for World {
                         }
                     }
                 }
-                if !definition.attribute_names.contains(&definition.attribute) {
+                if !usable(&definition.attribute) {
                     return Err(serde::de::Error::custom(
                         "combat definition names an undeclared checked attribute",
                     ));
@@ -199,6 +206,44 @@ impl<'de> Deserialize<'de> for World {
                     return Err(serde::de::Error::custom(
                         "combat definition misdeclares its health stat",
                     ));
+                }
+                // L1: a derived name is nonempty, unique, and neither the
+                // health stat nor an attribute.
+                {
+                    let mut seen = BTreeSet::new();
+                    for entry in &definition.derived {
+                        if entry.name.is_empty()
+                            || entry.name == definition.health_stat
+                            || definition.attribute_names.contains(&entry.name)
+                            || !seen.insert(&entry.name)
+                        {
+                            return Err(serde::de::Error::custom(
+                                "combat derived stat is misdeclared",
+                            ));
+                        }
+                    }
+                }
+                // L2: the kernel accepts the derived formulas.
+                {
+                    let mut fresh = Interners::new();
+                    let definitions = int_definitions(
+                        &definition.health_stat,
+                        &definition.attribute_names,
+                        &definition.derived,
+                        &mut fresh,
+                    );
+                    if crpg_rules::ModifierPipeline::new(definitions, BTreeMap::new()).is_err() {
+                        return Err(serde::de::Error::custom(
+                            "combat derived stats fail their kernel validation",
+                        ));
+                    }
+                }
+                if let Some(rule) = &definition.initiative {
+                    if rule.bonus_stats.iter().any(|name| !usable(name)) {
+                        return Err(serde::de::Error::custom(
+                            "combat bonus stat names no declared int stat",
+                        ));
+                    }
                 }
                 if definition.pools.is_empty() {
                     return Err(serde::de::Error::custom(
@@ -281,9 +326,14 @@ impl<'de> Deserialize<'de> for World {
                     }
                 }
                 for ability in &definition.abilities {
-                    if !definition.attribute_names.contains(&ability.attribute) {
+                    if !usable(&ability.attribute) {
                         return Err(serde::de::Error::custom(
                             "combat ability names an undeclared checked attribute",
+                        ));
+                    }
+                    if ability.bonus_stats.iter().any(|name| !usable(name)) {
+                        return Err(serde::de::Error::custom(
+                            "combat bonus stat names no declared int stat",
                         ));
                     }
                     if ability.costs.is_empty() {
@@ -303,12 +353,19 @@ impl<'de> Deserialize<'de> for World {
                             ));
                         }
                     }
-                    if let crate::combat::AbilityDefense::TargetStat { stat } = &ability.defense {
-                        if *stat == definition.health_stat
-                            || !definition.attribute_names.contains(stat)
-                        {
+                    if let AbilityDefense::TargetStat { stat }
+                    | AbilityDefense::ActorStat { stat } = &ability.defense
+                    {
+                        if *stat == definition.health_stat || !usable(stat) {
                             return Err(serde::de::Error::custom(
                                 "combat ability names an undeclared defense stat",
+                            ));
+                        }
+                    }
+                    if let AbilityDefense::Opposed { bonus_stats, .. } = &ability.defense {
+                        if bonus_stats.iter().any(|name| !usable(name)) {
+                            return Err(serde::de::Error::custom(
+                                "combat bonus stat names no declared int stat",
                             ));
                         }
                     }
@@ -340,7 +397,24 @@ impl<'de> Deserialize<'de> for World {
                             "combat effect carries an empty shape",
                         ));
                     }
+                    if effect.mod_type == COMBAT_BONUS_MOD_TYPE
+                        && definition
+                            .abilities
+                            .iter()
+                            .any(|ability| !ability.bonus_stats.is_empty())
+                    {
+                        return Err(serde::de::Error::custom(
+                            "combat effect uses the reserved bonus modifier type",
+                        ));
+                    }
                     for modifier in &effect.modifiers {
+                        if let EffectTarget::Stat { stat } = &modifier.target {
+                            if !usable(stat) {
+                                return Err(serde::de::Error::custom(
+                                    "combat effect stat target names no declared int stat",
+                                ));
+                            }
+                        }
                         let nameless = modifier.name.is_none();
                         let is_set = matches!(modifier.op, crate::combat::EffectOp::Set);
                         if is_set
@@ -490,6 +564,20 @@ impl<'de> Deserialize<'de> for World {
                                         "combatant attachment carries no future expiry",
                                     ));
                                 }
+                            }
+                        }
+                        // L6 (T137): the combatant's tags and every grant of
+                        // the definition's effects fit the kernel bound.
+                        {
+                            let mut union: BTreeSet<&str> =
+                                combatant.tags().iter().map(String::as_str).collect();
+                            for effect in &definition.effects {
+                                union.extend(effect.grants.iter().map(String::as_str));
+                            }
+                            if union.len() > crpg_rules::MAX_TAGS {
+                                return Err(serde::de::Error::custom(
+                                    "combatant tags exceed their bound",
+                                ));
                             }
                         }
                         if !placements.insert(combatant.placement()) {
