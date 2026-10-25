@@ -483,5 +483,3 @@ Searched `crates/crpg-server/src/` and `crates/crpg-server/tests/` for
 ## Agent log
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024h-facts · Gathered T024 S§11 sender rules, host delta/snapshot send paths, filtering, transfer API signatures, capture/retirement hooks, existing tests, and binding constraints into a contract-author fact sheet.
-EOF
-wc -l tasks/T024h-facts.md
