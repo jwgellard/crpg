@@ -165,6 +165,22 @@ requires an ADR.
   and consume duplicate delivery once in sequence order. Check the complete
   authority hash, full journal, execution count, and independent event oracle;
   cloning bytes and calling the codec alone does not establish recovery.
+- Transfer decode precedence (T024 S§6): whole-frame cap first (`decode_down`
+  over 65,536 / `decode_up` over 4,096 → `FrameTooLarge`), then first byte
+  (not `0x81` → `UnsupportedVersion`; empty → `Malformed`), then lane (not
+  2 → `WrongDirection`), then tag (the other direction's tag →
+  `WrongDirection`; any other unknown → `UnknownMessage`), then fields left to
+  right (value above its cap → `LimitExceeded`; zero or inconsistent →
+  `Malformed`; unassigned `reason` byte → `UnknownMessage`), then trailing
+  bytes → `Malformed`. Segment length is checked against 4,096 before body
+  availability.
+- Cutover barrier (T024 S§10.7): a delta is releasable when the mode is
+  `Live` and either no transfer is in flight or its `event_seq ≤` the
+  in-flight cursor; the FIFO queue is the only way updates leave the pool, so
+  deltas at or below the cursor queued before publication pop before the
+  snapshot, deltas above the cursor are never queued before it, and a later
+  delta at or below a published cursor is `Superseded`. No delta is applied
+  twice, to the wrong base, or skipped, and a gap is never released past.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`. No `HashMap`/`HashSet`
   (use `BTreeMap`/`IndexMap`); no `f32`/`f64` in policy paths (no spatial
   wire in v1 lane 0); no `SystemTime`/threads/I-O/unseeded RNG
@@ -255,6 +271,9 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   a delta above an in-flight cursor; never reset `event_seq` within an epoch;
   the full 1 MiB claim belongs to the byte layer (S§1.4); the T018b tracker
   test stays. DoD count: 119 passed (88 + 31; the other suites grew after the contract was written).
+- Segment length checked before body; never queue a delta above an in-flight
+  cursor; never reset `event_seq` within an epoch; the full 1 MiB claim
+  belongs to the byte layer (S§1.4); the T018b tracker test stays.
 
 ## Agent log
 
@@ -268,3 +287,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-10-04 (UTC) · claude-code + T023 · Added a dated Known-traps pointer to `crpg-net-quic` so no one adds QUIC, I/O, threads or clocks to this crate; doc-only.
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024 · Added transfer subprotocol modules, byte-layer assembly, bounded reassembly pool and cutover gate; 31-case suite.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S21-bookkeeping · Updated DoD count to 119 passed (88 + 31).
+- 2026-10-25 (UTC) · opencode-go/beam-free + T024-docs · Closed S§13 doc gaps: added transfer decode precedence and the S§10.7 cutover barrier to Invariants, traps, and ADR-0028 host requirements.
