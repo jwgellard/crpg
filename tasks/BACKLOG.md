@@ -107,7 +107,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T023v | done | 2026-10-05 | Vendored quinn-proto 0.11.19 + upstream fix `e556fde` (CONNECTION_CLOSE sent when congestion blocked) under `third_party/` (ADR-0027), CI advisories re-check, case 17 restored, regression case 28 (fails 10/10 unpatched); Windows close-code failure resolved (PR #27, merge `efbfdd8`; Windows green on the PR run and one re-run). Upstream provenance verified 2026-10-06: archive + `e556fde` reproduces the vendored tree byte for byte; see [T023v](T023v.md) |
 | T023d | done | 2026-10-06 | `crpg-net-quic`: a refused or `Discard`-closed pending connection now delivers its close when `Closed` is polled at once (release-then-remove, L§3); cases 29–30; negative control 6/6 `TimedOut` (about 10.2 s) with the fix reverted; Linux/GNU gates green (`quic` 30/30 ×5, cases 29–30 20/20, workspace 1,139 passed); Windows/MSVC pending at the PR tip; one PR with T023b, T023d first; see [T023d](T023d.md) Merged in PR #28 (`16f58c8`), CI green on both OSes. |
 | T023b | done | 2026-10-06 | `crpg-server` QUIC host adapter (`quic` module, `QuicHost`) over a `crpg-net-quic` path edge (no direct QUIC crates; lock +1 line); ADR-0026 Accepted; invitation credentials (32 bytes, constant-time), one-frame hold, `SessionFenced` fencing, slow-consumer fence, drain-then-unbind, D02 shutdown; 25-case `host_quic` suite incl. T023's five conformance cases and the trace-replay equivalence proof, every A§4 count reproduced; case-9 blocker fixed by T023d (no pump workaround); seven readings approved 2026-10-06; Linux/GNU gates green (`host_quic` 25/25 ×5, workspace 1,164 passed); Windows/MSVC pending at the PR tip; one PR with T023d, T023d first; see [T023b](T023b.md) Merged in PR #28 (`16f58c8`), CI green on both OSes. |
-| T024 | contract approved (D35); implementation to route | — | `crpg-net` snapshot transfer: separate subprotocol (byte 0x81, lane 2), 8 × 4 KiB segments per chunk, byte-level assembly plus a bounded receiver pool with atomic publication and a delivery-cursor cutover gate; 31 test cases; approval D35 (2026-10-24); see [T024](T024.md) |
+| T024 | implemented, verified, reviewed (Beam); two-keys and core review pending; on `mgr/session-21-batch` | — | `crpg-net` snapshot transfer: separate subprotocol (byte 0x81, lane 2), 8 × 4 KiB segments per chunk, byte-level assembly plus a bounded receiver pool with atomic publication and a delivery-cursor cutover gate; 31 test cases; approval D35 (2026-10-24); see [T024](T024.md) |
 | T024q | contract to write; before T025b | — | `crpg-net-quic` transfer channel on the existing ordered stream with an explicit channel selector under ALPN `crpg-lane0/2` (T024 Q3 follow-on) |
 | T024h | contract to write; before T025b | — | `crpg-server` T024 S§11 sender/host requirements and seamless narrowing (T024 Q5 follow-on) |
 | T025a | blocked | — | `crpg-net` reconnect/resync mechanisms; T024 approved (D35), contract can start; D12 |
@@ -138,6 +138,8 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T031 | done | 2026-09-30 | `tools/preflight.sh` / `tools/preflight.ps1` gate runners (PR #20, merge `c1bc6ab`). Native Windows run of `tools/tests` supplied by the D26 CI step: `lint-selftest (windows-latest)` green on PR #21 (merge `ac137ac`, 2026-10-01); see [T031](T031.md) |
 | T032 | done | 2026-09-30 | Documentation reconciliation: E003/E007/E012/E021 resolved, E013 spec part done (README pending), retrospective `tasks/T004.md`, `docs/adr/0000-template.md` (PR #20, merge `c1bc6ab`); see [T032](T032.md) |
 | T033 | done | 2026-10-01 | Documentation (PR #21, merge `ac137ac`, all nine checks green): remaining E-task wording (E010, E013 README, E017, E018, E019, E022) reconciled with D01–D18 and the as-built code; E023 deferred; see [T033](T033.md) |
+| A0-13 | ready | — | tools (`oc.py`): attempt lock for parallel `oc.py ask` runs (L5): parallel runs share an attempt number and write one `.jsonl`/report |
+| A0-14 | ready | — | tools (`verify_task.py`): contract-named tests must exist and assert (L6): empty `fn tN() {}` stubs must not report as passing |
 
 The delegated path from here to spec Phase 12 — work-package kinds, waves,
 concurrency limits and human gates — is [docs/IMPLEMENTATION_PLAN.md](../docs/IMPLEMENTATION_PLAN.md).
@@ -206,7 +208,7 @@ Its T034+ ids are reserved places in that order, not written contracts.
 |---|---|---|---|
 | T136b | merged (PR #70) | 2026-10-24 | `crpg-data` surface schemas: two-keys tests merged after attempt 2 on DeepSeek V4 Pro |
 | T136c | merged (PR #70) | 2026-10-24 | `crpg-sim` bridge: two-keys tests merged after attempt 2 on DeepSeek V4 Pro |
-| T137 | T137a, T137b, T137c merged into session-20 batch | 2026-10-24 | `crpg-sim` adapter generalization: T137a/T137b (+fix)/T137c merged into `mgr/session-20-batch`; `surface_v1` baselines approved (D36); T137b-tests pending (`task/T137b-tests-k1`, WIP `cb71544`) |
+| T137 | T137a, T137b, T137c merged into session-20 batch (PR #71 merged 2026-10-25, b7fa63e) | 2026-10-24 | `crpg-sim` adapter generalization: T137a/T137b (+fix)/T137c merged into `mgr/session-20-batch`; `surface_v1` baselines approved (D36); T137b-tests pending (`task/T137b-tests-k1`, WIP `cb71544`) |
 | T138a | merged (PR #70) | 2026-10-24 | `crpg-sim` encounter mode and RT policy: merged into the batch with two-keys `rt_contract.rs` and review fixes |
 | T138c | merged (PR #70) | 2026-10-24 | `crpg-script` `Stop` companion: merged into the batch with review fixes |
 | A0-12 | merged (PR #70) | 2026-10-24 | tools (`tools/agents/oc.py` slot guard): refuses a slot that holds another task's work; merged into the batch |
@@ -215,6 +217,7 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T138b-tests | merged (PR #70) | 2026-10-24 | `crpg-sim` two-keys `history_v2_contract.rs` (DeepSeek V4 Pro, mutation proofs) |
 | T138d | merged (PR #70) | 2026-10-24 | `crpg-server` `CombatAction::Stop` companion (OpenCode) |
 | T138e | merged (PR #70) | 2026-10-24 | `crpg-net` tests companion for T138 (OpenCode) |
+| T137-gaps | merged into session-21 batch | 2026-10-25 | `crpg-sim` tests: `crates/crpg-sim/tests/surface_draws_followup.rs`, 3 tests (self-targeted Opposed both-lists fold, its different-target control, reload after each of actions 1–3); opencode/deepseek-v4.1-flash-free attempt 1, commit `297cfc1`; the self-target fold is not publicly observable (both rolls fold the same lists); the crate-private plan test pins it |
 
 ## ADR-0029 follow-on contracts
 
@@ -223,7 +226,7 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T134 | `crpg-rules` | contract to write; approved to start (ADR-0029 Q3); implement only with its first consumer, T137 | — | K3(a) success-count and face-count modes on `DiceExpr`; sum default, notation extension, unchanged trace | Accepted; implement with its first consumer (T137) |
 | T135 | `crpg-rules` | implemented, reviewed; in session 14 batch (S-set: awaits the user's review) | Yes | K3(b) pool refill amount and validated maximum setter | Accepted |
 | T136 | `crpg-data` | T136a implemented, reviewed; merged (PR #64); T136b exact contract approved (`tasks/T136b.md`, D32, every recommendation), ready; companion T136c (`crpg-sim`) named; T136b and T136c merged (PR #70) | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
-| T137 | `crpg-sim` | T137a, T137b, T137c merged into session-20 batch; `surface_v1` baselines approved (D36); T137b-tests pending | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
+| T137 | `crpg-sim` | T137a, T137b, T137c merged into session-20 batch (PR #71 merged 2026-10-25, b7fa63e); `surface_v1` baselines approved (D36); T137b-tests pending | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
 | T138 | `crpg-sim` | T138a–e merged (PR #70, 2026-10-24); history_v2 baselines approved (D34) | Yes | Encounter mode and RT policy (T1–T16); history v2 (N5) | T136 (RT fields) |
 | T139 | `crpg-sim` | contract to write; waits on T137, T138 | Yes | Persistent creature state outside encounters; join and leave (T13, T14) | T137, T138 |
 | T140 | `crpg-net` | contract to write; waits on T024, T027b, T138 (H-filter; ADR-0029 Q8 roll transparency decided here) | — (H-filter) | Next protocol version: N1–N4 facts, events, intents, snapshot allowlist | T024, T027b, T138 |
@@ -518,3 +521,4 @@ Record it here, one line per week.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Added the Session 17 batch table (T136b/T136c two-keys tests in review-fix round on DeepSeek V4 Pro; T137 approved D33; T138a/T138c merged into the batch; A0-12 slot guard) and marked the T137 contract row approved, so the index matches the batch branch.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S20-bookkeeping · Renamed the Session 17 batch to PR #70 with merged statuses, added the T136b-tests/T138b/T138b-tests/T138d/T138e rows, moved the T136/T137/T138 contract rows to merged, and appended the PR #70 throughput row, so the index records the merge.
 - 2026-10-24 (UTC) · opencode-go/beam-free + S20-bookkeeping-2 · Recorded D35 T024 approval and T024q/T024h rows, T025a contract-start note, and T137 batch/D36/T137b-tests status.
+- 2026-10-25 (UTC) · opencode-go/beam-free + S21-bookkeeping · Recorded PR #71 merged (b7fa63e), T024 implemented/verified/reviewed on mgr/session-21-batch, T137-gaps merged, A0-13/A0-14 tooling rows.
