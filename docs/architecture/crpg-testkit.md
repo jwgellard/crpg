@@ -299,7 +299,26 @@ entries only). No workspace crate beyond those — later helpers add their
 edges with their tasks, each justified in the task file. No external crate
 beyond what the workspace already holds; anything else needs approval.
 
-## Agent log
+## Restored scope and machinery (A0-8)
+
+Scope note: this file describes the T008b harness, the T009a replay, and the
+T009c target policy (merged 2026-09-07; native gates passed on Windows/MSVC
+and genuine WSL Ubuntu 24.04 Linux/GNU). See the
+[T009c completion record](../../tasks/T009c.md).
+Fixture campaigns, contract conformance suites and any further helpers arrive
+with the tasks that need them; they extend this file, following the module
+docs that already name their owners.
+
+Shared test machinery, built once so it cannot fork across crates: the
+hash-sequence harness and golden-file convention that T009's replay, T016's
+combat and every golden file after them consume, plus the replay itself —
+versioned `.replay` record/parse/validate/playback with opaque input
+payloads and an exact-tick divergence report. This crate serves tests and
+harnesses: its tests-only adapters never ship in a binary, while the
+harness/replay library surface (`play_and_verify` and friends) is the shared
+implementation `crpgc` consumes at runtime (since T009b).
+
+## Agent log:
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T008b · Wrote the crate doc for the harness: testkit's position and one-way direction, the module map, today-vs-planned with T009/T016/E020 as named consumers, and what consumers inherit.
 - 2026-09-06 (UTC) · opencode/muse-spark + testkit mismatch hardening · Recorded ADR-0010, corrected the E005 dev-dependency claim to proposed-not-fact, and noted truthful mismatch sides.
@@ -314,3 +333,4 @@ beyond what the workspace already holds; anything else needs approval.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e crate opening · Recorded the tests-only srd adapter, extended grammar with the end op, per-attack trace shape, and independent native golden ownership before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the module with the as-built srd replay (seed 285, K = 9, per-target goldens, combat_basic untouched).
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Moved Public API, dependencies, combat/second-ruleset contract notes, and scope note from AGENTS.md into this doc; no rule meaning changed.
+- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 restore · Restored trimmed text blocks verbatim (scope note, shared machinery) per A0-8 no-information-lost rule.
