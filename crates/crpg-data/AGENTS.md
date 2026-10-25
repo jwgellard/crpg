@@ -135,10 +135,10 @@ blesses drift. Retain property regression seeds; never weaken existing tests.
 
 - 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136a · Recorded the rule for joining a family at its current version and added the three optional real-time fields to the optional-missing exceptions; zero `round_ticks`/`recovery_ticks` are `Malformed` read-time checks, with no semantic rule.
 
-- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving design/detail blocks to docs/architecture/crpg-data.md §"Moved from AGENTS.md (A0-8)" and condensing duplicate invariants; no rule meaning changed.
-
 - 2026-09-17 (UTC) · opencode/gpt-6-astra + T012a review fixes · Added working rules for checked version parsing, shared negative-test enforcement and actual single-edge oracle coverage. This supersedes the initial gate's weaker checks without changing the migration API or fixture baselines.
 
 - 2026-09-30 (UTC) · claude-code + T029a implementation · Added the declaration-only surface and its working rules (byte-length identifiers, pinned failure orders, exact content-derived identity, bounded traversal) so later edits cannot quietly add execution authority or loosen compatibility.
 
 - 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
+
+- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving design/detail blocks to docs/architecture/crpg-data.md §"Moved from AGENTS.md (A0-8)" and condensing duplicate invariants; no rule meaning changed.
