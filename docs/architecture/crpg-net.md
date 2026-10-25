@@ -156,6 +156,16 @@ queue). Working contract:
 [`codec_v2`]: ../../crates/crpg-net/src/codec_v2.rs
 [`projection_v2`]: ../../crates/crpg-net/src/projection_v2.rs
 
+## Snapshot transfer (T024)
+
+`protocol_transfer`, `codec_transfer`, and `reassembly` carry the separate
+versioned snapshot-transfer subprotocol (first byte `0x81`, lane 2). The byte
+layer `TransferAssembly` proves the full 1 MiB / 32-chunk envelope; the
+`ReassemblyPool` adds deadline, budgets, body validation, atomic publication
+and the delivery-cursor cutover gate. Host requirements are in T024 S§11.
+
+- 2026-10-25 (UTC) · opencode-go/beam-free + T024 · Added Snapshot transfer section.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
