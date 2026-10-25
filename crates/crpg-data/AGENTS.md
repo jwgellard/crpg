@@ -71,6 +71,10 @@ collections, OS branches, clocks, registry queries, or runtime id generation.
 
 ## Verification
 
+Use pinned Rust 1.98.0, default features and normal test profile on Windows/MSVC
+and genuine Linux/GNU. All focused commands and gates in T010 plus the T012a
+migration gate are mandatory:
+
 ```text
 cargo run -p crpg-data --example generate_schemas -- schemas
 cargo test -p crpg-data --lib migrations --locked
@@ -142,3 +146,5 @@ blesses drift. Retain property regression seeds; never weaken existing tests.
 - 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving design/detail blocks to docs/architecture/crpg-data.md §"Moved from AGENTS.md (A0-8)" and condensing duplicate invariants; no rule meaning changed.
+
+- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 restore · Restored the Verification intro line (pinned Rust/gates mandatory) lost by the A0-8 trim.

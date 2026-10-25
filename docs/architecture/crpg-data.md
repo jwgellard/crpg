@@ -2,6 +2,12 @@
 
 ## Scope
 
+Read the root rules and [T010](../../tasks/T010.md), the binding initial API and
+acceptance contract. Architecture: [crpg-data](../../docs/architecture/crpg-data.md).
+This document describes the verified T010 implementation plus the T011a
+semantic-validation layer and the T012a migration framework; results live in
+T010, [T011a](../../tasks/T011a.md) and [T012](../../tasks/T012.md).
+
 T010 implements the headless campaign-format crate. The implementation contract is
 [T010](../../tasks/T010.md); verification status belongs to the task record.
 The only internal dependency is `crpg-core`.
@@ -466,6 +472,29 @@ generator only.
   for the recorded blocker with options and recommendation.
 
 
+### Kernel-range vocabulary (T136b)
+
+## Kernel-range vocabulary (T136b)
+
+- `StatKindWire` is `Int`/`Fixed`/`Bool`/`Enum{enum_id, variants}`/`Tags`/
+  `Dice`: strings, except `{"enum":{...}}`. Its `Deserialize` is hand-written
+  because the derived one also accepts `{"int": null}`. `ExprWire` and
+  `StatValueWire` keep derived adjacent `type`/`value` decoding; their
+  rejection tests (extra and missing keys at every level) pin that.
+- `DefenseWire` gains `Constant(i32)`, `ActorStat{stat}`, `Opposed{dice,
+  bonus_stats}`; `EffectTargetWire` gains `Stat{stat}`. Their hand-written
+  impls list every variant in `unknown_variant`, so a new variant is added in
+  the enum, the impl and the list together. `DamageEntry`, `StatKindWire` and
+  `EffectTargetWire` are no longer `Copy`.
+- Derived-stat rules live in `validate_ruleset_kernel` (read time, in the
+  contract's order). Depth is bounded before anything recurses; the node count
+  is iterative. Full binary trees have an odd node count, so 4096 itself is
+  unreachable. "Valid stat" in the semantic rules always means declared,
+  non-health and `Int`; `missing_stat` skips derived and non-numeric stats.
+- `real_time_fields_without_round_ticks` is a `Warning` via `push_warning`;
+  warnings never fail validation. Never add a runtime meaning here: T137 owns
+  every mapping and `crpg-data` still never depends on `crpg-rules`.
+
 ### T012a review fixes
 
 ## T012a review fixes
@@ -665,3 +694,5 @@ the reverse; `load_campaign` is unchanged.
 
 - 2026-10-04 (UTC) · claude-code + T058a implementation · Documented the pointer-edit flow and precedence, the current-tag-only, canonical and purity guarantees, and `campaign_index` as the writer's structural check returning its index, so the editor's primitives have one owner here.
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Moved design/detail blocks from crates/crpg-data/AGENTS.md into this doc (new section "Moved from AGENTS.md (A0-8)") so AGENTS.md stays at or below 10,000 bytes; no rule meaning changed.
+
+- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 restore · Restored the intro sentence, the Kernel-range vocabulary bullets (StatKindWire/DefenseWire/derived-stat/real-time) lost by the A0-8 trim.
