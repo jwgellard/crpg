@@ -32,6 +32,9 @@ use crpg_net::reassembly::{
 
 const EPOCH: [u8; 16] = [0u8; 16];
 
+type HealthRow = (u64, Option<(u32, u32, bool)>);
+type LimitMutation = (fn(&mut TransferLimits), &'static str);
+
 fn ep(byte: u8) -> [u8; 16] {
     [byte; 16]
 }
@@ -89,8 +92,7 @@ fn with_epoch(mut value: BeginTransfer, epoch: [u8; 16]) -> BeginTransfer {
 }
 
 fn two_chunk_body() -> Vec<u8> {
-    let facts: Vec<(u64, Option<(u32, u32, bool)>)> =
-        (1..=800).map(|id| (id, Some((10, 10, false)))).collect();
+    let facts: Vec<HealthRow> = (1..=800).map(|id| (id, Some((10, 10, false)))).collect();
     encode_body(&body_of(&facts, None)).expect("two-chunk body")
 }
 
@@ -116,7 +118,7 @@ fn frames_of(value: &BeginTransfer, body: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn body_of(entities: &[(u64, Option<(u32, u32, bool)>)], turn: Option<TurnFact>) -> SnapshotBody {
+fn body_of(entities: &[HealthRow], turn: Option<TurnFact>) -> SnapshotBody {
     SnapshotBody {
         entities: entities
             .iter()
@@ -209,6 +211,40 @@ fn v1_delta_of_len(seq: u64, len: usize) -> Vec<u8> {
                 "padded delta length seq={seq} two={two} three={three}"
             );
             return bytes;
+        }
+    }
+    panic!("cannot build a v1 delta of {len} bytes");
+}
+
+/// A v1 delta of exactly `len` bytes for any `len` up to the 256-op ceiling,
+/// padded with maximal `Health` ops and then small `Died` ops.
+fn v1_delta_padded(seq: u64, len: usize) -> Vec<u8> {
+    let big = OpV1::Health {
+        entity: net(u64::MAX),
+        health: u32::MAX,
+        max_health: u32::MAX,
+        dead: true,
+    };
+    for bigs in (0..=256usize.min(len / 20)).rev() {
+        let base = v1_delta(seq, vec![big.clone(); bigs]).len();
+        if base > len {
+            continue;
+        }
+        for three in 0..=1usize {
+            for two in 0..=(len - base) / 2 + 1 {
+                if bigs + two + three > 256 {
+                    break;
+                }
+                let mut ops = vec![big.clone(); bigs];
+                if three == 1 {
+                    ops.push(OpV1::Died { entity: net(200) });
+                }
+                ops.extend((0..two).map(|_| OpV1::Died { entity: net(1) }));
+                let bytes = v1_delta(seq, ops);
+                if bytes.len() == len {
+                    return bytes;
+                }
+            }
         }
     }
     panic!("cannot build a v1 delta of {len} bytes");
@@ -1232,7 +1268,7 @@ fn narrow_body_entities() -> Vec<SnapshotEntity> {
 fn limits_validate_tightening_only() {
     assert_eq!(TransferLimits::v1().validate(), Ok(()));
 
-    let loosened: [(fn(&mut TransferLimits), &str); 7] = [
+    let loosened: [LimitMutation; 7] = [
         (|l| l.max_receivers = 9, "max_receivers"),
         (|l| l.deadline_ms = 5_001, "deadline_ms"),
         (
@@ -1264,7 +1300,7 @@ fn limits_validate_tightening_only() {
         );
     }
 
-    let invalid: [(fn(&mut TransferLimits), &str); 7] = [
+    let invalid: [LimitMutation; 7] = [
         (|l| l.max_receivers = 0, "max_receivers"),
         (|l| l.deadline_ms = 0, "deadline_ms"),
         (
@@ -2014,7 +2050,7 @@ fn wrong_epoch_and_behind_replica_refusals() {
             released: 0,
         })
     );
-    assert_eq!(pool.pop_update(id).is_some(), true);
+    assert!(pool.pop_update(id).is_some());
 
     let behind_cursor = begin(2, 100, 3, 2, 0, 1, 1);
     let result = expect_unchanged(&pool, |p| {
@@ -2852,4 +2888,808 @@ fn later_pop_all(pool: &mut ReassemblyPool, id: ReceiverId) -> Vec<ReplicaUpdate
         updates.push(update);
     }
     updates
+}
+fn small_body(health: u32) -> SnapshotBody {
+    body_of(&[(1, Some((health, 10, false)))], None)
+}
+
+fn delta_seq_of(update: &ReplicaUpdate) -> Option<u64> {
+    match update {
+        ReplicaUpdate::Delta(delta) => Some(delta.event_seq()),
+        ReplicaUpdate::Snapshot(_) => None,
+    }
+}
+
+// ---------------------------------------------------------------- S§10.6 step 3
+
+#[test]
+fn publication_over_a_queued_snapshot_clears_the_whole_queue() {
+    let ops = |seq: u64, count: usize| {
+        v1_delta(seq, (0..count).map(|_| health_op(1, seq as u32)).collect())
+    };
+
+    // Valid control: with no Snapshot in the queue, queued deltas are kept
+    // and the new snapshot lands behind them (S§10.7 FIFO).
+    let mut control = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut control, EPOCH, DeltaWire::V1, GateMode::Live);
+    let (d1, d2) = (ops(1, 1), ops(2, 2));
+    for bytes in [&d1, &d2] {
+        assert!(matches!(
+            control.offer_delta(id, bytes, 0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        ));
+    }
+    assert_eq!(
+        publish(&mut control, id, EPOCH, 1, 100, 2, 1, &small_body(1), 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    let kept = status(&control, id);
+    assert_eq!(kept.queued_updates, 3);
+    assert_eq!(kept.held_frames, 2);
+    assert_eq!(kept.held_bytes, d1.len() + d2.len());
+    let order: Vec<Option<u64>> = later_pop_all(&mut control, id)
+        .iter()
+        .map(delta_seq_of)
+        .collect();
+    assert_eq!(order, vec![Some(1), Some(2), None]);
+
+    // The case under test: the queue holds Snapshot 1 plus deltas 6 and 7.
+    let mut pool = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    assert_eq!(
+        publish(&mut pool, id, EPOCH, 1, 100, 5, 1, &small_body(1), 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    let (d6, d7, d8, d9) = (ops(6, 1), ops(7, 2), ops(8, 3), ops(9, 4));
+    for bytes in [&d6, &d7] {
+        assert!(matches!(
+            pool.offer_delta(id, bytes, 0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        ));
+    }
+    let queued = status(&pool, id);
+    assert_eq!(queued.queued_updates, 3);
+    assert_eq!(queued.held_frames, 2);
+    assert_eq!(queued.held_bytes, d6.len() + d7.len());
+    assert_eq!(pool.held_delta_bytes(), d6.len() + d7.len());
+
+    let frames = plan(EPOCH, 2, 100, 7, 1, &small_body(2)).expect("plan");
+    assert_eq!(
+        pool.offer_transfer(id, &frames[0], 0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(pool.offer_delta(id, &d9, 0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(pool.offer_delta(id, &d8, 0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(
+        pool.offer_transfer(id, &frames[frames.len() - 1], 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(2),
+            released: 2,
+        })
+    );
+    let after = status(&pool, id);
+    assert_eq!(
+        after.queued_updates, 3,
+        "the old Snapshot and deltas 6 and 7 must all be gone: only Snapshot 2, 8, 9"
+    );
+    assert_eq!(after.held_frames, 2);
+    assert_eq!(after.held_bytes, d8.len() + d9.len());
+    assert_eq!(pool.held_delta_bytes(), d8.len() + d9.len());
+    assert_eq!(after.next_event_seq, 10);
+    let popped = later_pop_all(&mut pool, id);
+    assert_eq!(popped.len(), 3);
+    match &popped[0] {
+        ReplicaUpdate::Snapshot(publication) => {
+            assert_eq!(publication.transfer, tid(2));
+            assert_eq!(publication.body, small_body(2));
+        }
+        other => panic!("expected the newer snapshot first, got {other:?}"),
+    }
+    assert_eq!(delta_seq_of(&popped[1]), Some(8));
+    assert_eq!(delta_seq_of(&popped[2]), Some(9));
+    let drained = status(&pool, id);
+    assert_eq!((drained.held_frames, drained.held_bytes), (0, 0));
+    assert_eq!(pool.held_delta_bytes(), 0);
+}
+
+// ---------------------------------------------------------------- S§7/S§10.8 step 7
+
+#[test]
+fn queued_deltas_count_toward_every_delta_cap() {
+    // Frames: 128 queued (not held) deltas fill the per-receiver frame cap.
+    let mut pool = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    for seq in 1..=128u64 {
+        assert_eq!(
+            pool.offer_delta(id, &v1_delta(seq, vec![]), 0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+    let full = status(&pool, id);
+    assert_eq!((full.queued_updates, full.held_frames), (128, 128));
+    // Control: popping one update frees one slot (pop_update releases).
+    let mut popped = pool.clone();
+    assert!(popped.pop_update(id).is_some());
+    assert_eq!(status(&popped, id).held_frames, 127);
+    assert_eq!(
+        popped.offer_delta(id, &v1_delta(129, vec![]), 0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        pool.offer_delta(id, &v1_delta(129, vec![]), 0),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+
+    // Per-receiver bytes: exactly 65,536 fits, one byte more overflows.
+    let build = |last_len: usize| {
+        let mut pool = ReassemblyPool::new(delta_limits(65_536, 16_777_216)).expect("pool");
+        let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+        for seq in 1..=63u64 {
+            assert_eq!(
+                pool.offer_delta(id, &v1_delta_padded(seq, 1_024), 0),
+                Ok(DeltaOutcome::Released { count: 1 })
+            );
+        }
+        assert_eq!(status(&pool, id).held_bytes, 63 * 1_024);
+        let outcome = pool.offer_delta(id, &v1_delta_padded(64, last_len), 0);
+        (pool, id, outcome)
+    };
+    let (exact, exact_id, outcome) = build(1_024);
+    assert_eq!(outcome, Ok(DeltaOutcome::Released { count: 1 }));
+    assert_eq!(status(&exact, exact_id).held_bytes, 65_536);
+    let (over, over_id, outcome) = build(1_025);
+    assert_eq!(outcome, Err(TransferError::Failed(FailReason::Overflow)));
+    assert_eq!(status(&over, over_id).queued_updates, 63);
+    // pop_update releases bytes: after one pop the room is back.
+    let (mut freed, freed_id, _) = build(1_024);
+    assert!(freed.pop_update(freed_id).is_some());
+    assert_eq!(status(&freed, freed_id).held_bytes, 63 * 1_024);
+    assert_eq!(freed.held_delta_bytes(), 63 * 1_024);
+    assert_eq!(
+        freed.offer_delta(freed_id, &v1_delta_padded(65, 1_024), 0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+
+    // Pool total: two receivers queue 65,536 each into a 131,072 pool.
+    let fill = || {
+        let mut pool = ReassemblyPool::new(delta_limits(65_536, 131_072)).expect("pool");
+        let a = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+        let b = receiver(&mut pool, ep(1), DeltaWire::V1, GateMode::Live);
+        let c = receiver(&mut pool, ep(2), DeltaWire::V1, GateMode::Live);
+        for seq in 1..=64u64 {
+            for who in [a, b] {
+                assert_eq!(
+                    pool.offer_delta(who, &v1_delta_padded(seq, 1_024), 0),
+                    Ok(DeltaOutcome::Released { count: 1 })
+                );
+            }
+        }
+        assert_eq!(pool.held_delta_bytes(), 131_072);
+        (pool, a, b, c)
+    };
+    let (mut pool, a, _b, c) = fill();
+    assert_eq!(
+        pool.offer_delta(c, &v1_delta_padded(1, 1_024), 0),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+    assert_eq!(status(&pool, a).queued_updates, 64);
+    // Controls: a pop, or removing a receiver, gives the room back.
+    let (mut pool, a, _b, c) = fill();
+    assert!(pool.pop_update(a).is_some());
+    assert_eq!(pool.held_delta_bytes(), 131_072 - 1_024);
+    assert_eq!(
+        pool.offer_delta(c, &v1_delta_padded(1, 1_024), 0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    let (mut pool, _a, b, c) = fill();
+    pool.remove_receiver(b);
+    assert_eq!(pool.held_delta_bytes(), 65_536);
+    assert_eq!(
+        pool.offer_delta(c, &v1_delta_padded(1, 1_024), 0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(pool.held_delta_bytes(), 65_536 + 1_024);
+}
+
+// ---------------------------------------------------------------- S§10.4 step 4
+
+#[test]
+fn overflow_drops_held_deltas_but_keeps_queued_updates() {
+    let mut tight = TransferLimits::v1();
+    tight.delta_frames_per_receiver = 4;
+    let mut pool = ReassemblyPool::new(tight).expect("pool");
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    let queued = [v1_delta(1, vec![]), v1_delta(2, vec![health_op(1, 2)])];
+    for bytes in &queued {
+        assert_eq!(
+            pool.offer_delta(id, bytes, 0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+    let value = begin(1, 0, 2, 2, 0, 1, 1);
+    assert_eq!(
+        pool.offer_transfer(id, &begin_frame(&value), 0),
+        Ok(TransferOutcome::Begun)
+    );
+    for seq in [3u64, 4] {
+        assert_eq!(
+            pool.offer_delta(id, &v1_delta(seq, vec![]), 0),
+            Ok(DeltaOutcome::Buffered)
+        );
+    }
+    let before = status(&pool, id);
+    assert_eq!((before.queued_updates, before.held_frames), (2, 4));
+
+    assert_eq!(
+        pool.offer_delta(id, &v1_delta(5, vec![]), 0),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+    let kept = queued[0].len() + queued[1].len();
+    let after = status(&pool, id);
+    assert_eq!(after.in_flight, None);
+    assert_eq!(after.resync, Some(ResyncReason::Overflow));
+    assert_eq!(after.mode, GateMode::AwaitSnapshot);
+    assert_eq!(after.queued_updates, 2, "queued updates must stay");
+    assert_eq!(after.held_frames, 2, "only held deltas are dropped");
+    assert_eq!(after.held_bytes, kept);
+    assert_eq!(pool.held_delta_bytes(), kept);
+    assert_eq!(pool.staging_bytes(), 0);
+    let popped = later_pop_all(&mut pool, id);
+    let order: Vec<Option<u64>> = popped.iter().map(delta_seq_of).collect();
+    assert_eq!(order, vec![Some(1), Some(2)]);
+    assert_eq!(pool.held_delta_bytes(), 0);
+    // The dropped deltas 3 and 4 never come back: a snapshot at cursor 2
+    // releases nothing, where keeping them would have released both.
+    assert_eq!(
+        publish(&mut pool, id, EPOCH, 2, 0, 2, 1, &small_body(1), 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(2),
+            released: 0,
+        })
+    );
+}
+
+// ---------------------------------------------------------------- S§8.2 / S§11 item 8
+
+fn descending_body() -> SnapshotBody {
+    let mut body = body_of(&[(1, None), (2, None)], None);
+    body.entities.reverse();
+    body
+}
+
+#[test]
+fn plan_transfer_error_arms_and_check_order() {
+    let body = small_body(5);
+    let call = |cursor: u64, segments: u8, body: &SnapshotBody| {
+        plan_transfer(EPOCH, tid(1), 0, cursor, segments, body)
+    };
+    let wide = |count: u64| {
+        body_of(
+            &(1..=count).map(|id| (id, None)).collect::<Vec<HealthRow>>(),
+            None,
+        )
+    };
+
+    // Valid controls at the edge of each arm.
+    assert!(call(SEQ_LAST, 1, &body).is_ok());
+    assert!(call(0, 8, &body).is_ok());
+    assert!(call(0, 1, &wide(1_024)).is_ok());
+
+    assert_eq!(call(SEQ_LAST + 1, 1, &body), Err(CodecError::Malformed));
+    assert_eq!(call(u64::MAX, 1, &body), Err(CodecError::Malformed));
+    assert_eq!(call(0, 0, &body), Err(CodecError::Malformed));
+    assert_eq!(call(0, 9, &body), Err(CodecError::LimitExceeded));
+    assert_eq!(call(0, u8::MAX, &body), Err(CodecError::LimitExceeded));
+    assert_eq!(call(0, 1, &wide(1_025)), Err(CodecError::LimitExceeded));
+
+    // Order: cursor, then segments, then the body.
+    assert_eq!(
+        call(u64::MAX, 9, &body),
+        Err(CodecError::Malformed),
+        "cursor (Malformed) is checked before segments (LimitExceeded)"
+    );
+    assert_eq!(
+        call(u64::MAX, 1, &wide(1_025)),
+        Err(CodecError::Malformed),
+        "cursor (Malformed) is checked before the body (LimitExceeded)"
+    );
+    assert_eq!(
+        call(0, 0, &wide(1_025)),
+        Err(CodecError::Malformed),
+        "segments (Malformed) are checked before the body (LimitExceeded)"
+    );
+    assert_eq!(
+        call(0, 9, &descending_body()),
+        Err(CodecError::LimitExceeded),
+        "segments (LimitExceeded) are checked before the body (Malformed)"
+    );
+    assert_eq!(
+        call(0, 1, &descending_body()),
+        Err(CodecError::Malformed),
+        "control: the body alone is Malformed"
+    );
+    let mut many_descending = wide(1_025);
+    many_descending.entities.reverse();
+    assert_eq!(
+        call(0, 1, &many_descending),
+        Err(CodecError::LimitExceeded),
+        "encode_body checks the count before the order"
+    );
+    let mut turn_missing = body.clone();
+    turn_missing.turn = Some(TurnFact {
+        active: Some(net(77)),
+        round: 1,
+    });
+    assert_eq!(call(0, 1, &turn_missing), Err(CodecError::Malformed));
+}
+
+// ---------------------------------------------------------------- S§10.4
+
+#[test]
+fn held_deltas_survive_expired_conflict_and_invalid_body_failures() {
+    let d1 = v1_delta(1, vec![health_op(1, 1)]);
+    let d2 = v1_delta(2, vec![health_op(1, 2), health_op(2, 2)]);
+    let held = d1.len() + d2.len();
+    // Receiver with transfer 1 in flight (two chunks, cursor 0) and deltas
+    // 1 and 2 held above the cursor.
+    let setup = |limits: TransferLimits| {
+        let mut pool = ReassemblyPool::new(limits).expect("pool");
+        let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+        let value = begin(1, 0, 0, 4_097, 0, 1, 2);
+        assert_eq!(
+            pool.offer_transfer(id, &begin_frame(&value), 0),
+            Ok(TransferOutcome::Begun)
+        );
+        for bytes in [&d1, &d2] {
+            assert_eq!(pool.offer_delta(id, bytes, 0), Ok(DeltaOutcome::Buffered));
+        }
+        (pool, id, value)
+    };
+    let check = |mut pool: ReassemblyPool, id: ReceiverId, reason: ResyncReason| {
+        let after = status(&pool, id);
+        assert_eq!(after.in_flight, None);
+        assert_eq!(after.resync, Some(reason));
+        assert_eq!(after.mode, GateMode::AwaitSnapshot);
+        assert_eq!(after.held_frames, 2, "{reason:?} must not drop held deltas");
+        assert_eq!(after.held_bytes, held);
+        assert_eq!(pool.held_delta_bytes(), held);
+        assert_eq!(after.queued_updates, 0);
+        // The deltas are really still held: the next snapshot releases both.
+        assert_eq!(
+            publish(&mut pool, id, EPOCH, 2, 0, 0, 1, &small_body(1), 5_000),
+            Ok(TransferOutcome::Published {
+                transfer: tid(2),
+                released: 2,
+            })
+        );
+        let order: Vec<Option<u64>> = later_pop_all(&mut pool, id)
+            .iter()
+            .map(delta_seq_of)
+            .collect();
+        assert_eq!(order, vec![None, Some(1), Some(2)]);
+    };
+
+    // Expired, found by a chunk arriving at 5,000 and by poll alone.
+    let (mut pool, id, value) = setup(TransferLimits::v1());
+    assert_eq!(
+        pool.offer_transfer(id, &chunk_frame(&value, &[0u8; 4_097], 0), 5_000),
+        Err(TransferError::Failed(FailReason::Expired))
+    );
+    check(pool, id, ResyncReason::Expired);
+    let (mut pool, id, _) = setup(TransferLimits::v1());
+    assert_eq!(pool.poll(5_000), vec![id]);
+    check(pool, id, ResyncReason::Expired);
+
+    // Conflict: a wrong-length chunk.
+    let (mut pool, id, value) = setup(TransferLimits::v1());
+    let mut short = chunk_of(&value, &[0u8; 4_097], 0);
+    short.bytes.truncate(4_095);
+    assert_eq!(
+        pool.offer_transfer(
+            id,
+            &encode_down(&TransferDown::Chunk(short)).expect("chunk"),
+            1
+        ),
+        Err(TransferError::Failed(FailReason::Conflict))
+    );
+    check(pool, id, ResyncReason::Invalid);
+
+    // Conflict: a Begin that repeats id 1 with another cursor.
+    let (mut pool, id, _) = setup(TransferLimits::v1());
+    assert_eq!(
+        pool.offer_transfer(id, &begin_frame(&begin(1, 0, 3, 4_097, 0, 1, 2)), 1),
+        Err(TransferError::Failed(FailReason::Conflict))
+    );
+    check(pool, id, ResyncReason::Invalid);
+
+    // InvalidBody: both chunks arrive, the 4,097 bytes do not decode.
+    let (mut pool, id, value) = setup(TransferLimits::v1());
+    let junk = vec![0xFFu8; 4_097];
+    assert_eq!(
+        pool.offer_transfer(id, &chunk_frame(&value, &junk, 0), 1),
+        Ok(TransferOutcome::Stored {
+            received: 1,
+            chunk_count: 2,
+        })
+    );
+    assert!(matches!(
+        pool.offer_transfer(id, &chunk_frame(&value, &junk, 1), 1),
+        Err(TransferError::Failed(FailReason::InvalidBody(_)))
+    ));
+    check(pool, id, ResyncReason::Invalid);
+
+    // Control: Overflow is the one failure that drops the held deltas.
+    let mut tight = TransferLimits::v1();
+    tight.delta_frames_per_receiver = 2;
+    let (mut pool, id, _) = setup(tight);
+    assert_eq!(
+        pool.offer_delta(id, &v1_delta(3, vec![]), 1),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+    assert_eq!(status(&pool, id).held_frames, 0);
+    assert_eq!(pool.held_delta_bytes(), 0);
+    assert_eq!(
+        publish(&mut pool, id, EPOCH, 2, 0, 0, 1, &small_body(1), 1),
+        Ok(TransferOutcome::Published {
+            transfer: tid(2),
+            released: 0,
+        })
+    );
+}
+
+// ---------------------------------------------------------------- S§10.2/S§10.3
+
+#[test]
+fn simultaneous_begin_refusals_report_the_first_failure() {
+    let mut pool = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    assert_eq!(
+        publish(&mut pool, id, EPOCH, 1, 100, 10, 1, &small_body(1), 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    let two = begin(2, 100, 20, 2, 0, 1, 1);
+    assert_eq!(
+        pool.offer_transfer(id, &begin_frame(&two), 0),
+        Ok(TransferOutcome::Begun)
+    );
+    let offer = |pool: &ReassemblyPool, value: &BeginTransfer| {
+        expect_unchanged(pool, |p| p.offer_transfer(id, &begin_frame(value), 0))
+    };
+
+    // Stale (id 1 retired) and InFlight (2 live) both hold: Stale wins.
+    assert_eq!(
+        offer(&pool, &begin(1, 100, 20, 2, 0, 1, 1)),
+        Err(TransferError::StaleTransfer)
+    );
+    // Control: only InFlight holds.
+    assert_eq!(
+        offer(&pool, &begin(3, 100, 20, 2, 0, 1, 1)),
+        Err(TransferError::InFlight)
+    );
+    // InFlight and BehindReplica (cursor 5 + 1 < next_event_seq 11): InFlight wins.
+    let behind = begin(3, 100, 5, 2, 0, 1, 1);
+    assert_eq!(offer(&pool, &behind), Err(TransferError::InFlight));
+    let rolled_back = begin(3, 99, 20, 2, 0, 1, 1);
+    assert_eq!(offer(&pool, &rolled_back), Err(TransferError::InFlight));
+
+    // Cancel 2: the same frames now report the next stage.
+    let cancel = encode_down(&TransferDown::Cancel {
+        epoch: EPOCH,
+        transfer: tid(2),
+        reason: CancelReason::Aborted,
+    })
+    .expect("cancel");
+    assert_eq!(
+        pool.offer_transfer(id, &cancel, 0),
+        Ok(TransferOutcome::Cancelled { discarded: true })
+    );
+    assert_eq!(offer(&pool, &behind), Err(TransferError::BehindReplica));
+    assert_eq!(
+        offer(&pool, &rolled_back),
+        Err(TransferError::BehindReplica)
+    );
+    // Stale (id 2 retired) and BehindReplica both hold: Stale wins.
+    assert_eq!(
+        offer(&pool, &begin(2, 100, 5, 2, 0, 1, 1)),
+        Err(TransferError::StaleTransfer)
+    );
+    // Control: a clean higher Begin is accepted.
+    assert_eq!(
+        pool.offer_transfer(id, &begin_frame(&begin(3, 100, 10, 2, 0, 1, 1)), 0),
+        Ok(TransferOutcome::Begun)
+    );
+}
+
+#[test]
+fn simultaneous_budget_refusals_report_the_first_failure() {
+    let mut pool = ReassemblyPool::new(limits(22_552, 22_552)).expect("pool");
+    let a = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    let b = receiver(&mut pool, ep(1), DeltaWire::V1, GateMode::Live);
+    assert_eq!(
+        publish(&mut pool, a, EPOCH, 1, 100, 10, 1, &small_body(1), 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    let fill = with_epoch(begin(1, 0, 0, 22_552, 0, 1, 6), ep(1));
+    assert_eq!(
+        pool.offer_transfer(b, &begin_frame(&fill), 0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(pool.staging_bytes(), 22_552);
+    let offer = |pool: &ReassemblyPool, value: &BeginTransfer| {
+        expect_unchanged(pool, |p| p.offer_transfer(a, &begin_frame(value), 0))
+    };
+
+    // Per-receiver and pool totals are both exceeded: StagingFull first.
+    assert_eq!(
+        offer(&pool, &begin(2, 100, 10, 22_553, 0, 1, 6)),
+        Err(TransferError::StagingFull)
+    );
+    // Control: within the per-receiver cap, only the pool total fails.
+    assert_eq!(
+        offer(&pool, &begin(2, 100, 10, 22_552, 0, 1, 6)),
+        Err(TransferError::AggregateFull)
+    );
+    // Behind the replica and over the cap: BehindReplica (step 4) first.
+    assert_eq!(
+        offer(&pool, &begin(2, 100, 5, 22_553, 0, 1, 6)),
+        Err(TransferError::BehindReplica)
+    );
+    // Control: once b's reservation is gone the same Begin is accepted.
+    pool.remove_receiver(b);
+    assert_eq!(
+        pool.offer_transfer(a, &begin_frame(&begin(2, 100, 10, 22_552, 0, 1, 6)), 0),
+        Ok(TransferOutcome::Begun)
+    );
+}
+
+// ---------------------------------------------------------------- S§10.7/S§10.8
+
+#[test]
+fn drain_stops_at_the_inflight_cursor_and_publication_drops_covered_deltas() {
+    let d = |seq: u64| v1_delta(seq, vec![health_op(1, seq as u32)]);
+    let mut pool = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    for seq in 1..=3u64 {
+        assert_eq!(
+            pool.offer_delta(id, &d(seq), 0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+    let value = begin(1, 0, 5, 2, 0, 1, 1);
+    assert_eq!(
+        pool.offer_transfer(id, &begin_frame(&value), 0),
+        Ok(TransferOutcome::Begun)
+    );
+    for seq in [7u64, 6, 5] {
+        assert_eq!(pool.offer_delta(id, &d(seq), 0), Ok(DeltaOutcome::Buffered));
+    }
+    // Delta 4 releases itself and 5; the drain must stop at the cursor, so
+    // 6 and 7 stay held.
+    assert_eq!(
+        pool.offer_delta(id, &d(4), 0),
+        Ok(DeltaOutcome::Released { count: 2 })
+    );
+    let mid = status(&pool, id);
+    assert_eq!(mid.next_event_seq, 6);
+    assert_eq!(mid.queued_updates, 5);
+    assert_eq!(mid.held_frames, 7);
+    assert_eq!(mid.held_bytes, (1..=7).map(|s| d(s).len()).sum::<usize>());
+    let early: Vec<Option<u64>> = later_pop_all(&mut pool, id)
+        .iter()
+        .map(delta_seq_of)
+        .collect();
+    assert_eq!(early, (1..=5).map(Some).collect::<Vec<_>>());
+    assert_eq!(
+        pool.offer_transfer(id, &chunk_frame(&value, &[0, 0], 0), 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 2,
+        })
+    );
+    let late: Vec<Option<u64>> = later_pop_all(&mut pool, id)
+        .iter()
+        .map(delta_seq_of)
+        .collect();
+    assert_eq!(late, vec![None, Some(6), Some(7)]);
+
+    // A held delta at exactly the cursor is covered by the snapshot and is
+    // dropped from the accounting, not just skipped.
+    let mut waiting = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut waiting, EPOCH, DeltaWire::V1, GateMode::AwaitSnapshot);
+    for seq in 1..=3u64 {
+        assert_eq!(
+            waiting.offer_delta(id, &d(seq), 0),
+            Ok(DeltaOutcome::Buffered)
+        );
+    }
+    assert_eq!(
+        publish(&mut waiting, id, EPOCH, 1, 0, 2, 1, &small_body(1), 0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 1,
+        })
+    );
+    let after = status(&waiting, id);
+    assert_eq!((after.queued_updates, after.held_frames), (2, 1));
+    assert_eq!(after.held_bytes, d(3).len());
+    assert_eq!(waiting.held_delta_bytes(), d(3).len());
+}
+
+#[test]
+fn identical_held_delta_is_a_duplicate_and_a_different_one_conflicts() {
+    let mut pool = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::AwaitSnapshot);
+    let held = v1_delta(5, vec![health_op(1, 50)]);
+    assert_eq!(pool.offer_delta(id, &held, 0), Ok(DeltaOutcome::Buffered));
+    let result = expect_unchanged(&pool, |p| p.offer_delta(id, &held, 0));
+    assert_eq!(result, Ok(DeltaOutcome::Duplicate));
+    let other = v1_delta(5, vec![health_op(1, 51)]);
+    assert_eq!(
+        pool.offer_delta(id, &other, 0),
+        Err(TransferError::Failed(FailReason::Conflict))
+    );
+    assert_eq!(status(&pool, id).resync, Some(ResyncReason::Invalid));
+}
+
+#[test]
+fn remove_receiver_releases_held_and_queued_delta_bytes() {
+    let d = |seq: u64| v1_delta(seq, vec![health_op(1, seq as u32)]);
+    let mut pool = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let waiting = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::AwaitSnapshot);
+    let live = receiver(&mut pool, ep(1), DeltaWire::V1, GateMode::Live);
+    for seq in 1..=3u64 {
+        assert_eq!(
+            pool.offer_delta(waiting, &d(seq), 0),
+            Ok(DeltaOutcome::Buffered)
+        );
+    }
+    for seq in 1..=2u64 {
+        assert_eq!(
+            pool.offer_delta(live, &d(seq), 0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+    let held: usize = (1..=3).map(|s| d(s).len()).sum();
+    let queued: usize = (1..=2).map(|s| d(s).len()).sum();
+    assert_eq!(pool.held_delta_bytes(), held + queued);
+    pool.remove_receiver(waiting);
+    assert_eq!(pool.held_delta_bytes(), queued, "held bytes were not freed");
+    let unknown = expect_unchanged(&pool, |p| {
+        p.remove_receiver(waiting);
+        p.held_delta_bytes()
+    });
+    assert_eq!(unknown, queued);
+    pool.remove_receiver(live);
+    assert_eq!(pool.held_delta_bytes(), 0, "queued bytes were not freed");
+}
+
+// ---------------------------------------------------------------- S§6 item 6
+
+#[test]
+fn trailing_bytes_are_malformed_in_every_transfer_frame() {
+    let value = begin(1, 0, 0, 2, 0, 1, 1);
+    let down = [
+        begin_frame(&value),
+        chunk_frame(&value, &[0, 0], 0),
+        encode_down(&TransferDown::Cancel {
+            epoch: EPOCH,
+            transfer: tid(1),
+            reason: CancelReason::Aborted,
+        })
+        .expect("cancel"),
+    ];
+    for frame in &down {
+        assert!(decode_down(frame).is_ok(), "control frame must decode");
+        let mut extra = frame.clone();
+        extra.push(0);
+        assert_eq!(decode_down(&extra), Err(CodecError::Malformed));
+    }
+    let up = [
+        encode_up(&TransferUp::Published {
+            epoch: EPOCH,
+            transfer: tid(1),
+        })
+        .expect("published"),
+        encode_up(&TransferUp::Resync {
+            epoch: EPOCH,
+            after: None,
+            reason: ResyncReason::Overflow,
+        })
+        .expect("resync"),
+    ];
+    for frame in &up {
+        assert!(decode_up(frame).is_ok(), "control frame must decode");
+        let mut extra = frame.clone();
+        extra.push(0);
+        assert_eq!(decode_up(&extra), Err(CodecError::Malformed));
+    }
+}
+
+// ---------------------------------------------------------------- S§10.2 step 1
+
+#[test]
+fn a_stale_clock_is_clamped_when_a_deadline_is_set() {
+    let mut pool = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    assert_eq!(pool.poll(10_000), Vec::new());
+    // The caller's clock reads 0, but the pool has seen 10,000.
+    let value = begin(1, 0, 0, 2, 0, 1, 1);
+    assert_eq!(
+        pool.offer_transfer(id, &begin_frame(&value), 0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        status(&pool, id).in_flight.map(|f| f.deadline_ms),
+        Some(15_000)
+    );
+    assert_eq!(pool.poll(14_999), Vec::new());
+    assert_eq!(pool.poll(15_000), vec![id]);
+
+    // Control: a clock that has not gone backwards gives the same deadline.
+    let mut fresh = ReassemblyPool::new(TransferLimits::v1()).expect("pool");
+    let id = receiver(&mut fresh, EPOCH, DeltaWire::V1, GateMode::Live);
+    assert_eq!(
+        fresh.offer_transfer(id, &begin_frame(&value), 10_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        status(&fresh, id).in_flight.map(|f| f.deadline_ms),
+        Some(15_000)
+    );
+}
+
+// ---------------------------------------------------------------- S§7/S§8.3
+
+#[test]
+fn limits_range_ends_are_inclusive() {
+    // The floor of every range is valid, and a total may equal its
+    // per-receiver value.
+    let floor = TransferLimits {
+        max_receivers: 1,
+        deadline_ms: 1,
+        staging_bytes_per_receiver: 22_552,
+        staging_bytes_total: 22_552,
+        delta_frames_per_receiver: 1,
+        delta_bytes_per_receiver: 65_536,
+        delta_bytes_total: 65_536,
+    };
+    assert_eq!(floor.validate(), Ok(()));
+    let mut pool = ReassemblyPool::new(floor.clone()).expect("floor limits build a pool");
+    assert_eq!(pool.limits(), floor);
+    let id = receiver(&mut pool, EPOCH, DeltaWire::V1, GateMode::Live);
+    assert_eq!(
+        pool.add_receiver(ep(1), DeltaWire::V1, GateMode::Live),
+        Err(TransferError::ReceiversFull)
+    );
+    // One delta frame fits and a second overflows.
+    assert_eq!(
+        pool.offer_delta(id, &v1_delta(1, vec![]), 0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        pool.offer_delta(id, &v1_delta(2, vec![]), 0),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+    // Each field one above its floor is still valid (control for the floors).
+    let mut above = floor.clone();
+    above.max_receivers = 2;
+    above.deadline_ms = 2;
+    above.staging_bytes_per_receiver = 22_553;
+    above.staging_bytes_total = 22_553;
+    above.delta_frames_per_receiver = 2;
+    above.delta_bytes_per_receiver = 65_537;
+    above.delta_bytes_total = 65_537;
+    assert_eq!(above.validate(), Ok(()));
 }
