@@ -24,7 +24,150 @@ controller over the ascending `(InitiativeKey, EntityId)` ordering, and the
 
 ## Public API  (changing this requires an ADR)
 
-Full list: `docs/architecture/crpg-sim.md` §Public API. Treat any change as ADR-level.
+`World`, `EntityMeta`, `ComponentStore<T>`, `Timeline`, `InitiativeKey`,
+`Transform`, `SimEvent`, `tick`, `end_turn`, `state_hash`, plus the T016b
+combat surface: `Combatant`, `CombatState`, `CombatDefinition`,
+`EncounterSpec`, `PlacementAndArea`, `CombatAction`, `ActionOutcome`,
+`CombatError`, `start_encounter`, `perform_action`,
+`MAX_COMBATANTS`, `MAX_COMBAT_STATS`, `COMBAT_ROLL_STREAM`,
+`COMBAT_ROLL_TAG`, plus the T016f release surface: `ParticipantResult`,
+`EncounterSummary`, `end_encounter`, plus the T020 opt-in history surface:
+`HistoryWorld`, `HistoryEvent`, `HistoryEnvelope`, `HistoryError`,
+`history_hash`, `MAX_HISTORY_EVENTS`, `MAX_HISTORY_BYTES`,
+`MAX_HISTORY_PAGE`, `MAX_HISTORY_STRING_BYTES`, `HISTORY_VERSION`, plus the
+T028 legality surface (ADR-0018): `validate_action`, `legal_actions`,
+`LegalActionsError`, `MAX_LEGAL_ACTIONS`, plus the T027a area surface
+(ADR-0020): `World::new_in_area` / `area` / `area_of`,
+`HistoryWorld::new_in_area`, `AreaError`, `transfer_entity`,
+`transfer_history_entity`, and `CombatError::AreaMismatch`, plus the T138a
+encounter-mode surface (ADR-0029): `EncounterMode`, `EncounterClock`,
+`StandingOrder`, `RT_CLOCK_MAX`, `start_encounter_in_mode`, `request_mode`,
+`CombatAction::Stop`, and `CombatError::{ModeUnsupported, WrongMode}`, plus
+the T138b history v2 surface: `HistoryWorld::{version, start_encounter_in_mode,
+request_mode}`, the `HistoryEvent` variants `RoundStarted`, `ModeChanged` and
+`OrderEnded`, and `HISTORY_VERSION` now 2 (1 is still read).
+
+- `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
+  `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
+  `transforms` / `transforms_mut`, `timeline` / `timeline_mut`,
+  `events` / `events_mut`, `rng_mut`, `Default` (= `new(0)`),
+  `Serialize` / validated `Deserialize` (skeleton only, see E014 trap below;
+  loading rejects dangling transforms/timelines and duplicate timeline
+  entries).
+- `ComponentStore<T>`: `new`, `insert` (returns replaced), `remove`, `get`,
+  `get_mut`, `contains`, `len`, `is_empty`, `clear`, `iter`, `iter_mut`.
+- `Timeline`: `new`, `insert` (replaces the entity's entry), `remove`
+  (O(n)), `contains`, `len`, `is_empty`, `iter` ascending.
+  `From<Vec<_>>` applies the same replace rule (last wins);
+  `Deserialize` rejects duplicate entities instead of normalizing.
+- `InitiativeKey(pub i32)`, `Transform { position, velocity }`,
+  `SimEvent::{Spawned, Despawned}`, `EntityMeta {}` (reserved placeholder).
+- `tick(world)`: counter saturating +1, then the ordered system list (today
+  exactly `[timeline_system]`). `end_turn(world)`: pops the timeline head,
+  never re-queues, never despawns. `state_hash(world) -> [u8; 32]`: BLAKE3
+  over canonical JSON, queue bytes included, exclusions none.
+- `start_encounter(world, spec)`: validates an authored encounter
+  all-or-nothing (pinned `CombatError` precedence: active-encounter,
+  collection bounds, placement/area/creature, per-stat presence/wholeness/
+  health-positivity, per-ability dice/table/cost) and only then publishes:
+  one entity per participant in authored order, pools at max, timeline at
+  authored initiative keys, `round = 0`, `active` = timeline head, the
+  `roll` tag interned, the incoming actor refreshed once with `TurnStart`.
+- `perform_action(world, action)`: validates in pinned precedence order
+  (`NoEncounter` … `InsufficientAction`) before any mutation — including
+  before any RNG stream is created — then resolves through the rules
+  kernel (`Against::Dc` on the actor's authored attribute, one named
+  stream, one interned roll tag, empty pipeline/views), spends the cost,
+  applies saturating nonnegative damage flooring at zero, emits `Died`
+  exactly once on the positive-to-zero transition, removes dead
+  participants from scheduling (entities and zero-health state retained),
+  and advances: next head + `TurnStart` refresh, round rollover (round +1,
+  `RoundStart` refresh, re-add live participants) when the timeline
+  empties with two or more alive, terminal (`active = None`) otherwise. A
+  rejected action leaves the whole world — resources, RNG, events, event
+  sequence — unchanged. A valid failed attack consumes its action; an
+  invalid action consumes nothing. Turn-based combat turn logic lives
+  only in these two operations, never in `tick` / `run_systems` / `end_turn`
+  (RT stages 2 and 3 execute stored orders only, T138a). Affordability
+  sums same-pool entries as one total in authored template order, primary
+  first, with checked `u32` addition (`ValueOverflow`) and `InsufficientAction`
+  carrying the total and original balance (T019).
+- `end_encounter(world) -> Result<EncounterSummary, CombatError>`: releases
+  the active encounter any time it is active (terminal or mid-fight) and
+  returns the retained summary (`encounter`/`ruleset` ULIDs, closing
+  `round`, per-participant placement/entity/health/dead in authored order).
+  `combat = None` fails as `NoEncounter` without mutation; otherwise the
+  operation strips combat scheduling and components, keeps every entity
+  live, and emits no events. Second encounters reuse content (same spec
+  shapes) with fresh runtime ids as a deterministic continuation.
+- `HistoryWorld` (T020, ADR-0017): the opt-in wrapper privately owning one
+  `World` plus its bounded journal. Immutable queries via `world()` only —
+  no `&mut World`, stores, queues, RNG, or free mutating controllers escape
+  (pinned by `compile_fail` rustdoc examples) — and typed transactional
+  mutations (`spawn`, `despawn`, `tick`, `start_encounter`,
+  `perform_action`, `end_encounter`) that stage a clone of the world, reuse
+  the existing controllers, drain staged legacy events exactly once,
+  translate each exactly once, collect branch-observed transition facts,
+  validate the journal additions against the live wrapper in pinned order
+  (strings, sequence range, event count, cached canonical byte total), and
+  publish only on success. Gameplay errors win before
+  history errors; rejection preserves authoritative state, RNG, entity
+  allocation, and all counters. Emission order per operation is
+  `ActionResolved`, drained `Died`s, then the actual `ModeChanged`,
+  `RoundStarted`, and `TurnStarted` or first `EncounterEnded` (T138b); an RT
+  `tick` journals `ModeChanged`, `RoundStarted`, `TurnStarted`, then each
+  `ActionResolved` followed at once by its `Died` and each `OrderEnded`, then
+  `EncounterEnded`; explicit release, RT order setting, `Stop` and
+  `request_mode` journal nothing. The wrapper `version` is 1 until the first
+  `commit` whose staged world holds a clock or whose events include a v2
+  variant, then 2 for good (`commit` is its only writer); the loader rejects
+  a version-1 wrapper holding a v2 event or a clock, and any version other
+  than 1 or 2. A history change that moves a `history_v2` or `history_v1`
+  golden is a stop, not a re-bless. `read_after` pages at
+  most 256 envelopes with `StaleCursor`/`FutureCursor` errors and inert
+  reads; `acknowledge` is monotonic and idempotent with no slow-peer cursor.
+  `history_hash` covers the complete canonical wrapper (world, version,
+  pending payloads, sequence/ack state) with no exclusions; legacy
+  `state_hash`, APIs, emissions, bytes, and hashes are unchanged.
+
+- `validate_action(world, action)` / `legal_actions(world, actor)` (T028,
+  ADR-0018): `validate_action` is the only pre-mutation admission path —
+  `perform_action` calls it first — and changes nothing (no interning, no
+  RNG stream, no event, no spend, no advance). `legal_actions` returns
+  `Actor(error)` when `EndTurn { actor }` fails, otherwise every accepted
+  `UseAbility` over abilities by ascending ULID × current combatants by
+  ascending full `EntityId`, then `EndTurn`; each candidate's own failure
+  excludes only that candidate. Over `MAX_LEGAL_ACTIONS` (4096, `EndTurn`
+  counted) the whole query fails with `TooManyOptions`, never a partial list.
+- Area identity (T027a, ADR-0020): `World::new_in_area(seed, area)` binds an
+  immutable authored area ULID (no setter, no late binding); `new`/`Default`
+  stay unbound and byte-identical (`area` omitted when `None`; missing or
+  `null` loads as `None`). `area_of` is the world's area iff the full id is
+  live — death and release keep presence, despawn and slot reuse do not
+  restore it. A bound `start_encounter` returns `AreaMismatch` after the
+  `MissingPlacement`/`MixedArea` checks and before creature/stat checks.
+  `transfer_entity` / `transfer_history_entity` move one noncombat,
+  unscheduled entity (`EntityMeta` plus optional finite `Transform`) between
+  two bound worlds with a fresh destination id, checking `UnboundSource`,
+  `UnboundDestination`, `SameArea`, `AbsentEntity`, `CombatParticipant`,
+  `ScheduledEntity`, `InvalidTransform` in order, then (history pair only)
+  `SourceHistory` before `DestinationHistory`; any failure publishes neither
+  side.
+
+- Encounter mode (T138a, ADR-0029): `CombatState.mode` (TB or RT; hashed;
+  omitted when TB), `clock` (`None` = TB-only), `pending_mode`, and
+  `Combatant.order`. `start_encounter` is TB (and `start_encounter_tracked` keeps its two-argument
+  form, delegating to the mode-taking `start_encounter_in_mode_tracked`); `start_encounter_in_mode`
+  publishes RT (every key `0`, `active = None`). In RT, `validate_action`
+  swaps only its turn stage (terminal gate for `UseAbility`/`Stop`,
+  `WrongMode` for `EndTurn`; `Stop` in TB is `WrongMode`); an accepted RT
+  `UseAbility` stores a `StandingOrder` and returns `Ok(None)`. `tick`
+  stage 2 runs the clock (+1, `OnTick` delivery, boundary: pending RT-to-TB
+  or RT round start) and stage 3 executes due orders through
+  `validate_action` and the shared `resolve_use`. `request_mode` only sets
+  `pending_mode`; switches apply at an RT boundary or a TB rollover. The
+  clock freezes at `RT_CLOCK_MAX`. TB and TB-only worlds are byte-identical
+  to before.
 
 ## Invariants
 
@@ -43,23 +186,18 @@ Full list: `docs/architecture/crpg-sim.md` §Public API. Treat any change as ADR
    health/dead/maximum agreement with pool/attribute/placement identity, and
    active/timeline scheduling against live non-dead combatants with the
    active turn holding the timeline head.
-
 2. **Events are automatic and tick-stamped.** `spawn`/`despawn` enqueue at the
    world's current tick. Draining happens in the tick loop; time advances
    only through `tick` / `end_turn`.
-
 3. **One timeline entry per entity.** `insert` and `From<Vec<_>>` replace
    (last wins). `remove` is total because live timelines hold no duplicates;
    malformed serialized timelines with duplicates are rejected on load.
-
 4. **Iteration contracts are load-bearing.** Arena iteration is ascending
    index (inherited); store iteration is insertion order (documented, not
    sorted); timeline iteration is ascending `(key, id)`. Determinism tests
    pin all three across identical sequences.
-
 5. **`Transform` is `f32`-only (E006-A).** Positions and velocities, never
    rules input. No `f64` anywhere in the crate.
-
 6. **Serde is pair-lists where JSON needs strings, with load-time
    guards.** `ComponentStore` and `Timeline` serialize as `(id, value)` /
    `(key, id)` lists because struct keys are not JSON keys. `EntityMeta` is
@@ -67,10 +205,12 @@ Full list: `docs/architecture/crpg-sim.md` §Public API. Treat any change as ADR
    indistinguishable from a vacant arena slot. `World` deserialization
    rejects non-live component/timeline ids; `Timeline` deserialization
    rejects duplicate entities.
-
+9. **`state_hash` checks finiteness first.** `Transform` fields are public
+   `f32`, so safe code can build a NaN/infinity. `serde_json` would write
+   those as `null` and collide distinct corrupted states, so the hash
+   asserts `is_finite` on every position/velocity before serializing.
 7. `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`. Every public item
    has a doc comment (spec §15.6).
-
 8. No `HashMap`/`HashSet` — anywhere, including tests. No clock, no threads,
    no I/O. `DeterministicRng` via `rng_mut` with explicit stream names is
    the only randomness. One recorded exception (T097): the `#[cfg(test)]`
@@ -78,17 +218,71 @@ Full list: `docs/architecture/crpg-sim.md` §Public API. Treat any change as ADR
    per-test-thread count of envelope encodings — a counter, not a thread the
    simulation owns, and test-only. It must stay spelled `thread_local!`;
    `std::thread_local!` would read as a thread to `determinism.py`.
+10. **Same-pool costs are atomic (T019, ADR-0016 §2).** At the existing
+    affordability stage (after actor/target/turn/ability/self-target checks,
+    before RNG or mutation) every pool's entries sum as one `u32` total in
+    authored template order, primary first, never ULID-sorted. An
+    unrepresentable sum returns `ValueOverflow`; a representable total above
+    balance returns `InsufficientAction` with the total and original balance;
+    the first failing pool in template order wins, so a later overflow never
+    replaces an earlier insufficiency. Only fully affordable actions reach
+    resolution/spending (exact sums; zero entries harmless); persisted vectors
+    keep their order, RNG draw order is unchanged, and the adapter's per-entry
+    validation plus load coherence still reject impossible shapes before
+    execution.
+11. **History is opt-in, transactional, and fully hashed (T020, ADR-0017).**
+    The wrapper owns its `World` privately; the only mutations are the typed
+    methods above — no store/timeline/RNG manipulation, no `From<World>`,
+    no into-inner escape, no low-level pop-only `end_turn`. Turn and terminal
+    facts come from the controller branches that fired (same-actor returns
+    and saturated-`u32` rollover still start logical turns), never from actor
+    comparison or round arithmetic; `CombatState.round` stays a persisted
+    saturating `u32`, widened to `u64` only inside history payloads. The
+    inner legacy queue is empty at every wrapper boundary with its sequence
+    counter retained, never reset. Retention is exactly the contiguous suffix
+    `(acknowledged, next_seq)` under 4096 envelopes and one MiB of canonical
+    bytes with 256-byte strings and 256-envelope pages; sequences never wrap
+    (`u64::MAX` is the exhausted sentinel) and partial appends are forbidden.
+    Persistence (`version`, `world`, `acknowledged`, `next_seq`, `pending`;
+    adjacent-tag payloads with `type` before `value`) rejects
+    duplicate/unknown/missing keys, over-limit shapes, gapped sequences,
+    decreasing or future ticks, and nonempty inner queues, decoding payloads
+    directly with bounded visitors — retained-history bounds, not a claim
+    about parser scratch, whose mandatory pre-parse byte cap belongs to
+    T022's host boundary.
+14. **The journal's byte total is cached, and `commit` is its only writer
+    before validation ends (T097, J1).** The retained journal is a private
+    `Journal` holding the envelopes plus a derived canonical byte total. At
+    every public boundary that total equals the sum of `envelope_len` over the
+    retained envelopes and stays within the byte cap; it is derived, never
+    persisted, and `envelope_len` is called exactly once per new envelope —
+    never on a retained one — so a mutation costs O(new envelopes + world
+    clone). The loader seeds the cache from the total it already computes, and
+    acknowledgement subtracts the drained prefix, emptying a fully drained
+    journal without encoding. No code outside `commit` assigns the journal,
+    the owned world, or `next_seq`, and `commit` writes nothing before every
+    check passes.
 
-9. **`state_hash` checks finiteness first.** `Transform` fields are public
-   `f32`, so safe code can build a NaN/infinity. `serde_json` would write
-   those as `null` and collide distinct corrupted states, so the hash
-   asserts `is_finite` on every position/velocity before serializing.
-
-10. **Same-pool costs are atomic (T019, ADR-0016 §2).** Full invariant: `docs/architecture/crpg-sim.md` §Atomic same-pool affordability (T019).
-11. **History is opt-in, transactional, and fully hashed (T020, ADR-0017).** Full invariant: `docs/architecture/crpg-sim.md` §Opt-in authoritative history (T020).
-12. **One legality source (T028, ADR-0018).** Full invariant: `docs/architecture/crpg-sim.md` §Shared read-only combat legality (T028).
-13. **Area identity is world-owned and immutable (T027a, ADR-0020).** Full invariant: `docs/architecture/crpg-sim.md` §Area identity and explicit transfer (T027a).
-14. **The journal's byte total is cached, and `commit` is its only writer (T097, J1).** Full invariant: `docs/architecture/crpg-sim.md` §Journal byte accounting and world-only staging (T097).
+12. **One legality source (T028, ADR-0018).** Never re-check admission in a
+    second predicate or validate by executing on a clone: add a new rule to
+    `validate_action` and both execution and enumeration inherit it. Every
+    `UseAbility` names a live combatant target whatever `requires_target`
+    says; `allow_self_target` alone governs self-targets. Do not cache
+    options across state changes; they confer no authorization, and host
+    disclosure filtering stays outside sim. Since T137 the last stage of the
+    `UseAbility` path is the stat evaluation stage: when the definition has
+    derived stats it builds the action plan on a scratch interner and queries
+    the defence-side stat, then the actor's bonus stats, and a failure (a zero
+    divisor a `Stat` effect or lost health caused) is `StatEvaluation`; it runs
+    after affordability and mutates nothing.
+13. **Area identity is world-owned and immutable (T027a, ADR-0020).** One
+    `World` is one area; presence is liveness, so there is no membership
+    index to dangle. Cross-world identity is `(area, EntityId)` — never key
+    anything across worlds by `EntityId` alone. Transfer supports only the
+    shape it can copy completely: a new per-entity component must extend the
+    move contract or make transfer fail, never be silently dropped. Viewer
+    grants, snapshot cancellation and actionable-mapping retirement belong to
+    the host (T027c) and net (T027b), not sim.
 
 ## Allowed dependencies
 
@@ -209,15 +403,145 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 
 ## Compatibility with B1 shapes (T017b, specified before source)
 
-See `docs/architecture/crpg-sim.md` §Compatibility with B1 shapes (T017b).
+The B1 data shapes replace authored `Ruleset.action_pool` with
+`Ruleset.pools` and extend `Ability` with `extra_costs`, `ends_turn`,
+`effect`, `defense`, and `natural_die`. This task adapts the adapter only:
+`start_encounter` reads `ruleset.pools.first()` for the existing
+single-pool runtime (`CombatDefinition.pool_*`, `Combatant.action_pool`);
+fixtures use legacy-equivalent JSON (`pools: [single]`, `extra_costs: []`,
+`ends_turn: true`, no effect, `ActorAttribute`, no selection). Runtime
+names, persistence bytes, precedence, and all action/turn/damage/RNG/event
+semantics stay unchanged. Multi-pool spending, effects, target defense,
+natural selection, and non-ending turns stay in B3. New execution
+requirements that cannot be honored must fail before mutation; no existing
+error accurately covers them, so that boundary waits on its narrow ADR and
+is not implemented here.
+
+As-built (primary part): `combat.rs` reads `pools.first().expect(...)`
+matching the existing `abilities[0]` style (data validation guarantees
+nonempty; empty-pools clean failure moves to the ADR boundary);
+`support/mod.rs` fixtures use the exact current wire; `tests/combat.rs`
+gains migrated-v1 and first-listed regressions (38 tests green on
+Windows/MSVC). Boundary regressions wait on ADR-0015 approval.
+
+As-built (boundary, ADR-0015 Accepted): `CombatError::UnsupportedAuthored
+{ what }` with per-field `spec/<field>: <what>` Display carrying canonical
+ULIDs; pinned order encounter→stats→pools→all-abilities→first-support
+(`extra_costs, ends_turn, effect, defense, natural_die`); first-only
+support with non-first `UnknownAbility` non-executability; six sites plus
+empty pools, field-order and multifault regressions (40 combat tests green
+on Windows/MSVC). Per-field retirement stays with B3.
 
 ## Generalization to multi-ability/pool/effect/turn (T017d, specified before source)
 
-See `docs/architecture/crpg-sim.md` §Generalization to multi-ability/pool/effect/turn (T017d, specified before source).
+B3 executes the B1 shapes through the production path with no package-name
+branches, retiring ADR-0015 field-by-field under accepted ADR-0016:
+per-ability definitions addressed by ULID (dice, defense selector, table,
+damage, per-pool costs in template order with primary first, `ends_turn`,
+optional effect, optional natural selector), plural pool templates carried
+in authored order with per-combatant balances (`action_pool` primary
+unchanged, `extra_pools` non-primary in template order, skipped when empty)
+plus attached `(effect ULID, expires_round)` pairs (ascending effect ULID,
+skipped when empty), `EndTurn{actor}` with `perform_action` returning
+`Result<Option<ActionOutcome>>` (`Some` attack / `None` `EndTurn`), and
+`EncounterSpec.effects` supplying every referenced effect. `InsufficientAction`
+gains `pool: Ulid` (`Display` unchanged); six new variants (`MissingEffect`,
+`MissingPool`, `InvalidEffect`, `DuplicateModifier`, `InvalidNaturalDie`,
+`PolicyConflict`) hide fields in `Display` with pinned `spec/*` locations
+and Phase A–E precedence; `UnsupportedAuthored` is deleted when no
+restriction remains. Minimal-d6 worlds serialize byte-identically via
+absence-skip (legacy fields always persisted from the first-listed entry;
+new vectors persisted together only for non-legacy shapes; execution uses
+new vectors when present, else the legacy-derived single-entry view).
+Neutrality extends to every new/changed file with the second-ruleset
+vocabulary added to the banned list.
+
+As-built: `combat.rs` carries the generalized definition/adapter/controller
+(`EndTurn`, `Option` return, pool-scoped insufficiency, effect attachment,
+natural bound, Phase A–E precedence) with joint absence-skip serialization;
+`world.rs` carries the extended coherence checks; `UnsupportedAuthored` is
+deleted with six-site execution coverage in the new 14-test `combat_multi`
+suite; existing suites pass via mechanical updates only (effects maps,
+`Option` unwraps, pool identity, retirement smoke); legacy `combat_basic`
+goldens byte-identical per target. The breaking API required a
+user-authorized narrow mechanical fix in the downstream adapters
+(`crpg-testkit/tests/support/combat.rs`, `crpg-cli/src/combat_apply.rs`:
+effects-map wiring plus one `Option` unwrap; no golden/behavior change),
+recorded in `tasks/T017d.md`; B4 still owns replay/goldens and B5 the CLI
+proof.
 
 ## Kernel range (T137)
 
-See `docs/architecture/crpg-sim.md` §Kernel range (T137, ADR-0029 Follow-on 4).
+The T136b authored surface executes through the kernel: typed and derived
+`Int` stats, the `Constant`/`ActorStat`/`Opposed` defences, ability
+`bonus_stats`, damage dice, rolled initiative, `Stat` effect targets and tag
+grants. No start rejects a T136b shape as unsupported; the T136c bridge
+(`UnsupportedAuthored`, its check and its test suite) is deleted, so do not
+reintroduce a refusal list: a new shape gets execution or a precise error.
+
+- **Public additions.** `IntFormula`, `DerivedStat`, `InitiativeRule`,
+  `COMBAT_BONUS_MOD_TYPE`, `CombatError::StatEvaluation` (`StatEvaluation at
+  combat/stats`) and `CombatError::TooManyTags` (`TooManyTags at spec/tags`),
+  `AbilityDefense::{Constant, ActorStat, Opposed}`, `EffectTarget::Stat`
+  (so `EffectTarget` is not `Copy`), and last fields
+  `AbilityDefinition::{bonus_stats, damage_dice}`,
+  `CombatDefinition::{derived, initiative}`, `EffectDefinition::grants` and
+  `Combatant::tags`, all skipped at their absence value. `definition_is_legacy` and `ability_is_legacy` decide the 15-field
+  shape: a new field that must not move a golden is added to them.
+- **Only `Int` stats execute.** The kernel has no implicit conversion and
+  every combat consumer is an `Int`. The adapter carries no `Fixed`, `Bool`,
+  `Enum`, `Tags` or `Dice` stat; a non-derived `Fixed` stat must exist on the
+  creature and is never read, and every other non-`Int` or derived stat is
+  not read. Do not store a typed value no reader uses (it is hashed state).
+  Data owns the formula preconditions (`Int` literals and `Int` names only,
+  a buildable kernel pipeline); a breach panics with `derived int stats are
+  validated by data read-time checks`.
+- **Trap: stat and tag handles come from a per-operation scratch interner.**
+  Every operation that reads a stat (`action_plan`, the start preflight, the
+  load check) clones `world.interners()` and interns into the clone, in the
+  order health, attributes, derived names. Never intern a T137 handle into
+  the world: the world interner is hashed, and the `srd_lite` goldens pin it.
+  The one write is a `TargetStat` action interning its defence stat, as
+  before. A handle from the clone is meaningless outside its operation.
+- **Reads are queries, never cached.** A base stat read is a kernel query over
+  the combatant's current-health block plus its unexpired `Stat` modifiers, so
+  a legacy fight (no `Stat` modifier) reads its stored value through the same
+  code. Do not add a second path for legacy content.
+- **Bonus stats** are synthetic `Roll` `Add` modifiers of the reserved type
+  `combat.bonus_stat`, `StackAll`, ids the smallest unused from `1` in that
+  view. An effect using the reserved type is `InvalidEffect` while a listed
+  ability carries bonus stats (and a load error).
+- **Start order (B21).** Opening checks, placements/areas, per-participant
+  creature then stats, initiative rule (dice `InvalidDice`, then bonus names
+  `MissingStat`), derived preflight (`InvalidStatValue` naming the derived
+  stat), pools, per-ability checks (spec entry, usable attribute, dice, table,
+  costs, defence name or `Opposed` dice then bonus names, bonus names, damage
+  dice, effect, natural), per-effect checks (empty shape, reserved type, per
+  modifier policy checks then `Stat` name), `DuplicateModifier`,
+  `PolicyConflict`, `TooManyTags`, publication. A new start check goes in that
+  order and mutates nothing; the only draws at start are the initiative keys,
+  after the last check.
+- **Draw order (T137b).** `Opposed`: the actor's dice, then the opposing dice
+  (no natural die on it), on `combat.roll`; the margin is the actor total
+  minus the opposing total. Damage dice come after `resolve` and before
+  `spend_costs`; an outcome without dice draws nothing. Initiative is rolled
+  once at start in authored participant order, in TB and RT alike; the key is
+  stored in `Combatant.initiative` (RT timeline keys stay `0`), so rollover
+  and the RT-to-TB rebuild read it and draw nothing. Content without these
+  shapes must draw exactly as before.
+- **Tags.** `Combatant.tags` and `EffectDefinition.grants` are carried only
+  when a referenced effect grants, because creature tags would otherwise move
+  the `srd_lite` goldens. A view's projection (placement tags plus unexpired
+  grants, scratch handles) is the contract a condition consumer will read;
+  nothing reads it yet. The union bound is `MAX_TAGS` (`TooManyTags`, and the
+  `combatant tags exceed their bound` load error).
+- **Surface golden (T137c).** `tests/surface_golden.rs` runs the pinned
+  seed-42 three-combatant turn-based schedule (`tests/support/surface_schedule.rs`)
+  that uses every T137 shape at once, records one `state_hash` per step, and
+  compares against the per-target `surface_v1.<target>.txt` baseline after a
+  hand-written oracle of the rolled initiative keys, each action's margin and
+  each damage total. The authoring example
+  (`examples/generate_surface_golden.rs`) shares the schedule source.
 
 ## Agent log
 
@@ -245,4 +569,3 @@ See `docs/architecture/crpg-sim.md` §Kernel range (T137, ADR-0029 Follow-on 4).
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137a · Replaced the bridge section with the kernel-range section (public additions, the `Int`-only rule, the scratch-interner trap, the B21 start order) and added the stat evaluation stage to invariant 12, so later tasks extend the one legality source instead of a copy.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the bridge text from the kernel-range section and added the `Opposed`/damage-dice/initiative draw order, the tag carriage rule and the new start-order steps, so the section describes the whole executed surface and warns against a new refusal list.
 - 2026-10-24 (UTC) · opencode-go/beam-free + T137c · Added the surface golden paragraph with the pinned seed-42 schedule, example, test and Windows baseline, so the generalized surface carries a per-target golden with a hand-written value oracle.
-- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work; moved design/behaviour/history content to docs/architecture/crpg-sim.md.

@@ -1,7 +1,12 @@
 # crpg-testkit — agent contract
 
-Scope: T008b harness, T009a replay, T009c target policy (merged 2026-09-07;
-native gates passed). Fixtures/conformance suites arrive with their tasks.
+Scope note: this file describes the T008b harness, the T009a replay, and the
+T009c target policy (merged 2026-09-07; native gates passed on Windows/MSVC
+and genuine WSL Ubuntu 24.04 Linux/GNU). See the
+[T009c completion record](../../tasks/T009c.md).
+Fixture campaigns, contract conformance suites and any further helpers arrive
+with the tasks that need them; they extend this file, following the module
+docs that already name their owners.
 
 ## Purpose
 
@@ -11,6 +16,60 @@ what you may do and what will break. The dependency direction is ratified by
 E005; the determinism scope it operates under is ADR-0009; the mismatch shape
 is ADR-0010. ADR-0012/T009c supersedes only ADR-0009 Decision 3's Linux-only
 selection, not its exact-build scope or hash-exclusion governance.
+
+Shared test machinery, built once so it cannot fork across crates: the
+hash-sequence harness and golden-file convention that T009's replay, T016's
+combat and every golden file after them consume, plus the replay itself —
+versioned `.replay` record/parse/validate/playback with opaque input
+payloads and an exact-tick divergence report. This crate serves tests and
+harnesses: its tests-only adapters never ship in a binary, while the
+harness/replay library surface (`play_and_verify` and friends) is the shared
+implementation `crpgc` consumes at runtime (since T009b).
+
+## Public API  (changing this requires an ADR)
+
+`run_hash_sequence`, `ScriptStep`, `write_golden`, `verify_golden`,
+`Mismatch`, `HarnessError`, and the replay surface: `Replay`,
+`ReplayInput`, `ApplyInput`, `ReplayDivergence`, `ReplayError`,
+`REPLAY_FORMAT_VERSION`, `MAX_REPLAY_TICKS`, `MAX_REPLAY_INPUTS`,
+`Replay::new`, `validate_replay`, `play_replay`, `write_replay`,
+`read_replay`, `play_and_verify`.
+
+- `run_hash_sequence(seed, ticks, script) -> Vec<[u8; 32]>`: script step,
+  then `tick`, then `state_hash`, every tick, from `World::new(seed)`.
+- `ScriptStep = Box<dyn FnMut(&mut World)>`: public sim API only — a script
+  needing a private seam proves the sim API is missing something.
+- `write_golden(path, hashes)`: lowercase hex, one per line, `#` scope
+  headers, trailing newline, parents created.
+- `verify_golden(path, hashes) -> Result<(), HarnessError>`: `Ok` on full
+  match; `Mismatch` enum on divergence — `Diverged`, `GoldenShort`,
+  `RunShort`, `Malformed`, `InvalidUtf8` (ADR-0010, only present sides);
+  `Io` on filesystem failure. Headers never compare.
+- `Replay { format_version, seed, campaign_id, campaign_version,
+  engine_version, total_ticks, inputs }`: the recorded run. Identity is
+  recorded, never enforced — playback does not compare versions against the
+  running build. `Replay::new` validates; deserialized replays are
+  validated by every consuming entry point.
+- `ReplayInput { tick, payload }`: one scheduled input. `tick` is the
+  zero-based tick index the payload applies before; the payload is an opaque
+  `serde_json::Value` testkit never interprets.
+- `ApplyInput = Box<dyn FnMut(&mut World, &Value) -> Result<(), String>>`:
+  caller-owned payload meaning over public `World` APIs only. `Err(reason)`
+  aborts with `ApplyFailed` at that tick and index.
+- `play_replay(replay, apply) -> Result<Vec<[u8; 32]>, ReplayError>`:
+  validate, then `World::new(seed)`, then per tick — every input for that
+  tick in file order, `tick`, `state_hash`.
+- `read_replay` / `write_replay`: pretty JSON plus trailing newline,
+  parents created, byte-stable round trip. Missing file is `Io(NotFound)`;
+  non-UTF-8 or bad JSON is `Malformed`.
+- `play_and_verify(replay_path, golden_path, apply)`: read, validate, play,
+  compare with `verify_golden` semantics. `Divergence` (boxed) carries
+  replay identity plus the `Mismatch`; either file missing stays `Io`.
+- `ReplayError`: `Io`, `Malformed`, `UnsupportedVersion { found }`,
+  `UnorderedSchedule { index, tick, prev_tick }`,
+  `OutOfRange { index, tick, total_ticks }`, `TooLarge { what, value }`,
+  `ApplyFailed { tick, index, reason }`, `Divergence(Box<ReplayDivergence>)`
+  — distinguishable without string matching, single-pathed `Display`.
 
 ## Invariants
 
@@ -69,22 +128,71 @@ selection, not its exact-build scope or hash-exclusion governance.
 
 ## Allowed dependencies
 
-See `docs/architecture/crpg-testkit.md` §Dependencies for the full approved
-edge list. No new crate or external beyond those edges without approval;
-tests-only dev-edges arrive with their task, each justified in that task
-file.
+`crpg-sim` (path, normal), `serde` + `serde_json` (workspace, normal —
+T009a replay format; both already in the graph, no new package or version),
+`crpg-core` (path, dev-only for tests), `crpg-data` + `crpg-rules` (path,
+dev-only for the T016c combat adapter in `tests/` — production content
+loading and the typed trace oracle; approved in-session 2026-09-26, see
+[tasks/T016c.md](../../tasks/T016c.md); both already workspace members, so
+the lock grows by edge entries only).
+No workspace crate beyond those — later helpers add their edges with their
+tasks, each justified in the task file. No external crate beyond what the
+workspace already holds; anything else needs approval.
 
 ## Combat replay (T016c, tests-only)
 
-See `docs/architecture/crpg-testkit.md` §Combat replay for the as-built
-adapter, artifacts and golden ownership. The adapter never ships; T016d owns
-the CLI glue.
+The cross-layer combat proof owns no `src/` change and no public export:
+`tests/support/combat.rs` (caller-owned adapter, content loader, trace
+oracle helpers) included directly from the reserved `tests/combat_replay.rs`
+suite via `#[path = "support/combat.rs"] mod combat;` so existing replay
+suites and `tests/support/mod.rs` stay unchanged. The adapter loads
+repo-root `campaigns/fixtures/combat_basic/` through production
+`load_campaign` (engine `0.1.0`) from `CARGO_MANIFEST_DIR`-relative I/O,
+binds authored placement ULIDs to runtime entities by walking
+`world.combatants()` against `encounter.participants` in authored order,
+and decodes the versioned `{"combat": 1, "op": "init" | "attack"}` grammar
+with strict unknown-field rejection and the T016c §Payload check order.
+Gameplay goes only through `start_encounter` / `perform_action`; trace and
+terminal facts are collected with shared `&World` reads plus read-only
+`serde_json::to_vec(&world)` snapshots and detached `World` clones (the
+`EventQueue` has no read iterator, and draining the authoritative queue
+would mutate hashed state). The portable input is
+`fixtures/combat_basic.replay`; the scoped baselines are
+`goldens/combat_basic_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden`
+and `goldens/combat_basic_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden`,
+each generated independently on its genuine native target through
+`read_replay` → `play_replay` → `write_golden` with a temporary
+deleted-before-finish helper. T016d owns the CLI adapter; this adapter
+never ships.
 
-## Second-ruleset replay (T017e)
+## Second-ruleset replay (T017e, specified before source)
 
-See `docs/architecture/crpg-testkit.md` §Second-ruleset replay for the
-as-built adapter, artifacts and golden ownership. The adapter never ships;
-B5 owns the CLI proof.
+Same tests-only shape for `combat_srd`: `tests/support/srd.rs` (srd-only
+adapter, content loader, trace oracle helpers) included directly from the
+reserved `tests/srd_replay.rs` suite via `#[path = "support/srd.rs"] mod
+srd;` so `support/combat.rs`, `tests/combat_replay.rs`, and every
+`combat_basic` artifact stay unchanged. The adapter loads repo-root
+`campaigns/fixtures/combat_srd/` through production `load_campaign`
+(engine `0.1.0`) and decodes the versioned `{"combat": 1}` grammar extended
+with the `end` op (`{"combat": 1, "op": "end", "actor": <ULID>}`) under the
+same strict unknown-field rejection. Accepted inputs only (`init`,
+`attack`, `end`); rejections are covered by direct-adapter rollback tests,
+never replay inputs. The portable input is
+`fixtures/combat_srd.replay` (pinned ascending-probe seed, `K <= 12`
+actions plus `T = 4` trailing ticks); the scoped baselines are
+`goldens/srd_lite_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden`
+and
+`goldens/srd_lite_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden`,
+each generated independently on its genuine native target through
+`read_replay` → `play_replay` → `write_golden` with a temporary
+deleted-before-finish helper. B5 owns the CLI proof (including the CLI-side
+`end` decode); this adapter never ships.
+
+As-built: seed 285, `K = 9`, `TOTAL_TICKS = 14` (terminal prefix at tick 9
+with the hero dead and the goblin surviving at 1; alternate seed 286 with a
+different tick-1 focus face); 13-test `srd_replay` suite green on both
+natives with per-target goldens byte-stable; `combat_basic` replay,
+goldens, and suites pass unmodified.
 
 ## Definition of done for any change
 
@@ -98,8 +206,7 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 ```
 
 Any `proptest-regressions/` file a failure produces is **committed**, not
-ignored: it is the shrunk counterexample, and losing it loses the
-regression.
+ignored: it is the shrunk counterexample, and losing it loses the regression.
 
 ## Known traps
 
@@ -171,5 +278,3 @@ regression.
 - 2026-09-27 (UTC) · opencode/muse-spark + A0 status reconciliation · Reconciled the never-ships wording with the as-built split (tests-only adapters never ship; the harness/replay library is shared with `crpgc` at runtime since T009b); no code, dependency, or ownership move.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e crate opening · Extended the contract with the tests-only second-ruleset replay shape (srd-only adapter, accepted-only inputs with the new end op, pinned probe seed, per-target goldens) under tasks/T017e.md before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the contract with the as-built replay (seed 285, K = 9, 13-test srd_replay suite, per-target goldens, combat_basic untouched); no commit/push/PR.
-- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work size by moving Public API, dependencies, combat/second-ruleset replay detail, and scope note to the architecture doc; no rule meaning changed.
-- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 restore · Restored trimmed text blocks verbatim (invariants, traps, design-doc pointer) per A0-8 no-information-lost rule.
