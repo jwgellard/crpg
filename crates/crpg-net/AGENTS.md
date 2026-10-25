@@ -254,7 +254,7 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - *2026-10-25 (UTC), T024:* Segment length checked before body; never queue
   a delta above an in-flight cursor; never reset `event_seq` within an epoch;
   the full 1 MiB claim belongs to the byte layer (S§1.4); the T018b tracker
-  test stays. DoD count: 112 passed (81 + 31).
+  test stays. DoD count: 119 passed (88 + 31; the other suites grew after the contract was written).
 
 ## Agent log
 
@@ -267,3 +267,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-09-29 (UTC) · opencode/muse-spark + T021 v2 event protocol · Added the explicit protocol_v2/codec_v2/projection_v2 surface with the version/tag/disclosure rules above (bounded-before-allocation strings, full-u64 delta event_seq, ordered host-fed projection) and the six-case events_v2 suite against real T020 history, keeping v1 frozen and adding no dependency.
 - 2026-10-04 (UTC) · claude-code + T023 · Added a dated Known-traps pointer to `crpg-net-quic` so no one adds QUIC, I/O, threads or clocks to this crate; doc-only.
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024 · Added transfer subprotocol modules, byte-layer assembly, bounded reassembly pool and cutover gate; 31-case suite.
+- 2026-10-25 (UTC) · opencode-go/beam-free + S21-bookkeeping · Updated DoD count to 119 passed (88 + 31).
