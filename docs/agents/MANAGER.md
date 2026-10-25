@@ -83,10 +83,12 @@ Preference: stretch tokens. Among the OpenCode models strong enough for the job,
 | G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
 | S-set, A, C, core review | Claude only (plan §§4.2–4.3) | — | — |
 
+Beam (`opencode-go/beam-free`) is limited to doc-only work, fact sheets and first-pass review (D37b). While Go is over quota, implementation and tests go to free Zen models first, then the Claude `implementer` (D37c).
+
 Tier membership:
 
 - O1: DeepSeek V4.1 Flash (Go), Kimi K3, MiMo-V2.6-Pro, Gemini 4 Argon Contributor, DeepSeek V4 Pro, Muse Spark 1.3 Contributor (Go, and the free variant).
-- O2: GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash, Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation retry), Beam Free (Cat Jam renamed; `MODELS.md` §1 item 13).
+- O2: GPT-6 Luna, Claude Haiku 5.5 (Go), GLM-5.3-Flash, Qwen3.8 Flash, Kimi K2.7 Code, GLM-5.3 (review only until it passes an implementation retry), Beam Free (Cat Jam renamed; `MODELS.md` §1 item 13) (Beam: doc-only, fact sheets and first-pass review only, D37b).
 - O3: DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, Big Pickle, Space Bunny Free, Qwen3.8 Max, Hy4 preview. O3 is fallback, not first choice.
 - Not routed: Nemotron 3.5 Lightning, Nemotron 3 Ultra, Nemotron 3.5 Super VL and MiMo-V2.6-Flash Free (scouting at most), MiniMax M3, Step 5 Preview for implementation, GPT-5.6 Terra for scouting or review, LongCat 2.5 Preview Free (`MODELS.md` §1 item 14).
 - Free Zen tier is one account-wide rate limit: at most three free runs at once, at most one per model. Beam (formerly Cat Jam) always uses its `opencode-go/beam-free` ID, never the free Zen ID, and stays uncapped after the Go 5-hour cap; LongCat is out of routing (`MODELS.md` §1 item 14). After a free-tier hit, route to Go IDs until the next day. Data handling: Gemini 4 Argon Contributor, Muse Spark contributor models, Big Pickle and MiMo-V2.6-Flash Free may train on prompts; acceptable under §3.2 rule 4.
@@ -215,3 +217,4 @@ VERDICT: ready-for-pr | fix | reject
 - 2026-10-23 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-11 · Re-synced §3.5's routing table rows with `MODELS.md` §4 (routine second, harder pair, tests row, first-pass review row); tier, not-routed, free-tier, data-handling and demote/promote lines already said the same thing, so they stay condensed.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-11b · Moved LongCat from §3.5's O3 tier to Not routed and reduced the Go-only line to Beam alone, so the manager's summary matches the corrected `MODELS.md` §4 and §1 item 14.
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Re-synced §3.5's tests row with `MODELS.md` §4 (MiMo-V2.6-Pro demoted under §4.1 after 0/2 first-attempt; DeepSeek V4 Pro or DeepSeek V4.1 Flash first), so the manager routes tests away from the demoted model.
+- 2026-10-25 (UTC) · opencode-go/beam-free + D37-record · Recorded D37b/D37c in §3.5: Beam is doc-only, fact sheets and first-pass review only, and while Go is over quota implementation and tests go to free Zen models first then the Claude implementer, never Beam.
