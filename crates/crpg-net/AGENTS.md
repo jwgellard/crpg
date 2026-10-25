@@ -62,6 +62,13 @@ requires an ADR.
   (`TooManyEvents`/`InvalidOutcome`/`StringLimit`, `Error`+`Display` as
   `<VariantName> at projection/events`), `project_events` (at most 256
   inputs, ordered subsequence, no partial output on error).
+- `protocol_transfer` (T024): transfer subprotocol constants, `TransferId`,
+  `BeginTransfer`, `TransferChunk`, `CancelReason`, `ResyncReason`,
+  `TransferDown`/`TransferUp`, `SnapshotBody` and related fact types.
+- `codec_transfer` (T024): `encode_down`/`decode_down`/`encode_up`/
+  `decode_up`/`encode_body`/`decode_body`/`plan_transfer`.
+- `reassembly` (T024): `TransferAssembly`, `TransferLimits`,
+  `ReassemblyPool` and cutover gate types.
 
 ## Invariants
 
@@ -244,6 +251,10 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   Rejected inputs leave complete `World`/RNG/event state byte-identical.
 - *2026-10-04 (UTC), T023:* **Real QUIC lives in `crpg-net-quic`**
   (ADR-0024); never add I/O, threads, clocks or QUIC crates here.
+- *2026-10-25 (UTC), T024:* Segment length checked before body; never queue
+  a delta above an in-flight cursor; never reset `event_seq` within an epoch;
+  the full 1 MiB claim belongs to the byte layer (S§1.4); the T018b tracker
+  test stays. DoD count: 112 passed (81 + 31).
 
 ## Agent log
 
@@ -255,3 +266,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-09-28 (UTC) · opencode/muse-spark + T018 review fixes · Enforced the specified failure-response budgets on the wire path (drops retain outcomes for retry), pinned egress enforcement to fabric staging with v1_egress depths, made SeqExhausted reachable with cache-first precedence, and bound driver peer binding to the 8-peer proof population.
 - 2026-09-29 (UTC) · opencode/muse-spark + T021 v2 event protocol · Added the explicit protocol_v2/codec_v2/projection_v2 surface with the version/tag/disclosure rules above (bounded-before-allocation strings, full-u64 delta event_seq, ordered host-fed projection) and the six-case events_v2 suite against real T020 history, keeping v1 frozen and adding no dependency.
 - 2026-10-04 (UTC) · claude-code + T023 · Added a dated Known-traps pointer to `crpg-net-quic` so no one adds QUIC, I/O, threads or clocks to this crate; doc-only.
+- 2026-10-25 (UTC) · opencode-go/beam-free + T024 · Added transfer subprotocol modules, byte-layer assembly, bounded reassembly pool and cutover gate; 31-case suite.
