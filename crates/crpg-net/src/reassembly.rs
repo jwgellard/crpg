@@ -77,7 +77,10 @@ impl TransferAssembly {
         if chunk.index >= self.begin.chunk_count {
             return Err(AssemblyError::OutOfRange);
         }
-        let expected_len = self.begin.chunk_len(chunk.index).ok_or(AssemblyError::OutOfRange)?;
+        let expected_len = self
+            .begin
+            .chunk_len(chunk.index)
+            .ok_or(AssemblyError::OutOfRange)?;
         if chunk.bytes.len() != expected_len {
             return Err(AssemblyError::WrongLength);
         }
@@ -146,46 +149,74 @@ impl TransferLimits {
     }
     pub fn validate(&self) -> Result<(), LimitsError> {
         if self.max_receivers == 0 {
-            return Err(LimitsError::InvalidLimits { field: "max_receivers" });
+            return Err(LimitsError::InvalidLimits {
+                field: "max_receivers",
+            });
         }
         if self.max_receivers > 8 {
-            return Err(LimitsError::LoosensPolicy { field: "max_receivers" });
+            return Err(LimitsError::LoosensPolicy {
+                field: "max_receivers",
+            });
         }
         if self.deadline_ms == 0 {
-            return Err(LimitsError::InvalidLimits { field: "deadline_ms" });
+            return Err(LimitsError::InvalidLimits {
+                field: "deadline_ms",
+            });
         }
         if self.deadline_ms > 5_000 {
-            return Err(LimitsError::LoosensPolicy { field: "deadline_ms" });
+            return Err(LimitsError::LoosensPolicy {
+                field: "deadline_ms",
+            });
         }
         if self.staging_bytes_per_receiver < 22_552 {
-            return Err(LimitsError::InvalidLimits { field: "staging_bytes_per_receiver" });
+            return Err(LimitsError::InvalidLimits {
+                field: "staging_bytes_per_receiver",
+            });
         }
         if self.staging_bytes_per_receiver > crate::protocol::MAX_SNAPSHOT_BYTES {
-            return Err(LimitsError::LoosensPolicy { field: "staging_bytes_per_receiver" });
+            return Err(LimitsError::LoosensPolicy {
+                field: "staging_bytes_per_receiver",
+            });
         }
         if self.staging_bytes_total < self.staging_bytes_per_receiver {
-            return Err(LimitsError::InvalidLimits { field: "staging_bytes_total" });
+            return Err(LimitsError::InvalidLimits {
+                field: "staging_bytes_total",
+            });
         }
         if self.staging_bytes_total > 8 * 1_048_576 {
-            return Err(LimitsError::LoosensPolicy { field: "staging_bytes_total" });
+            return Err(LimitsError::LoosensPolicy {
+                field: "staging_bytes_total",
+            });
         }
         if self.delta_frames_per_receiver == 0 {
-            return Err(LimitsError::InvalidLimits { field: "delta_frames_per_receiver" });
+            return Err(LimitsError::InvalidLimits {
+                field: "delta_frames_per_receiver",
+            });
         }
         if self.delta_frames_per_receiver > 128 {
-            return Err(LimitsError::LoosensPolicy { field: "delta_frames_per_receiver" });
+            return Err(LimitsError::LoosensPolicy {
+                field: "delta_frames_per_receiver",
+            });
         }
         if self.delta_bytes_per_receiver < 65_536 {
-            return Err(LimitsError::InvalidLimits { field: "delta_bytes_per_receiver" });
+            return Err(LimitsError::InvalidLimits {
+                field: "delta_bytes_per_receiver",
+            });
         }
         if self.delta_bytes_per_receiver > 2 * 1_048_576 {
-            return Err(LimitsError::LoosensPolicy { field: "delta_bytes_per_receiver" });
+            return Err(LimitsError::LoosensPolicy {
+                field: "delta_bytes_per_receiver",
+            });
         }
         if self.delta_bytes_total < self.delta_bytes_per_receiver {
-            return Err(LimitsError::InvalidLimits { field: "delta_bytes_total" });
+            return Err(LimitsError::InvalidLimits {
+                field: "delta_bytes_total",
+            });
         }
         if self.delta_bytes_total > 16 * 1_048_576 {
-            return Err(LimitsError::LoosensPolicy { field: "delta_bytes_total" });
+            return Err(LimitsError::LoosensPolicy {
+                field: "delta_bytes_total",
+            });
         }
         Ok(())
     }
@@ -200,8 +231,12 @@ pub enum LimitsError {
 impl fmt::Display for LimitsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidLimits { field } => write!(f, "InvalidLimits at transfer/limits: {}", field),
-            Self::LoosensPolicy { field } => write!(f, "LoosensPolicy at transfer/limits: {}", field),
+            Self::InvalidLimits { field } => {
+                write!(f, "InvalidLimits at transfer/limits: {}", field)
+            }
+            Self::LoosensPolicy { field } => {
+                write!(f, "LoosensPolicy at transfer/limits: {}", field)
+            }
         }
     }
 }
@@ -264,10 +299,18 @@ impl ReceiverId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferOutcome {
     Begun,
-    Stored { received: u8, chunk_count: u8 },
+    Stored {
+        received: u8,
+        chunk_count: u8,
+    },
     Duplicate,
-    Published { transfer: TransferId, released: usize },
-    Cancelled { discarded: bool },
+    Published {
+        transfer: TransferId,
+        released: usize,
+    },
+    Cancelled {
+        discarded: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,7 +488,12 @@ impl ReassemblyPool {
     pub fn limits(&self) -> TransferLimits {
         self.limits.clone()
     }
-    pub fn add_receiver(&mut self, epoch: [u8; 16], wire: DeltaWire, start: GateMode) -> Result<ReceiverId, TransferError> {
+    pub fn add_receiver(
+        &mut self,
+        epoch: [u8; 16],
+        wire: DeltaWire,
+        start: GateMode,
+    ) -> Result<ReceiverId, TransferError> {
         if self.receivers.len() >= self.limits.max_receivers {
             return Err(TransferError::ReceiversFull);
         }
@@ -478,7 +526,9 @@ impl ReassemblyPool {
             if let Some(inf) = recv.in_flight {
                 self.staging_bytes = self.staging_bytes.saturating_sub(inf.reserved_bytes);
             }
-            self.held_delta_bytes = self.held_delta_bytes.saturating_sub(recv.held_bytes + recv.queued_bytes);
+            self.held_delta_bytes = self
+                .held_delta_bytes
+                .saturating_sub(recv.held_bytes + recv.queued_bytes);
         }
     }
     fn sweep(&mut self, now_ms: u64) -> Vec<(ReceiverId, TransferId)> {
@@ -495,7 +545,15 @@ impl ReassemblyPool {
                 }
             };
             if should {
-                let tid = self.receivers.get(&rid).unwrap().in_flight.as_ref().unwrap().begin.transfer;
+                let tid = self
+                    .receivers
+                    .get(&rid)
+                    .unwrap()
+                    .in_flight
+                    .as_ref()
+                    .unwrap()
+                    .begin
+                    .transfer;
                 self.fail_in_flight(rid, FailReason::Expired);
                 expired.push((rid, tid));
             }
@@ -520,7 +578,12 @@ impl ReassemblyPool {
             }
         }
     }
-    pub fn offer_transfer(&mut self, id: ReceiverId, bytes: &[u8], now_ms: u64) -> Result<TransferOutcome, TransferError> {
+    pub fn offer_transfer(
+        &mut self,
+        id: ReceiverId,
+        bytes: &[u8],
+        now_ms: u64,
+    ) -> Result<TransferOutcome, TransferError> {
         let now_ms = now_ms.max(self.now_ms);
         self.now_ms = now_ms;
         let expired_pairs = self.sweep(now_ms);
@@ -542,7 +605,10 @@ impl ReassemblyPool {
             TransferDown::Chunk(c) => c.transfer,
             TransferDown::Cancel { transfer, .. } => *transfer,
         };
-        if expired_pairs.iter().any(|(rid, tid)| *rid == id && *tid == msg_tid) {
+        if expired_pairs
+            .iter()
+            .any(|(rid, tid)| *rid == id && *tid == msg_tid)
+        {
             return Err(TransferError::Failed(FailReason::Expired));
         }
         match msg {
@@ -551,7 +617,12 @@ impl ReassemblyPool {
             TransferDown::Cancel { transfer, .. } => self.handle_cancel(id, transfer),
         }
     }
-    fn handle_begin(&mut self, id: ReceiverId, begin: BeginTransfer, now_ms: u64) -> Result<TransferOutcome, TransferError> {
+    fn handle_begin(
+        &mut self,
+        id: ReceiverId,
+        begin: BeginTransfer,
+        now_ms: u64,
+    ) -> Result<TransferOutcome, TransferError> {
         // step1 same id in-flight
         {
             let recv = self.receivers.get(&id).unwrap();
@@ -578,7 +649,11 @@ impl ReassemblyPool {
         // step4 behind replica
         {
             let behind_cursor = begin.cursor + 1 < recv.next_event_seq;
-            let behind_tick = recv.published.as_ref().map(|p| begin.base_tick < p.base_tick).unwrap_or(false);
+            let behind_tick = recv
+                .published
+                .as_ref()
+                .map(|p| begin.base_tick < p.base_tick)
+                .unwrap_or(false);
             if behind_cursor || behind_tick {
                 return Err(TransferError::BehindReplica);
             }
@@ -604,9 +679,16 @@ impl ReassemblyPool {
         self.staging_bytes += begin.total_bytes as usize;
         Ok(TransferOutcome::Begun)
     }
-    fn handle_chunk(&mut self, id: ReceiverId, chunk: TransferChunk) -> Result<TransferOutcome, TransferError> {
+    fn handle_chunk(
+        &mut self,
+        id: ReceiverId,
+        chunk: TransferChunk,
+    ) -> Result<TransferOutcome, TransferError> {
         // check in-flight matching
-        let in_flight_transfer_id = self.receivers.get(&id).and_then(|r| r.in_flight.as_ref().map(|i| i.begin.transfer));
+        let in_flight_transfer_id = self
+            .receivers
+            .get(&id)
+            .and_then(|r| r.in_flight.as_ref().map(|i| i.begin.transfer));
         if let Some(inf_tid) = in_flight_transfer_id {
             if inf_tid == chunk.transfer {
                 // accept
@@ -668,8 +750,15 @@ impl ReassemblyPool {
             Ok(b) => b,
             Err(a) => {
                 // incomplete shouldn't happen
-                recv.in_flight = Some(InFlightTransfer { assembly: a, reserved_bytes: reserved, deadline_ms: inf.deadline_ms, begin: inf.begin.clone() });
-                return Err(TransferError::Failed(FailReason::InvalidBody(CodecError::Malformed)));
+                recv.in_flight = Some(InFlightTransfer {
+                    assembly: a,
+                    reserved_bytes: reserved,
+                    deadline_ms: inf.deadline_ms,
+                    begin: inf.begin.clone(),
+                });
+                return Err(TransferError::Failed(FailReason::InvalidBody(
+                    CodecError::Malformed,
+                )));
             }
         };
         let body = match codec_transfer::decode_body(&bytes) {
@@ -696,7 +785,10 @@ impl ReassemblyPool {
         self.staging_bytes = self.staging_bytes.saturating_sub(reserved);
         recv.retired_through = recv.retired_through.max(transfer_id.get());
         // step3 if queue holds Snapshot, clear whole queue
-        let had_snapshot = recv.queued.iter().any(|u| matches!(u, ReplicaUpdate::Snapshot(_)));
+        let had_snapshot = recv
+            .queued
+            .iter()
+            .any(|u| matches!(u, ReplicaUpdate::Snapshot(_)));
         if had_snapshot {
             // free queued delta bytes
             self.held_delta_bytes = self.held_delta_bytes.saturating_sub(recv.queued_bytes);
@@ -752,11 +844,25 @@ impl ReassemblyPool {
         // Actually if no held moved, released=0. Case 13 last chunk returns Published; released maybe 0. Fine.
         // step8
         // Need return, but recv borrow ended? We still hold &mut recv. Return value uses transfer_id, released.
-        Ok(TransferOutcome::Published { transfer: transfer_id, released })
+        Ok(TransferOutcome::Published {
+            transfer: transfer_id,
+            released,
+        })
     }
-    fn handle_cancel(&mut self, id: ReceiverId, t: TransferId) -> Result<TransferOutcome, TransferError> {
-        let recv = self.receivers.get_mut(&id).ok_or(TransferError::UnknownReceiver)?;
-        let in_flight_id_le = recv.in_flight.as_ref().map(|i| i.begin.transfer <= t).unwrap_or(false);
+    fn handle_cancel(
+        &mut self,
+        id: ReceiverId,
+        t: TransferId,
+    ) -> Result<TransferOutcome, TransferError> {
+        let recv = self
+            .receivers
+            .get_mut(&id)
+            .ok_or(TransferError::UnknownReceiver)?;
+        let in_flight_id_le = recv
+            .in_flight
+            .as_ref()
+            .map(|i| i.begin.transfer <= t)
+            .unwrap_or(false);
         if in_flight_id_le {
             // discard
             if let Some(inf) = recv.in_flight.take() {
@@ -775,7 +881,12 @@ impl ReassemblyPool {
             Ok(TransferOutcome::Cancelled { discarded: false })
         }
     }
-    pub fn offer_delta(&mut self, id: ReceiverId, bytes: &[u8], now_ms: u64) -> Result<DeltaOutcome, TransferError> {
+    pub fn offer_delta(
+        &mut self,
+        id: ReceiverId,
+        bytes: &[u8],
+        now_ms: u64,
+    ) -> Result<DeltaOutcome, TransferError> {
         let now_ms = now_ms.max(self.now_ms);
         self.now_ms = now_ms;
         let _expired = self.sweep(now_ms);
@@ -817,7 +928,11 @@ impl ReassemblyPool {
         // overflow check
         {
             let recv = self.receivers.get(&id).unwrap();
-            let queued_delta_frames = recv.queued.iter().filter(|u| matches!(u, ReplicaUpdate::Delta(_))).count();
+            let queued_delta_frames = recv
+                .queued
+                .iter()
+                .filter(|u| matches!(u, ReplicaUpdate::Delta(_)))
+                .count();
             let new_frames = recv.held.len() + queued_delta_frames + 1;
             let new_bytes_recv = recv.held_bytes + recv.queued_bytes + bytes.len();
             if new_frames > self.limits.delta_frames_per_receiver
@@ -852,7 +967,9 @@ impl ReassemblyPool {
                         None => true,
                         Some(inf) => seq <= inf.begin.cursor,
                     };
-                if !r { break; }
+                if !r {
+                    break;
+                }
                 let hd = match recv.held.remove(&seq) {
                     Some(h) => h,
                     None => break,
@@ -892,14 +1009,53 @@ impl ReassemblyPool {
         if recv.queued.is_empty() {
             return None;
         }
+        let len = if recv.queued_lens.is_empty() {
+            0
+        } else {
+            recv.queued_lens.remove(0)
+        };
         let upd = recv.queued.remove(0);
-        // adjust bytes
-        if let ReplicaUpdate::Delta(_) = &upd {
-            // need encoded len; we stored queued_bytes aggregate. Subtract? We don't know per update.
-            // We need per-update encoded len. ReplicaUpdate::Delta doesn't carry. Hmm.
-        }
-        // We'll handle bytes by recomputing? Let's instead store encoded len in a parallel queue.
-        None // placeholder, fix below
+        recv.queued_bytes = recv.queued_bytes.saturating_sub(len);
+        self.held_delta_bytes = self.held_delta_bytes.saturating_sub(len);
+        Some(upd)
     }
-    // ...
+    pub fn status(&self, id: ReceiverId) -> Result<ReceiverStatus, TransferError> {
+        let recv = self
+            .receivers
+            .get(&id)
+            .ok_or(TransferError::UnknownReceiver)?;
+        let in_flight = recv.in_flight.as_ref().map(|inf| InFlightStatus {
+            transfer: inf.begin.transfer,
+            cursor: inf.begin.cursor,
+            base_tick: inf.begin.base_tick,
+            received: inf.assembly.received_chunks(),
+            chunk_count: inf.assembly.begin().chunk_count,
+            deadline_ms: inf.deadline_ms,
+            reserved_bytes: inf.reserved_bytes,
+        });
+        let queued_deltas = recv
+            .queued
+            .iter()
+            .filter(|u| matches!(u, ReplicaUpdate::Delta(_)))
+            .count();
+        Ok(ReceiverStatus {
+            epoch: recv.epoch,
+            wire: recv.wire,
+            mode: recv.mode,
+            in_flight,
+            retired_through: recv.retired_through,
+            published: recv.published.clone(),
+            next_event_seq: recv.next_event_seq,
+            held_frames: recv.held.len() + queued_deltas,
+            held_bytes: recv.held_bytes + recv.queued_bytes,
+            queued_updates: recv.queued.len(),
+            resync: recv.resync,
+        })
+    }
+    pub fn staging_bytes(&self) -> usize {
+        self.staging_bytes
+    }
+    pub fn held_delta_bytes(&self) -> usize {
+        self.held_delta_bytes
+    }
 }

@@ -14,7 +14,8 @@ fn extend<T: serde::Serialize + ?Sized>(out: Vec<u8>, value: &T) -> Result<Vec<u
 }
 
 fn take<'a, T: serde::Deserialize<'a>>(rest: &mut &'a [u8]) -> Result<T, CodecError> {
-    let (value, remaining) = postcard::take_from_bytes::<T>(rest).map_err(|_| CodecError::Malformed)?;
+    let (value, remaining) =
+        postcard::take_from_bytes::<T>(rest).map_err(|_| CodecError::Malformed)?;
     *rest = remaining;
     Ok(value)
 }
@@ -118,7 +119,11 @@ pub fn decode_body(bytes: &[u8]) -> Result<SnapshotBody, CodecError> {
             let health: u32 = take(&mut rest)?;
             let max_health: u32 = take(&mut rest)?;
             let dead: bool = take(&mut rest)?;
-            Some(HealthFact { health, max_health, dead })
+            Some(HealthFact {
+                health,
+                max_health,
+                dead,
+            })
         } else {
             None
         };
@@ -203,7 +208,7 @@ pub fn encode_down(msg: &TransferDown) -> Result<Vec<u8>, CodecError> {
             for s in segs {
                 out = extend(out, &(s.len() as u64))?;
                 // write raw bytes: postcard serializes [u8] as length-prefixed? Need raw bytes.
-                // Use extend with slice? postcard to_extend for &[u8] writes length prefix. We need raw bytes no length prefix? 
+                // Use extend with slice? postcard to_extend for &[u8] writes length prefix. We need raw bytes no length prefix?
                 // S§5 says len then len bytes. The len is separate varint we already wrote. So body bytes raw.
                 out.extend_from_slice(s);
             }
@@ -212,7 +217,11 @@ pub fn encode_down(msg: &TransferDown) -> Result<Vec<u8>, CodecError> {
             }
             Ok(out)
         }
-        TransferDown::Cancel { epoch, transfer, reason } => {
+        TransferDown::Cancel {
+            epoch,
+            transfer,
+            reason,
+        } => {
             if transfer.get() == 0 {
                 return Err(CodecError::Malformed);
             }
@@ -370,11 +379,13 @@ pub fn decode_down(bytes: &[u8]) -> Result<TransferDown, CodecError> {
             if !rest.is_empty() {
                 return Err(CodecError::Malformed);
             }
-            Ok(TransferDown::Cancel { epoch, transfer, reason })
+            Ok(TransferDown::Cancel {
+                epoch,
+                transfer,
+                reason,
+            })
         }
-        TRANSFER_TAG_PUBLISHED | TRANSFER_TAG_RESYNC => {
-            Err(CodecError::WrongDirection)
-        }
+        TRANSFER_TAG_PUBLISHED | TRANSFER_TAG_RESYNC => Err(CodecError::WrongDirection),
         _ => Err(CodecError::UnknownMessage),
     }
 }
@@ -395,7 +406,11 @@ pub fn encode_up(msg: &TransferUp) -> Result<Vec<u8>, CodecError> {
             }
             Ok(out)
         }
-        TransferUp::Resync { epoch, after, reason } => {
+        TransferUp::Resync {
+            epoch,
+            after,
+            reason,
+        } => {
             if ResyncReason::from_u8(reason.as_u8()).is_none() {
                 return Err(CodecError::UnknownMessage);
             }
@@ -453,7 +468,11 @@ pub fn decode_up(bytes: &[u8]) -> Result<TransferUp, CodecError> {
             if !rest.is_empty() {
                 return Err(CodecError::Malformed);
             }
-            Ok(TransferUp::Resync { epoch, after, reason })
+            Ok(TransferUp::Resync {
+                epoch,
+                after,
+                reason,
+            })
         }
         TRANSFER_TAG_BEGIN | TRANSFER_TAG_CHUNK | TRANSFER_TAG_CANCEL => {
             Err(CodecError::WrongDirection)

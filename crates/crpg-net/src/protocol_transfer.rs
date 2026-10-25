@@ -6,8 +6,10 @@
 //! [`crate::codec_transfer`], reassembly in [`crate::reassembly`].
 
 use crate::codec::CodecError;
-use crate::protocol::{MAX_DELTA_FRAME_BYTES, MAX_INTENT_FRAME_BYTES, MAX_SNAPSHOT_BYTES,
-    MAX_SNAPSHOT_CHUNKS, MAX_VISIBLE_ENTITIES, MAX_WIRE_BYTES_FIELD, SEQ_LAST};
+use crate::protocol::{
+    MAX_DELTA_FRAME_BYTES, MAX_INTENT_FRAME_BYTES, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_CHUNKS,
+    MAX_VISIBLE_ENTITIES, MAX_WIRE_BYTES_FIELD, SEQ_LAST,
+};
 
 // ---------------------------------------------------------------------------
 // Version, lane, tags.
