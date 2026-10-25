@@ -366,4 +366,4 @@ and the delivery-cursor cutover gate. Host requirements are in T024 S§11.
 - 2026-09-29 (UTC) · opencode/muse-spark + T021 v2 event wire · Recorded the as-built explicit v2 modules (tagged history events beside frozen v1, bounded-before-allocation codec, host-fed ordered projection) and the six-case acceptance suite, so T022 consumes version-selected codecs plus ordered conformance evidence.
 - 2026-10-04 (UTC) · claude-code + T023 · Appended a dated Scope pointer to `crpg-net-quic` for real QUIC, so this crate's no-I/O boundary names where the transport went; doc-only, no source or manifest change.
 
-- 2026-10-25 (UTC) � opencode-go/beam-free + A0-8 � Absorbed the moved Public surface, Invariants, and Allowed dependencies sections from AGENTS.md; no content lost.
+- 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Absorbed the moved Public surface, Invariants, and Allowed dependencies sections from AGENTS.md; no content lost.

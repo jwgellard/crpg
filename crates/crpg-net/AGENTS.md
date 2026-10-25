@@ -113,4 +113,3 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024-docs · Closed S§13 doc gaps: added transfer decode precedence and the S§10.7 cutover barrier to Invariants, traps, and ADR-0028 host requirements.
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving Public surface, Invariants, and Allowed dependencies to the architecture doc; no rules changed.
-PY
