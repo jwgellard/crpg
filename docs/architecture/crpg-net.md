@@ -355,6 +355,67 @@ and the delivery-cursor cutover gate. Host requirements are in T024 S§11.
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024 · Added Snapshot transfer section.
 
+## Resume and reconnect (T025a)
+
+`protocol_resume`, `codec_resume`, and (T025a2) `resume` carry the separate
+versioned resume subprotocol (first byte `0x91`, lane 3) beside frozen v1/v2
+and the `0x81` transfer wire. The channel or transport chooses the codec; no
+resume decoder falls back to another. `protocol_resume` holds the constants,
+`ConnectionFence`, the opaque `ResumeProof` (16..=128 bytes, redacted `Debug`,
+`ct_eq`, no `PartialEq`/`Eq`/`Ord`/`Hash`/`Display`), the claim/progress
+shapes and the messages. `codec_resume` holds the four functions
+(`encode_request`/`decode_request`, `encode_down`/`decode_down`) with the
+S§7 precedence: whole-frame cap → version `0x91` → lane 3 → tag → fields left
+to right → trailing-byte reject. `resume` holds `SessionFence`,
+`ResumeDecision`, `check_result` and the additive `rebind_receiver`.
+
+The fence window (S§15): state is `epoch`, current fence `c`, confirmed fence
+`k`, and `max_fence`, with `1 ≤ k ≤ c ≤ max_fence`.
+
+| Call | Result | Change |
+|---|---|---|
+| `check_frame(tag)` with `tag == c` | `Ok` | `k = c` |
+| `check_frame(tag)` with `tag < c` | `Err(Fenced)` | none |
+| `check_frame(tag)` with `tag > c` | `Err(UnknownFence)` | none |
+| `check_request`: `epoch` wrong / `fence > c` / `fence < k` / `c == max_fence` | `WrongEpoch` / `UnknownFence` / `StaleFence` / `FenceExhausted` | none |
+| `check_request` otherwise | `Ok(c + 1)` | none |
+| `resolve` on a fence error | the same error | none |
+| `resolve` on `Reject(reason)` | `Ok(Rejected)` | none |
+| `resolve` on `Accept` with invalid progress | `Err(InvalidProgress)` | none |
+| `resolve` on `Accept` | `Ok(Accepted { granted: c })` | `c = c + 1` |
+| `check_result(epoch, presented, result)` | `WrongEpoch` / `StaleFence` (granted ≤ presented) / `Ok` | — |
+
+Grants strictly increase and are never re-issued, so at most one connection
+of a session passes `check_frame` at any time. A lost result is recoverable
+through the `[k, c]` window; nothing lowers `c` or `k`.
+
+Receiver rebind (`rebind_receiver(id, now_ms)`, S§16), in order: run the
+pool-wide expiry sweep (clamping `now_ms`); unknown id → `UnknownReceiver`;
+discard and retire the in-flight transfer; drop every held delta (freeing its
+accounting); set `AwaitSnapshot` and `resync = None`; keep `epoch`, `wire`,
+`published`, `next_event_seq`, `retired_through` and queued updates. A second
+rebind is an idempotent no-op apart from the mode; late chunks of the
+discarded transfer are `StaleTransfer`.
+
+Carriage over QUIC (S§20) lives in T024q: channel `0x91` under `/2`, an
+opt-in resume-first connection on `bind_resumable`, the result in place of
+the welcome, one total order per direction after `Accepted`, and no new
+`ServerEvent`/`SendError`/`ServerError` variant.
+
+Host requirements (H1–H8, S§21; the ADR-0028 pattern, see
+[ADR-0032](../adr/0032-resume-subprotocol-and-connection-fencing.md)): one
+`SessionFence` per session, never re-created; tag connections with their
+fence and `check_frame` every inbound frame; build the `ResumeDecision` only
+after authenticating the proof; answer any net refusal with `Rejected
+{ Denied }`; on `Accepted`, fence the old connection, send the result, then
+stage the resume snapshot before later deltas; never reset the epoch, ledger,
+seqs, ordinals, transfer ids or budgets; issue a `Ticket` and never persist
+proofs; a `Busy`/`Denied` never moves the fence.
+
+Mechanism here, authenticated policy in `crpg-server`.
+
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Added Resume and reconnect section.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
