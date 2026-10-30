@@ -49,6 +49,23 @@ c). AGENTS.md forbids weakening a test without the user.
 
 T139 is revised before implementation: every combatant carries its tags, the record stores them, and the six `crpg-testkit` goldens and the `crpg-cli` replay fixtures built from `combat_basic`/`combat_srd` are approved for re-baselining alongside D39a's four. The revised contract needs no second user gate unless the revision raises a new question.
 
+## D40e — zstd advisories: upgrade the pinned tree
+
+Asked and answered 2026-10-30 (the user, session 26): **upgrade**. The approved
+`zstd-sys` bump cleared only RUSTSEC-2026-0410, which is wasm32-only. Three
+more advisories from the same upstream fix (zstd-rs PR #384) landed in the
+same database update: RUSTSEC-2026-0391 (`zstd`, `with_context` constructors),
+0398 (`zstd-safe`, `seekable` feature) and 0403 (`zstd-safe`, legacy frames
+through `write::Decoder`). None is reachable from `crpg-persist`, which calls
+only `bulk::Compressor::new` and `stream::read::Decoder::with_buffer` with
+default features off. `cargo deny` matches on version alone, so every gate
+failed anyway. The pin in `crates/crpg-persist/Cargo.toml` moves from
+`=0.14.0` to `=0.14.3`, and the lockfile from `zstd-safe` 8.0.0 to 8.2.0 and
+from `zstd-sys` 2.1.0 to 2.1.2. No new crates, identical dependency tables,
+and the same bundled zstd 1.5.7 C sources (byte-identical `zstd/lib`). The
+rejected alternative was ignoring the four IDs in `deny.toml`.
+
 ## Agent log
 - 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + T139 review closed · Drafted the four user questions the D39a revision and its review raised, each with the architect's recommendation, so T139 implementation can start on one answer.
 - 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + D40 answered · Recorded the user's answers: test markers, despawn removing the record and T139d approved as recommended, tags stored on the record against the recommendation (with the extra goldens approved), and the zstd-sys lockfile bump approved.
+- 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + D40e · Recorded the user's choice to upgrade the pinned zstd tree after the zstd-sys bump proved to clear only a wasm32-only advisory, with the reachability findings that informed it.
