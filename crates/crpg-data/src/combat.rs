@@ -396,6 +396,92 @@ pub struct Ruleset {
     /// Rolled initiative rule; absent means each participant's authored key alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initiative: Option<InitiativeWire>,
+    /// Who keeps creature state after an encounter; absent means survivors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creature_persistence: Option<CreaturePersistenceWire>,
+    /// Where a late first-round joiner acts; absent means the next round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late_join: Option<LateJoinWire>,
+    /// What attached effects become at exit; absent means suspend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects_on_exit: Option<EffectsOnExitWire>,
+}
+
+/// Which placed creatures keep their state after an encounter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CreaturePersistenceWire {
+    /// Every placed creature that leaves or outlives an encounter keeps its state, and the dead stay dead.
+    Survivors,
+    /// Only creatures that entered from a kept state keep it; authored participants spawn fresh at every start.
+    Registered,
+}
+
+/// Where a turn-based first-round joiner acts when its initiative slot has passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LateJoinWire {
+    /// It waits for the next round.
+    NextRound,
+    /// It acts right after the current turn.
+    AfterActive,
+}
+
+/// What a creature's attached effects become when it leaves an encounter or the encounter ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectsOnExitWire {
+    /// They keep their remaining rounds and resume at the next entry.
+    Suspend,
+    /// They are removed at leave and at release.
+    Strip,
+    /// They are removed at release and kept at leave.
+    StripAtRelease,
+}
+
+impl<'de> Deserialize<'de> for CreaturePersistenceWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["survivors", "registered"];
+        match Value::deserialize(deserializer)? {
+            Value::String(name) => match name.as_str() {
+                "survivors" => Ok(Self::Survivors),
+                "registered" => Ok(Self::Registered),
+                other => Err(de::Error::unknown_variant(other, VARIANTS)),
+            },
+            _ => Err(de::Error::custom(
+                "creature_persistence must be a policy name",
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LateJoinWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["next_round", "after_active"];
+        match Value::deserialize(deserializer)? {
+            Value::String(name) => match name.as_str() {
+                "next_round" => Ok(Self::NextRound),
+                "after_active" => Ok(Self::AfterActive),
+                other => Err(de::Error::unknown_variant(other, VARIANTS)),
+            },
+            _ => Err(de::Error::custom("late_join must be a policy name")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EffectsOnExitWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["suspend", "strip", "strip_at_release"];
+        match Value::deserialize(deserializer)? {
+            Value::String(name) => match name.as_str() {
+                "suspend" => Ok(Self::Suspend),
+                "strip" => Ok(Self::Strip),
+                "strip_at_release" => Ok(Self::StripAtRelease),
+                other => Err(de::Error::unknown_variant(other, VARIANTS)),
+            },
+            _ => Err(de::Error::custom("effects_on_exit must be a policy name")),
+        }
+    }
 }
 
 /// One data-selected outcome label.
@@ -561,6 +647,9 @@ pub struct Encounter {
     pub ruleset: Ulid,
     /// Participants in authored order.
     pub participants: Vec<EncounterParticipant>,
+    /// Whether every start spawns the participants fresh and keeps none; absent means false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub respawns: Option<bool>,
 }
 
 fn exact_keys<'de, D: serde::Deserializer<'de>>(

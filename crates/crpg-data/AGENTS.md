@@ -33,7 +33,8 @@ prescribed accessors. Do not extend the surface casually.
   both dispatch and `schema_versions`, with no caller registration.
 - Reject unknown fields. Only `_note` (and the optional-missing `effect`,
   `natural_die`, `round_ticks`, `recovery_ticks`, `repeats_in_real_time`,
-  `derived`, `initiative`, `bonus_stats`, damage `dice`, `grants`) may
+  `derived`, `initiative`, `bonus_stats`, damage `dice`, `grants`,
+  `creature_persistence`, `late_join`, `effects_on_exit`, encounter `respawns`) may
   be missing; other nullable fields
   need a required-nullable serde helper and matching schema required annotation.
 - A field may join a family at its current version, with no tag change and no
@@ -403,3 +404,5 @@ the named tests, is [T058a](../../tasks/T058a.md).
   `DataError` text and may quote input; callers truncate when logging.
 
 - 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
+
+- 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139d · Added the four optional creature-lifecycle fields (ruleset `creature_persistence`, `late_join`, `effects_on_exit`; encounter `respawns`) to the optional-missing list; they join at the current tags with hand-written enum decoders and no read-time rule (D32c).

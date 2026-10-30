@@ -56,6 +56,13 @@
           },
           "type": "array"
         },
+        "respawns": {
+          "description": "Whether every start spawns the participants fresh and keeps none; absent means false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "ruleset": {
           "$ref": "#/$defs/UlidText",
           "description": "Ruleset identity governing this encounter."
