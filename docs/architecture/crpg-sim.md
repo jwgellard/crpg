@@ -244,15 +244,17 @@ stored in `Combatant.initiative`. A TB start and every TB rollover insert it,
 an RT start keys `0` and keeps it, and an RT-to-TB switch rebuilds at it.
 Content without these shapes draws exactly as before.
 
-**Tags.** Creature tags are carried (sorted, distinct) in `Combatant.tags`,
-and each effect's `grants`, only in an encounter whose referenced effects
-grant, so every other world keeps its bytes. A view's tag projection is its
+**Tags.** Every combatant carries its creature's tags (sorted, distinct) in
+`Combatant.tags` (T139 D5; T139a2 removed the T137 gate that carried them only
+when a referenced effect grants), and each effect carries its `grants`. A
+record stores the tags and entry reads them back, so a prefab is not re-read
+after registration. A view's tag projection is its
 combatant's tags plus the grants of its unexpired attachments, interned into
 the operation's scratch interner. Nothing reads a tag yet (rebuilt modifiers
 carry no condition); the projection is the contract a later condition
 consumer reads. The union of one participant's tags and every grant is
-bounded by the kernel's 1024: over it is `TooManyTags` at start and a load
-error.
+bounded by the kernel's 1024: over it is `TooManyTags` at every start, with
+or without a grant, and a load error.
 
 **Load coherence.** `World` deserialization tests the usable names (base plus
 derived) where it tested attributes, and adds the derived-stat, kernel,
@@ -378,12 +380,14 @@ One encounter is turn-based (TB) or real-time (RT), chosen by the host and never
 - **Loader.** `version` must be 1 or 2 (`unknown history version`). Payloads decode with both vocabularies whatever the version; after all keys are read a version-1 wrapper is rejected if a retained payload is a v2 variant (`history v1 journal holds a v2 event`) or if its world holds `combat.clock: Some` (`history v1 wrapper holds a real-time-capable encounter`).
 - **Goldens.** `tests/goldens/history_v2.<target>.txt` is generated independently per native target by `examples/generate_history_v2_golden.rs` from `tests/support/history_v2_schedule.rs`, and checked by `tests/history_v2_golden.rs` after a hand-written event oracle.
 
-## Persistent creature records (T139a1, T139)
+## Persistent creature records (T139a1, T139a2, T139)
 
-`World.creatures` (`ComponentStore<CreatureState>`, last field after `area`) is the only copy of a creature outside every encounter; an entity holds a record or a `Combatant`, never both. It is skipped when empty, so a world that holds no record keeps its bytes, hash and goldens. T139a1 lands the store, registration and life outside encounters; the lifecycle at start and release (`Lifecycle`, entry, write-back, tag carriage, `Combatant.fixed`/`entered`) is T139a2, so today a start still spawns every participant fresh and `end_encounter` writes no record.
+`World.creatures` (`ComponentStore<CreatureState>`, last field after `area`) is the only copy of a creature outside every encounter; an entity holds a record or a `Combatant`, never both. It is skipped when empty, so a world that holds no record keeps its bytes, hash and goldens. T139a1 landed the store, registration and life outside encounters; T139a2 lands the lifecycle at start and release (`Lifecycle`, entry, write-back, tag carriage, `Combatant.fixed`/`entered`), so a start now enters survivors from their records and `end_encounter` writes survivors back.
 
 - **Shape.** A `CreatureState` holds placement, ruleset, base non-derived `Int` attributes, base `Fixed` values, health and maximum, the pools in template order, suspended attachments (ascending effect, at least one round) and the creature's own tags (ascending, distinct). Absent `fixed`, `suspended` and `tags` are skipped. The loader refuses a record for a non-live entity or a combatant, a bad maximum or health, no or duplicate pools, a repeated stat name, unordered or empty suspended entries, a repeated placement, and unordered or over-bound tags (K1-K12).
 - **Registration.** `register_creature(world, &CreatureSpec)` checks R1 `TooManyStats`, R2 `AreaMismatch`, R3 `MissingCreature`, R4 the prefab's stat errors (the extracted `read_creature_stats`, shared with start), R5 `PlacementInUse` (a record or a combatant already holds the placement) and R6 `TooManyTags`, in that order and mutating nothing on failure. It then spawns one entity (one `Spawned`) with a full-health record. It draws no RNG, interns nothing and is allowed during an encounter. `HistoryWorld::register_creature` journals the one `Spawned` and never changes the wrapper version.
+- **Lifecycle at start.** `CombatState.lifecycle` (`respawns`, `effects_on_exit`) is set from the encounter's `respawns` and the ruleset's `creature_persistence` and `effects_on_exit`, and is skipped at its default. After the definition is built and before the initiative draws, each authored participant spawns (the encounter respawns, or no record holds its placement), is skipped (a dead record: the dead stay dead) or enters (S1 `RulesetMismatch`, S2 `InvalidStatValue`, S3 `TooManyTags`); a start with no spawn and no entrant is `NoEntrants`. Initiative draws run for spawns and entrants only, an entrant's bonus reading its record. An entrant keeps its record's pools unrefreshed, resumes suspended effects as `round + remaining_rounds` when the definition has them, takes its tags and `fixed` from the record, and journals nothing.
+- **Release.** `end_encounter` writes each combatant back as a record when it entered from one or its encounter does not respawn, dead included (`health == 0`). Suspended effects are stored per `effects_on_exit` (`suspend`: remaining rounds; `strip` and `strip_at_release`: none at release). A combatant that is not written back stays a bare live entity. `Combatant` gains `fixed` (base `Fixed` stats, carried by every combatant) and `entered`; the loader adds P1 (`combatant fixed stats repeat a name`).
 - **Time.** Nothing refreshes, counts down or otherwise touches a record outside an encounter; `tick` leaves the store alone.
 - **Despawn and transfer.** `despawn` removes the record with the entity. `transfer_entity` and `transfer_history_entity` move the record to the destination id; a final preflight check, `AreaError::PlacementInUse`, refuses a transfer into an area whose record or combatant already holds the placement, because dropping either record would be silent loss.
 
@@ -412,3 +416,4 @@ One encounter is turn-based (TB) or real-time (RT), chosen by the host and never
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the remaining bridge text and recorded the `Opposed` draw order, damage dice, rolled initiative and tag carriage with the `TooManyTags` bound, so the kernel-range section describes the whole executed surface.
 - 2026-10-24 (UTC) · opencode-go/beam-free + T137c · Added the surface golden paragraph and the pinned seed-42 schedule/example/test/baseline, so the generalized surface has a per-target golden with a hand-written value oracle.
 - 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139a1 · Recorded the creature store, registration, load checks and the `PlacementInUse` transfer check, and marked the start/release lifecycle as T139a2's, so readers do not look for write-back that does not exist yet.
+- 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139a2 · Recorded the start/release lifecycle, the removed tag-carriage gate and P1, replacing the "deferred to T139a2" notes, so the document matches the code.

@@ -478,7 +478,7 @@ fn spec_of<'a>(fixture: &'a Fixture, bundle: &'a support::SpecBundle<'a>) -> Enc
 
 #[test]
 fn encounter_release_full_lifecycle() {
-    let (fixture, world, ids) = terminal_world();
+    let (mut fixture, world, ids) = terminal_world();
     let bytes = serde_json::to_vec(&world).expect("the world serializes");
     let mut loaded: World = serde_json::from_slice(&bytes).expect("terminal reloads");
 
@@ -507,6 +507,7 @@ fn encounter_release_full_lifecycle() {
     assert!(released.combat().is_none());
 
     // A second encounter reuses the content with fresh runtime identity.
+    fixture.encounter.respawns = Some(true);
     let bundle = fixture.bundle();
     let spec = spec_of(&fixture, &bundle);
     start_encounter(&mut released, &spec).expect("a second encounter starts");

@@ -172,8 +172,8 @@ request_mode}`, the `HistoryEvent` variants `RoundStarted`, `ModeChanged` and
 ## Invariants
 
 1. **Despawn is total, and loading is validated.** A successful `despawn`
-   removes the entity, strips every store and the timeline entry, and
-   enqueues exactly one `Despawned`. A dead id returns `false` and enqueues
+   removes the entity, strips every store (the creature record included,
+   T139) and the timeline entry, and enqueues exactly one `Despawned`. A dead id returns `false` and enqueues
    nothing. Despawning the last combatant releases the encounter (`combat`
    back to `None`; interners, events, RNG, and tick retained) so the world
    still reloads. After any op sequence, no store key and no timeline entry
@@ -280,7 +280,10 @@ request_mode}`, the `HistoryEvent` variants `RoundStarted`, `ModeChanged` and
     index to dangle. Cross-world identity is `(area, EntityId)` — never key
     anything across worlds by `EntityId` alone. Transfer supports only the
     shape it can copy completely: a new per-entity component must extend the
-    move contract or make transfer fail, never be silently dropped. Viewer
+    move contract or make transfer fail, never be silently dropped. A
+    creature record moves with its entity, and a transfer into an area that
+    already holds a record or combatant for its placement fails
+    `AreaError::PlacementInUse` (T139 T1). Viewer
     grants, snapshot cancellation and actionable-mapping retirement belong to
     the host (T027c) and net (T027b), not sim.
 
@@ -381,7 +384,9 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   head + `TurnStart`, rollover, or terminal) through the shared helper,
   removing any other leaves the turn, and removing the last releases the
   encounter. `end_encounter` releases without despawning anyone: entities
-  stay live, the summary retains the outcome, and no event is emitted.
+  stay live, the summary retains the outcome, and no event is emitted. Since
+  T139a2 a release also writes each survivor back as a record (below); it
+  still despawns nobody.
   `Died` is the only combat event: core-closed (`entity` only),
   produced exactly once on the positive-to-zero transition, consumed by
   terminal assertions and future AI/effect systems. No hook dispatcher,
@@ -529,12 +534,14 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
   stored in `Combatant.initiative` (RT timeline keys stay `0`), so rollover
   and the RT-to-TB rebuild read it and draw nothing. Content without these
   shapes must draw exactly as before.
-- **Tags.** `Combatant.tags` and `EffectDefinition.grants` are carried only
-  when a referenced effect grants, because creature tags would otherwise move
-  the `srd_lite` goldens. A view's projection (placement tags plus unexpired
-  grants, scratch handles) is the contract a condition consumer will read;
-  nothing reads it yet. The union bound is `MAX_TAGS` (`TooManyTags`, and the
-  `combatant tags exceed their bound` load error).
+- **Tags.** Every combatant carries its creature's tags, sorted and distinct
+  (T139 D5; T139a2 removed T137 B19's "only when a referenced effect grants"
+  gate), and a record stores them; grants live on `EffectDefinition.grants`
+  and never enter `Combatant.tags`. A view's projection (placement tags plus
+  unexpired grants, scratch handles) is the contract a condition consumer
+  will read; nothing reads it yet. The union bound is `MAX_TAGS`
+  (`TooManyTags`, and the `combatant tags exceed their bound` load error); it
+  runs at every start, with an empty grant set when nothing grants.
 - **Surface golden (T137c).** `tests/surface_golden.rs` runs the pinned
   seed-42 three-combatant turn-based schedule (`tests/support/surface_schedule.rs`)
   that uses every T137 shape at once, records one `state_hash` per step, and
@@ -543,12 +550,16 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
   each damage total. The authoring example
   (`examples/generate_surface_golden.rs`) shares the schedule source.
 
-## Persistent creature records (T139a1)
+## Persistent creature records (T139a1, T139a2)
 
 - `World.creatures` is the only copy of a creature outside an encounter. An entity holds a `CreatureState` or a `Combatant`, never both; the loader enforces it (K1-K12).
-- Public additions: `CreatureState`, `SuspendedEffect`, `CreatureSpec`, `register_creature`, `HistoryWorld::register_creature`, `World::creatures`, `AreaError::PlacementInUse`, and the `CombatError` variants `PlacementInUse`, `RulesetMismatch`, `NoEntrants` (the last two are T139a2's to raise).
+- Public additions: `CreatureState`, `SuspendedEffect`, `CreatureSpec`, `register_creature`, `HistoryWorld::register_creature`, `World::creatures`, `AreaError::PlacementInUse`, and the `CombatError` variants `PlacementInUse`, `RulesetMismatch`, `NoEntrants`. T139a2 adds `Lifecycle`, `EffectsOnExit`, `CombatState.lifecycle`, `Combatant::fixed` and `Combatant::entered`.
 - Start's per-prefab stat reading lives in `combat::read_creature_stats` and is shared with registration; change the two together. A registration check order change is a precedence change (R1-R6).
-- Trap: T139a1 leaves `Combatant`, `CombatState` and `end_encounter` alone. A start does not read the store yet, so a record and a combatant for one placement can coexist until T139a2; registration (R5) and transfer (T1) refuse to create that.
+- Trap: a record and a combatant may share a placement only in a respawning encounter (B13): its authored participants spawn fresh and are never written back, while a combatant that *entered* from a record is always written back. Registration (R5) and transfer (T1) refuse to create the other collisions.
+- **Lifecycle at start and release (T139a2).** `CombatState.lifecycle` is copied at start from the encounter's `respawns` and the ruleset's `creature_persistence` and `effects_on_exit`, and is skipped at its default. After the definition is built and before the initiative draws, each authored participant resolves to Spawn (respawning, or no record), Skip (a dead record) or Enter (S1 `RulesetMismatch`, S2 `InvalidStatValue`, S3 `TooManyTags`, in that order); no participant left is `NoEntrants`. An entrant takes its health, attributes, pools (unrefreshed), tags and `fixed` from the record, resumes suspended effects as `round + remaining` and has its record removed. `end_encounter` writes back every combatant that entered, and every combatant when the encounter does not respawn, dead included (`health == 0`: the dead stay dead). The write-back is `combat::exit_record`, which T139b's leave shares. `despawn` removes a record with the entity, so a despawned placement spawns fresh at the next start.
+- Trap: add a new start check before S1-S4, never between them; an existing check must keep winning over S1-S4.
+- Trap: nothing happens to a creature outside an encounter (D9): no pool refreshes, no effect counts down, and `tick` leaves the store alone.
+- Trap: `Combatant.tags` is no longer gated on a granting effect. The hash of any world that starts an encounter over tagged prefabs moved once (the four `crpg-sim` goldens here; four `crpg-testkit` goldens in T139g).
 - Tests: `tests/creature_state.rs`, `tests/creature_lifecycle.rs`; the helpers are `support::creature`.
 
 ## Agent log
@@ -578,3 +589,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the bridge text from the kernel-range section and added the `Opposed`/damage-dice/initiative draw order, the tag carriage rule and the new start-order steps, so the section describes the whole executed surface and warns against a new refusal list.
 - 2026-10-24 (UTC) · opencode-go/beam-free + T137c · Added the surface golden paragraph with the pinned seed-42 schedule, example, test and Windows baseline, so the generalized surface carries a per-target golden with a hand-written value oracle.
 - 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139a1 · Added the creature-record contract, its public additions and the shared stat-reading trap; the start/release lifecycle is deferred to T139a2.
+- 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139a2 · Recorded the start/release lifecycle (Spawn/Skip/Enter, write-back, `respawns`), amended the Tags and release traps for the removed carriage gate, and added the no-time-outside-an-encounter trap, so a reader does not look for the old gate or an unwritten release.

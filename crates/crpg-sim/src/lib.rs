@@ -36,10 +36,10 @@ pub use combat::{
     start_encounter_in_mode, validate_action, AbilityDefense, AbilityDefinition, ActionOutcome,
     AttachedEffect, CombatAction, CombatDefinition, CombatError, CombatState, Combatant,
     DerivedStat, EffectAim, EffectDefinition, EffectModifier, EffectOp, EffectTarget,
-    EncounterClock, EncounterMode, EncounterSpec, EncounterSummary, InitiativeRule, IntFormula,
-    LegalActionsError, ParticipantResult, PlacementAndArea, PoolTemplate, StandingOrder,
-    COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_STREAM, COMBAT_ROLL_TAG, MAX_COMBATANTS, MAX_COMBAT_STATS,
-    MAX_LEGAL_ACTIONS, RT_CLOCK_MAX,
+    EffectsOnExit, EncounterClock, EncounterMode, EncounterSpec, EncounterSummary, InitiativeRule,
+    IntFormula, LegalActionsError, Lifecycle, ParticipantResult, PlacementAndArea, PoolTemplate,
+    StandingOrder, COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_STREAM, COMBAT_ROLL_TAG, MAX_COMBATANTS,
+    MAX_COMBAT_STATS, MAX_LEGAL_ACTIONS, RT_CLOCK_MAX,
 };
 pub use creature::{register_creature, CreatureSpec, CreatureState, SuspendedEffect};
 pub use event::SimEvent;
