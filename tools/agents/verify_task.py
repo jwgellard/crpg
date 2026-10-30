@@ -704,6 +704,91 @@ def check_lints(ctx: Context) -> dict:
     return _ok()
 
 
+# A0-15 (lesson L8): a doc trim must not delete, edit or reorder a dated
+# agent-log entry, corrupt its `·` separator, or leave heredoc debris.
+_AGENT_LOG_HEADING = re.compile(r"^##\s+Agent log\s*$")
+_AGENT_LOG_ENTRY = re.compile(r"^- \d{4}-\d{2}-\d{2}\b")
+_AGENT_LOG_SIGNATURE = re.compile(r"^- \d{4}-\d{2}-\d{2} \(UTC\) · ")
+_HEREDOC_REMNANTS = frozenset({"EOF", "PY", "MD", "END", '"', "'", '"""', "'''"})
+DETAIL_CAP = 20
+
+
+def agent_log_entries(text: str) -> list[tuple[int, str]]:
+    """The (1-based line number, line) of dated entries in `## Agent log`.
+
+    The section ends at the next level-1 or level-2 heading, so an entry
+    elsewhere in the file is not an agent-log line.
+    """
+    entries: list[tuple[int, str]] = []
+    inside = False
+    for number, line in enumerate(text.splitlines(), 1):
+        if _AGENT_LOG_HEADING.match(line):
+            inside = True
+            continue
+        if inside and re.match(r"^#{1,2} ", line):
+            inside = False
+            continue
+        if inside and _AGENT_LOG_ENTRY.match(line):
+            entries.append((number, line))
+    return entries
+
+
+def _last_nonblank(text: str | None) -> str | None:
+    """The final line holding any non-whitespace, stripped, if there is one."""
+    if text is None:
+        return None
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line.strip()
+    return None
+
+
+def _bad_separator(line: str) -> bool:
+    """Whether a new dated entry's field separators are not ` · ` (U+00B7).
+
+    A field separator is the middot with one space on each side: anything
+    else (`Â·`, a replacement character, a plain `.`/`-`/`?` after the date)
+    means the line was mangled. The signature separator after `(UTC)` is
+    always required; any other middot must be spaced the same way.
+    """
+    if _AGENT_LOG_SIGNATURE.match(line) is None:
+        return True
+    if "\ufffd" in line:
+        return True
+    for found in re.finditer("·", line):
+        before = line[found.start() - 1] if found.start() else ""
+        after = line[found.end()] if found.end() < len(line) else ""
+        if before != " " or after != " ":
+            return True
+    return False
+
+
+def agent_log_problems(path: str, base: str | None, new: str) -> list[str]:
+    """A0-15 details for one changed `.md`: prior entries kept, no debris."""
+    problems: list[str] = []
+    base_entries = agent_log_entries(base or "")
+    new_entries = agent_log_entries(new)
+    new_lines = [line for _, line in new_entries]
+    positions: list[int] = []
+    for _, line in base_entries:
+        try:
+            positions.append(new_lines.index(line))
+        except ValueError:
+            problems.append(f'{path}: deleted agent-log line "{line[:60]}"')
+    if any(later <= earlier for earlier, later in zip(positions, positions[1:])):
+        problems.append(f"{path}: agent-log line moved")
+
+    base_lines = {line for _, line in base_entries}
+    for number, line in new_entries:
+        if line not in base_lines and _bad_separator(line):
+            problems.append(f"{path}:{number} bad separator")
+
+    last_new = _last_nonblank(new)
+    if last_new in _HEREDOC_REMNANTS and last_new != _last_nonblank(base):
+        problems.append(f'{path}: trailing heredoc remnant "{last_new}"')
+    return problems
+
+
 def check_docsig(ctx: Context) -> dict:
     today = os.environ.get("CRPG_TODAY") or datetime.datetime.now(
         datetime.timezone.utc
@@ -737,8 +822,17 @@ def check_docsig(ctx: Context) -> dict:
             continue
         if not any(signed(line) for line in ctx.added_lines(path)):
             offenders.append(f"{path}: no added agent-log entry dated {wanted} (UTC)")
+        new = ctx.new_text(path)
+        if new is not None:
+            offenders.extend(agent_log_problems(path, ctx.base_text(path), new))
     if offenders:
-        return _fail(f"{len(offenders)} .md file(s) without a signature dated {wanted}", offenders)
+        shown = offenders[:DETAIL_CAP]
+        if len(offenders) > DETAIL_CAP:
+            shown.append(f"… and {len(offenders) - DETAIL_CAP} more")
+        return _fail(
+            f"{len(offenders)} docsig problem(s); new entries dated {wanted} (UTC)",
+            shown,
+        )
     return _ok()
 
 

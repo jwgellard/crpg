@@ -464,6 +464,145 @@ class Docsig(VerifyCase):
         self.assertEqual(result.returncode, 0, result.stdout)
 
 
+class DocsigAgentLog(VerifyCase):
+    """A0-15 (L8): docsig protects prior entries and catches edit debris."""
+
+    PRIOR_ONE = "- 2026-10-15 (UTC) · old/one + A0-1 · first entry"
+    PRIOR_TWO = "- 2026-10-15 (UTC) · old/two + A0-2 · second entry"
+    TODAY_ENTRY = "- 2026-10-16 (UTC) · new/agent + A0-15 · today's entry"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_log(self.PRIOR_ONE, self.PRIOR_TWO)
+        self.git("add", "docs/notes.md")
+        self.commit("agent log")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+
+    def write_log(self, *lines: str) -> None:
+        body = "# Notes\n\n## Agent log\n\n" + "\n".join(lines) + "\n"
+        self.add("docs/notes.md", body)
+
+    def rewrite_base_log(self, *lines: str) -> None:
+        self.write_log(*lines)
+        self.git("add", "docs/notes.md")
+        self.commit("agent log")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+
+    def docsig(self, result: subprocess.CompletedProcess) -> dict:
+        document = json.loads(result.stdout)
+        return next(c for c in document["checks"] if c["name"] == "docsig")
+
+    def test_deleted_prior_entry_fails(self) -> None:
+        self.write_log(self.PRIOR_ONE, self.TODAY_ENTRY)
+        self.assert_only_failed(self.verify(), "docsig")
+        check = self.docsig(self.verify("--json"))
+        self.assertIn(
+            f'docs/notes.md: deleted agent-log line "{self.PRIOR_TWO[:60]}"',
+            check["output"],
+        )
+
+    def test_edited_prior_entry_counts_as_deleted(self) -> None:
+        edited = self.PRIOR_TWO.replace("second entry", "second entry, edited")
+        self.write_log(self.PRIOR_ONE, edited, self.TODAY_ENTRY)
+        self.assert_only_failed(self.verify(), "docsig")
+        check = self.docsig(self.verify("--json"))
+        self.assertIn(
+            f'docs/notes.md: deleted agent-log line "{self.PRIOR_TWO[:60]}"',
+            check["output"],
+        )
+
+    def test_two_prior_entries_swapped_fails(self) -> None:
+        self.write_log(self.PRIOR_TWO, self.PRIOR_ONE, self.TODAY_ENTRY)
+        self.assert_only_failed(self.verify(), "docsig")
+        check = self.docsig(self.verify("--json"))
+        self.assertIn("docs/notes.md: agent-log line moved", check["output"])
+
+    def test_new_entry_inserted_between_prior_entries_passes(self) -> None:
+        self.write_log(self.PRIOR_ONE, self.TODAY_ENTRY, self.PRIOR_TWO)
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_appended_entry_at_the_end_passes(self) -> None:
+        self.write_log(self.PRIOR_ONE, self.PRIOR_TWO, self.TODAY_ENTRY)
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_new_file_with_entries_passes(self) -> None:
+        self.add(
+            "docs/fresh.md",
+            "# Fresh\n\n## Agent log\n\n"
+            "- 2026-10-16 (UTC) · new/agent + A0-15 · a new file's entry\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_mojibake_separator_in_a_new_entry_fails(self) -> None:
+        self.write_log(
+            self.PRIOR_ONE,
+            self.PRIOR_TWO,
+            "- 2026-10-16 (UTC) Â· new/agent + A0-15 Â· mojibake",
+        )
+        self.assert_only_failed(self.verify(), "docsig")
+        check = self.docsig(self.verify("--json"))
+        self.assertIn("docs/notes.md:7 bad separator", check["output"])
+
+    def test_each_other_bad_separator_in_a_new_entry_fails(self) -> None:
+        corruptions = [
+            "- 2026-10-16 (UTC) - new/agent + A0-15 - hyphen",
+            "- 2026-10-16 (UTC) ? new/agent + A0-15 ? question",
+            "- 2026-10-16 (UTC) � new/agent + A0-15 � replacement",
+        ]
+        for line in corruptions:
+            with self.subTest(line=line):
+                self.write_log(self.PRIOR_ONE, self.PRIOR_TWO, line)
+                self.assert_only_failed(self.verify(), "docsig")
+                check = self.docsig(self.verify("--json"))
+                self.assertIn("docs/notes.md:7 bad separator", check["output"])
+
+    def test_unchanged_bad_separator_on_the_base_is_not_flagged(self) -> None:
+        legacy = "- 2026-10-14 (UTC) Â· legacy + x Â· old mojibake"
+        self.rewrite_base_log(self.PRIOR_ONE, legacy, self.PRIOR_TWO)
+        self.write_log(self.PRIOR_ONE, legacy, self.PRIOR_TWO, self.TODAY_ENTRY)
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_trailing_eof_fails(self) -> None:
+        self.write_log(self.PRIOR_ONE, self.PRIOR_TWO, self.TODAY_ENTRY, "EOF")
+        self.assert_only_failed(self.verify(), "docsig")
+        check = self.docsig(self.verify("--json"))
+        self.assertIn('docs/notes.md: trailing heredoc remnant "EOF"', check["output"])
+
+    def test_trailing_eof_already_on_the_base_is_not_flagged(self) -> None:
+        self.rewrite_base_log(self.PRIOR_ONE, self.PRIOR_TWO, "EOF")
+        self.write_log(self.PRIOR_ONE, self.PRIOR_TWO, self.TODAY_ENTRY, "EOF")
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_normal_file_ending_passes(self) -> None:
+        self.write_log(
+            self.PRIOR_ONE,
+            self.PRIOR_TWO,
+            self.TODAY_ENTRY,
+            "",
+            "Done.",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_details_cap_at_twenty_plus_tail(self) -> None:
+        old = [
+            f"- 2026-10-15 (UTC) · old/agent + A0-1 · entry {index}"
+            for index in range(25)
+        ]
+        self.rewrite_base_log(*old)
+        self.write_log(self.TODAY_ENTRY)
+        result = self.verify("--json")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        check = self.docsig(result)
+        self.assertEqual(len(check["output"]), 21, check["output"])
+        self.assertEqual(check["output"][-1], "… and 5 more")
+
+
 class Grants(VerifyCase):
     def test_protected_grant_lifts_the_check(self) -> None:
         self.write_brief(
