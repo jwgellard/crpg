@@ -210,7 +210,10 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
   agent-log entry dated from the UTC day of the oldest commit in
   `base..HEAD` up to today (today only with no commits; `$CRPG_TODAY`
   overrides today). Its `asserts` check fails a new or changed `#[test]`-style
-  test whose body is empty, comment-only, or holds no assertion (skipped
+  test whose body is empty, comment-only, or holds no assertion; calls to
+  same-file helpers whose bodies assert (transitively, bare `check(` and
+  turbofish included), tests inside a `macro_rules!` body, and non-empty
+  `proptest!` properties all pass (skipped
   with `--skip asserts`).
 - `tools/agents/brief.py`, `tools/agents/recall.py` — brief generation and
   memory search (A0-5). `oc.py` calls `brief.py` when `--brief` is omitted.
@@ -231,3 +234,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4c · Documented `ask --diff/--base`, the diff file beside the run log, the exact question sentence, the recorded `diff` key, and the non-fault `bad-ref`/`empty-diff` exits, so a reviewer can read a slot branch's diff from the main checkout without loosening a permission.
 - 2026-10-24 (UTC) · opencode-go/deepseek-v4.1-flash + A0-12 · Documented the occupied-slot guard: auto-pick skips (and `--slot` refuses with `slot-occupied`) a slot holding another task's uncommitted work or commits no other ref holds, so a dispatcher never reads a neighbour's work as its base.
 - 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 · Named the new `asserts` check above so workers know a new or changed Rust test must assert, per lesson L6.
+- 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 attempt 2 · Extended the `asserts` line above: same-file asserting helpers (transitive, bare prefixes, turbofish), `macro_rules!` delegates, and non-empty `proptest!` properties pass, so the check no longer flags legitimate assertion routes.

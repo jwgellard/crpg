@@ -1042,6 +1042,134 @@ class AssertsMarkers(VerifyCase):
         self.assert_passes(self.verify())
 
 
+class AssertsHelpers(VerifyCase):
+    """A0-14 attempt 2: calls to same-file helpers whose bodies assert pass."""
+
+    def test_non_prefixed_helper_with_asserting_body_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/local.rs",
+            "fn rejects(input: &str) {\n"
+            '    assert!(!input.is_empty(), "must fail to load");\n'
+            "}\n"
+            "#[test]\n"
+            'fn t01() { rejects("bad"); }\n',
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_bare_check_prefix_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/bare.rs",
+            "fn check(input: &str) {\n"
+            '    assert!(!input.is_empty(), "bad input");\n'
+            "}\n"
+            "#[test]\n"
+            'fn t01() { check("2d6"); }\n',
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_transitive_helper_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/transitive.rs",
+            "fn inner(value: i32) {\n"
+            "    assert!(value > 0);\n"
+            "}\n"
+            "fn outer(value: i32) {\n"
+            "    inner(value);\n"
+            "}\n"
+            "#[test]\n"
+            "fn t01() { outer(1); }\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_helper_cycle_terminates_and_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/cycle.rs",
+            "fn ping() { pong(); }\n"
+            "fn pong() { ping(); assert!(true); }\n"
+            "#[test]\n"
+            "fn t01() { ping(); }\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_turbofish_helper_call_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/turbo.rs",
+            "#[test]\n"
+            "fn t01() {\n"
+            "    fn assert_send_sync<T: Send + Sync>() {}\n"
+            "    assert_send_sync::<Vec<u8>>();\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_non_asserting_helper_still_fails(self) -> None:
+        self.add(
+            "crates/demo/tests/noop.rs",
+            "fn note(value: i32) -> i32 {\n"
+            "    value + 1\n"
+            "}\n"
+            "#[test]\n"
+            "fn t01() { let _ = note(1); }\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_unwrap_on_result_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/roundtrip.rs",
+            "#[test]\n"
+            "fn t01() {\n"
+            "    let path = temp_path();\n"
+            "    write_data(&path).unwrap();\n"
+            "    verify_data(&path).unwrap();\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class AssertsMacroRules(VerifyCase):
+    """A0-14 attempt 2: a test inside a `macro_rules!` body is not checked."""
+
+    def test_macro_generated_tests_pass(self) -> None:
+        self.add(
+            "crates/demo/tests/delegated.rs",
+            "macro_rules! both_versions {\n"
+            "    ($name:ident) => {\n"
+            "        mod $name {\n"
+            "            #[test]\n"
+            "            fn v1() {\n"
+            "                super::$name(super::V1);\n"
+            "            }\n"
+            "        }\n"
+            "    };\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class AssertsProptestProperty(VerifyCase):
+    """A0-14 attempt 2: a proptest property fails only when empty."""
+
+    def test_never_panics_property_without_assert_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/property.rs",
+            "proptest! {\n"
+            "    #[test]\n"
+            '    fn arbitrary_text_never_panics(text in ".{0,100}") {\n'
+            "        let _ = text.parse::<u32>();\n"
+            "    }\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class AssertsDetail(VerifyCase):
     """A0-14: detail names each failing test, capped at 20 plus a tail line."""
 

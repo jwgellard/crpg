@@ -22,3 +22,4 @@ This file keeps one line per lesson with ID, evidence, and promotion.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S22-bookkeeping · Appended L7 (Beam ready-for-pr is not test-strength evidence), from the T024 Claude core review that found six untested behaviours.
 - 2026-10-25 (UTC) · opencode-go/beam-free + S23-bookkeeping · Appended L8 (Beam doc trims delete/reorder agent-log entries; docsig does not catch a deleted prior entry).
 - 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 · Promoted L6 to the landed `verify_task.py` asserts check so the empty-stub lesson points at its enforcement.
+- 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 attempt 2 · Kept L6 promoted: refined the `asserts` check to accept same-file asserting helpers (transitively), `macro_rules!` delegates, and non-empty `proptest!` properties after the attempt-1 check flagged 26 legitimate tests.

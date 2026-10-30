@@ -89,7 +89,21 @@ _PANIC = re.compile(r"\bpanic\s*!")
 _UNREACHABLE = re.compile(r"\bunreachable\s*!")
 _UNWRAP_ERR = re.compile(r"\.\s*unwrap_err\s*\(")
 _EXPECT_ERR = re.compile(r"\.\s*expect_err\s*\(")
-_HELPER_CALL = re.compile(r"\b(?:assert_|check_|expect_)\w*\s*\(")
+# `.unwrap()` panics on Err/None, so it asserts like `.expect()` does: the
+# bare `expect` prefix below already matches `.expect(`, and this marker
+# covers `.unwrap()`.
+_UNWRAP = re.compile(r"\.\s*unwrap\s*\(")
+# Turbofish with one level of nested angles (`::<T>`, `::<Vec<u8>>`).
+_TURBOFISH = r"(?:\s*::\s*<(?:[^;{}<>]|<[^;{}<>]*>)*>)?"
+# Assertion-helper prefixes, with or without the `_` (`check(` counts) and
+# with optional turbofish (`assert_send_sync::<T>()` counts).
+_HELPER_CALL = re.compile(
+    r"\b(?:assert|check|expect|validate)(?:_\w*)?" + _TURBOFISH + r"\s*\("
+)
+# A call to any function, with optional turbofish; the callee resolves
+# against functions defined in the same file (method calls do not).
+_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)" + _TURBOFISH + r"\s*\(")
+_MACRO_RULES_RE = re.compile(r"\bmacro_rules\s*!\s*([A-Za-z_]\w*)")
 
 
 class UsageError(Exception):
@@ -895,10 +909,96 @@ def _in_tests_dir(path: str) -> bool:
 
 _FN_RE = re.compile(
     r"(?P<attrs>(?:#\s*\[[^\]]*\]\s*|#\s*test\b\s*)*)"
-    r"(?P<decl>(?:pub\s*(?:\([^)]*\))?\s*)?(?:async\s+)?(?:unsafe\s+)?"
+    r"(?P<decl>(?:pub\s*(?:\([^)]*\))?\s*)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?"
     r"fn\s+(?P<name>[A-Za-z_]\w*))"
 )
 _PROptest_RE = re.compile(r"\bproptest\s*!")
+
+
+def _macro_rules_ranges(masked: str) -> list[tuple[int, int]]:
+    """Ranges of `macro_rules!` bodies; tests generated inside are not checked.
+
+    A `#[test] fn v1() { super::$name(super::V1); }` inside a `macro_rules!`
+    body only delegates to the function it names, so the check exempts it
+    and judges the delegate instead.
+    """
+    closers = {"{": "}", "(": ")", "[": "]"}
+    ranges: list[tuple[int, int]] = []
+    for found in _MACRO_RULES_RE.finditer(masked):
+        j = found.end()
+        while j < len(masked) and masked[j] in " \t\n\r":
+            j += 1
+        if j < len(masked) and masked[j] in closers:
+            close = _match_pair(masked, j, masked[j], closers[masked[j]])
+            if close is not None:
+                ranges.append((j, close))
+    return ranges
+
+
+def _file_functions(masked: str) -> dict[str, list[str]]:
+    """Every `fn name` in the file mapped to its masked bodies."""
+    found: dict[str, list[str]] = {}
+    for match in _FN_RE.finditer(masked):
+        brace = masked.find("{", match.end())
+        if brace == -1:
+            continue
+        if ";" in masked[match.end() : brace]:
+            continue
+        close = _match_brace(masked, brace)
+        if close is None:
+            continue
+        found.setdefault(match.group("name"), []).append(masked[brace + 1 : close])
+    return found
+
+
+def _body_asserts(code: str) -> bool:
+    """Whether masked code holds an assertion marker (A0-14 Behaviour 2)."""
+    return bool(
+        _ASSERT_MACRO.search(code)
+        or _PROP_ASSERT.search(code)
+        or _PANIC.search(code)
+        or _UNREACHABLE.search(code)
+        or _UNWRAP_ERR.search(code)
+        or _EXPECT_ERR.search(code)
+        or _UNWRAP.search(code)
+        or _HELPER_CALL.search(code)
+    )
+
+
+def _helper_passes(
+    name: str, helpers: dict[str, list[str]], seen: frozenset[str], depth: int
+) -> bool:
+    """Whether the same-file function `name` asserts, transitively to depth 3."""
+    if depth <= 0 or name in seen:
+        return False
+    bodies = helpers.get(name)
+    if not bodies:
+        return False
+    seen = seen | {name}
+    for body in bodies:
+        if body.strip() == "":
+            continue
+        if _body_asserts(body):
+            return True
+    for body in bodies:
+        if body.strip() == "":
+            continue
+        for call in _CALL_RE.finditer(body):
+            if call.start() > 0 and body[call.start() - 1] == ".":
+                continue
+            if _helper_passes(call.group(1), helpers, seen, depth - 1):
+                return True
+    return False
+
+
+def _calls_asserting_helper(code: str, helpers: dict[str, list[str]]) -> bool:
+    """Whether masked code calls a same-file function whose body asserts."""
+    for call in _CALL_RE.finditer(code):
+        if call.start() > 0 and code[call.start() - 1] == ".":
+            continue
+        if _helper_passes(call.group(1), helpers, frozenset(), 3):
+            return True
+    return False
 
 
 def _rust_tests(masked: str, original: str, tests_dir: bool) -> list[dict]:
@@ -907,7 +1007,9 @@ def _rust_tests(masked: str, original: str, tests_dir: bool) -> list[dict]:
     `masked` is `_mask_rust(original)`; offsets line up. In an integration
     tests dir every `#[test]`-style function counts; elsewhere only ones
     inside a `#[cfg(test)]` module do. Any function inside a `proptest!`
-    block counts, including its `#test` functions.
+    block counts, including its `#test` functions. Functions inside a
+    `macro_rules!` body never count: they only delegate to the function
+    they name.
     """
     cfg_ranges: list[tuple[int, int]] = []
     for found in _CFG_TEST_MOD.finditer(masked):
@@ -932,9 +1034,12 @@ def _rust_tests(masked: str, original: str, tests_dir: bool) -> list[dict]:
                 proptest_ranges.append((j, close))
 
     tests: list[dict] = []
+    macro_ranges = _macro_rules_ranges(masked)
     for found in _FN_RE.finditer(masked):
         attrs = found.group("attrs") or ""
         name = found.group("name")
+        if any(s <= found.start() < e for s, e in macro_ranges):
+            continue
         in_proptest = any(s <= found.start() < e for s, e in proptest_ranges)
         in_cfg = any(s <= found.start() < e for s, e in cfg_ranges)
         if in_proptest:
@@ -961,6 +1066,7 @@ def _rust_tests(masked: str, original: str, tests_dir: bool) -> list[dict]:
                 "body_masked": masked[brace + 1 : close],
                 "body_raw": original[brace + 1 : close],
                 "should_panic": bool(_SHOULD_PANIC.search(attrs)),
+                "in_proptest": in_proptest,
             }
         )
     return tests
@@ -980,6 +1086,7 @@ def check_asserts(ctx: Context) -> dict:
         new_tests = _rust_tests(_mask_rust(new), new, tests_dir)
         if not new_tests:
             continue
+        helpers = _file_functions(_mask_rust(new))
         base = ctx.base_text(path)
         if base is None:
             changed = new_tests
@@ -1006,15 +1113,13 @@ def check_asserts(ctx: Context) -> dict:
             if item["should_panic"]:
                 continue
             code = item["body_masked"]
-            if (
-                _ASSERT_MACRO.search(code)
-                or _PROP_ASSERT.search(code)
-                or _PANIC.search(code)
-                or _UNREACHABLE.search(code)
-                or _UNWRAP_ERR.search(code)
-                or _EXPECT_ERR.search(code)
-                or _HELPER_CALL.search(code)
-            ):
+            if _body_asserts(code):
+                continue
+            # A proptest! property holds without an explicit assertion: the
+            # property itself is "does not panic". Only empty bodies fail.
+            if item["in_proptest"]:
+                continue
+            if _calls_asserting_helper(code, helpers):
                 continue
             failures.append((path, item["line"], item["name"]))
     if failures:
