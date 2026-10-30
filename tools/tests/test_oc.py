@@ -246,6 +246,11 @@ class DispatchCase(unittest.TestCase):
         safe = model.replace("/", "_")
         return self.repo / ".agents" / "runs" / task / f"{attempt}-{safe}.jsonl"
 
+    def claim_path(self, task, model=MODEL, attempt=1, slug=None) -> Path:
+        safe = model.replace("/", "_")
+        stem = f"{attempt}-{slug}-{safe}" if slug else f"{attempt}-{safe}"
+        return self.repo / ".agents" / "runs" / task / f"{stem}.claim"
+
     def read_record(self, task, model=MODEL, attempt=1) -> dict:
         return json.loads(self.record_path(task, model, attempt).read_text())
 
@@ -1201,6 +1206,79 @@ class DispatchCase(unittest.TestCase):
             2,
         )
         self.assertFalse((task_dir / f"2-{safe}.result.json").exists())
+
+    # -- attempt reservation: parallel runs (A0-13) ----------------------
+
+    def test_run_leaves_its_attempt_claim(self) -> None:
+        # The run's number is reserved before anything starts, and the claim
+        # stays as the marker afterwards.
+        task = self.tid()
+        result = self.oc_run(task)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        claim = self.claim_path(task)
+        self.assertTrue(claim.is_file())
+        payload = json.loads(claim.read_text(encoding="utf-8"))
+        self.assertEqual(payload["attempt"], 1)
+        self.assertGreater(payload["pid"], 0)
+        self.assertRegex(
+            payload["utc"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+        )
+        self.assertEqual(self.read_record(task)["attempt"], 1)
+        self.assertTrue(self.log_path(task).is_file())
+        self.assertTrue(self.log_path(task).with_suffix(".report.md").is_file())
+
+    def test_failed_run_keeps_its_claimed_number(self) -> None:
+        # Any verdict keeps the reserved number in the result, report and log.
+        task = self.tid()
+        result = self.oc_run(task, env={"FAKE_VERIFY_MODE": "fail"})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertTrue(self.claim_path(task).is_file())
+        record = self.read_record(task)
+        self.assertEqual((record["attempt"], record["verdict"]), (1, "FAIL"))
+        self.assertTrue(self.log_path(task).is_file())
+        self.assertTrue(self.log_path(task).with_suffix(".report.md").is_file())
+
+    def test_second_run_reserves_the_next_attempt(self) -> None:
+        task = self.tid()
+        first = self.oc_run(task)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        second = self.oc_run(task)
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        self.assertTrue(self.claim_path(task, attempt=1).is_file())
+        self.assertTrue(self.claim_path(task, attempt=2).is_file())
+        self.assertEqual(self.read_record(task, attempt=1)["attempt"], 1)
+        self.assertEqual(self.read_record(task, attempt=2)["attempt"], 2)
+
+    def test_ask_reserves_an_attempt_claim(self) -> None:
+        result = self.oc(
+            "ask", "--role", "scout", "--model", MODEL,
+            "--timeout", "60", "--idle", "10", "did the claim land?",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        task_dir = self.repo / ".agents" / "runs" / "ask"
+        records = sorted(
+            task_dir.glob("*.result.json"),
+            key=lambda path: int(path.name.split("-", 1)[0]),
+        )
+        record = json.loads(records[-1].read_text(encoding="utf-8"))
+        claim = task_dir / (
+            f"{record['attempt']}-{MODEL.replace('/', '_')}.claim")
+        self.assertTrue(claim.is_file())
+        self.assertEqual(
+            json.loads(claim.read_text(encoding="utf-8"))["attempt"],
+            record["attempt"],
+        )
+
+    def test_dry_run_writes_no_claim(self) -> None:
+        task = self.tid()
+        result = self.oc(
+            "run", "--task", task, "--role", "implement", "--model", MODEL,
+            "--base", "master", "--brief", self.brief(), "--dry-run", env={},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        task_dir = self.repo / ".agents" / "runs" / task
+        self.assertEqual(list(task_dir.glob("*.claim")), [])
+        self.assertFalse(task_dir.exists())
 
     def test_attempt_creates_a_missing_task_branch(self) -> None:
         task = self.tid()
@@ -2240,6 +2318,22 @@ class AskDiffCase(unittest.TestCase):
             self.prompt_file.read_text(encoding="utf-8"), question)
         self.assertNotIn("diff", self.read_record())
 
+    def test_diff_keeps_the_claimed_attempt(self) -> None:
+        # The reservation's number is the same in the claim, the diff, the
+        # log and the result record (A0-13).
+        self.branch("changed", "a changed line\n")
+        result = self.ask("--diff", "changed")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        safe = MODEL.replace("/", "_")
+        claim = self.runs_dir() / f"1-{safe}.claim"
+        self.assertTrue(claim.is_file())
+        self.assertEqual(
+            json.loads(claim.read_text(encoding="utf-8"))["attempt"], 1)
+        self.assertTrue(self.diff_path().is_file())
+        self.assertTrue(self.record_path().is_file())
+        self.assertTrue((self.runs_dir() / f"1-{safe}.jsonl").is_file())
+        self.assertEqual(self.read_record()["attempt"], 1)
+
     def test_stats_does_not_count_bad_ref_or_empty_diff(self) -> None:
         self.branch("same")
         empty = self.ask("--diff", "same")
@@ -2699,6 +2793,101 @@ class HarnessUnitCase(unittest.TestCase):
                 json.dumps({"attempt": 2}), encoding="utf-8"
             )
             self.assertEqual(OCMOD.next_attempt_number(task_dir), 3)
+
+    def test_reserve_attempt_claims_distinct_numbers_and_records_owner(self) -> None:
+        # A0-13: the reservation is the attempt number, and the claim names
+        # its owner so a stale marker is traceable.
+        with tempfile.TemporaryDirectory(prefix="oc claims ") as tmp:
+            task_dir = Path(tmp)
+            first = OCMOD.reserve_attempt(task_dir, "go/m", None)
+            second = OCMOD.reserve_attempt(task_dir, "go/m", None)
+            self.assertEqual((first, second), (1, 2))
+            claim = task_dir / "1-go_m.claim"
+            self.assertTrue(claim.is_file())
+            payload = json.loads(claim.read_text(encoding="utf-8"))
+            self.assertEqual(payload["pid"], os.getpid())
+            self.assertEqual(payload["attempt"], 1)
+            self.assertEqual(payload["model"], "go/m")
+            self.assertIsNone(payload["slug"])
+            self.assertRegex(
+                payload["utc"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+            )
+            self.assertTrue((task_dir / "2-go_m.claim").is_file())
+
+    def test_a_pre_existing_claim_makes_the_next_reservation_higher(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="oc claims ") as tmp:
+            task_dir = Path(tmp)
+            claim = task_dir / "5-go_m.claim"
+            claim.write_text(json.dumps({
+                "pid": 1, "utc": "2026-10-30T00:00:00Z", "attempt": 5,
+                "model": "go/m", "slug": None,
+            }), encoding="utf-8")
+            self.assertEqual(OCMOD.reserve_attempt(task_dir, "go/m", None), 6)
+            self.assertTrue((task_dir / "6-go_m.claim").is_file())
+            # The pre-existing claim is the marker; it is never overwritten.
+            self.assertEqual(
+                json.loads(claim.read_text(encoding="utf-8"))["pid"], 1)
+
+    def test_next_attempt_number_counts_claims(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="oc claims ") as tmp:
+            task_dir = Path(tmp)
+            (task_dir / "3-go_other.claim").write_text(json.dumps({
+                "pid": 1, "utc": "2026-10-30T00:00:00Z", "attempt": 3,
+                "model": "go/other", "slug": None,
+            }), encoding="utf-8")
+            # Any model's claim at this slug counts, so the unfinished
+            # attempt is never handed out again.
+            self.assertEqual(OCMOD.next_attempt_number(task_dir), 4)
+            # An unreadable claim is skipped, like an unreadable record.
+            (task_dir / "9-go_other.claim").write_text("not json\n",
+                                                       encoding="utf-8")
+            self.assertEqual(OCMOD.next_attempt_number(task_dir), 4)
+
+    def test_a_slugged_claim_does_not_affect_another_slug(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="oc claims ") as tmp:
+            task_dir = Path(tmp)
+            self.assertEqual(
+                OCMOD.reserve_attempt(task_dir, "go/m", "draft-a"), 1)
+            self.assertTrue((task_dir / "1-draft-a-go_m.claim").is_file())
+            self.assertEqual(OCMOD.next_attempt_number(task_dir, "draft-b"), 1)
+            self.assertEqual(OCMOD.next_attempt_number(task_dir), 1)
+            self.assertEqual(
+                OCMOD.reserve_attempt(task_dir, "go/m", "draft-b"), 1)
+            self.assertTrue((task_dir / "1-draft-b-go_m.claim").is_file())
+            # Rerunning one slug is that slug's attempt 2, not the other's.
+            self.assertEqual(
+                OCMOD.reserve_attempt(task_dir, "go/m", "draft-a"), 2)
+            self.assertEqual(OCMOD.next_attempt_number(task_dir, None), 1)
+
+    def test_concurrent_reservations_are_all_distinct(self) -> None:
+        # Four threads start together and race the exclusive create; a
+        # non-atomic number choice would hand two of them the same attempt.
+        with tempfile.TemporaryDirectory(prefix="oc claims ") as tmp:
+            task_dir = Path(tmp)
+            barrier = threading.Barrier(4)
+            lock = threading.Lock()
+            numbers: list[int] = []
+            errors: list[BaseException] = []
+
+            def reserve() -> None:
+                try:
+                    barrier.wait(timeout=10)
+                    number = OCMOD.reserve_attempt(task_dir, "go/m", None)
+                except BaseException as error:  # noqa: BLE001 - reported below
+                    with lock:
+                        errors.append(error)
+                    return
+                with lock:
+                    numbers.append(number)
+
+            threads = [threading.Thread(target=reserve) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+            self.assertEqual(errors, [])
+            self.assertEqual(sorted(numbers), [1, 2, 3, 4])
+            self.assertEqual(len(list(task_dir.glob("*.claim"))), 4)
 
     def test_pid_probe_never_kills(self) -> None:
         sleeper = subprocess.Popen(
