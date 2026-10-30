@@ -824,9 +824,9 @@ impl Host {
         if self.closed {
             return Err(HostError::Closed);
         }
-        let grants = normalize_grants(grants)?;
-        let (map, next_net, narrowing, snapshot) = {
+        let (grants, map, next_net, narrowing, snapshot) = {
             let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+            let grants = normalize_grants(grants)?;
             let (map, next_net) = plan_map(
                 &session.map,
                 session.next_net,
@@ -835,7 +835,7 @@ impl Host {
             )?;
             let narrowing = is_narrowing(&session.grants, &grants);
             let snapshot = session.snapshot;
-            (map, next_net, narrowing, snapshot)
+            (grants, map, next_net, narrowing, snapshot)
         };
         if narrowing {
             if snapshot {

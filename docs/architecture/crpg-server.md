@@ -27,7 +27,7 @@ credentials, backpressure, fencing and D02 shutdown. What is planned and
 **not** here: the dedicated binary's wiring, certificate and key loading,
 credential generation, the invitation file format and operator
 configuration (T040); reconnect, resume and the 30 s grace (T025a/T025b);
-snapshot transfer and seamless narrowing (T024); production interest facts
+production interest facts
 (T027a–c supply values for these grant shapes); save slot/autosave policy,
 the save directory and the incarnation source (T040); OS service
 integration; listen-server mixed mode; and the GM endpoint.
@@ -164,8 +164,64 @@ fresh ids), a lane-0 retry cache of canonical intent bytes plus fixed-size
 outcome metadata, failure-response budgets, and a delivery log. Receipts go
 to the originator only; permitted events (V2) and state ops fan out per
 peer. V1 hosts deliver receipts plus legacy state ops only; V2 hosts add the
-ordered event ops. Narrowing grants restart a peer's delivery at 1 with a
-fresh filtered state; widening continues it.
+ordered event ops. Narrowing a `bind_peer` session restarts its delivery at
+1 with a fresh filtered state (`RebindRequired`); narrowing a snapshot
+session stages a snapshot transfer above the current cursor
+(`SnapshotStaged`) and keeps `event_seq` and ordinals continuous. Widening
+continues incrementally in both kinds.
+
+## Snapshot sessions (T024h)
+
+`bind_snapshot_peer` opts a session into the `0x81` transfer subprotocol
+(ADR-0028) beside lane-0 frames, in one total order. The kind is fixed for
+the session's life and both kinds share every other rule. Exact contract:
+[T024h](../../tasks/T024h.md) S§5–S§11; reasoning:
+[ADR-0031](../adr/0031-host-snapshot-sender-and-snapshot-sessions.md).
+
+| | lane-0 session (`bind_peer`) | snapshot session (`bind_snapshot_peer`) |
+|---|---|---|
+| First delivery | `full_state_ops` as deltas from seq 1 | the same |
+| Narrowing | T022: reset to seq 1, `RebindRequired` | snapshot transfer above the cursor, `SnapshotStaged`, no reset |
+| Widening | incremental deltas | incremental deltas |
+| `ingest_transfer` | `Refused(NotSnapshotPeer)` | S§9 |
+| `transfer_state` | `Ok(None)` | `Ok(Some(..))` |
+
+Every delivery entry carries `ordinal` (from 1, never reused in the
+session), `kind` (`Delta` or `Transfer`) and the encoded bytes.
+`acknowledge_delivery(through)` takes an ordinal; clearing the log counts
+discarded entries as retired (`delivered = next_ordinal − 1`). In a lane-0
+session the ordinal equals the entry's `event_seq`, so its path is
+unchanged.
+
+Staging is one private routine used by narrowing and `Resync`, and is
+atomic and immediate:
+
+1. `next_transfer == u64::MAX` is `CounterExhausted`.
+2. If a transfer is in flight, plan `Cancel` (`Aborted` for narrowing,
+   `Superseded` for `Resync`).
+3. Build the body from `PeerView` (mapped entities, their health, and the
+   turn when granted) — only facts granted at capture.
+4. `plan_transfer(epoch, next_transfer, server_tick(), cursor, 8, body)`
+   gives `Begin` and one `Chunk` per v1 body.
+5. Check entries, bytes and host egress room against the cleared log,
+   plus the ordinal counter, without mutating.
+6. Commit: install the grants and map, clear the log, push
+   `Cancel`/`Begin`/`Chunk` as `Transfer`, set `in_flight` and advance
+   `next_transfer`.
+
+There is no pending stage. At v1 caps the room check cannot fail
+(S§1 item 7) and is kept as defence in depth. `ingest_transfer` decodes
+the T024 S§5.2 upstream set (`Published`, `Resync`), spends the shared
+intent frame and byte buckets before decoding, and returns a
+`TransferDisposition` rather than an error for refusals.
+
+The QUIC adapter routes by kind, never by reading bytes: `Channel::Lane0`
+frames go through `ingest`, `Channel::Transfer` frames through
+`ingest_transfer`, and delivery sends `Delta` on `Lane0` and `Transfer`
+on `Transfer`, acknowledging the last accepted ordinal. `/1` connections
+carry only lane-0 frames and keep today's behaviour. The `/2` adapter is
+T024h2; T024h1 changes no adapter behaviour and `/1` narrowing still
+fences (ADR-0026).
 
 ## Gate 10 (save/load equivalence)
 
@@ -223,3 +279,4 @@ with T040/T041.
 - 2026-10-05 (UTC) · claude-code + T039 · Added the `save` module, the `crpg-persist` edge, the payload/identity/precedence summary and the gate-10 claim with its non-claims, so the doc describes the persistence the crate now has rather than calling it planned.
 - 2026-10-06 (UTC) · claude-code + T023b · Added the `quic` adapter (pump phases, connection-to-binding mapping), the `crpg-net-quic` edge in the dependency diagram, its consumers, and a "planned and not here" list without QUIC endpoints, so the doc describes the transport adapter the crate now has.
 - 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T132 (D29g/h/i) · Recorded that the two unreachable v1 host-wide caps are defence in depth, so nobody counts them as tested.
+- 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session section (session-kind table, ordinal ledger, staging steps, adapter routing), replaced the blanket narrowing reset with the per-kind rule, and removed snapshot transfer from the planned list, so the doc describes the sender T024h1 landed.
