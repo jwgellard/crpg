@@ -255,7 +255,7 @@ diagnostic for any value or mix: the fields are hooks that the sim reads
 (T139a, T139b). The `ruleset` and `encounter` schemas are regenerated, with
 the enums as `$defs` string schemas and `respawns` as `boolean|null`.
 
-- 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139d · Documented the four optional creature-lifecycle fields and three wire enums added at the current tags, their decode and encode rules, and that no rule reads them in this crate.
+- 2026-10-30 (UTC) Â· claude-code/sonnet-5.5 (implementer) + T139d Â· Documented the four optional creature-lifecycle fields and three wire enums added at the current tags, their decode and encode rules, and that no rule reads them in this crate.
 
 ## Agent log
 

@@ -405,4 +405,4 @@ the named tests, is [T058a](../../tasks/T058a.md).
 
 - 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
 
-- 2026-10-30 (UTC) � claude-code/sonnet-5.5 (implementer) + T139d � Added the four optional creature-lifecycle fields (ruleset `creature_persistence`, `late_join`, `effects_on_exit`; encounter `respawns`) to the optional-missing list; they join at the current tags with hand-written enum decoders and no read-time rule (D32c).
+- 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139d · Added the four optional creature-lifecycle fields (ruleset `creature_persistence`, `late_join`, `effects_on_exit`; encounter `respawns`) to the optional-missing list; they join at the current tags with hand-written enum decoders and no read-time rule (D32c).
