@@ -15,7 +15,9 @@ T018a lane-0 protocol v1 plus bounded `postcard` codec plus local
 Design, module flow, public surface, invariants, and allowed dependencies
 live in `docs/architecture/crpg-net.md` (§Scope, §Module flow, §Public
 surface, §Invariants, §Allowed dependencies, §Conformance, §v2 event wire,
-§Snapshot transfer). This file keeps only how-to-work rules.
+§Snapshot transfer, §Resume and reconnect (T025a)). The resume modules
+(`protocol_resume`, `codec_resume`, and `resume` in T025a2) follow that
+pointer. This file keeps only how-to-work rules.
 
 ## Definition of done for any change
 
@@ -42,7 +44,10 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   `postcard` decode error maps to `Malformed`).
 - **No host invention.** Host-policy checks appear only as `POLICY_*`
   documented constants for T018b/c drivers. No auth, placement, lifecycle,
-  perception, or capability API lives here.
+  perception, or capability API lives here. `SessionFence` orders connection
+  generations and authorises nothing: it checks epoch, fence order and shape,
+  and the host's explicit `ResumeDecision` is the only input that produces
+  `Accepted`.
 - **No open bag, no transform op, no sim-enum serialization.** Undisclosed
   fields are omitted, never zero-filled. Spatial replication waits for the
   lane-1 movement channel.
@@ -89,6 +94,15 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   a delta above an in-flight cursor; never reset `event_seq` within an epoch;
   the full 1 MiB claim belongs to the byte layer (S§1.4); the T018b tracker
   test stays. DoD count: 119 passed (88 + 31; the other suites grew after the contract was written).
+- *2026-10-30 (UTC), T025a1:* The resume subprotocol (`0x91`, lane 3) is a
+  separate codec beside v1/v2/`0x81`. Never put a fence on a lane-0 or
+  transfer frame; never rotate the epoch on resume; never remove and re-add a
+  retained receiver (use `rebind_receiver`, T025a2); never re-create a
+  `SessionFence` for a live session and never add a restore constructor;
+  `ResumeProof` never gains `PartialEq`, `Eq`, `Hash`, `Ord`, `Display` or a
+  logging path (case 9's probe fails if it does); a resume decoder never
+  falls back to another codec. DoD count: 175 passed (165 + 10), then 186
+  (T025a2).
 
 ## Agent log
 
@@ -113,3 +127,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024-docs · Closed S§13 doc gaps: added transfer decode precedence and the S§10.7 cutover barrier to Invariants, traps, and ADR-0028 host requirements.
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving Public surface, Invariants, and Allowed dependencies to the architecture doc; no rules changed.
+
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Added the resume subprotocol modules (`protocol_resume`, `codec_resume`) to the architecture pointer, the SessionFence-orders-and-authorises-nothing note on the No-host-invention trap, and the T025a1 traps with the DoD count 175.
