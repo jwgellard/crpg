@@ -45,7 +45,13 @@ task ID and the same `--slug` only: `--slug draft-a` and `--slug draft-b`
 under T136b both start at attempt 1, while rerunning `draft-a` is attempt
 2, and a run with no slug counts only slug-less runs. A slug run's files
 are named `<attempt>-<slug>-<model>.{jsonl,result.json,report.md}`; a
-slug-less run keeps `<attempt>-<model>…`, so `stats` reads both.
+slug-less run keeps `<attempt>-<model>…`, so `stats` reads both. A new run
+reserves its number before anything starts by creating
+`<attempt>-<model>.claim` (or `<attempt>-<slug>-<model>.claim`) with an
+exclusive create, writing its PID and a UTC stamp; `next_attempt_number`
+counts claims too, so two parallel runs of one task and slug can never share
+an attempt, and the claim stays after the run as its marker (`--dry-run`
+writes none).
 
 Environment: `$CRPG_REPO` (repo root, default: the main worktree),
 `$CRPG_SLOTS`, `$CRPG_OPENCODE` (executable; a `.py` path runs under
@@ -235,3 +241,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-24 (UTC) · opencode-go/deepseek-v4.1-flash + A0-12 · Documented the occupied-slot guard: auto-pick skips (and `--slot` refuses with `slot-occupied`) a slot holding another task's uncommitted work or commits no other ref holds, so a dispatcher never reads a neighbour's work as its base.
 - 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 · Named the new `asserts` check above so workers know a new or changed Rust test must assert, per lesson L6.
 - 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 attempt 2 · Extended the `asserts` line above: same-file asserting helpers (transitive, bare prefixes, turbofish), `macro_rules!` delegates, and non-empty `proptest!` properties pass, so the check no longer flags legitimate assertion routes.
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-13 · Documented the per-run `.claim` reservation so the manager knows parallel runs of one task and slug get distinct attempts and leave a marker, per lesson L5.
