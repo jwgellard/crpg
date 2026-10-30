@@ -534,6 +534,17 @@ fn a8_load_checks() {
             .push(json!([{"index": 99, "generation": 1}, copy]));
     });
     assert!(message.starts_with("dangling creature"), "{message}");
+    // K1 is a loop of its own: a bad record EARLIER in the store than a
+    // later dangling one still reports K1.
+    let message = load_error(&world, |save| {
+        let copy = save["creatures"][1][1].clone();
+        save["creatures"][0][1]["max_health"] = json!(0);
+        save["creatures"]
+            .as_array_mut()
+            .expect("list")
+            .push(json!([{"index": 99, "generation": 1}, copy]));
+    });
+    assert!(message.starts_with("dangling creature"), "{message}");
 
     // K3-K9, K11 and K12 on the first record; K10 across the two.
     assert_eq!(
@@ -649,6 +660,14 @@ fn a8_load_checks_against_combatants() {
         ]);
     });
     assert!(message.starts_with("dangling creature"), "{message}");
+    // K2 is a loop of its own: a K3-bad record EARLIER in the store than a
+    // later record on a combatant still reports K2.
+    let message = load_error(&world, |save| {
+        let mut bad = donor.clone();
+        bad["max_health"] = json!(0);
+        save["creatures"] = json!([[id_json(bare), bad], [id_json(ids[0]), donor.clone()]]);
+    });
+    assert_eq!(message, "creature state for a combatant");
     // Control: a record on a bare entity whose placement equals A's loads
     // (a respawning encounter, B13).
     let loaded = with_json(&world, |save| {
@@ -660,4 +679,34 @@ fn a8_load_checks_against_combatants() {
         fixture.placement_a
     );
     assert_eq!(loaded.combatants().len(), 2);
+}
+
+/// B3: an empty `ruleset.pools` panics with start's text.
+#[test]
+#[should_panic(expected = "ruleset pools are validated nonempty by data read-time checks")]
+fn a3_empty_pools_panic() {
+    let mut fixture = Fixture::standard();
+    fixture.ruleset.pools.clear();
+    let mut world = bound(&fixture);
+    let _ = fixture.register(&mut world, fixture.placement_a);
+}
+
+/// Errors: the three T139a `CombatError` variants render as pinned and hide
+/// their fields.
+#[test]
+fn new_combat_errors_display_as_pinned() {
+    let mut world = World::new(1);
+    let entity = world.spawn(EntityMeta {});
+    assert_eq!(
+        CombatError::PlacementInUse { placement: id(111) }.to_string(),
+        "PlacementInUse at creatures/placement"
+    );
+    assert_eq!(
+        CombatError::RulesetMismatch { entity }.to_string(),
+        "RulesetMismatch at creatures/ruleset"
+    );
+    assert_eq!(
+        CombatError::NoEntrants.to_string(),
+        "NoEntrants at spec/participants"
+    );
 }

@@ -133,6 +133,18 @@ impl Duo {
         }
     }
 
+    /// Performs one accepted action in X.
+    fn act_x(&mut self, action: &crpg_sim::CombatAction) {
+        match self {
+            Self::Plain(x, _) => {
+                crpg_sim::perform_action(x, action).expect("the action is accepted");
+            }
+            Self::History(x, _) => {
+                x.perform_action(action).expect("the action is accepted");
+            }
+        }
+    }
+
     fn rejects(&mut self, entity: EntityId, forward: bool, expected: AreaError) {
         let before = self.bytes();
         let result = if forward {
@@ -232,6 +244,31 @@ fn a7_t1_combatant_collision() {
         }
         duo.back(moved).expect("moves once the placement is free");
         assert_eq!(duo.x().creatures().len(), 1);
+    }
+}
+
+/// A7 (B8, T1): a dead combatant still collides ("dead or alive").
+#[test]
+fn a7_t1_dead_combatant_collision() {
+    for history in [false, true] {
+        let mut fixture = Fixture::standard();
+        support::rt::make_lethal(&mut fixture, 5);
+        let creature_a = fixture.creature_a;
+        support::surface::set_stat(&mut fixture, creature_a, "health", 2);
+        let placement = fixture.placement_a;
+        let mut duo = Duo::new(&fixture, history);
+        let record = duo.register_x(&fixture, placement);
+        let moved = duo.forward(record).expect("the record moves");
+        let combatants = duo.start_x(&fixture);
+        // B acts first and kills A.
+        duo.act_x(&support::rt::use_action(
+            combatants[1],
+            fixture.ability,
+            combatants[0],
+        ));
+        assert!(duo.x().combatants().get(combatants[0]).expect("A").dead());
+        duo.rejects(moved, false, AreaError::PlacementInUse { placement });
+        assert_eq!(duo.y().creatures().len(), 1);
     }
 }
 
