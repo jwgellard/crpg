@@ -22,7 +22,7 @@ Options:
     --full         lift the 12-line per-check and 40-line total caps
 
 Checks, in order: scope, gates, doc-only, protected, goldens, weakening, unsafe,
-lints, docsig, todo. In a doc-only slot (`slot-3` … `slot-6`, or a brief whose
+lints, docsig, todo, asserts. In a doc-only slot (`slot-3` … `slot-6`, or a brief whose
 `Route:` line says `doc-only`) the gates never run cargo: with a crate owned
 they report `skipped (doc-only slot)`, and with no crate owned they run the
 tool unittests when `tools/`, `.opencode/` or `opencode.json` changed (else
@@ -56,6 +56,7 @@ CHECKS = [
     "lints",
     "docsig",
     "todo",
+    "asserts",
 ]
 
 TOTAL = len(CHECKS)
@@ -77,6 +78,18 @@ _ASSERT_MARKERS = re.compile(r"\bassert\w*")
 _IGNORE_MARKERS = re.compile(r"#\[ignore")
 _UNSAFE = re.compile(r"\bunsafe\b")
 _TODO = re.compile(r"todo!\(|unimplemented!\(")
+
+# `asserts`: a new or changed Rust test must contain an assertion.
+_TEST_ATTR = re.compile(r"#\s*\[\s*(?:\w+\s*::\s*)*test\b")
+_SHOULD_PANIC = re.compile(r"#\s*\[\s*should_panic\b")
+_CFG_TEST_MOD = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+([A-Za-z_]\w*)")
+_ASSERT_MACRO = re.compile(r"\b(?:debug_assert\w*|assert\w*)\s*!")
+_PROP_ASSERT = re.compile(r"\bprop_assert\w*\s*!")
+_PANIC = re.compile(r"\bpanic\s*!")
+_UNREACHABLE = re.compile(r"\bunreachable\s*!")
+_UNWRAP_ERR = re.compile(r"\.\s*unwrap_err\s*\(")
+_EXPECT_ERR = re.compile(r"\.\s*expect_err\s*\(")
+_HELPER_CALL = re.compile(r"\b(?:assert_|check_|expect_)\w*\s*\(")
 
 
 class UsageError(Exception):
@@ -736,6 +749,287 @@ def check_todo(ctx: Context) -> dict:
     return _ok()
 
 
+# --------------------------------------------------------------------------
+# asserts (A0-14, lesson L6): a new or changed Rust test must assert.
+
+
+def _mask_rust(text: str) -> str:
+    """Mask comments and string/char literals with spaces, keeping newlines.
+
+    The mask is the same length as the input, so offsets and line numbers
+    still line up; braces inside comments or literals become spaces, which
+    keeps the small brace matcher honest.
+    """
+    out = list(text)
+    n = len(text)
+    i = 0
+    while i < n:
+        two = text[i : i + 2]
+        if two == "//":
+            end = text.find("\n", i)
+            if end == -1:
+                end = n
+            for k in range(i, end):
+                out[k] = " "
+            i = end
+        elif two == "/*":
+            depth = 1
+            out[i] = " "
+            out[i + 1] = " "
+            i += 2
+            while i < n and depth > 0:
+                if text[i : i + 2] == "/*":
+                    out[i] = " "
+                    out[i + 1] = " "
+                    depth += 1
+                    i += 2
+                elif text[i : i + 2] == "*/":
+                    out[i] = " "
+                    out[i + 1] = " "
+                    depth -= 1
+                    i += 2
+                else:
+                    if text[i] != "\n":
+                        out[i] = " "
+                    i += 1
+        elif re.match(r"b?r(#+)?\"", text[i:]):
+            hashes = re.match(r"b?r(#+)?\"", text[i:]).group(1) or ""
+            opener_len = len(re.match(r"b?r(#+)?\"", text[i:]).group(0))
+            closer = '"' + hashes
+            end = text.find(closer, i + opener_len)
+            end = n if end == -1 else end + len(closer)
+            for k in range(i, end):
+                if text[k] != "\n":
+                    out[k] = " "
+            i = end
+        elif text[i] == "b" and i + 1 < n and text[i + 1] in "\"'":
+            quote = text[i + 1]
+            if quote == '"':
+                j = i + 2
+                while j < n:
+                    if text[j] == "\\":
+                        j += 2
+                        continue
+                    if text[j] == '"':
+                        j += 1
+                        break
+                    j += 1
+                for k in range(i, min(j, n)):
+                    if text[k] != "\n":
+                        out[k] = " "
+                i = j
+            else:
+                match = re.match(r"b'(?:\\.|[^'\\\n])'", text[i:])
+                if match:
+                    for k in range(i, i + len(match.group(0))):
+                        out[k] = " "
+                    i += len(match.group(0))
+                else:
+                    i += 1
+        elif text[i] == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                if text[j] == "\n":
+                    break
+                j += 1
+            for k in range(i, min(j, n)):
+                if text[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif text[i] == "'":
+            match = re.match(r"'(?:\\.|[^'\\\n])'", text[i:])
+            if match:
+                for k in range(i, i + len(match.group(0))):
+                    out[k] = " "
+                i += len(match.group(0))
+            else:
+                # A lifetime (`'a`), not a literal.
+                i += 1
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _match_brace(masked: str, opener: int) -> int | None:
+    """The offset of the `}` closing the `{` at `opener` (masked text)."""
+    depth = 0
+    for i in range(opener, len(masked)):
+        if masked[i] == "{":
+            depth += 1
+        elif masked[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _match_pair(masked: str, opener: int, open_ch: str, close_ch: str) -> int | None:
+    depth = 0
+    for i in range(opener, len(masked)):
+        if masked[i] == open_ch:
+            depth += 1
+        elif masked[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _in_tests_dir(path: str) -> bool:
+    """Whether `path` is a `crates/**/tests/` integration-test file."""
+    if not path.endswith(".rs"):
+        return False
+    parts = path.split("/")
+    if parts[0] != "crates":
+        return False
+    if os.path.basename(path) == "tests.rs":
+        return True
+    return "tests" in parts[:-1]
+
+
+_FN_RE = re.compile(
+    r"(?P<attrs>(?:#\s*\[[^\]]*\]\s*|#\s*test\b\s*)*)"
+    r"(?P<decl>(?:pub\s*(?:\([^)]*\))?\s*)?(?:async\s+)?(?:unsafe\s+)?"
+    r"fn\s+(?P<name>[A-Za-z_]\w*))"
+)
+_PROptest_RE = re.compile(r"\bproptest\s*!")
+
+
+def _rust_tests(masked: str, original: str, tests_dir: bool) -> list[dict]:
+    """Test functions in a file: name, line, bodies, `should_panic`.
+
+    `masked` is `_mask_rust(original)`; offsets line up. In an integration
+    tests dir every `#[test]`-style function counts; elsewhere only ones
+    inside a `#[cfg(test)]` module do. Any function inside a `proptest!`
+    block counts, including its `#test` functions.
+    """
+    cfg_ranges: list[tuple[int, int]] = []
+    for found in _CFG_TEST_MOD.finditer(masked):
+        brace = masked.find("{", found.end())
+        if brace == -1:
+            continue
+        if ";" in masked[found.end() : brace]:
+            continue
+        close = _match_brace(masked, brace)
+        if close is not None:
+            cfg_ranges.append((brace, close))
+    proptest_ranges: list[tuple[int, int]] = []
+    for found in _PROptest_RE.finditer(masked):
+        j = found.end()
+        while j < len(masked) and masked[j] in " \t\n\r":
+            j += 1
+        if j < len(masked) and masked[j] in "{(":
+            close = _match_pair(
+                masked, j, masked[j], "}" if masked[j] == "{" else ")"
+            )
+            if close is not None:
+                proptest_ranges.append((j, close))
+
+    tests: list[dict] = []
+    for found in _FN_RE.finditer(masked):
+        attrs = found.group("attrs") or ""
+        name = found.group("name")
+        in_proptest = any(s <= found.start() < e for s, e in proptest_ranges)
+        in_cfg = any(s <= found.start() < e for s, e in cfg_ranges)
+        if in_proptest:
+            is_test = True
+        elif tests_dir:
+            is_test = bool(_TEST_ATTR.search(attrs))
+        else:
+            is_test = bool(_TEST_ATTR.search(attrs)) and in_cfg
+        if not is_test:
+            continue
+        brace = masked.find("{", found.end())
+        if brace == -1:
+            continue
+        if ";" in masked[found.end() : brace]:
+            continue
+        close = _match_brace(masked, brace)
+        if close is None:
+            continue
+        line = original.count("\n", 0, found.start("name")) + 1
+        tests.append(
+            {
+                "name": name,
+                "line": line,
+                "body_masked": masked[brace + 1 : close],
+                "body_raw": original[brace + 1 : close],
+                "should_panic": bool(_SHOULD_PANIC.search(attrs)),
+            }
+        )
+    return tests
+
+
+def check_asserts(ctx: Context) -> dict:
+    """A new or changed Rust test must contain an assertion (A0-14, L6)."""
+    doc_only = is_doc_only(ctx)
+    failures: list[tuple[str, int, str]] = []
+    for path in sorted(ctx.files):
+        if not path.endswith(".rs"):
+            continue
+        new = ctx.new_text(path)
+        if new is None:
+            continue
+        tests_dir = _in_tests_dir(path)
+        new_tests = _rust_tests(_mask_rust(new), new, tests_dir)
+        if not new_tests:
+            continue
+        base = ctx.base_text(path)
+        if base is None:
+            changed = new_tests
+        else:
+            base_tests = _rust_tests(_mask_rust(base), base, tests_dir)
+            by_name: dict[str, list[tuple[str, bool]]] = {}
+            for item in base_tests:
+                by_name.setdefault(item["name"], []).append(
+                    (item["body_raw"], item["should_panic"])
+                )
+            changed = [
+                item
+                for item in new_tests
+                if not any(
+                    body == item["body_raw"] and panic == item["should_panic"]
+                    for body, panic in by_name.get(item["name"], [])
+                )
+            ]
+        for item in changed:
+            # An empty (or comment-only) body fails whatever else surrounds it.
+            if item["body_masked"].strip() == "":
+                failures.append((path, item["line"], item["name"]))
+                continue
+            if item["should_panic"]:
+                continue
+            code = item["body_masked"]
+            if (
+                _ASSERT_MACRO.search(code)
+                or _PROP_ASSERT.search(code)
+                or _PANIC.search(code)
+                or _UNREACHABLE.search(code)
+                or _UNWRAP_ERR.search(code)
+                or _EXPECT_ERR.search(code)
+                or _HELPER_CALL.search(code)
+            ):
+                continue
+            failures.append((path, item["line"], item["name"]))
+    if failures:
+        if doc_only:
+            # A doc-only slot already fails `doc-only` on any `.rs` change,
+            # so `asserts` never piles on: like `gates`, it skips instead.
+            return _result("ok", DOC_ONLY_GATE_DETAIL)
+        failures.sort()
+        shown = [f"{path}:{line} {name}" for path, line, name in failures[:20]]
+        if len(failures) > 20:
+            shown.append(f"… and {len(failures) - 20} more")
+        return _fail(f"{len(failures)} test(s) without assertion", shown)
+    return _ok()
+
+
 CHECK_FUNCTIONS = {
     "scope": check_scope,
     "gates": check_gates,
@@ -747,6 +1041,7 @@ CHECK_FUNCTIONS = {
     "lints": check_lints,
     "docsig": check_docsig,
     "todo": check_todo,
+    "asserts": check_asserts,
 }
 
 

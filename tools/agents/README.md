@@ -209,7 +209,9 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
   `.rs`, `Cargo.toml` or `Cargo.lock`. Its `docsig` check accepts an added
   agent-log entry dated from the UTC day of the oldest commit in
   `base..HEAD` up to today (today only with no commits; `$CRPG_TODAY`
-  overrides today).
+  overrides today). Its `asserts` check fails a new or changed `#[test]`-style
+  test whose body is empty, comment-only, or holds no assertion (skipped
+  with `--skip asserts`).
 - `tools/agents/brief.py`, `tools/agents/recall.py` — brief generation and
   memory search (A0-5). `oc.py` calls `brief.py` when `--brief` is omitted.
 
@@ -228,3 +230,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b attempt 3 · Corrected the doc-only gate rule: no cargo ever, but a tool change still runs the tool unittests (no tool change reports `skipped (no tool change)`), so a tools task's own tests are not silently skipped.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4c · Documented `ask --diff/--base`, the diff file beside the run log, the exact question sentence, the recorded `diff` key, and the non-fault `bad-ref`/`empty-diff` exits, so a reviewer can read a slot branch's diff from the main checkout without loosening a permission.
 - 2026-10-24 (UTC) · opencode-go/deepseek-v4.1-flash + A0-12 · Documented the occupied-slot guard: auto-pick skips (and `--slot` refuses with `slot-occupied`) a slot holding another task's uncommitted work or commits no other ref holds, so a dispatcher never reads a neighbour's work as its base.
+- 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 · Named the new `asserts` check above so workers know a new or changed Rust test must assert, per lesson L6.
