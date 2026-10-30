@@ -235,6 +235,28 @@ reject each feature with `UnsupportedAuthored` until T137 maps it.
 
 - 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136b · Documented the kernel-range surface added at the current tags, its read-time and semantic rules, and the first warning; the T136a line that `validate` has no rule for the real-time fields is superseded by the new warning.
 
+### Creature lifecycle fields (T139d)
+
+Four optional-missing fields join at the current tags, `crpg.ruleset/2` and
+`crpg.encounter/1`, with no version bump, no migration edge and no fixture
+change (D32c): `Ruleset.creature_persistence`
+(`CreaturePersistenceWire`: `survivors`, `registered`), `Ruleset.late_join`
+(`LateJoinWire`: `next_round`, `after_active`), `Ruleset.effects_on_exit`
+(`EffectsOnExitWire`: `suspend`, `strip`, `strip_at_release`) and
+`Encounter.respawns` (`bool`). Each is the last field of its struct. Absence
+means today's behaviour, so every existing document decodes and re-encodes
+byte for byte; an explicit `null` reads as absent and is never written back,
+while an explicit default (`"survivors"`, `false`) is kept.
+
+The three enums hand-write `Deserialize` in the `StatKindWire` string style:
+a non-string fails `<key> must be a policy name` and an unknown string fails
+`unknown variant` listing every variant. They add no read-time rule and no
+diagnostic for any value or mix: the fields are hooks that the sim reads
+(T139a, T139b). The `ruleset` and `encounter` schemas are regenerated, with
+the enums as `$defs` string schemas and `respawns` as `boolean|null`.
+
+- 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139d · Documented the four optional creature-lifecycle fields and three wire enums added at the current tags, their decode and encode rules, and that no rule reads them in this crate.
+
 ## Agent log
 
 - 2026-09-10 (UTC) · opencode/gpt-6-astra + T010 crate opening · Established approved module and authority boundaries before source implementation. This opening record does not claim completed implementation or passing gates.

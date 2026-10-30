@@ -1253,7 +1253,10 @@ def next_attempt_number(task_dir: Path, slug: str | None = None) -> int:
     draft-b) are different pieces of work, not retries, so only earlier
     records with the same slug count; a run with no slug counts only runs
     with no slug. Records written before the slug field existed count as
-    slug-less, so their attempts are still honoured (A0-4b).
+    slug-less, so their attempts are still honoured (A0-4b). A run's
+    ``.claim`` file counts too, whatever model wrote it, so an attempt a
+    parallel run has reserved but not finished is never handed out again
+    (A0-13).
     """
     highest = 0
     if task_dir.is_dir():
@@ -1267,7 +1270,53 @@ def next_attempt_number(task_dir: Path, slug: str | None = None) -> int:
             attempt = record.get("attempt")
             if isinstance(attempt, int) and not isinstance(attempt, bool):
                 highest = max(highest, attempt)
+        for path in task_dir.glob("*.claim"):
+            try:
+                claim = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(claim, dict) or claim.get("slug") != slug:
+                continue
+            attempt = claim.get("attempt")
+            if isinstance(attempt, int) and not isinstance(attempt, bool):
+                highest = max(highest, attempt)
     return highest + 1
+
+
+def claim_path(task_dir: Path, attempt: int, model: str,
+               slug: str | None = None) -> Path:
+    """A run's reservation marker: the log's stem with a `.claim` suffix."""
+    return task_dir / f"{run_stem(attempt, model, slug)}.claim"
+
+
+def reserve_attempt(task_dir: Path, model: str, slug: str | None = None) -> int:
+    """Claim the next attempt number for this task, model and slug.
+
+    Starting from `next_attempt_number`, create the run's `.claim` file with
+    an exclusive create (`O_CREAT | O_EXCL`); a claim another process already
+    holds means that number is taken, so try the next one. The claim records
+    the owner's PID and a UTC stamp and stays after the run as its marker, so
+    two parallel runs of one task and slug can never share a number (A0-13).
+    """
+    task_dir.mkdir(parents=True, exist_ok=True)
+    attempt = next_attempt_number(task_dir, slug)
+    while True:
+        path = claim_path(task_dir, attempt, model, slug)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            attempt += 1
+            continue
+        payload = {
+            "pid": os.getpid(),
+            "utc": utcnow(),
+            "attempt": attempt,
+            "model": model,
+            "slug": slug,
+        }
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+        return attempt
 
 
 # -- verify ----------------------------------------------------------------------
@@ -1768,7 +1817,10 @@ def do_run(args: argparse.Namespace) -> int:
     dry = bool(args.dry_run)
 
     task_dir = runs_dir(repo) / args.task
-    attempt = next_attempt_number(task_dir, args.slug)
+    # A real run reserves its number before anything else, so a parallel run
+    # cannot share it; a dry run only reads the number and writes no claim.
+    attempt = (next_attempt_number(task_dir, args.slug) if dry
+               else reserve_attempt(task_dir, args.model, args.slug))
     log_path = log_file(task_dir, attempt, args.model, args.slug)
     branch = f"task/{args.task}-{args.slug}" if args.slug else f"task/{args.task}"
     base = args.base or "origin/master"
@@ -2065,7 +2117,7 @@ def do_ask(args: argparse.Namespace) -> int:
         raise Exit(2, "usage: --base requires --diff")
     task = "ask"
     task_dir = runs_dir(repo) / task
-    attempt = next_attempt_number(task_dir)
+    attempt = reserve_attempt(task_dir, args.model)
     log_path = log_file(task_dir, attempt, args.model)
     started = utcnow()
     wall_start = time.time()
