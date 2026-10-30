@@ -62,9 +62,11 @@ decision and rebind mechanisms are T025a2.
 Authoritative contract: `tasks/T025a.md` S§21.
 
 - **H1.** Create one `SessionFence` per session at bind, with the session's
-  epoch. Retain it through the D12 grace, drop it only at expiry or unbind,
-  and never re-create it for a live session. Over QUIC, bind with
-  `QuicServer::bind_resumable` and drive it with `poll_notice` only.
+  epoch. Retain it with the session through the D12 grace, drop it only at
+  expiry or unbind, and never re-create it for a live session. Over QUIC,
+  bind the server with `QuicServer::bind_resumable` and drive it with
+  `poll_notice` only (Q§9 item 6). An adapter that polls only `poll_event`
+  must not be given a `bind_resumable` server (Q§9 item 1).
 - **H2.** Tag the first connection `FIRST` and a resumed connection with
   exactly the `granted` fence. Call `check_frame(tag)` on every inbound frame
   of a bound connection before any other processing. On `Fenced` or
@@ -76,17 +78,24 @@ Authoritative contract: `tasks/T025a.md` S§21.
   its own use of the advisory claims. It never builds `Accept` without
   authenticating.
 - **H4.** Call `resolve` once per request and send its result as the
-  connection's first frame. On `Err(_)` from `resolve`, send `Rejected {
-  epoch, reason: Denied }` (cause-neutral). After any `Rejected`, close the
-  connection.
-- **H5.** On `Accepted`, fence the previous connection if still open, send
-  the result, then stage the resume snapshot before any later delta: cancel
-  any in-flight transfer, then a `Begin` with an id above every id issued in
-  the epoch, `cursor` = the last `event_seq`, and a body built from current
-  grants.
+  connection's first frame, with `accept_resume(conn, &encoded)`. On
+  `Err(_)` from `resolve`, send `Rejected { epoch: request.epoch, reason:
+  Denied }` (cause-neutral). After any `Rejected`, close with
+  `close(conn, code, Flush)` (Q§4.5, Q§9 item 8).
+- **H5.** On `Accepted`, before anything else:
+  - fence the session's previous connection if it is still open;
+  - send the result;
+  - then stage the resume snapshot before any later delta on the new
+    connection. That means `Cancel(in-flight, Superseded)` if one is in
+    flight, then a `Begin` with a transfer id above every id issued in the
+    epoch, `cursor` = the last `event_seq` issued, `base_tick` = the
+    current server tick, and a body built from the current grants. The
+    unacknowledged log is cleared (H§7 `stage_snapshot`, with a new cause
+    `Resume`).
 - **H6.** Never reset the epoch, `PeerState`, the retry cache,
   `next_new_seq`, `event_seq`, ordinals, transfer ids or rate budgets at
-  resume. Report `Accept { progress }` from the retained ledger.
+  resume. Report `Accept { progress }` from the retained ledger
+  (`finalized_through` = `next_new_seq − 1` per lane).
 - **H7.** Issue a `Ticket` after each welcome, optionally rotating it after
   each `Accepted`. Proofs are never logged, printed, checkpointed or
   persisted. A restart issues fresh epochs.
@@ -114,3 +123,4 @@ Mechanism lives here; authenticated policy lives in `crpg-server` (T025b).
 ## Agent log
 
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Filed ADR-0032 Accepted per D39d S§26 item 9, recording S§2 and H1–H8 with the contract as authoritative.
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Restored H1, H4, H5 and H6 in full from S§21 (review 1): H1's `poll_event`-only warning, H4's `accept_resume`/`close(.., Flush)`, H5's `base_tick` = current server tick and unacknowledged-log clearing, H6's `finalized_through = next_new_seq − 1`.

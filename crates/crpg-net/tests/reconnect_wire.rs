@@ -1155,9 +1155,15 @@ fn proof_is_opaque_bounded_and_redacted() {
         epoch: ZERO_EPOCH,
         proof: proof(&aa16),
     });
+    let ticket_q = ResumeDown::Ticket(ResumeTicket {
+        epoch: ZERO_EPOCH,
+        proof: proof(&q_bytes),
+    });
     let ticket_p_dbg = format!("{ticket_p:?}");
     let ticket_aa_dbg = format!("{ticket_aa:?}");
+    let ticket_q_dbg = format!("{ticket_q:?}");
     assert_eq!(ticket_p_dbg, ticket_aa_dbg);
+    assert_eq!(ticket_p_dbg, ticket_q_dbg);
     assert!(ticket_p_dbg.contains("ResumeProof(<redacted>)"));
 
     let raw_ticket_p = ResumeTicket {
@@ -1168,9 +1174,15 @@ fn proof_is_opaque_bounded_and_redacted() {
         epoch: ZERO_EPOCH,
         proof: proof(&aa16),
     };
+    let raw_ticket_q = ResumeTicket {
+        epoch: ZERO_EPOCH,
+        proof: proof(&q_bytes),
+    };
     let raw_ticket_p_dbg = format!("{raw_ticket_p:?}");
     let raw_ticket_aa_dbg = format!("{raw_ticket_aa:?}");
+    let raw_ticket_q_dbg = format!("{raw_ticket_q:?}");
     assert_eq!(raw_ticket_p_dbg, raw_ticket_aa_dbg);
+    assert_eq!(raw_ticket_p_dbg, raw_ticket_q_dbg);
     assert!(raw_ticket_p_dbg.contains("ResumeProof(<redacted>)"));
 
     // ct_eq.
@@ -1275,6 +1287,11 @@ fn resume_and_existing_codecs_refuse_each_other() {
     v1_intent.extend_from_slice(&ZERO_EPOCH);
     v1_intent.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x01]);
 
+    // Valid v2 end-turn intent: the v1 shape with version byte 2.
+    let mut v2_intent = vec![0x02];
+    v2_intent.extend_from_slice(&ZERO_EPOCH);
+    v2_intent.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x01]);
+
     // Valid v1 delta: version 1, lane 0, server_tick 0, event_seq 1, one
     // EntityEnter op (tag 0, entity 1).
     let v1_delta = [0x01, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01];
@@ -1337,6 +1354,7 @@ fn resume_and_existing_codecs_refuse_each_other() {
 
     // Control: each codec decodes its own frames.
     assert!(codec::decode_intent(&v1_intent_vec).is_ok());
+    assert!(codec_v2::decode_intent(&v2_intent).is_ok());
     assert!(codec::decode_delta(&v1_delta).is_ok());
     assert!(codec_v2::decode_delta(&v2_delta).is_ok());
     assert!(codec_transfer::decode_down(&begin).is_ok());
