@@ -1120,6 +1120,10 @@ impl QuicHost {
                 self.store_grants(id, grants);
                 Ok(self.narrowed(conn))
             }
+            Ok(GrantUpdate::SnapshotStaged) => {
+                self.store_grants(id, grants);
+                Ok(self.narrowed(conn))
+            }
             Err(error) => Err(self.host_error(error)),
         }
     }
