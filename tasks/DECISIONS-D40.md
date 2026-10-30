@@ -65,7 +65,12 @@ from `zstd-sys` 2.1.0 to 2.1.2. No new crates, identical dependency tables,
 and the same bundled zstd 1.5.7 C sources (byte-identical `zstd/lib`). The
 rejected alternative was ignoring the four IDs in `deny.toml`.
 
+## Follow-up approvals (2026-10-30, session 27)
+- **D40c test edits approved:** the five `crates/crpg-sim/tests/surface_tags.rs` / `surface_draws_contract.rs:492` assertions that pinned T137's no-grant-no-tags rule now expect the prefab's tags, with four doc comments (T139a2 owns them; recorded in `tasks/T139.md`).
+- **T139d pinned-key edit approved:** `crates/crpg-data/tests/rt_fields_contract.rs:389` gains `creature_persistence`, `effects_on_exit` and `late_join` in the pinned ruleset key list; the T139 contract's L1 had missed this file.
+
 ## Agent log
 - 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + T139 review closed · Drafted the four user questions the D39a revision and its review raised, each with the architect's recommendation, so T139 implementation can start on one answer.
 - 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + D40 answered · Recorded the user's answers: test markers, despawn removing the record and T139d approved as recommended, tags stored on the record against the recommendation (with the extra goldens approved), and the zstd-sys lockfile bump approved.
 - 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + D40e · Recorded the user's choice to upgrade the pinned zstd tree after the zstd-sys bump proved to clear only a wasm32-only advisory, with the reachability findings that informed it.
+- 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + session 27 approvals · Recorded the user's two follow-up test-edit approvals (D40c assertions, T139d pinned schema keys) so the reviewed exceptions to the no-test-edit rule are on file.
