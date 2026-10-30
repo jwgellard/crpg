@@ -199,6 +199,29 @@ They use temporary git repositories and worktrees only — never the real
 python -m unittest discover -s tools/tests -p "test_oc.py" -v
 ```
 
+## lost.py — doc-move check for trims (A0-16, lesson L8)
+
+Checks that a documentation trim did not drop whole blocks, the failure mode
+behind L8. Stdlib only, Python 3.11+.
+
+```text
+python tools/agents/lost.py --base REF [--head REF]
+                            --from PATH [--from PATH ...]
+                            [--to PATH ...] [--min-chars N]
+                            [--threshold F] [--json]
+```
+
+Every `--from` file's base text is split into blocks (blank lines and `#`
+headings end one; a list item or table row starts one) and checked against
+the concatenated head text of every `--to` file (`--to` defaults to `--from`,
+`--head` defaults to the working tree). Blocks shorter than `--min-chars`
+(default 25) are skipped; a block is lost when fewer than `--threshold`
+(default 0.5) of its 8-word shingles appear in the head. A missing path on
+either side is empty text. The verdict line comes first, then up to 40
+`<ratio>  <path>:<line>  <text>` lines and `… and K more`; `--json` prints
+`{verdict, checked, lost: [{path, line, ratio, text}]}` instead. Exits 0 when
+nothing is lost, 1 when a block is, 2 on a usage or bad-ref error.
+
 ## Neighbours (other workers, not this script)
 
 - `tools/agents/verify_task.py` — the verifier `oc.py` runs (A0-4). Faked in
@@ -242,3 +265,4 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 · Named the new `asserts` check above so workers know a new or changed Rust test must assert, per lesson L6.
 - 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 attempt 2 · Extended the `asserts` line above: same-file asserting helpers (transitive, bare prefixes, turbofish), `macro_rules!` delegates, and non-empty `proptest!` properties pass, so the check no longer flags legitimate assertion routes.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-13 · Documented the per-run `.claim` reservation so the manager knows parallel runs of one task and slug get distinct attempts and leave a marker, per lesson L5.
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-16 · Documented `lost.py`, the block/shingle doc-move check that replaces the manager's private script, so a trim that drops whole blocks fails a named check instead of a "no info lost" report (L8).
