@@ -37,6 +37,7 @@ use crate::combat::{
     int_definitions, AbilityDefense, CombatState, Combatant, EffectTarget, EncounterMode,
     TransitionFacts, COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_TAG, RT_CLOCK_MAX,
 };
+use crate::creature::CreatureState;
 use crate::event::SimEvent;
 use crate::store::ComponentStore;
 use crate::timeline::Timeline;
@@ -96,6 +97,11 @@ pub struct World {
     /// compatibility shape, not a hash exclusion: a present area hashes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     area: Option<Ulid>,
+    /// Persistent out-of-encounter creature state (T139 D1). Absent (empty)
+    /// in worlds that hold no record, so those serialize byte-identically;
+    /// a compatibility shape, not a hash exclusion.
+    #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
+    creatures: ComponentStore<CreatureState>,
 }
 
 /// Reports whether an interner holds no strings in either namespace.
@@ -123,6 +129,8 @@ struct WorldRepr {
     interners: Interners,
     #[serde(default)]
     area: Option<Ulid>,
+    #[serde(default = "ComponentStore::new")]
+    creatures: ComponentStore<CreatureState>,
 }
 
 impl<'de> Deserialize<'de> for World {
@@ -147,6 +155,91 @@ impl<'de> Deserialize<'de> for World {
                 return Err(serde::de::Error::custom(format!(
                     "dangling timeline entry for non-live {id:?}"
                 )));
+            }
+        }
+        // T139 K1-K12: the creature store is coherent.
+        for (id, _) in repr.creatures.iter() {
+            if !repr.entities.contains(id) {
+                return Err(serde::de::Error::custom(format!(
+                    "dangling creature for non-live {id:?}"
+                )));
+            }
+        }
+        for (id, _) in repr.creatures.iter() {
+            if repr.combatants.contains(id) {
+                return Err(serde::de::Error::custom("creature state for a combatant"));
+            }
+        }
+        {
+            let mut placements = BTreeSet::new();
+            for (_, record) in repr.creatures.iter() {
+                if record.max_health() == 0 {
+                    return Err(serde::de::Error::custom(
+                        "creature with a nonpositive maximum",
+                    ));
+                }
+                if record.health() > record.max_health() {
+                    return Err(serde::de::Error::custom(
+                        "creature health exceeds its maximum",
+                    ));
+                }
+                if record.pools().is_empty() {
+                    return Err(serde::de::Error::custom("creature declares no pools"));
+                }
+                {
+                    let mut seen = BTreeSet::new();
+                    for pool in record.pools() {
+                        if !seen.insert(pool.id()) {
+                            return Err(serde::de::Error::custom(
+                                "creature declares a duplicate pool",
+                            ));
+                        }
+                    }
+                }
+                {
+                    let mut seen = BTreeSet::new();
+                    let names = record
+                        .attributes()
+                        .iter()
+                        .map(|(name, _)| name)
+                        .chain(record.fixed().iter().map(|(name, _)| name));
+                    for name in names {
+                        if !seen.insert(name) {
+                            return Err(serde::de::Error::custom("creature stats repeat a name"));
+                        }
+                    }
+                }
+                if record
+                    .suspended()
+                    .windows(2)
+                    .any(|pair| pair[0].effect >= pair[1].effect)
+                {
+                    return Err(serde::de::Error::custom(
+                        "creature attachments break ascending order",
+                    ));
+                }
+                if record
+                    .suspended()
+                    .iter()
+                    .any(|entry| entry.remaining_rounds == 0)
+                {
+                    return Err(serde::de::Error::custom(
+                        "creature attachment carries no remaining rounds",
+                    ));
+                }
+                if !placements.insert(record.placement()) {
+                    return Err(serde::de::Error::custom(
+                        "creatures share a placement identity",
+                    ));
+                }
+                if record.tags().windows(2).any(|pair| pair[0] >= pair[1]) {
+                    return Err(serde::de::Error::custom(
+                        "creature tags break ascending order",
+                    ));
+                }
+                if record.tags().len() > crpg_rules::MAX_TAGS {
+                    return Err(serde::de::Error::custom("creature tags exceed their bound"));
+                }
             }
         }
         match &repr.combat {
@@ -734,6 +827,7 @@ impl<'de> Deserialize<'de> for World {
             combat: repr.combat,
             interners: repr.interners,
             area: repr.area,
+            creatures: repr.creatures,
         })
     }
 }
@@ -755,6 +849,7 @@ impl World {
             combat: None,
             interners: Interners::new(),
             area: None,
+            creatures: ComponentStore::new(),
         }
     }
 
@@ -855,6 +950,7 @@ impl World {
             return (false, TransitionFacts::default());
         }
         self.transforms.remove(id);
+        self.creatures.remove(id);
         self.combatants.remove(id);
         self.timeline.remove(id);
         let mut facts = TransitionFacts::default();
@@ -980,6 +1076,16 @@ impl World {
     /// [`combatants`](Self::combatants).
     pub(crate) fn combatants_mut(&mut self) -> &mut ComponentStore<Combatant> {
         &mut self.combatants
+    }
+
+    /// The persistent creature store (T139).
+    pub fn creatures(&self) -> &ComponentStore<CreatureState> {
+        &self.creatures
+    }
+
+    /// Mutably, the creature store. Crate-visible only.
+    pub(crate) fn creatures_mut(&mut self) -> &mut ComponentStore<CreatureState> {
+        &mut self.creatures
     }
 
     /// Encounter-level state, or `None` when no encounter is active.
