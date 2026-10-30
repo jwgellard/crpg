@@ -50,7 +50,7 @@ configurable level or cap needs a new approved contract.
    strictly shorter, so `body_len == payload_len` (raw) or
    `1 <= body_len < payload_len` (zstd). An envelope is never longer than
    `HEADER_BYTES + payload.len()`.
-7. **Pinned zstd.** Bundled zstd 1.5.7 through `zstd =0.14.0` with default
+7. **Pinned zstd.** Bundled zstd 1.5.7 through `zstd =0.14.3` with default
    features off; `linked_zstd_is_bundled_1_5_7` asserts
    `version_number() == 10507`. A fresh compression context per call, level
    3, no zstd checksum, no dictionary id, content size on, everything else
@@ -72,7 +72,7 @@ Exactly T038 §7, and nothing else:
 ```toml
 [dependencies]
 blake3 = { workspace = true }
-zstd = { version = "=0.14.0", default-features = false }
+zstd = { version = "=0.14.3", default-features = false }
 ```
 
 No `[dev-dependencies]`, no `[build-dependencies]`, no `build.rs`. Tests reach
@@ -128,3 +128,4 @@ the scan is the check. This file must not trip that scan either.
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T038 · Wrote the crate's first working contract with its first code: the exact surface, the precedence and cap invariants, the pinned zstd tree and the traps, so T039 and later backends extend the envelope rather than reinterpret it.
+- 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + D40e zstd advisories · Moved the pin to `zstd =0.14.3` (tree `zstd-safe` 8.2.0, `zstd-sys` 2.1.2, same bundled zstd 1.5.7) so `cargo deny` clears RUSTSEC-2026-0391/0398/0403/0410; none was reachable here.
