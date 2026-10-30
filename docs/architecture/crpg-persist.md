@@ -20,11 +20,13 @@ work (see below), not a placeholder.
 
 ## Where it sits
 
-Normal dependencies are workspace `blake3` and `zstd =0.14.0` with default
+Normal dependencies are workspace `blake3` and `zstd =0.14.3` with default
 features off, pinned in the crate manifest. That pin, its tree
-(`zstd-safe` 8.0.0, `zstd-sys` 2.1.0 bundling zstd 1.5.7 C, plus build-only
+(`zstd-safe` 8.2.0, `zstd-sys` 2.1.2 bundling zstd 1.5.7 C, plus build-only
 `pkg-config` and `jobserver`) and the build-time C compilation were approved
-under D27b with the T038 §9 audit ([approval](../../tasks/T038.md#approval--2026-10-04-utc)).
+under D27b with the T038 §9 audit ([approval](../../tasks/T038.md#approval--2026-10-04-utc)); the
+patch upgrade from 0.14.0 for four RustSec advisories is D40e
+([decision](../../tasks/DECISIONS-D40.md)).
 There are no dev-dependencies and no build script of its own.
 
 `tools/lint/deps.py`'s `ALLOWED` row permits `crpg-core`, `crpg-data` and
@@ -146,3 +148,4 @@ with honest durability claims. The envelope's crate-level contract is
 
 - 2026-10-04 (UTC) · claude-code + T038 · Wrote the crate's first architecture doc with its first code. It covers the envelope, the caps, the file store, the payload-neutral boundary and the spec §8 `postcard` deviation, and lists what T039 and later backends inherit.
 - 2026-10-05 (UTC) · claude-code + T039 · Appended a dated note under "Planned" recording T039 as the first consumer and what it chose, without rewriting the original plan text.
+- 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + D40e zstd advisories · Updated the pinned tree to `zstd =0.14.3` / `zstd-safe` 8.2.0 / `zstd-sys` 2.1.2 and linked the approval, so the doc matches the manifest after the advisory upgrade.
