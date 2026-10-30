@@ -827,8 +827,12 @@ impl Host {
         let grants = normalize_grants(grants)?;
         let (map, next_net, narrowing, snapshot) = {
             let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
-            let (map, next_net) =
-                plan_map(&session.map, session.next_net, &grants, self.history.world())?;
+            let (map, next_net) = plan_map(
+                &session.map,
+                session.next_net,
+                &grants,
+                self.history.world(),
+            )?;
             let narrowing = is_narrowing(&session.grants, &grants);
             let snapshot = session.snapshot;
             (map, next_net, narrowing, snapshot)
@@ -1571,19 +1575,20 @@ impl Host {
             let epoch = session.epoch;
             let cursor = session.last_event_seq();
             // 2. Cancel the in-flight transfer first, if any.
-            let cancel: Option<Vec<u8>> = match session.in_flight {
-                Some(old) => {
-                    let message = TransferDown::Cancel {
-                        epoch,
-                        transfer: TransferId::new(old).expect("in-flight id is nonzero"),
-                        reason: cause.cancel_reason(),
-                    };
-                    Some(codec_transfer::encode_down(&message).map_err(|_| {
-                        HostError::Invariant("snapshot transfer failed to encode")
-                    })?)
-                }
-                None => None,
-            };
+            let cancel: Option<Vec<u8>> =
+                match session.in_flight {
+                    Some(old) => {
+                        let message = TransferDown::Cancel {
+                            epoch,
+                            transfer: TransferId::new(old).expect("in-flight id is nonzero"),
+                            reason: cause.cancel_reason(),
+                        };
+                        Some(codec_transfer::encode_down(&message).map_err(|_| {
+                            HostError::Invariant("snapshot transfer failed to encode")
+                        })?)
+                    }
+                    None => None,
+                };
             // 3. Body from the (current or new) grants and map.
             let view = PeerView {
                 grants: &grants,
@@ -1603,8 +1608,8 @@ impl Host {
             // 5. Room against the cleared log; the ordinal counter must stay
             //    below `u64::MAX`.
             let count = frames.len() + usize::from(cancel.is_some());
-            let bytes: usize = frames.iter().map(Vec::len).sum::<usize>()
-                + cancel.as_ref().map_or(0, Vec::len);
+            let bytes: usize =
+                frames.iter().map(Vec::len).sum::<usize>() + cancel.as_ref().map_or(0, Vec::len);
             let caps = self.egress_caps;
             let ordinal_room = (u64::MAX - 1).saturating_sub(session.next_ordinal);
             if count as u64 > ordinal_room {
