@@ -35,6 +35,7 @@ CHECKS = [
     "lints",
     "docsig",
     "todo",
+    "asserts",
 ]
 TODAY = "2026-10-16"
 
@@ -888,6 +889,329 @@ class DocsigDateRange(VerifyCase):
     def test_uncommitted_work_still_needs_todays_entry(self) -> None:
         self.note("2026-10-15")
         self.assertEqual(self.verify().returncode, 1)
+
+
+class AssertsScope(VerifyCase):
+    """A0-14: only new/changed tests count, in tests dirs and cfg(test) mods."""
+
+    def test_empty_stub_file_fails(self) -> None:
+        self.add("crates/demo/tests/empty.rs", "#[test]\nfn t01() {}\n")
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_comment_only_body_fails(self) -> None:
+        self.add(
+            "crates/demo/tests/comments.rs",
+            "#[test]\nfn t01() {\n    // nothing here\n    /* nor here */\n}\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_block_comment_hiding_assert_fails(self) -> None:
+        self.add(
+            "crates/demo/tests/hidden.rs",
+            "#[test]\nfn t01() {\n    // assert_eq!(1, 1);\n}\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_string_literal_does_not_count(self) -> None:
+        self.add(
+            "crates/demo/tests/strings.rs",
+            '#[test]\nfn t01() {\n    let _ = "assert_eq!(1, 1)";\n}\n',
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_empty_should_panic_still_fails(self) -> None:
+        self.add(
+            "crates/demo/tests/panicky.rs",
+            "#[test]\n#[should_panic]\nfn t01() {}\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_plain_function_without_test_is_ignored(self) -> None:
+        self.add("crates/demo/tests/helper.rs", "fn t01() {}\n")
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_test_outside_cfg_test_is_ignored(self) -> None:
+        self.add("crates/demo/src/loose.rs", "#[test]\nfn t01() {}\n")
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_cfg_test_module_empty_stub_fails(self) -> None:
+        self.add(
+            "crates/demo/src/inside.rs",
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t01() {}\n}\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_tokio_test_empty_stub_fails(self) -> None:
+        self.add(
+            "crates/demo/tests/async_empty.rs",
+            "#[tokio::test]\nasync fn t01() {}\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_tokio_test_with_assert_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/async_ok.rs",
+            "#[tokio::test]\nasync fn t01() { assert!(true); }\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_proptest_empty_block_fails(self) -> None:
+        self.add(
+            "crates/demo/tests/prop_empty.rs",
+            "proptest! {\n    #test\n    fn t01(a in 0..10u8) {}\n}\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_proptest_with_prop_assert_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/prop_ok.rs",
+            "proptest! {\n"
+            "    #test\n"
+            "    fn t01(a in 0..10u8) { prop_assert!(a < 20); }\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_unchanged_legacy_empty_test_is_not_flagged(self) -> None:
+        self.add("crates/demo/tests/legacy.rs", "#[test]\nfn legacy_empty() {}\n")
+        self.git("add", "-A")
+        self.commit("legacy empty stub")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.clean_change()
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class AssertsMarkers(VerifyCase):
+    """A0-14: every passing marker in Behaviour 2 lets a new test through."""
+
+    def plant(self, body: str, prefix: str = "#[test]\n") -> None:
+        self.add("crates/demo/tests/markers.rs", f"{prefix}fn t01() {{ {body} }}\n")
+
+    def assert_passes(self, result: subprocess.CompletedProcess) -> None:
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_assert_eq_passes(self) -> None:
+        self.plant("assert_eq!(1, 1);")
+        self.assert_passes(self.verify())
+
+    def test_each_assert_macro_passes(self) -> None:
+        bodies = [
+            "assert!(true);",
+            "assert_ne!(1, 2);",
+            "assert_matches!(Some(1), Some(_));",
+            "debug_assert!(true);",
+        ]
+        for index, body in enumerate(bodies):
+            with self.subTest(body=body):
+                path = f"crates/demo/tests/assert_{index}.rs"
+                self.add(path, f"#[test]\nfn t{index:02d}() {{ {body} }}\n")
+        self.assert_passes(self.verify())
+
+    def test_panic_and_unreachable_pass(self) -> None:
+        self.add("crates/demo/tests/panic.rs", "#[test]\nfn t01() { panic!(\"boom\"); }\n")
+        self.add(
+            "crates/demo/tests/unreach.rs",
+            "#[test]\nfn t02(v: Option<i32>) { unreachable!(); }\n",
+        )
+        self.assert_passes(self.verify())
+
+    def test_unwrap_err_and_expect_err_pass(self) -> None:
+        self.add(
+            "crates/demo/tests/errs.rs",
+            "#[test]\nfn t01() { Err::<i32, _>(1).unwrap_err(); }\n"
+            "#[test]\nfn t02() { Err::<i32, _>(1).expect_err(\"must fail\"); }\n",
+        )
+        self.assert_passes(self.verify())
+
+    def test_should_panic_passes(self) -> None:
+        self.plant('panic!("boom");', prefix="#[test]\n#[should_panic]\n")
+        self.assert_passes(self.verify())
+
+    def test_helper_prefix_calls_pass(self) -> None:
+        self.add(
+            "crates/demo/tests/helpers.rs",
+            "#[test]\nfn t01() { assert_roundtrip(&v); }\n"
+            "#[test]\nfn t02() { check_invariants(&v); }\n"
+            "#[test]\nfn t03() { expect_valid(&v); }\n",
+        )
+        self.assert_passes(self.verify())
+
+
+class AssertsHelpers(VerifyCase):
+    """A0-14 attempt 2: calls to same-file helpers whose bodies assert pass."""
+
+    def test_non_prefixed_helper_with_asserting_body_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/local.rs",
+            "fn rejects(input: &str) {\n"
+            '    assert!(!input.is_empty(), "must fail to load");\n'
+            "}\n"
+            "#[test]\n"
+            'fn t01() { rejects("bad"); }\n',
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_bare_check_prefix_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/bare.rs",
+            "fn check(input: &str) {\n"
+            '    assert!(!input.is_empty(), "bad input");\n'
+            "}\n"
+            "#[test]\n"
+            'fn t01() { check("2d6"); }\n',
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_transitive_helper_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/transitive.rs",
+            "fn inner(value: i32) {\n"
+            "    assert!(value > 0);\n"
+            "}\n"
+            "fn outer(value: i32) {\n"
+            "    inner(value);\n"
+            "}\n"
+            "#[test]\n"
+            "fn t01() { outer(1); }\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_helper_cycle_terminates_and_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/cycle.rs",
+            "fn ping() { pong(); }\n"
+            "fn pong() { ping(); assert!(true); }\n"
+            "#[test]\n"
+            "fn t01() { ping(); }\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_turbofish_helper_call_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/turbo.rs",
+            "#[test]\n"
+            "fn t01() {\n"
+            "    fn assert_send_sync<T: Send + Sync>() {}\n"
+            "    assert_send_sync::<Vec<u8>>();\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_non_asserting_helper_still_fails(self) -> None:
+        self.add(
+            "crates/demo/tests/noop.rs",
+            "fn note(value: i32) -> i32 {\n"
+            "    value + 1\n"
+            "}\n"
+            "#[test]\n"
+            "fn t01() { let _ = note(1); }\n",
+        )
+        self.assert_only_failed(self.verify(), "asserts")
+
+    def test_unwrap_on_result_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/roundtrip.rs",
+            "#[test]\n"
+            "fn t01() {\n"
+            "    let path = temp_path();\n"
+            "    write_data(&path).unwrap();\n"
+            "    verify_data(&path).unwrap();\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class AssertsMacroRules(VerifyCase):
+    """A0-14 attempt 2: a test inside a `macro_rules!` body is not checked."""
+
+    def test_macro_generated_tests_pass(self) -> None:
+        self.add(
+            "crates/demo/tests/delegated.rs",
+            "macro_rules! both_versions {\n"
+            "    ($name:ident) => {\n"
+            "        mod $name {\n"
+            "            #[test]\n"
+            "            fn v1() {\n"
+            "                super::$name(super::V1);\n"
+            "            }\n"
+            "        }\n"
+            "    };\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class AssertsProptestProperty(VerifyCase):
+    """A0-14 attempt 2: a proptest property fails only when empty."""
+
+    def test_never_panics_property_without_assert_passes(self) -> None:
+        self.add(
+            "crates/demo/tests/property.rs",
+            "proptest! {\n"
+            "    #[test]\n"
+            '    fn arbitrary_text_never_panics(text in ".{0,100}") {\n'
+            "        let _ = text.parse::<u32>();\n"
+            "    }\n"
+            "}\n",
+        )
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class AssertsDetail(VerifyCase):
+    """A0-14: detail names each failing test, capped at 20 plus a tail line."""
+
+    def test_detail_names_path_line_and_fn(self) -> None:
+        self.add(
+            "crates/demo/tests/two.rs",
+            "#[test]\nfn t01() {}\n#[test]\nfn t02() { assert!(true); }\n",
+        )
+        result = self.verify("--json")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        document = json.loads(result.stdout)
+        asserts = next(c for c in document["checks"] if c["name"] == "asserts")
+        self.assertEqual(asserts["status"], "failed", result.stdout)
+        self.assertIn("crates/demo/tests/two.rs:2 t01", asserts["output"])
+
+    def test_detail_caps_at_twenty_plus_tail(self) -> None:
+        stubs = "".join(f"#[test]\nfn t{i:02d}() {{}}\n" for i in range(21))
+        self.add("crates/demo/tests/many.rs", stubs)
+        result = self.verify("--json")
+        document = json.loads(result.stdout)
+        asserts = next(c for c in document["checks"] if c["name"] == "asserts")
+        self.assertEqual(len(asserts["output"]), 21, result.stdout)
+        self.assertEqual(asserts["output"][-1], "… and 1 more")
+
+
+class AssertsSkipAndDocOnly(VerifyCase):
+    SLOT_NAME = "slot-1"
+
+    def test_skip_asserts_skips(self) -> None:
+        self.add("crates/demo/tests/empty.rs", "#[test]\nfn t01() {}\n")
+        result = self.verify("--skip", "asserts")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("asserts: skipped", result.stdout)
+
+    def test_doc_only_diff_skips(self) -> None:
+        self.write_brief(DEFAULT_BRIEF.replace("Route: x", "Route: doc-only"))
+        self.add("crates/demo/tests/empty.rs", "#[test]\nfn t01() {}\n")
+        result = self.verify("--json")
+        document = json.loads(result.stdout)
+        asserts = next(c for c in document["checks"] if c["name"] == "asserts")
+        self.assertEqual(asserts["status"], "ok", result.stdout)
+        self.assertEqual(asserts["detail"], "skipped (doc-only slot)")
 
 
 if __name__ == "__main__":
