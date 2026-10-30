@@ -477,6 +477,8 @@ struct Sink {
     published_cursor: u64,
     /// Every update popped, in order (for the cutover-order assertions).
     popped: Vec<ReplicaUpdate>,
+    /// The replica as it stood immediately after each pop, in pop order.
+    trace: Vec<Replica>,
 }
 
 impl Sink {
@@ -497,7 +499,17 @@ impl Sink {
             last_delta_seq: 0,
             published_cursor: 0,
             popped: Vec::new(),
+            trace: Vec::new(),
         }
+    }
+
+    /// The entries not yet fed to this pool, in ordinal order.
+    fn fresh(&self, entries: &[DeliveryEntry]) -> Vec<DeliveryEntry> {
+        entries
+            .iter()
+            .filter(|entry| entry.ordinal > self.seen)
+            .cloned()
+            .collect()
     }
 
     fn offer(&mut self, entry: &DeliveryEntry, now: u64) -> Result<Fed, TransferError> {
@@ -518,6 +530,7 @@ impl Sink {
         let mut count = 0;
         while let Some(update) = self.pool.pop_update(self.rx) {
             self.apply(&update);
+            self.trace.push(self.replica.clone());
             self.popped.push(update);
             count += 1;
         }
@@ -1185,22 +1198,33 @@ fn acknowledgement_is_by_ordinal() {
     let p_lane = lane.bind(all_actors(), full_grants());
     lane.ack_all(p_lane);
     assert_lane0_ordinals(&mut lane, p_lane);
+    assert_lane0_ordinals(&mut lane, w_lane);
     let script = lane.declare(p_lane, 1, 1, strike(), 2);
     assert_eq!(lane.send(p_lane, &script).status, APPLIED);
     assert_lane0_ordinals(&mut lane, p_lane);
+    assert_lane0_ordinals(&mut lane, w_lane);
+    // The narrowed watcher is a lane-0 session too: the reset restarts its
+    // ordinals at 1 together with its `event_seq`.
     assert_eq!(
         lane.host.set_grants(w_lane, hide_b(full_grants())),
         Ok(GrantUpdate::RebindRequired)
     );
     assert_lane0_ordinals(&mut lane, p_lane);
+    assert_lane0_ordinals(&mut lane, w_lane);
+    let reset = lane.entries(w_lane);
+    assert_eq!(reset.len(), 1);
+    assert_eq!(reset[0].ordinal, 1);
+    assert_eq!(decode_frame(protocol, &reset[0].bytes).event_seq, 1);
     let second = lane.declare(p_lane, 2, 2, strike(), 3);
     assert_eq!(lane.send(p_lane, &second).status, APPLIED);
     assert_lane0_ordinals(&mut lane, p_lane);
+    assert_lane0_ordinals(&mut lane, w_lane);
     assert_eq!(
         lane.host.set_grants(w_lane, full_grants()),
         Ok(GrantUpdate::Unchanged)
     );
     assert_lane0_ordinals(&mut lane, p_lane);
+    assert_lane0_ordinals(&mut lane, w_lane);
 }
 
 fn assert_lane0_ordinals(rig: &mut Rig, peer: PeerHandle) {
@@ -1983,7 +2007,127 @@ both_versions!(widening_during_a_transfer_stays_incremental);
 // S§11 case 11.
 // ---------------------------------------------------------------------------
 
-fn independent_replica_oracle_over_a_scripted_fight(protocol: ProtocolSelection) {
+/// The one deliberate fault a run of the scripted fight may carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tamper {
+    /// No fault: the oracle must agree after every pop.
+    None,
+    /// Control (a): W2's `Chunk` never reaches its pool.
+    WithholdW2Chunk,
+    /// Control (b): one health byte is wrong in W1's `Chunk`.
+    CorruptW1Chunk,
+    /// Control (c): W2's seq-2 delta never reaches its pool.
+    DropW2Seq2,
+}
+
+/// The hand-written replica of W1 after each of its five pops: its state
+/// delta, seq 1, seq 2, the `Resync` snapshot, seq 3.
+fn expected_one() -> Vec<Replica> {
+    let seq_two = expected(
+        &[(1, (10, 10, false)), (2, (7, 10, false)), (3, (0, 3, true))],
+        Some((Some(1), 1)),
+    );
+    vec![
+        expected(
+            &[
+                (1, (10, 10, false)),
+                (2, (10, 10, false)),
+                (3, (3, 3, false)),
+            ],
+            Some((Some(1), 0)),
+        ),
+        expected(
+            &[
+                (1, (10, 10, false)),
+                (2, (7, 10, false)),
+                (3, (3, 3, false)),
+            ],
+            Some((Some(2), 0)),
+        ),
+        seq_two.clone(),
+        seq_two,
+        expected(
+            &[(1, (10, 10, false)), (2, (4, 10, false)), (3, (0, 3, true))],
+            Some((Some(2), 1)),
+        ),
+    ]
+}
+
+/// The hand-written replica of W2 after each of its six pops: its state
+/// delta, seq 1, the B-free snapshot, seq 2, the widening, seq 3.
+fn expected_two() -> Vec<Replica> {
+    vec![
+        expected(
+            &[
+                (1, (10, 10, false)),
+                (2, (10, 10, false)),
+                (3, (3, 3, false)),
+            ],
+            Some((Some(1), 0)),
+        ),
+        expected(
+            &[
+                (1, (10, 10, false)),
+                (2, (7, 10, false)),
+                (3, (3, 3, false)),
+            ],
+            Some((Some(2), 0)),
+        ),
+        expected(&[(1, (10, 10, false)), (3, (3, 3, false))], Some((None, 0))),
+        expected(
+            &[(1, (10, 10, false)), (3, (0, 3, true))],
+            Some((Some(1), 1)),
+        ),
+        expected(
+            &[(1, (10, 10, false)), (3, (0, 3, true)), (4, (7, 10, false))],
+            Some((Some(1), 1)),
+        ),
+        expected(
+            &[(1, (10, 10, false)), (3, (0, 3, true)), (4, (4, 10, false))],
+            Some((Some(4), 1)),
+        ),
+    ]
+}
+
+/// The index of the first pop at which the replica trace and the oracle
+/// disagree; a trace that is shorter or longer than the oracle diverges where
+/// the shorter one ends. `None` means they agree pop for pop.
+fn divergence(trace: &[Replica], oracle: &[Replica]) -> Option<usize> {
+    let common = trace.len().min(oracle.len());
+    (0..common)
+        .find(|index| trace[*index] != oracle[*index])
+        .or((trace.len() != oracle.len()).then_some(common))
+}
+
+/// Re-encodes a `Chunk` entry with B's health byte (`07`) changed to `06`:
+/// a still-decodable body that is wrong.
+fn corrupt_health_byte(entry: &DeliveryEntry) -> DeliveryEntry {
+    let TransferDown::Chunk(mut chunk) = decode_transfer(&entry.bytes) else {
+        panic!("expected a Chunk entry");
+    };
+    let at = chunk
+        .bytes
+        .iter()
+        .position(|byte| *byte == 0x07)
+        .expect("B's health byte");
+    assert_eq!(at, 8, "03 01 01 0A 0A 00 02 01 07 ...");
+    chunk.bytes[at] = 0x06;
+    DeliveryEntry {
+        ordinal: entry.ordinal,
+        kind: entry.kind,
+        bytes: codec_transfer::encode_down(&TransferDown::Chunk(chunk)).expect("encodes"),
+    }
+}
+
+struct Fight {
+    one: Sink,
+    two: Sink,
+    /// W2's pop count before its narrowing.
+    w2_mark: usize,
+}
+
+/// Runs the S§11 case 11 script once, with at most one deliberate fault.
+fn fight(protocol: ProtocolSelection, tamper: Tamper) -> Fight {
     let mut rig = Rig::new(protocol);
     let w1 = rig.bind_snapshot(control(&[]), full_grants());
     let w2 = rig.bind_snapshot(control(&[]), observer_grants());
@@ -1993,15 +2137,8 @@ fn independent_replica_oracle_over_a_scripted_fight(protocol: ProtocolSelection)
     let w2_epoch = rig.epoch(w2);
     let mut one = Sink::new(w1_epoch, protocol);
     let mut two = Sink::new(w2_epoch, protocol);
+    let oracle_two = expected_two();
 
-    let initial = expected(
-        &[
-            (1, (10, 10, false)),
-            (2, (10, 10, false)),
-            (3, (3, 3, false)),
-        ],
-        Some((Some(1), 0)),
-    );
     let first_one = rig.entries(w1);
     assert_eq!(
         decode_frame(protocol, &first_one[0].bytes).ops,
@@ -2009,24 +2146,12 @@ fn independent_replica_oracle_over_a_scripted_fight(protocol: ProtocolSelection)
     );
     one.feed(&first_one, rig.now);
     two.feed(&rig.entries(w2), rig.now);
-    assert_eq!(one.replica, initial);
-    assert_eq!(two.replica, initial);
 
     // seq 1: A strikes B.
     let script = rig.declare(p, 1, 1, strike(), 2);
     assert_eq!(rig.send(p, &script).status, APPLIED);
-    let after_one = expected(
-        &[
-            (1, (10, 10, false)),
-            (2, (7, 10, false)),
-            (3, (3, 3, false)),
-        ],
-        Some((Some(2), 0)),
-    );
     one.feed(&rig.entries(w1), rig.now);
     two.feed(&rig.entries(w2), rig.now);
-    assert_eq!(one.replica, after_one);
-    assert_eq!(two.replica, after_one);
 
     // W2's narrowing publishes the B-free snapshot.
     let w2_mark = two.popped.len();
@@ -2034,21 +2159,74 @@ fn independent_replica_oracle_over_a_scripted_fight(protocol: ProtocolSelection)
         rig.host.set_grants(w2, hide_b(observer_grants())),
         Ok(GrantUpdate::SnapshotStaged)
     );
-    let fed = two.feed(&rig.entries(w2), rig.now);
-    assert_eq!(fed.len(), 2);
-    assert_eq!(
-        fed[1],
-        Fed::Transfer(TransferOutcome::Published {
-            transfer: TransferId::new(1).expect("nonzero"),
-            released: 0,
-        })
-    );
-    let w2_snapshot = expected(&[(1, (10, 10, false)), (3, (3, 3, false))], Some((None, 0)));
-    assert_eq!(two.replica, w2_snapshot);
-    assert!(!two.replica.health.contains_key(&2));
+    let staged = two.fresh(&rig.entries(w2));
+    assert_eq!(staged.len(), 2);
+    let w2_transfer = if tamper == Tamper::WithholdW2Chunk {
+        // Only the Begin arrives: nothing is published.
+        let t = rig.now;
+        assert_eq!(
+            two.feed(&staged[..1], t),
+            vec![Fed::Transfer(TransferOutcome::Begun)]
+        );
+        assert_eq!(two.trace.len(), 2, "no publication without the Chunk");
+        assert!(two.replica.health.contains_key(&2), "B is still held");
+        // The oracle disagrees at the snapshot, which has not happened.
+        assert_eq!(divergence(&two.trace, &oracle_two[..3]), Some(2));
+        // The deadline is `t + 5_000` inclusive.
+        assert_eq!(two.pool.poll(t + 4_999), Vec::<ReceiverId>::new());
+        assert_eq!(two.pool.poll(t + 5_000), vec![two.rx]);
+        assert_eq!(
+            two.pool.status(two.rx).expect("receiver").resync,
+            Some(ResyncReason::Expired)
+        );
+        // Recovery goes through the host's Resync path.
+        assert_eq!(
+            rig.host.ingest_transfer(
+                w2,
+                &resync(w2_epoch, Some(1), ResyncReason::Expired),
+                rig.now
+            ),
+            Ok(TransferDisposition::Resynced)
+        );
+        let recovery = two.fresh(&rig.entries(w2));
+        assert_eq!(recovery.len(), 3);
+        assert_eq!(
+            decode_cancel(&recovery[0].bytes),
+            (
+                TransferId::new(1).expect("nonzero"),
+                CancelReason::Superseded
+            )
+        );
+        let transfer_two = TransferId::new(2).expect("nonzero");
+        assert_eq!(decode_begin(&recovery[1].bytes).transfer, transfer_two);
+        assert_eq!(
+            two.feed(&recovery, rig.now),
+            vec![
+                Fed::Transfer(TransferOutcome::Cancelled { discarded: false }),
+                Fed::Transfer(TransferOutcome::Begun),
+                Fed::Transfer(TransferOutcome::Published {
+                    transfer: transfer_two,
+                    released: 0,
+                }),
+            ]
+        );
+        assert_eq!(divergence(&two.trace, &oracle_two[..3]), None);
+        2
+    } else {
+        let fed = two.feed(&staged, rig.now);
+        assert_eq!(fed.len(), 2);
+        assert_eq!(
+            fed[1],
+            Fed::Transfer(TransferOutcome::Published {
+                transfer: TransferId::new(1).expect("nonzero"),
+                released: 0,
+            })
+        );
+        1
+    };
     assert_eq!(
         rig.host
-            .ingest_transfer(w2, &published(w2_epoch, 1), rig.now),
+            .ingest_transfer(w2, &published(w2_epoch, w2_transfer), rig.now),
         Ok(TransferDisposition::Published)
     );
 
@@ -2056,21 +2234,15 @@ fn independent_replica_oracle_over_a_scripted_fight(protocol: ProtocolSelection)
     let second = rig.declare(p, 2, 2, strike(), 3);
     assert_eq!(rig.send(p, &second).status, APPLIED);
     one.feed(&rig.entries(w1), rig.now);
-    two.feed(&rig.entries(w2), rig.now);
-    assert_eq!(
-        one.replica,
-        expected(
-            &[(1, (10, 10, false)), (2, (7, 10, false)), (3, (0, 3, true)),],
-            Some((Some(1), 1)),
-        )
-    );
-    assert_eq!(
-        two.replica,
-        expected(
-            &[(1, (10, 10, false)), (3, (0, 3, true))],
-            Some((Some(1), 1))
-        )
-    );
+    let w2_seq_two = two.fresh(&rig.entries(w2));
+    if tamper == Tamper::DropW2Seq2 {
+        assert_eq!(w2_seq_two.len(), 1);
+        assert_eq!(w2_seq_two[0].kind, DeliveryKind::Delta);
+        // Lost on the wire: later feeds must not resend it.
+        two.seen = w2_seq_two[0].ordinal;
+    } else {
+        two.feed(&w2_seq_two, rig.now);
+    }
 
     // W1's Resync publishes the full snapshot.
     assert_eq!(
@@ -2078,53 +2250,82 @@ fn independent_replica_oracle_over_a_scripted_fight(protocol: ProtocolSelection)
             .ingest_transfer(w1, &resync(w1_epoch, None, ResyncReason::Overflow), rig.now),
         Ok(TransferDisposition::Resynced)
     );
-    let fed = one.feed(&rig.entries(w1), rig.now);
-    assert_eq!(fed.len(), 2);
-    let w1_snapshot = expected(
-        &[(1, (10, 10, false)), (2, (7, 10, false)), (3, (0, 3, true))],
-        Some((Some(1), 1)),
+    let mut w1_staged = one.fresh(&rig.entries(w1));
+    assert_eq!(w1_staged.len(), 2);
+    if tamper == Tamper::CorruptW1Chunk {
+        w1_staged[1] = corrupt_health_byte(&w1_staged[1]);
+    }
+    let fed = one.feed(&w1_staged, rig.now);
+    assert_eq!(
+        fed,
+        vec![
+            Fed::Transfer(TransferOutcome::Begun),
+            Fed::Transfer(TransferOutcome::Published {
+                transfer: TransferId::new(1).expect("nonzero"),
+                released: 0,
+            }),
+        ]
     );
-    assert_eq!(one.replica, w1_snapshot);
     assert_eq!(
         rig.host
             .ingest_transfer(w1, &published(w1_epoch, 1), rig.now),
         Ok(TransferDisposition::Published)
     );
 
-    // W2 widens back to the observer's full set: incremental, fresh id 4.
+    // W2 widens back to the observer's full set: incremental.
     assert_eq!(
         rig.host.set_grants(w2, observer_grants()),
         Ok(GrantUpdate::Unchanged)
     );
     two.feed(&rig.entries(w2), rig.now);
-    assert_eq!(
-        two.replica,
-        expected(
-            &[(1, (10, 10, false)), (3, (0, 3, true)), (4, (7, 10, false)),],
-            Some((Some(1), 1)),
-        )
-    );
 
     // seq 3: A strikes B.
     let third = rig.declare(p, 3, 1, strike(), 2);
     assert_eq!(rig.send(p, &third).status, APPLIED);
     one.feed(&rig.entries(w1), rig.now);
     two.feed(&rig.entries(w2), rig.now);
-    assert_eq!(
-        one.replica,
-        expected(
-            &[(1, (10, 10, false)), (2, (4, 10, false)), (3, (0, 3, true)),],
-            Some((Some(2), 1)),
-        )
-    );
-    assert_eq!(
-        two.replica,
-        expected(
-            &[(1, (10, 10, false)), (3, (0, 3, true)), (4, (4, 10, false)),],
-            Some((Some(4), 1)),
-        )
-    );
-    assert!(!two.replica.health.contains_key(&2));
-    two.assert_never_mentions(w2_mark, 2);
+
+    Fight { one, two, w2_mark }
+}
+
+fn independent_replica_oracle_over_a_scripted_fight(protocol: ProtocolSelection) {
+    // The untampered run agrees with the hand-written facts after every pop.
+    let run = fight(protocol, Tamper::None);
+    assert_eq!(divergence(&run.one.trace, &expected_one()), None);
+    assert_eq!(divergence(&run.two.trace, &expected_two()), None);
+    assert_eq!(run.one.trace.len(), 5);
+    assert_eq!(run.two.trace.len(), 6);
+    assert!(!run.two.replica.health.contains_key(&2));
+    run.two.assert_never_mentions(run.w2_mark, 2);
+
+    // Control (a): W2's Chunk withheld, so no publication; `poll(t + 5_000)`
+    // expires the transfer and `Resync { after: Some(1), Expired }` stages
+    // `Cancel(1, Superseded)` + `Begin(2)`, which publishes and then matches
+    // (the in-run assertions show the comparison failing before it).
+    let run = fight(protocol, Tamper::WithholdW2Chunk);
+    assert_eq!(divergence(&run.one.trace, &expected_one()), None);
+    assert_eq!(divergence(&run.two.trace, &expected_two()), None);
+    run.two.assert_never_mentions(run.w2_mark, 2);
+
+    // Control (b): one health byte corrupted in W1's Chunk publishes a
+    // decodable wrong body, and the comparison fails at the snapshot.
+    let run = fight(protocol, Tamper::CorruptW1Chunk);
+    assert_eq!(divergence(&run.one.trace, &expected_one()), Some(3));
+    assert_eq!(run.one.trace[3].health.get(&2), Some(&Some((6, 10, false))));
+    assert_eq!(divergence(&run.two.trace, &expected_two()), None);
+
+    // Control (c): W2's seq-2 delta dropped leaves the later deltas held, so
+    // the comparison at the end fails.
+    let run = fight(protocol, Tamper::DropW2Seq2);
+    assert_eq!(divergence(&run.one.trace, &expected_one()), None);
+    assert_eq!(divergence(&run.two.trace, &expected_two()), Some(3));
+    assert_eq!(run.two.trace.len(), 3);
+    let held = run
+        .two
+        .pool
+        .status(run.two.rx)
+        .expect("receiver")
+        .held_frames;
+    assert_eq!(held, 2);
 }
 both_versions!(independent_replica_oracle_over_a_scripted_fight);
