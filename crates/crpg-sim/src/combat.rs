@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crpg_core::{DeterministicRng, EntityId, GenerationalArena, Interners, Tick, Ulid};
+use crpg_core::{DeterministicRng, EntityId, Fx16_16, GenerationalArena, Interners, Tick, Ulid};
 use crpg_data::{
     Ability as AuthoredAbility, Creature as AuthoredCreature, Effect as AuthoredEffect,
     Encounter as AuthoredEncounter, ExprWire, OutcomeTable as AuthoredOutcomeTable,
@@ -1049,6 +1049,19 @@ pub enum CombatError {
         /// The queried stat whose evaluation failed.
         stat: String,
     },
+    /// A placement already has a record or a combatant (T139).
+    PlacementInUse {
+        /// The placement.
+        placement: Ulid,
+    },
+    /// A record's ruleset, attribute names or pools disagree with the
+    /// encounter definition (T139).
+    RulesetMismatch {
+        /// The entity.
+        entity: EntityId,
+    },
+    /// Every authored participant is dead and no member enters (T139 D3).
+    NoEntrants,
 }
 
 impl std::fmt::Display for CombatError {
@@ -1092,6 +1105,9 @@ impl std::fmt::Display for CombatError {
             Self::WrongMode { .. } => write!(f, "WrongMode at combat/mode"),
             Self::TooManyTags => write!(f, "TooManyTags at spec/tags"),
             Self::StatEvaluation { .. } => write!(f, "StatEvaluation at combat/stats"),
+            Self::PlacementInUse { .. } => write!(f, "PlacementInUse at creatures/placement"),
+            Self::RulesetMismatch { .. } => write!(f, "RulesetMismatch at creatures/ruleset"),
+            Self::NoEntrants => write!(f, "NoEntrants at spec/participants"),
         }
     }
 }
@@ -1166,7 +1182,7 @@ fn map_outcome(outcome: crpg_data::OutcomeWire) -> Outcome {
 ///
 /// A zero tick period violates data's read-time validation, which owns
 /// that invariant; encountering one here is a caller-contract breach.
-fn convert_refresh(refresh: AuthoredRefresh) -> RefreshTrigger {
+pub(crate) fn convert_refresh(refresh: AuthoredRefresh) -> RefreshTrigger {
     match refresh {
         AuthoredRefresh::OnTurnStart => RefreshTrigger::OnTurnStart,
         AuthoredRefresh::OnRoundStart => RefreshTrigger::OnRoundStart,
@@ -1180,6 +1196,86 @@ fn convert_refresh(refresh: AuthoredRefresh) -> RefreshTrigger {
         }
         AuthoredRefresh::Never => RefreshTrigger::Never,
     }
+}
+
+/// The base stats and tags one prefab carries under one ruleset (T139 B3).
+pub(crate) struct CreatureStats {
+    /// Base non-health, non-derived `Int` stats in authored order.
+    pub attributes: Vec<(String, i32)>,
+    /// The health stat's value.
+    pub health: u32,
+    /// Non-derived `Fixed` values in authored order.
+    pub fixed: Vec<(String, Fx16_16)>,
+    /// Prefab tags, sorted and deduplicated.
+    pub tags: Vec<String>,
+}
+
+/// Reads one prefab's stats and tags with start's per-creature errors in
+/// start's order: `MissingStat`, `InvalidStatValue` and `ValueOverflow` for
+/// each base `Int` stat in authored order, and `MissingStat` for an absent
+/// base `Fixed` stat.
+pub(crate) fn read_creature_stats(
+    ruleset: &AuthoredRuleset,
+    creature: &AuthoredCreature,
+) -> Result<CreatureStats, CombatError> {
+    use CombatError::{InvalidStatValue, MissingStat, ValueOverflow};
+
+    let mut stats = Vec::with_capacity(ruleset.stats.len());
+    let mut health = None;
+    let mut fixed = Vec::new();
+    for declaration in &ruleset.stats {
+        if declaration.derived.is_some() {
+            continue;
+        }
+        match &declaration.kind {
+            StatKindWire::Int => {}
+            StatKindWire::Fixed => {
+                let value = creature.stats.get(&declaration.name).ok_or(MissingStat {
+                    stat: declaration.name.clone(),
+                })?;
+                fixed.push((declaration.name.clone(), *value));
+                continue;
+            }
+            _ => continue,
+        }
+        let authored = creature.stats.get(&declaration.name).ok_or(MissingStat {
+            stat: declaration.name.clone(),
+        })?;
+        let raw = authored.to_raw();
+        if raw % 65536 != 0 {
+            return Err(InvalidStatValue {
+                stat: declaration.name.clone(),
+            });
+        }
+        let wide = i64::from(raw) / 65536;
+        let value = i32::try_from(wide).map_err(|_| ValueOverflow)?;
+        if declaration.name == ruleset.health_stat {
+            if wide <= 0 {
+                return Err(InvalidStatValue {
+                    stat: declaration.name.clone(),
+                });
+            }
+            let positive = u32::try_from(wide).map_err(|_| ValueOverflow)?;
+            health = Some(positive);
+        }
+        stats.push((declaration.name.clone(), value));
+    }
+    let health = health.expect("the health stat names a declared stat");
+    let mut tags = creature.tags.clone();
+    tags.sort();
+    tags.dedup();
+    let mut attributes = Vec::with_capacity(stats.len());
+    for (name, value) in &stats {
+        if *name != ruleset.health_stat {
+            attributes.push((name.clone(), *value));
+        }
+    }
+    Ok(CreatureStats {
+        attributes,
+        health,
+        fixed,
+        tags,
+    })
 }
 
 /// Maps one authored stacking policy to its runtime counterpart.
@@ -1261,7 +1357,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
         DuplicateModifier, EncounterActive, InvalidCost, InvalidDice, InvalidEffect,
         InvalidNaturalDie, InvalidOutcomeTable, InvalidStatValue, MissingCreature, MissingEffect,
         MissingPlacement, MissingPool, MissingStat, MixedArea, PolicyConflict, TooManyParticipants,
-        TooManyStats, TooManyTags, UnknownAbility, ValueOverflow,
+        TooManyStats, TooManyTags, UnknownAbility,
     };
 
     let encounter = spec.encounter;
@@ -1378,56 +1474,12 @@ pub(crate) fn start_encounter_in_mode_tracked(
             .ok_or(MissingCreature {
                 prefab: resolved.placement.prefab,
             })?;
-        let mut stats = Vec::with_capacity(ruleset.stats.len());
-        let mut health = None;
-        for declaration in &ruleset.stats {
-            if declaration.derived.is_some() {
-                continue;
-            }
-            match &declaration.kind {
-                StatKindWire::Int => {}
-                StatKindWire::Fixed => {
-                    if !creature.stats.contains_key(&declaration.name) {
-                        return Err(MissingStat {
-                            stat: declaration.name.clone(),
-                        });
-                    }
-                    continue;
-                }
-                _ => continue,
-            }
-            let fixed = creature.stats.get(&declaration.name).ok_or(MissingStat {
-                stat: declaration.name.clone(),
-            })?;
-            let raw = fixed.to_raw();
-            if raw % 65536 != 0 {
-                return Err(InvalidStatValue {
-                    stat: declaration.name.clone(),
-                });
-            }
-            let wide = i64::from(raw) / 65536;
-            let value = i32::try_from(wide).map_err(|_| ValueOverflow)?;
-            if declaration.name == ruleset.health_stat {
-                if wide <= 0 {
-                    return Err(InvalidStatValue {
-                        stat: declaration.name.clone(),
-                    });
-                }
-                let positive = u32::try_from(wide).map_err(|_| ValueOverflow)?;
-                health = Some(positive);
-            }
-            stats.push((declaration.name.clone(), value));
-        }
-        let health = health.expect("the health stat names a declared stat");
-        let mut tags = creature.tags.clone();
-        tags.sort();
-        tags.dedup();
-        let mut attributes = Vec::with_capacity(stats.len());
-        for (name, value) in &stats {
-            if *name != ruleset.health_stat {
-                attributes.push((name.clone(), *value));
-            }
-        }
+        let CreatureStats {
+            attributes,
+            health,
+            tags,
+            ..
+        } = read_creature_stats(ruleset, creature)?;
         pending.push(Pending {
             placement: resolved.placement.id,
             initiative: participant.initiative,

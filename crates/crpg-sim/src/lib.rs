@@ -20,6 +20,7 @@ extern crate self as crpg_sim;
 
 pub mod area;
 pub mod combat;
+pub mod creature;
 pub mod event;
 pub mod hash;
 pub mod history;
@@ -40,6 +41,7 @@ pub use combat::{
     COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_STREAM, COMBAT_ROLL_TAG, MAX_COMBATANTS, MAX_COMBAT_STATS,
     MAX_LEGAL_ACTIONS, RT_CLOCK_MAX,
 };
+pub use creature::{register_creature, CreatureSpec, CreatureState, SuspendedEffect};
 pub use event::SimEvent;
 pub use hash::state_hash;
 pub use history::{

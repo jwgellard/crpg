@@ -10,8 +10,8 @@
 //! simulation transition between two bound worlds, requested by a higher
 //! authorized owner — not automatic navigation, and not a client operation.
 //! They move only the currently supported noncombat, unscheduled shape
-//! (`EntityMeta` plus an optional `Transform`), allocating a fresh identity in
-//! the destination. Runtime identity across worlds is `(area, EntityId)`
+//! (`EntityMeta` plus an optional `Transform` and an optional `CreatureState`),
+//! allocating a fresh identity in the destination. Runtime identity across worlds is `(area, EntityId)`
 //! because two worlds can mint equal arena ids. Anything the move cannot
 //! carry fails the whole transfer instead of disappearing.
 
@@ -58,6 +58,12 @@ pub enum AreaError {
         /// The entity with the corrupt transform.
         entity: EntityId,
     },
+    /// The destination already holds a record or a combatant for the moved
+    /// record's placement (T139).
+    PlacementInUse {
+        /// The placement.
+        placement: Ulid,
+    },
     /// The source journal cannot accept the removal.
     SourceHistory(HistoryError),
     /// The destination journal cannot accept the spawn.
@@ -75,6 +81,7 @@ impl fmt::Display for AreaError {
             Self::CombatParticipant { .. } => "CombatParticipant",
             Self::ScheduledEntity { .. } => "ScheduledEntity",
             Self::InvalidTransform { .. } => "InvalidTransform",
+            Self::PlacementInUse { .. } => "PlacementInUse",
             Self::SourceHistory(_) => "SourceHistory",
             Self::DestinationHistory(_) => "DestinationHistory",
         };
@@ -118,6 +125,21 @@ fn preflight(source: &World, destination: &World, entity: EntityId) -> Result<()
             return Err(AreaError::InvalidTransform { entity });
         }
     }
+    // T139 T1: one record per placement across areas (B2, K10).
+    if let Some(record) = source.creatures().get(entity) {
+        let placement = record.placement();
+        let held = destination
+            .creatures()
+            .iter()
+            .any(|(_, other)| other.placement() == placement)
+            || destination
+                .combatants()
+                .iter()
+                .any(|(_, other)| other.placement() == placement);
+        if held {
+            return Err(AreaError::PlacementInUse { placement });
+        }
+    }
     Ok(())
 }
 
@@ -128,7 +150,8 @@ fn preflight(source: &World, destination: &World, entity: EntityId) -> Result<()
 /// staged and published together: the source despawns the entity (one
 /// `Despawned` at its tick), the destination spawns the copied `EntityMeta`
 /// (one `Spawned` at its tick) and receives the copied `Transform` if one
-/// existed — an absent transform stays absent. RNG, interners, encounter
+/// existed — an absent transform stays absent — and the copied
+/// `CreatureState` if one existed (T139), likewise. RNG, interners, encounter
 /// state and ticks do not migrate or change. The returned id may equal the
 /// old one numerically; it belongs to the destination area. A rejection
 /// leaves both worlds unchanged.
@@ -142,6 +165,7 @@ pub fn transfer_entity(
         .entity_meta(entity)
         .expect("preflight checks the entity is live");
     let transform = source.transforms().get(entity).copied();
+    let creature = source.creatures().get(entity).cloned();
     let mut staged_source = source.clone();
     let mut staged_destination = destination.clone();
     let removed = staged_source.despawn(entity);
@@ -149,6 +173,9 @@ pub fn transfer_entity(
     let moved = staged_destination.spawn(meta);
     if let Some(transform) = transform {
         staged_destination.transforms_mut().insert(moved, transform);
+    }
+    if let Some(creature) = creature {
+        staged_destination.creatures_mut().insert(moved, creature);
     }
     *source = staged_source;
     *destination = staged_destination;
@@ -174,6 +201,7 @@ pub fn transfer_history_entity(
         .entity_meta(entity)
         .expect("preflight checks the entity is live");
     let transform = source.world().transforms().get(entity).copied();
+    let creature = source.world().creatures().get(entity).cloned();
     let mut staged_source = source.clone();
     let mut staged_destination = destination.clone();
     let removed = staged_source
@@ -181,7 +209,7 @@ pub fn transfer_history_entity(
         .map_err(AreaError::SourceHistory)?;
     debug_assert!(removed, "preflight checks the entity is live");
     let moved = staged_destination
-        .spawn(meta)
+        .spawn_with_creature(meta, creature)
         .map_err(AreaError::DestinationHistory)?;
     if let Some(transform) = transform {
         staged_destination.attach_transform(moved, transform);

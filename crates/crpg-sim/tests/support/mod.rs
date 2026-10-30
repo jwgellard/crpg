@@ -917,3 +917,143 @@ pub mod draws {
         start_encounter(world, &spec)
     }
 }
+
+/// Persistent-creature fixtures (T139): registration, record reads and raw
+/// JSON edits. Kept apart so that test binaries that never use them stay
+/// free of dead-code warnings.
+pub mod creature {
+    #![allow(dead_code)]
+
+    use crpg_core::{EntityId, Ulid};
+    use crpg_data::EncounterParticipant;
+    use crpg_sim::{register_creature, CombatError, CreatureSpec, HistoryError, HistoryWorld};
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+    use serde::Deserializer;
+    use serde_json::Value;
+
+    use super::{Fixture, World};
+
+    /// Adds a placement (in `fixture.area`) and a clone of creature A with
+    /// fresh identities, without an encounter participant: `add_clone`
+    /// minus the participant push.
+    pub fn add_outsider(fixture: &mut Fixture, placement: u128, creature: u128) {
+        let placement_id = Ulid::from_u128(placement);
+        let creature_id = Ulid::from_u128(creature);
+        let mut document = fixture.placements[&fixture.placement_a].0.clone();
+        document.id = placement_id;
+        document.slug = format!("probe-outsider-{placement}");
+        document.name = format!("probe.outsider-{placement}");
+        document.prefab = creature_id;
+        fixture
+            .placements
+            .insert(placement_id, (document, fixture.area));
+        let mut clone = fixture.creatures[&fixture.creature_a].clone();
+        clone.id = creature_id;
+        clone.slug = format!("probe-creature-outsider-{creature}");
+        clone.name = format!("probe.creature-outsider-{creature}");
+        fixture.creatures.insert(creature_id, clone);
+    }
+
+    /// Adds one more encounter participant for a placement `add_outsider`
+    /// made (kept for later T139 tests).
+    pub fn enlist(fixture: &mut Fixture, placement: u128, initiative: i32) {
+        fixture.encounter.participants.push(EncounterParticipant {
+            placement: Ulid::from_u128(placement),
+            initiative,
+        });
+    }
+
+    impl Fixture {
+        /// Runs `body` with the [`CreatureSpec`] of `placement`: its
+        /// document, its owning area and its prefab.
+        pub fn with_creature_spec<R>(
+            &self,
+            placement: Ulid,
+            body: impl FnOnce(&CreatureSpec<'_>) -> R,
+        ) -> R {
+            let (document, area) = &self.placements[&placement];
+            let spec = CreatureSpec {
+                ruleset: &self.ruleset,
+                placement: document,
+                area: *area,
+                creature: &self.creatures[&document.prefab],
+            };
+            body(&spec)
+        }
+
+        /// Registers `placement` in `world`.
+        pub fn register(
+            &self,
+            world: &mut World,
+            placement: Ulid,
+        ) -> Result<EntityId, CombatError> {
+            self.with_creature_spec(placement, |spec| register_creature(world, spec))
+        }
+
+        /// Registers `placement` in `history`.
+        pub fn register_history(
+            &self,
+            history: &mut HistoryWorld,
+            placement: Ulid,
+        ) -> Result<EntityId, HistoryError> {
+            self.with_creature_spec(placement, |spec| history.register_creature(spec))
+        }
+    }
+
+    /// The world's record of `entity` as JSON.
+    pub fn record(world: &World, entity: EntityId) -> Value {
+        serde_json::to_value(world.creatures().get(entity).expect("a record"))
+            .expect("the record serializes")
+    }
+
+    /// Applies `edit` to the whole save as JSON and reloads it, or returns
+    /// the loader's message.
+    pub fn try_with_json(world: &World, edit: impl FnOnce(&mut Value)) -> Result<World, String> {
+        let mut value = serde_json::to_value(world).expect("the world serializes");
+        edit(&mut value);
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    /// [`try_with_json`] that panics if the edited save fails to load.
+    pub fn with_json(world: &World, edit: impl FnOnce(&mut Value)) -> World {
+        try_with_json(world, edit).expect("the edited save loads")
+    }
+
+    /// Applies `edit` to the JSON of `entity`'s record and reloads the world.
+    pub fn with_record(world: &World, entity: EntityId, edit: impl FnOnce(&mut Value)) -> World {
+        with_json(world, |save| edit_record(save, entity, edit))
+    }
+
+    /// Edits one record inside a saved world's JSON.
+    pub fn edit_record(save: &mut Value, entity: EntityId, edit: impl FnOnce(&mut Value)) {
+        let key = serde_json::to_value(entity).expect("the id serializes");
+        let entries = save["creatures"].as_array_mut().expect("a creatures list");
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry[0] == key)
+            .expect("the entity holds a record");
+        edit(&mut entry[1]);
+    }
+
+    /// The object keys of the top level of `bytes`, in written order.
+    pub fn top_level_keys(bytes: &[u8]) -> Vec<String> {
+        struct Keys;
+        impl<'de> Visitor<'de> for Keys {
+            type Value = Vec<String>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut keys = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    map.next_value::<IgnoredAny>()?;
+                    keys.push(key);
+                }
+                Ok(keys)
+            }
+        }
+        serde_json::Deserializer::from_slice(bytes)
+            .deserialize_map(Keys)
+            .expect("an object")
+    }
+}

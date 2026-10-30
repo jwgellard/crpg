@@ -48,6 +48,7 @@ use crate::combat::{
     perform_action_tracked, start_encounter_in_mode_tracked, ActionOutcome, CombatAction,
     CombatError, EncounterMode, EncounterSpec, EncounterSummary, TickEvent, TransitionFacts,
 };
+use crate::creature::{CreatureSpec, CreatureState};
 use crate::event::SimEvent;
 use crate::transform::Transform;
 use crate::world::{EntityMeta, World};
@@ -496,6 +497,49 @@ impl HistoryWorld {
     pub fn spawn(&mut self, meta: EntityMeta) -> Result<EntityId, HistoryError> {
         let mut world = self.world.clone();
         let id = world.spawn(meta);
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
+        debug_assert_eq!(drained.len(), 1, "spawn enqueues exactly one event");
+        let mut events = Vec::with_capacity(drained.len());
+        for envelope in &drained {
+            events.push(translate_legacy(&envelope.payload));
+        }
+        self.commit(world, events, tick)?;
+        Ok(id)
+    }
+
+    /// Journaled registration (T139, ADR-0029 T16): stages
+    /// [`register_creature`](crate::register_creature) and journals one
+    /// `Spawned`. Gameplay errors win and commit nothing.
+    pub fn register_creature(&mut self, spec: &CreatureSpec<'_>) -> Result<EntityId, HistoryError> {
+        let mut world = self.world.clone();
+        let id =
+            crate::creature::register_creature(&mut world, spec).map_err(HistoryError::Combat)?;
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
+        debug_assert_eq!(drained.len(), 1, "registration enqueues exactly one event");
+        let mut events = Vec::with_capacity(drained.len());
+        for envelope in &drained {
+            events.push(translate_legacy(&envelope.payload));
+        }
+        self.commit(world, events, tick)?;
+        Ok(id)
+    }
+
+    /// [`spawn`](Self::spawn) that also attaches the moved record, journaling
+    /// one `Spawned`. Crate-visible only: the area transfer's destination
+    /// spawn carries the record through `commit`, so a rejected commit
+    /// discards it with the staged clone.
+    pub(crate) fn spawn_with_creature(
+        &mut self,
+        meta: EntityMeta,
+        creature: Option<CreatureState>,
+    ) -> Result<EntityId, HistoryError> {
+        let mut world = self.world.clone();
+        let id = world.spawn(meta);
+        if let Some(creature) = creature {
+            world.creatures_mut().insert(id, creature);
+        }
         let drained = world.events_mut().drain();
         let tick = world.tick();
         debug_assert_eq!(drained.len(), 1, "spawn enqueues exactly one event");
