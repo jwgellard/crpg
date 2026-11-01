@@ -384,7 +384,15 @@ pub fn run_golden_schedule() -> GoldenRun {
     hashes.push(history_hash(&world));
 
     // Step 11: a second encounter reuses the content with fresh runtime ids.
-    world.start_encounter(&spec).expect("step 11 starts");
+    let mut respawning = fixture.encounter.clone();
+    respawning.respawns = Some(true);
+    let respawning_spec = EncounterSpec {
+        encounter: &respawning,
+        ..spec
+    };
+    world
+        .start_encounter(&respawning_spec)
+        .expect("step 11 starts");
     let second: Vec<_> = world
         .world()
         .combatants()

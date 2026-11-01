@@ -489,7 +489,10 @@ fn tags_carried_only_with_a_granting_effect() {
     let creature_id = fixture.creature_a;
     draws::set_tags(&mut fixture, creature_id, &["pc", "hero", "hero"]);
     let (world, ids) = start(&fixture, 3);
-    assert!(world.combatants().get(ids[0]).expect("A").tags().is_empty());
+    assert_eq!(
+        world.combatants().get(ids[0]).expect("A").tags(),
+        ["hero", "pc"]
+    );
 
     let mut fixture = Fixture::standard();
     let creature_id = fixture.creature_a;

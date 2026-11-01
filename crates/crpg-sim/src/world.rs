@@ -678,6 +678,23 @@ impl<'de> Deserialize<'de> for World {
                                 "combatants share a placement identity",
                             ));
                         }
+                        // P1 (T139): no stat name repeats across the
+                        // combatant's attributes and `Fixed` stats.
+                        {
+                            let mut seen = BTreeSet::new();
+                            let names = combatant
+                                .attributes()
+                                .iter()
+                                .map(|(name, _)| name)
+                                .chain(combatant.fixed().iter().map(|(name, _)| name));
+                            for name in names {
+                                if !seen.insert(name) {
+                                    return Err(serde::de::Error::custom(
+                                        "combatant fixed stats repeat a name",
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
                 for (_, id) in repr.timeline.iter() {

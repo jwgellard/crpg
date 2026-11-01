@@ -925,7 +925,9 @@ pub mod creature {
     #![allow(dead_code)]
 
     use crpg_core::{EntityId, Ulid};
-    use crpg_data::EncounterParticipant;
+    use crpg_data::{
+        CreaturePersistenceWire, EffectsOnExitWire, EncounterParticipant, LateJoinWire,
+    };
     use crpg_sim::{register_creature, CombatError, CreatureSpec, HistoryError, HistoryWorld};
     use serde::de::{IgnoredAny, MapAccess, Visitor};
     use serde::Deserializer;
@@ -1017,6 +1019,29 @@ pub mod creature {
     /// [`try_with_json`] that panics if the edited save fails to load.
     pub fn with_json(world: &World, edit: impl FnOnce(&mut Value)) -> World {
         try_with_json(world, edit).expect("the edited save loads")
+    }
+
+    /// Sets the three lifecycle hooks of the fixture's ruleset (T139).
+    pub fn set_hooks(
+        fixture: &mut Fixture,
+        persistence: Option<CreaturePersistenceWire>,
+        late_join: Option<LateJoinWire>,
+        effects_on_exit: Option<EffectsOnExitWire>,
+    ) {
+        fixture.ruleset.creature_persistence = persistence;
+        fixture.ruleset.late_join = late_join;
+        fixture.ruleset.effects_on_exit = effects_on_exit;
+    }
+
+    /// Edits one combatant inside a saved world's JSON.
+    pub fn edit_combatant(save: &mut Value, entity: EntityId, edit: impl FnOnce(&mut Value)) {
+        let key = serde_json::to_value(entity).expect("the id serializes");
+        let entries = save["combatants"].as_array_mut().expect("a combatant list");
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry[0] == key)
+            .expect("the entity holds a combatant");
+        edit(&mut entry[1]);
     }
 
     /// Applies `edit` to the JSON of `entity`'s record and reloads the world.

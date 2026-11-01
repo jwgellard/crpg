@@ -1,5 +1,7 @@
 //! T139a1: the persistent creature store, registration and load checks
 //! (Behaviour B1-B7, B9 and the world half of B10; tests A1-A6 and A8).
+//! T139a2 adds P1 (`a8_p1_combatant_fixed_repeat`) and the carriage tests
+//! A17 and A18.
 //!
 //! Every rejection compares the world's bytes and hash before and after and
 //! has a positive control.
@@ -8,7 +10,7 @@
 mod support;
 
 use crpg_core::{EntityId, Fx16_16, Ulid};
-use crpg_data::RefreshWire;
+use crpg_data::{CreaturePersistenceWire, EffectsOnExitWire, RefreshWire};
 use crpg_rules::{RefreshTrigger, ResourcePool, ResourcePoolId, MAX_TAGS};
 use crpg_sim::{
     perform_action, register_creature, request_mode, state_hash, tick, CombatAction, CombatError,
@@ -16,7 +18,8 @@ use crpg_sim::{
 };
 use serde_json::{json, Value};
 use support::creature::{
-    add_outsider, edit_record, record, top_level_keys, try_with_json, with_json, with_record,
+    add_outsider, edit_record, record, set_hooks, top_level_keys, try_with_json, with_json,
+    with_record,
 };
 use support::draws::set_tags;
 use support::rt::{json_keys, tick_pools, ticks, value_of};
@@ -499,7 +502,8 @@ fn load_error(world: &World, edit: impl FnOnce(&mut Value)) -> String {
     try_with_json(world, edit).expect_err("the edited save is refused")
 }
 
-/// A8 (B9): K1, K3-K12, each with its exact message. P1 is T139a2's.
+/// A8 (B9): K1, K3-K12, each with its exact message. P1 is
+/// `a8_p1_combatant_fixed_repeat`.
 #[test]
 fn a8_load_checks() {
     let (world, first, _) = two_record_world();
@@ -708,5 +712,121 @@ fn new_combat_errors_display_as_pinned() {
     assert_eq!(
         CombatError::NoEntrants.to_string(),
         "NoEntrants at spec/participants"
+    );
+}
+
+/// A8 (B9, P1): a combatant's `Fixed` stats must not repeat a name. P1 reads
+/// `Combatant.fixed`, so it lands with the field (T139a2). Control: the
+/// unmutated save and a valid `fixed` load.
+#[test]
+fn a8_p1_combatant_fixed_repeat() {
+    let fixture = speed_fixture();
+    let (world, ids) = fixture.start(3);
+    let first = ids[0];
+    let edit_first = |edit: fn(&mut Value)| {
+        load_error(&world, |save| {
+            support::creature::edit_combatant(save, first, edit)
+        })
+    };
+    assert_eq!(
+        edit_first(|c| c["fixed"] = json!([["speed", 98_304], ["speed", 1]])),
+        "combatant fixed stats repeat a name"
+    );
+    assert_eq!(
+        edit_first(|c| c["fixed"] = json!([["alpha", 65_536]])),
+        "combatant fixed stats repeat a name",
+        "a name repeated across attributes and fixed"
+    );
+
+    // P1 follows the placement check: a combatant that breaks both reports
+    // the placement.
+    let message = load_error(&world, |save| {
+        let placement = save["combatants"][0][1]["placement"].clone();
+        save["combatants"][1][1]["placement"] = placement;
+        save["combatants"][1][1]["fixed"] = json!([["speed", 1], ["speed", 2]]);
+    });
+    assert_eq!(message, "combatants share a placement identity");
+
+    // Controls: the unmutated save, and a distinct `fixed` entry, load.
+    let reloaded: World = serde_json::from_value(value_of(&world)).expect("loads");
+    assert_eq!(reloaded, world);
+    let edited = with_json(&world, |save| {
+        support::creature::edit_combatant(save, first, |c| {
+            c["fixed"] = json!([["speed", 131_072]]);
+        });
+    });
+    assert_eq!(
+        edited.combatants().get(first).expect("A").fixed(),
+        [("speed".to_owned(), Fx16_16::from_raw(131_072))]
+    );
+}
+
+/// A17 (B12): every combatant carries the prefab's `Fixed` stats, written as
+/// the last key. Control: the standard fixture writes no `fixed` key.
+#[test]
+fn a17_fixed_carriage() {
+    let fixture = speed_fixture();
+    let (world, ids) = fixture.start(3);
+    for entity in ids {
+        let combatant = world.combatants().get(entity).expect("combatant");
+        assert_eq!(
+            combatant.fixed(),
+            [("speed".to_owned(), Fx16_16::from_raw(98_304))]
+        );
+        assert!(!combatant.entered());
+        let text = serde_json::to_string(combatant).expect("serializes");
+        assert!(text.ends_with(r#""fixed":[["speed",98304]]}"#), "{text}");
+        assert_eq!(
+            top_level_keys(text.as_bytes()).last().map(String::as_str),
+            Some("fixed"),
+            "`entered` is false, so it is skipped"
+        );
+    }
+    let (plain, _) = Fixture::standard().start(3);
+    assert!(!json_keys(&value_of(&plain)).contains("fixed"));
+}
+
+/// A18 (B11): the five hook combinations map onto `lifecycle`; each
+/// round-trips. Control: explicit defaults write no key.
+#[test]
+fn a18_lifecycle_mapping() {
+    let case = |respawns: Option<bool>,
+                persistence: Option<CreaturePersistenceWire>,
+                exit: Option<EffectsOnExitWire>|
+     -> Option<Value> {
+        let mut fixture = Fixture::standard();
+        fixture.encounter.respawns = respawns;
+        set_hooks(&mut fixture, persistence, None, exit);
+        let (world, _) = fixture.start(3);
+        let value = value_of(&world);
+        let reloaded: World = serde_json::from_value(value.clone()).expect("round-trips");
+        assert_eq!(reloaded, world);
+        value["combat"].get("lifecycle").cloned()
+    };
+    assert_eq!(case(None, None, None), None);
+    assert_eq!(
+        case(Some(true), None, None),
+        Some(json!({"respawns": true}))
+    );
+    assert_eq!(
+        case(None, Some(CreaturePersistenceWire::Registered), None),
+        Some(json!({"respawns": true}))
+    );
+    assert_eq!(
+        case(None, None, Some(EffectsOnExitWire::Strip)),
+        Some(json!({"effects_on_exit": "strip"}))
+    );
+    assert_eq!(
+        case(None, None, Some(EffectsOnExitWire::StripAtRelease)),
+        Some(json!({"effects_on_exit": "strip_at_release"}))
+    );
+    // Control: explicit defaults write nothing.
+    assert_eq!(
+        case(
+            Some(false),
+            Some(CreaturePersistenceWire::Survivors),
+            Some(EffectsOnExitWire::Suspend)
+        ),
+        None
     );
 }
