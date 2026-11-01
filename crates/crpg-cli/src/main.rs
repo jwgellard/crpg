@@ -13,6 +13,7 @@
 mod apply;
 mod combat_apply;
 mod demo;
+mod play;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -53,6 +54,11 @@ const RUN_USAGE: &str = "crpgc run --ticks N --hash-every M [--seed S]";
 /// Usage line printed for the `demo` subcommand, kept in sync with the
 /// interface block in `tasks/T145.md`.
 const DEMO_USAGE: &str = "crpgc demo <replay> --campaign <campaign-root> [--delay-ms N]";
+
+/// Usage line printed for the `play` subcommand, kept in sync with the
+/// interface block in `tasks/T146.md`.
+const PLAY_USAGE: &str =
+    "crpgc play --campaign <campaign-root> [--encounter <ulid>] [--side <name>] [--seed N]";
 
 /// Exact stderr bytes when the compile-time engine version does not parse as
 /// semver for combat `replay --campaign`. A release-process bug, never user
@@ -144,6 +150,12 @@ enum Command {
         replay_path: PathBuf,
         campaign_root: PathBuf,
         delay_ms: u64,
+    },
+    Play {
+        campaign_root: PathBuf,
+        encounter: Option<Ulid>,
+        side: Option<String>,
+        seed: u64,
     },
 }
 
@@ -255,6 +267,7 @@ fn parse_args(args: &[OsString]) -> Result<Command, CliError> {
         Some("lock") => parse_lock(&args[1..]),
         Some("run") => parse_run(&args[1..]),
         Some("demo") => parse_demo(&args[1..]),
+        Some("play") => parse_play(&args[1..]),
         Some(other) => Err(CliError::Usage(format!("unknown subcommand '{other}'"))),
         None => Err(CliError::Usage(format!(
             "unknown subcommand '{}'",
@@ -831,6 +844,103 @@ fn parse_demo(args: &[OsString]) -> Result<Command, CliError> {
         replay_path: PathBuf::from(replay),
         campaign_root: PathBuf::from(campaign),
         delay_ms: delay_ms.unwrap_or(0),
+    })
+}
+
+/// Parses the `play` subcommand: a required `--campaign` plus optional
+/// `--encounter <ulid>`, `--side <name>`, and `--seed N` defaulting to 0, each
+/// at most once and with separate-token values. No positionals. Unknown,
+/// duplicate, missing-value, and flag-shaped-value cases are usage exit 2
+/// before any filesystem work; a malformed `--encounter` ULID and a
+/// non-decimal `--seed` are usage errors here too. `--side` is free text: a
+/// name no combatant has can only be known after the campaign loads, so that
+/// usage error is reported by the command runner.
+fn parse_play(args: &[OsString]) -> Result<Command, CliError> {
+    let mut campaign: Option<&OsString> = None;
+    let mut encounter: Option<Ulid> = None;
+    let mut side: Option<String> = None;
+    let mut seed: Option<u64> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match flag_text(arg) {
+            Some("--campaign") => {
+                let value = iter
+                    .next()
+                    .filter(|next| flag_text(next).is_none())
+                    .ok_or_else(|| CliError::Usage("--campaign needs a value".to_string()))?;
+                if campaign.replace(value).is_some() {
+                    return Err(CliError::Usage(
+                        "--campaign given more than once".to_string(),
+                    ));
+                }
+            }
+            Some("--encounter") => {
+                let value = iter
+                    .next()
+                    .filter(|next| flag_text(next).is_none())
+                    .ok_or_else(|| CliError::Usage("--encounter needs a value".to_string()))?;
+                if encounter.is_some() {
+                    return Err(CliError::Usage(
+                        "--encounter given more than once".to_string(),
+                    ));
+                }
+                let text = value
+                    .to_str()
+                    .ok_or_else(|| CliError::Usage("--encounter needs a ULID".to_string()))?;
+                encounter = Some(
+                    text.parse()
+                        .map_err(|_| CliError::Usage("--encounter needs a ULID".to_string()))?,
+                );
+            }
+            Some("--side") => {
+                let value = iter
+                    .next()
+                    .filter(|next| flag_text(next).is_none())
+                    .ok_or_else(|| CliError::Usage("--side needs a value".to_string()))?;
+                if side.is_some() {
+                    return Err(CliError::Usage("--side given more than once".to_string()));
+                }
+                side = Some(
+                    value
+                        .to_str()
+                        .ok_or_else(|| CliError::Usage("--side needs a name".to_string()))?
+                        .to_owned(),
+                );
+            }
+            Some("--seed") => {
+                let value = iter
+                    .next()
+                    .filter(|next| flag_text(next).is_none())
+                    .ok_or_else(|| CliError::Usage("--seed needs a value".to_string()))?;
+                if seed.is_some() {
+                    return Err(CliError::Usage("--seed given more than once".to_string()));
+                }
+                let text = value
+                    .to_str()
+                    .ok_or_else(|| CliError::Usage("--seed needs a number".to_string()))?;
+                seed = Some(
+                    parse_run_number(text)
+                        .map_err(|_| CliError::Usage("--seed needs a number".to_string()))?,
+                );
+            }
+            Some(other) => {
+                return Err(CliError::Usage(format!("unknown flag '{other}'")));
+            }
+            None => {
+                return Err(CliError::Usage(format!(
+                    "unexpected argument '{}'; try '{PLAY_USAGE}'",
+                    arg.to_string_lossy()
+                )));
+            }
+        }
+    }
+    let campaign = campaign
+        .ok_or_else(|| CliError::Usage(format!("missing --campaign; try '{PLAY_USAGE}'")))?;
+    Ok(Command::Play {
+        campaign_root: PathBuf::from(campaign),
+        encounter,
+        side,
+        seed: seed.unwrap_or(0),
     })
 }
 
@@ -2555,6 +2665,18 @@ fn run(command: Command) -> Outcome {
             delay_ms,
             env!("CARGO_PKG_VERSION"),
         ),
+        Command::Play {
+            campaign_root,
+            encounter,
+            side,
+            seed,
+        } => play::run(
+            &campaign_root,
+            encounter,
+            side.as_deref(),
+            seed,
+            env!("CARGO_PKG_VERSION"),
+        ),
     }
 }
 
@@ -2602,6 +2724,62 @@ mod tests {
     }
 
     #[test]
+    fn play_parser_defaults_and_usage() {
+        let campaign = PathBuf::from("campaigns/fixtures/combat_basic");
+        let root = campaign.to_str().expect("utf-8");
+        match parse_args(&args(&[
+            "play",
+            "--campaign",
+            root,
+            "--encounter",
+            "0000000000000000000000000N",
+            "--side",
+            "Hero",
+            "--seed",
+            "12",
+        ])) {
+            Ok(Command::Play {
+                campaign_root,
+                encounter,
+                side,
+                seed,
+            }) => {
+                assert_eq!(campaign_root, campaign);
+                assert_eq!(encounter, Some(Ulid::from_u128(21)));
+                assert_eq!(side.as_deref(), Some("Hero"));
+                assert_eq!(seed, 12);
+            }
+            other => panic!("expected play command: {other:?}"),
+        }
+        match parse_args(&args(&["play", "--campaign", root])) {
+            Ok(Command::Play {
+                encounter,
+                side,
+                seed,
+                ..
+            }) => {
+                assert_eq!(encounter, None);
+                assert_eq!(side, None);
+                assert_eq!(seed, 0);
+            }
+            other => panic!("expected play command: {other:?}"),
+        }
+        for bad in [
+            vec!["play"],
+            vec!["play", "--campaign", root, "--seed", "x"],
+            vec!["play", "--campaign", root, "--encounter", "nope"],
+            vec!["play", "--campaign", root, "--side"],
+            vec!["play", "--campaign", root, "extra"],
+            vec!["play", "--campaign", root, "--campaign", root],
+        ] {
+            assert!(
+                matches!(parse_args(&args(&bad)), Err(CliError::Usage(_))),
+                "{bad:?} must be usage"
+            );
+        }
+    }
+
+    #[test]
     fn replay_defaults_golden_to_sibling() {
         let command = parse_args(&args(&["replay", "run/replay_basic.replay"])).expect("parses");
         match command {
@@ -2622,7 +2800,8 @@ mod tests {
             | Command::Fmt { .. }
             | Command::Lock { .. }
             | Command::Run { .. }
-            | Command::Demo { .. } => panic!("expected replay"),
+            | Command::Demo { .. }
+            | Command::Play { .. } => panic!("expected replay"),
         }
     }
 
@@ -2647,7 +2826,8 @@ mod tests {
             | Command::Fmt { .. }
             | Command::Lock { .. }
             | Command::Run { .. }
-            | Command::Demo { .. } => panic!("expected replay"),
+            | Command::Demo { .. }
+            | Command::Play { .. } => panic!("expected replay"),
         }
     }
 
