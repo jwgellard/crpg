@@ -26,7 +26,11 @@ cover scaffolding, introspection, canonical formatting, package locking, and
 the bounded hash harness, each with the same `0/1/2` buckets. The terminal
 combat viewer is live (T145, 2026-11-01): `crpgc demo <replay> --campaign
 <dir> [--delay-ms N]` plays a combat replay through the private adapter and
-prints the fight to stdout. Every other
+prints the fight to stdout. Playable terminal combat is live (T146,
+2026-11-01): `crpgc play --campaign <dir> [--encounter <ulid>] [--side
+<name>] [--seed N]` fights one encounter where the person chooses each
+move from `legal_actions` on their side and a fixed rule plays the rest.
+Every other
 subcommand is planned (the T013 parser decision — hand-rolled `args_os` with
 private per-command parsers, no parser library — now applies crate-wide).
 
@@ -97,6 +101,14 @@ file it there, do not reach around.
   round/turn/death lines, and a summary. It owns presentation and the name
   tables it resolves from campaign documents; it owns no rules, RNG, replay
   ordering, or sim state.
+- **`play` — playable terminal combat (T146).** `pub(crate) fn run` loads the
+  campaign, binds its first (or named) encounter through the private
+  adapter's `start`, then loops over the active combatant: a player-side turn
+  prints the round, everyone's health, and the numbered `legal_actions` and
+  reads one line from stdin; every other side takes the first listed attack
+  on a living opponent, else the first listed action. Every change goes
+  through `perform_action`. Presentation is `demo`'s `Show`, reused, so both
+  commands print the same header, action, turn, death, and summary blocks.
 
 ## CLI contract (T009b)
 
@@ -326,6 +338,56 @@ Readings fixed by this task:
   byte-deterministic for a fixed replay and campaign. An application failure
   after the first block leaves that output on stdout before the exit-1 line.
 
+## CLI contract (T146 `play`)
+
+```
+crpgc play --campaign <campaign-root> [--encounter <ulid>] [--side <name>] [--seed N]
+
+  --campaign <dir>  campaign root, the same value `replay --campaign` takes.
+                    Required.
+  --encounter <id>  encounter to fight. Default: the first encounter document
+                    in source-path (document) order.
+  --side <name>     the person's side. Default: the side of the first
+                    combatant in the encounter.
+  --seed N          ASCII-decimal RNG seed. Default: 0.
+
+exit 0  the fight ended (demo's summary printed) or the person quit (`Quit.`).
+exit 1  a campaign failure `crpgc replay` reports (collection, engine/load,
+        semantic findings), or a campaign with no encounter document.
+exit 2  usage: missing/duplicate/unknown flags, extra positionals, a
+        malformed --encounter ULID, a non-decimal --seed, an --encounter
+        naming no encounter document, or a --side no combatant has.
+```
+
+`play` adds no rules: every offered choice is `crpg_sim::legal_actions` in
+its returned order, and every change goes through
+`crpg_sim::perform_action` by way of the private adapter's `perform`. It
+reuses `demo`'s `Show` for the header, action, turn, death, and summary
+blocks (only visibility moved in T146) and the adapter's `start` for the
+same encounter binding the `init` payload performs; no sim or data API was
+added. A player turn prints the round (one-based, as `demo` does), the
+acting combatant, everyone's health, the numbered options by ability and
+target name, and `q` to quit; a number in range performs that option, and
+anything else prints one line naming the valid range and reads again with
+the world unchanged. On every other side's turn the computer takes the
+first listed attack whose target is a living opponent, else the first
+listed action. `q`, end of stdin, and unreadable stdin print `Quit.` and
+exit 0 without a summary.
+
+Readings fixed by this task:
+
+- **Document order** is the collector's `SourcePath` order, the order
+  `LoadedCampaign.documents` iterates.
+- **Unknown side** is a usage error even though it can only be detected
+  after the campaign loads and the encounter starts; campaign failures keep
+  their exit-1 precedence.
+- **A campaign with no encounter document** is the domain failure replay
+  reports for an invalid campaign (exit 1), not usage. An `--encounter` that
+  parses but names no encounter document is usage (exit 2).
+- **Output is `demo`'s**, block for block, because both commands drive the
+  same `Show`; the computer's turns print the same action and aftermath
+  blocks without a prompt.
+
 ## Today versus planned
 
 | Exists (T009b/T011b/T012b/T013) | Planned (owner) |
@@ -336,6 +398,7 @@ Readings fixed by this task:
 | `crpgc migrate` thin wrapper (T012b): explicit save, preflight plus bounded rewrite, data-golden tests | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | `crpgc new`/`schema`/`explain`/`fmt`/`lock`/`run` thin wrappers (T013): explicit-identity scaffolds, data-generated schemas, data-owned introspection reports, canonical check/save, flat-catalog lock adapter, bounded no-op harness sampling | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | `crpgc demo` terminal viewer (T145): replay played through testkit and the private adapter, document-resolved names, streamed blocks, summary | Spec §24 subcommands (`pack`, `diff`) as their specs land |
+| `crpgc play` playable terminal combat (T146): the person's side chooses from `legal_actions`, the computer attacks from the same list, shared demo blocks and summary | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | Crate-opening docs (arch doc + AGENTS.md) | Spec §24 subcommands (`pack`, `diff`) as their specs land |
 | Verify-only replay gate on ADR-0012 targets | `crpgc` in product/driver roles once server capabilities exist (E020) |
 
@@ -897,3 +960,4 @@ network-dependent CI step.
 - 2026-10-16 (UTC) · opencode-go/beam-free + A0-8 · Absorbed the detailed contracts, per-subcommand invariants, second-ruleset proof, and command-specific traps moved out of the trimmed AGENTS.md; no information removed.
 - 2026-10-16 (UTC) · claude-code/opus-5.5 + A0-8 review fix · Restored four facts the trim dropped (replay exit codes as a stable CI-facing contract; validate usage errors, its second fixed-text internal failure, and its three exit buckets), found by a Beam review and a keyword check.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T145 · Documented the terminal demo contract (required `--campaign`, streamed blocks, replay-identical errors, locale-resolved names, faction-else-creature sides, one-based round display) and the additive `CombatAdapter::step` observation, so the viewer cannot drift into a second rules or replay path.
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T146 · Documented `play` as a chooser over `legal_actions`/`perform_action` that reuses `demo`'s `Show` and the adapter's `start`/`perform`, with its exit buckets and the document-order and unknown-side readings, so the first playable command cannot become a second rules path.

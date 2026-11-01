@@ -1,4 +1,5 @@
-//! Private combat intents for `crpgc replay --campaign` (T016d, T017f).
+//! Private combat intents for `crpgc replay --campaign` (T016d, T017f) and
+//! `crpgc play` (T146).
 //!
 //! The caller-owns-payload rule means this crate decides what a combat
 //! payload means. This module decodes the version-1 grammar
@@ -8,6 +9,12 @@
 //! decode and bind glue only; combat semantics stay in `crpg-sim`, replay
 //! semantics stay in `crpg-testkit`, and validation semantics stay in
 //! `crpg-data`. Nothing outside this crate may import it.
+//!
+//! `play` has no payloads: it asks `crpg_sim::legal_actions` for the options
+//! and calls [`CombatAdapter::perform`], which performs the same identity
+//! binding and reports the same [`Applied`] observation as the payload path.
+//! Starting the encounter goes through [`CombatAdapter::start`], the same
+//! spec assembly and binding assertions the `init` payload uses.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -73,6 +80,65 @@ impl CombatAdapter {
             entities: BTreeMap::new(),
             initialized: false,
         }
+    }
+
+    /// Binds and publishes `encounter` in `world`, exactly as the `init`
+    /// payload does, and records the placement-to-runtime binding.
+    ///
+    /// `play` uses this instead of a payload; the assertions are the same
+    /// ones replay depends on, so a terminal fight starts over content that
+    /// the goldens already pin.
+    pub(crate) fn start(&mut self, world: &mut World, encounter: Ulid) -> Result<(), String> {
+        self.apply_init(world, encounter)
+    }
+
+    /// Performs one already-listed action and reports the same observation
+    /// [`Self::step`] reports for a decoded payload.
+    ///
+    /// `play` obtains `action` from [`crpg_sim::legal_actions`], so this adds
+    /// no rule: the controller still revalidates, and the adapter only maps
+    /// runtime entities back to authored placements for printing. A `Stop`
+    /// action is not produced by a turn-based encounter and reports the
+    /// controller's own rejection; this method invents nothing.
+    pub(crate) fn perform(
+        &mut self,
+        world: &mut World,
+        action: &crpg_sim::CombatAction,
+    ) -> Result<Applied, String> {
+        if !self.initialized {
+            return Err("combat not initialized".to_string());
+        }
+        let actor = match *action {
+            crpg_sim::CombatAction::UseAbility { actor, .. }
+            | crpg_sim::CombatAction::EndTurn { actor }
+            | crpg_sim::CombatAction::Stop { actor } => actor,
+        };
+        let actor_placement = self.placement_of(actor)?;
+        let outcome = crpg_sim::perform_action(world, action)
+            .map_err(|error| format!("play failed: {error}"))?;
+        match *action {
+            crpg_sim::CombatAction::UseAbility {
+                ability, target, ..
+            } => Ok(Applied::Attack {
+                actor: actor_placement,
+                ability,
+                target: self.placement_of(target)?,
+                target_entity: target,
+                outcome,
+            }),
+            crpg_sim::CombatAction::EndTurn { .. } => Ok(Applied::End {
+                actor: actor_placement,
+            }),
+            crpg_sim::CombatAction::Stop { .. } => Err("play failed: unexpected stop".to_string()),
+        }
+    }
+
+    /// Resolves one bound runtime entity back to its authored placement.
+    fn placement_of(&self, entity: EntityId) -> Result<Ulid, String> {
+        self.entities
+            .iter()
+            .find_map(|(placement, bound)| (*bound == entity).then_some(*placement))
+            .ok_or_else(|| format!("unknown runtime identity: {entity:?}"))
     }
 
     /// Decodes one payload and executes only the public sim operation.

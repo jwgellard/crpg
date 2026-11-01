@@ -1,4 +1,5 @@
-//! `crpgc demo` — the terminal combat viewer (T145).
+//! `crpgc demo` — the terminal combat viewer (T145), plus the block printer
+//! `crpgc play` (T146) reuses.
 //!
 //! Reads a combat replay through `crpg-testkit` (`read_replay`/`play_replay`,
 //! so validation, input ordering, and the tick interleaving stay there),
@@ -6,6 +7,11 @@
 //! the fight as it happens. It is a viewer: no rules, no RNG, no replay
 //! semantics, and no sim state live here. Every printed fact is read from a
 //! campaign document or from existing public `crpg-sim` API.
+//!
+//! [`Show`] is the shared presentation: `demo` drives it from replay payloads
+//! and `play` from chosen legal actions, so both commands print byte-identical
+//! header, action, turn, death, and summary blocks. Only visibility moved for
+//! T146; demo's bytes are unchanged.
 //!
 //! Output is streamed and flushed per block so `--delay-ms` lets a person
 //! follow along; the bytes are deterministic for a fixed replay and campaign.
@@ -57,9 +63,8 @@ pub(crate) fn run(
         Ok(replay) => replay,
         Err(error) => return Outcome::cli_error(&crate::CliError::Replay(error)),
     };
-    let names = Names::from_loaded(&loaded);
-    let show = Rc::new(RefCell::new(Show::new(
-        names,
+    let show = Rc::new(RefCell::new(Show::from_loaded(
+        &loaded,
         Duration::from_millis(delay_ms),
     )));
     let shared = Rc::clone(&show);
@@ -240,7 +245,10 @@ struct Health {
 
 /// The printed show: name tables plus the facts the summary needs after
 /// `play_replay` has dropped its world.
-struct Show {
+///
+/// `demo` and `play` share it: names and sides resolve from campaign
+/// documents, and each printed block is flushed as it is produced.
+pub(crate) struct Show {
     names: Names,
     delay: Duration,
     initialized: bool,
@@ -271,8 +279,31 @@ impl Show {
         }
     }
 
+    /// Builds an uninitialized show whose names resolve against `loaded`.
+    ///
+    /// Shared by `demo` and `play`; the caller owns the pause (only `demo`
+    /// has a `--delay-ms` flag).
+    pub(crate) fn from_loaded(loaded: &LoadedCampaign, delay: Duration) -> Self {
+        Self::new(Names::from_loaded(loaded), delay)
+    }
+
+    /// One combatant's display name for its authored placement.
+    pub(crate) fn name(&self, placement: Ulid) -> String {
+        self.names.combatant(placement).0
+    }
+
+    /// The side a combatant's authored placement belongs to.
+    pub(crate) fn side(&self, placement: Ulid) -> String {
+        self.names.combatant(placement).1
+    }
+
+    /// One ability's display name.
+    pub(crate) fn ability_name(&self, ability: Ulid) -> String {
+        self.names.ability(ability)
+    }
+
     /// Writes one block to stdout and flushes it.
-    fn emit(&self, text: &str) {
+    pub(crate) fn emit(&self, text: &str) {
         if text.is_empty() {
             return;
         }
@@ -289,7 +320,7 @@ impl Show {
     }
 
     /// Prints the campaign and combatant header after the encounter starts.
-    fn header(&mut self, world: &World) {
+    pub(crate) fn header(&mut self, world: &World) {
         let campaign = self.names.campaign();
         let encounter = world.combat().map_or_else(String::new, |combat| {
             self.names.encounter(combat.definition.encounter)
@@ -310,7 +341,7 @@ impl Show {
     }
 
     /// Prints one action block for an ability use.
-    fn attack(
+    pub(crate) fn attack(
         &mut self,
         world: &World,
         actor: Ulid,
@@ -358,7 +389,7 @@ impl Show {
     }
 
     /// Prints one block for a completed turn.
-    fn end_turn(&mut self, actor: Ulid) {
+    pub(crate) fn end_turn(&mut self, actor: Ulid) {
         self.actions += 1;
         let (actor_name, _) = self.names.combatant(actor);
         let text = format!("[{}] {actor_name} | ends turn\n", self.actions);
@@ -367,7 +398,7 @@ impl Show {
     }
 
     /// Prints the death, round-change, and turn-change lines after one step.
-    fn after(&mut self, world: &World) {
+    pub(crate) fn after(&mut self, world: &World) {
         let previous_round = self.round;
         let previous_active = self.active;
         let previous_dead: Vec<Ulid> = self
@@ -432,7 +463,7 @@ impl Show {
     }
 
     /// Prints the closing summary from the last observed snapshot.
-    fn summary(&self) {
+    pub(crate) fn summary(&self) {
         let mut text = String::from("== Summary ==\n");
         text.push_str(&format!("Rounds played: {}\n", self.round + 1));
         text.push_str("Final health:\n");
