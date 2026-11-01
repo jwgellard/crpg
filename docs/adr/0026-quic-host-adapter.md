@@ -158,6 +158,28 @@ there; the native Windows/MSVC run is CI's and was pending at filing.
 
 ## Supersession and corrections
 
+## Addendum — T024h2 (2026-11-01)
+
+`crpg-lane0/2` bindings are snapshot sessions (T024h S§15). Items 5, 7, 9
+and 10 read as follows for them; item 5's `try_send` is
+`try_send_channel` on the entry's channel, and the acknowledgement is by
+delivery ordinal, live, departed and at shutdown alike.
+
+- **Item 7.** Narrowing fences `/1` bindings only; `/2` bindings narrow by
+  snapshot (ADR-0031). A narrow `set_invitation_grants` on a live `/2`
+  binding calls `Host::set_grants`, stores the grants and returns
+  `GrantChange::SnapshotStaged`; the connection stays open.
+- **Items 5, 9 and 10.** On `/2`, delivery goes out with
+  `try_send_channel` on each entry's `DeliveryKind` channel and is
+  acknowledged through the last accepted entry's ordinal. The departing
+  peer is acknowledged through the last taken ordinal (never
+  `acked + n`), and the shutdown flush uses the same channel rule and
+  acknowledgement. Draining, retiring connections and inbound reads use
+  `try_recv_channel`, so a `Transfer` frame at the head is neither lost
+  nor left to leak the transport record.
+
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Appended the `/2` addendum to items 5, 7, 9 and 10, recording per-kind narrowing and channel-plus-ordinal delivery without rewriting the original decision.
+
 ## Agent log
 
 - 2026-10-06 (UTC) · claude-code + T023b · Filed ADR-0026 Accepted, as the approved contract (B§16 Q1) requires, recording the adapter choices T025b and T040 inherit: the invitation principal, constant-time matching, newest-wins supersession, acknowledge on hand-off, the one-frame hold, `SessionFenced` fencing, the slow-consumer fence, drain-then-unbind and the D02 shutdown order.

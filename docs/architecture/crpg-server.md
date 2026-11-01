@@ -215,13 +215,21 @@ the T024 S§5.2 upstream set (`Published`, `Resync`), spends the shared
 intent frame and byte buckets before decoding, and returns a
 `TransferDisposition` rather than an error for refusals.
 
-The QUIC adapter routes by kind, never by reading bytes: `Channel::Lane0`
-frames go through `ingest`, `Channel::Transfer` frames through
-`ingest_transfer`, and delivery sends `Delta` on `Lane0` and `Transfer`
-on `Transfer`, acknowledging the last accepted ordinal. `/1` connections
-carry only lane-0 frames and keep today's behaviour. The `/2` adapter is
-T024h2; T024h1 changes no adapter behaviour and `/1` narrowing still
-fences (ADR-0026).
+The QUIC adapter routes by kind, never by reading bytes. A hello on a
+`crpg-lane0/2` connection calls `bind_snapshot_peer` (`BindSnapshotPeer`);
+a `/1` connection calls `bind_peer` as before. Inbound reads use
+`try_recv_channel`: `Channel::Lane0` frames go through `ingest`,
+`Channel::Transfer` frames through `ingest_transfer`, and the unreachable
+`Channel::Resume` arm counts a refusal and fences. Delivery sends each
+entry's `DeliveryKind` on `Lane0` or `Transfer` with `try_send_channel`
+and acknowledges the last accepted ordinal; a departed peer and the
+shutdown flush do the same. Retiring connections drain every channel, so
+a transfer frame cannot leak the transport record. A narrowing
+`set_invitation_grants` on a live `/2` binding stores the grants and
+returns `GrantChange::SnapshotStaged`; on `/1` it still fences
+(`Narrowed`). `QuicHost::start` takes a server from `QuicServer::bind` or
+`bind_dual`, never `bind_resumable` (T025b lifts this). `/1` connections
+carry only lane-0 frames and keep T023b's behaviour and trace.
 
 ## Gate 10 (save/load equivalence)
 
@@ -261,8 +269,8 @@ with T040/T041.
   ([ADR-0026](../adr/0026-quic-host-adapter.md)). T040 drives `QuicHost`
   from the dedicated binary (pump cadence, clock conversion, credentials,
   certificate). T025b builds resume on its newest-wins supersession and
-  fresh-epoch rule. T024 adds snapshot resync, which can make narrowing
-  seamless.
+  fresh-epoch rule. T024h's `/2` snapshot sessions make narrowing seamless
+  instead of fencing.
   T025b inherits the fresh-session restart rule — a world save does not
   deduplicate commands across restarts. T027b/c supply production grant
   values for the existing shapes.
@@ -280,3 +288,4 @@ with T040/T041.
 - 2026-10-06 (UTC) · claude-code + T023b · Added the `quic` adapter (pump phases, connection-to-binding mapping), the `crpg-net-quic` edge in the dependency diagram, its consumers, and a "planned and not here" list without QUIC endpoints, so the doc describes the transport adapter the crate now has.
 - 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T132 (D29g/h/i) · Recorded that the two unreachable v1 host-wide caps are defence in depth, so nobody counts them as tested.
 - 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session section (session-kind table, ordinal ledger, staging steps, adapter routing), replaced the blanket narrowing reset with the per-kind rule, and removed snapshot transfer from the planned list, so the doc describes the sender T024h1 landed.
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Updated the adapter routing to the as-built `/2` path (framing bind, channel reads and writes, ordinal acks, retiring drain, shutdown flush, `bind_dual` precondition), so the doc describes the adapter rather than calling it a future task.
