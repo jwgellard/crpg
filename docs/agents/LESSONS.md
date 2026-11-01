@@ -12,6 +12,7 @@ This file keeps one line per lesson with ID, evidence, and promotion.
 | L6 | `verify_task.py` passed a test file of 31 empty `fn tN() {}` stubs that the worker reported as "31 passed" (session 21, T024 attempt 1 on Beam). | Beam may report empty test stubs as passing: check named tests and assertion counts before trusting a pass (session 21, T024 attempt 1 on Beam). | `promoted: verify_task.py asserts check (A0-14)` |
 | L7 | Beam's first-pass review of T024 said ready-for-pr; the Claude core review then found six untested contract behaviours (items 5–10 of `.agents/briefs/T024-tests-notes-3.md`). | A Beam ready-for-pr is not test-strength evidence (session 22, T024 Claude core review, Sonnet 5.5, ~216k tokens, VERDICT fix). | `not yet promoted` |
 | L8 | Beam doc trims delete or reorder prior agent-log entries, drop blocks while reporting "no info lost", and leave heredoc remnants (`EOF`, `PY`, `"`) or a corrupted `·`; docsig does not catch a deleted prior entry. | A0-8-sim attempt 2, A0-8-data attempt 1, A0-8-net attempt 1, A0-8-testkit, T024h-facts. | `docsig part promoted (A0-15)`, A0-16 (`lost.py`); meanwhile briefs say "never delete, move or reorder a dated agent-log line; use the file edit tool, not heredocs", and the manager runs `lost.py` on every trim. |
+| L9 | Check that a task file does not exist before writing it. | Manager overwrote `tasks/T144.md` (session 28), restored from git. | `not yet promoted` |
 
 ## Agent log
 
@@ -25,3 +26,4 @@ This file keeps one line per lesson with ID, evidence, and promotion.
 - 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 attempt 2 · Kept L6 promoted: refined the `asserts` check to accept same-file asserting helpers (transitively), `macro_rules!` delegates, and non-empty `proptest!` properties after the attempt-1 check flagged 26 legitimate tests.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-13 · Promoted L5 to the landed `oc.py` attempt claim, so the parallel-attempt-collision lesson points at its enforcement.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-15 · Marked L8's docsig part promoted: `verify_task.py` now keeps prior entries in order and catches bad separators and heredoc debris, while A0-16 still owns lost-text detection.
+- 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Appended L9 (check a task file does not exist before writing it), from the session 28 `tasks/T144.md` overwrite restored from git.

@@ -407,6 +407,7 @@ spec/architect slot; "Impl" is the two implementer slots.
 | **7** | T026p (S), T037, T040 (S), T056 | T046, T047 | Accept the bridge ADR; godot pin (D27d) |
 | **8** | T041 (M4 exit), T046, T047 (S) | M5/M6 contracts | **M4 exit review**; H-unsafe |
 | **9+** | M5, M5′ and M6 packages as their contracts clear | ahead by one wave | H-play, H-author |
+| Demo-first (user, 2026-11-01) | T027b, T046, T045, T047, T048, cut-down T051 | — | ahead of movement, nav and the rest of M4 |
 | later | M7 → M13 in milestone order | — | MVP sign-off, H-legal, H-release |
 
 Filler for an idle implementer slot: T044 workloads, T042, T075, and per-crate
@@ -448,3 +449,4 @@ estimates slip.
 - 2026-10-16 (UTC) · claude-code + D28l · Made rule-defining an authoring task and both time modes a design input: T099 gains ruleset and pause/mode angles, T108 (kernel range and time model) gates T034, T109 is a third ruleset family, and T110 places the rules editor after M6.
 - 2026-10-16 (UTC) · claude-code + D28m · Added the four further gaps the user approved: a custom-content angle in T099 and T101, ruleset-driven player UI in T104 and T108 (gating T051), module updates versus player saves (T111), mod combination in T107, and an automated module playtester (T112).
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Re-scoped T109 to data-only after T136/T137 and listed the ten ADR-0029 follow-on contract packages (T134–T143); no contract approved.
+- 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Added the user-ordered demo-first row above the later row (T027b, T046, T045, T047, T048, cut-down T051 ahead of movement, nav and the rest of M4).
