@@ -2,7 +2,8 @@
 #![warn(missing_docs)]
 //! `crpgc` — the campaign toolchain CLI: validate, migrate, replay, and the
 //! T013 scaffolding/introspection commands (`new`, `schema`, `explain`,
-//! `fmt`, `lock`, `run`). No Godot, no rendering. T009b shipped the `replay`
+//! `fmt`, `lock`, `run`), plus T145's terminal combat viewer (`demo`). No
+//! Godot, no rendering. T009b shipped the `replay`
 //! subcommand; T011b adds the thin `validate` wrapper over `crpg-data`
 //! validation; T012b adds the thin `migrate` explicit-save wrapper over T012a
 //! migration-aware loading and the canonical writer. T013 retains and
@@ -11,6 +12,7 @@
 
 mod apply;
 mod combat_apply;
+mod demo;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -47,6 +49,10 @@ const EXPLAIN_USAGE: &str = "crpgc explain <id> [--root <campaign-root>]";
 const FMT_USAGE: &str = "crpgc fmt [<campaign-root>] [--check]";
 const LOCK_USAGE: &str = "crpgc lock [<campaign-root>] --catalog <catalog-path>";
 const RUN_USAGE: &str = "crpgc run --ticks N --hash-every M [--seed S]";
+
+/// Usage line printed for the `demo` subcommand, kept in sync with the
+/// interface block in `tasks/T145.md`.
+const DEMO_USAGE: &str = "crpgc demo <replay> --campaign <campaign-root> [--delay-ms N]";
 
 /// Exact stderr bytes when the compile-time engine version does not parse as
 /// semver for combat `replay --campaign`. A release-process bug, never user
@@ -133,6 +139,11 @@ enum Command {
         ticks: usize,
         hash_every: usize,
         seed: u64,
+    },
+    Demo {
+        replay_path: PathBuf,
+        campaign_root: PathBuf,
+        delay_ms: u64,
     },
 }
 
@@ -243,6 +254,7 @@ fn parse_args(args: &[OsString]) -> Result<Command, CliError> {
         Some("fmt") => parse_fmt(&args[1..]),
         Some("lock") => parse_lock(&args[1..]),
         Some("run") => parse_run(&args[1..]),
+        Some("demo") => parse_demo(&args[1..]),
         Some(other) => Err(CliError::Usage(format!("unknown subcommand '{other}'"))),
         None => Err(CliError::Usage(format!(
             "unknown subcommand '{}'",
@@ -750,6 +762,75 @@ fn parse_run(args: &[OsString]) -> Result<Command, CliError> {
         ticks: ticks as usize,
         hash_every: hash_every as usize,
         seed: seed.unwrap_or(0),
+    })
+}
+
+/// Parses the `demo` subcommand: exactly one replay path plus a required
+/// `--campaign` and an optional `--delay-ms N` defaulting to zero, each at
+/// most once and with separate-token values. A flag in first position is a
+/// usage error, as in `replay`. The delay is ASCII decimal only: signs,
+/// whitespace, hex, separators, and overflow are usage errors before any
+/// filesystem work.
+fn parse_demo(args: &[OsString]) -> Result<Command, CliError> {
+    let replay = args
+        .first()
+        .ok_or_else(|| CliError::Usage(format!("missing <replay>; try '{DEMO_USAGE}'")))?;
+    if let Some(flag) = flag_text(replay) {
+        return Err(CliError::Usage(format!(
+            "unexpected flag '{flag}'; expected <replay>"
+        )));
+    }
+    let mut campaign: Option<&OsString> = None;
+    let mut delay_ms: Option<u64> = None;
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match flag_text(arg) {
+            Some("--campaign") => {
+                let value = iter
+                    .next()
+                    .filter(|next| flag_text(next).is_none())
+                    .ok_or_else(|| CliError::Usage("--campaign needs a value".to_string()))?;
+                if campaign.replace(value).is_some() {
+                    return Err(CliError::Usage(
+                        "--campaign given more than once".to_string(),
+                    ));
+                }
+            }
+            Some("--delay-ms") => {
+                let value = iter
+                    .next()
+                    .filter(|next| flag_text(next).is_none())
+                    .ok_or_else(|| CliError::Usage("--delay-ms needs a value".to_string()))?;
+                if delay_ms.is_some() {
+                    return Err(CliError::Usage(
+                        "--delay-ms given more than once".to_string(),
+                    ));
+                }
+                let text = value
+                    .to_str()
+                    .ok_or_else(|| CliError::Usage("--delay-ms needs a number".to_string()))?;
+                delay_ms = Some(
+                    parse_run_number(text)
+                        .map_err(|_| CliError::Usage("--delay-ms needs a number".to_string()))?,
+                );
+            }
+            Some(other) => {
+                return Err(CliError::Usage(format!("unknown flag '{other}'")));
+            }
+            None => {
+                return Err(CliError::Usage(format!(
+                    "unexpected argument '{}'",
+                    arg.to_string_lossy()
+                )));
+            }
+        }
+    }
+    let campaign = campaign
+        .ok_or_else(|| CliError::Usage(format!("missing --campaign; try '{DEMO_USAGE}'")))?;
+    Ok(Command::Demo {
+        replay_path: PathBuf::from(replay),
+        campaign_root: PathBuf::from(campaign),
+        delay_ms: delay_ms.unwrap_or(0),
     })
 }
 
@@ -2464,6 +2545,16 @@ fn run(command: Command) -> Outcome {
             hash_every,
             seed,
         } => run_run(ticks, hash_every, seed),
+        Command::Demo {
+            replay_path,
+            campaign_root,
+            delay_ms,
+        } => demo::run(
+            &replay_path,
+            &campaign_root,
+            delay_ms,
+            env!("CARGO_PKG_VERSION"),
+        ),
     }
 }
 
@@ -2530,7 +2621,8 @@ mod tests {
             | Command::Explain { .. }
             | Command::Fmt { .. }
             | Command::Lock { .. }
-            | Command::Run { .. } => panic!("expected replay"),
+            | Command::Run { .. }
+            | Command::Demo { .. } => panic!("expected replay"),
         }
     }
 
@@ -2554,7 +2646,8 @@ mod tests {
             | Command::Explain { .. }
             | Command::Fmt { .. }
             | Command::Lock { .. }
-            | Command::Run { .. } => panic!("expected replay"),
+            | Command::Run { .. }
+            | Command::Demo { .. } => panic!("expected replay"),
         }
     }
 
