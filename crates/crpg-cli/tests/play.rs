@@ -656,6 +656,71 @@ fn q_and_end_of_stdin_quit_cleanly() {
     }
 }
 
+/// Behaviour 6: the Round and Turn lines never print `-` and never repeat a
+/// value that was already printed, while the first real lines are present.
+///
+/// Collects the announcement lines in printed order: the same-kind sequence
+/// must not repeat consecutively (today a prompt reprints the Round and Turn
+/// lines the computer's step just printed), and the whole stream must not
+/// contain adjacent duplicates. With two combatants whose names differ, a
+/// repeated Turn line really is a duplicate.
+#[test]
+fn round_and_turn_lines_print_only_on_change() {
+    for slug in FIXTURES {
+        let stdout = play_stdout(slug, &[], &ones());
+        let names = header_names(&stdout);
+        let mut rounds: Vec<&str> = Vec::new();
+        let mut turns: Vec<&str> = Vec::new();
+        for line in stdout.lines() {
+            if line.starts_with("-- Round ") && line.ends_with(" --") {
+                rounds.push(line);
+            } else if let Some(name) = line.strip_prefix("Turn: ") {
+                turns.push(name);
+            }
+        }
+        // Positive control: the first real Round and Turn lines are present.
+        assert_eq!(
+            rounds.first().copied(),
+            Some("-- Round 1 --"),
+            "{slug} prints round one first: {stdout}"
+        );
+        let first_turn = turns
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("{slug} prints a Turn line: {stdout}"));
+        assert!(
+            names.iter().any(|name| name == first_turn),
+            "{slug} first Turn line names a combatant: {first_turn:?} in {stdout}"
+        );
+        assert!(
+            !turns.contains(&"-"),
+            "{slug} prints no Turn: - line: {stdout}"
+        );
+        // No same-kind line repeats the value printed before it.
+        for pair in rounds.windows(2) {
+            assert_ne!(pair[0], pair[1], "{slug} repeats a Round line: {stdout}");
+        }
+        for pair in turns.windows(2) {
+            assert_ne!(pair[0], pair[1], "{slug} repeats a Turn line: {stdout}");
+        }
+        // No duplicate survives in the announcement stream either.
+        let mut last_announcement: Option<String> = None;
+        for line in stdout.lines() {
+            let is_announcement = (line.starts_with("-- Round ") && line.ends_with(" --"))
+                || line.starts_with("Turn: ");
+            if !is_announcement {
+                continue;
+            }
+            assert_ne!(
+                Some(line),
+                last_announcement.as_deref(),
+                "{slug} repeats an announcement line: {stdout}"
+            );
+            last_announcement = Some(line.to_string());
+        }
+    }
+}
+
 /// The test's determinism clause: the same stdin and seed give byte-identical
 /// stdout, while at least one of seeds 1..=9 differs from seed 0.
 #[test]

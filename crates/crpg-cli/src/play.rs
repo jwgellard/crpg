@@ -112,7 +112,7 @@ pub(crate) fn run(
             Err(error) => return failure(&error.to_string()),
         };
         let chosen = if show.side(actor_placement) == player_side {
-            match prompt(&mut show, &world, actor_placement, &options) {
+            match prompt(&mut show, &world, &options) {
                 Prompt::Action(index) => options[index],
                 Prompt::Quit => {
                     show.emit("Quit.\n");
@@ -134,13 +134,13 @@ pub(crate) fn run(
 
 /// Reads one choice for the acting player-side combatant.
 ///
-/// The block names the round, the acting combatant, and everyone's health,
-/// then the `legal_actions` list in returned order by ability and target
-/// name. Invalid input prints one line naming the valid range and asks again
-/// without touching the world.
-fn prompt(show: &mut Show, world: &World, actor: Ulid, options: &[CombatAction]) -> Prompt {
-    let round = world.combat().map_or(0, |combat| combat.round) + 1;
-    let mut text = format!("-- Round {round} --\nTurn: {}\n", show.name(actor));
+/// The block names the round and the acting combatant when either changed
+/// since the last line printed (never repeating a value), then everyone's
+/// health, then the `legal_actions` list in returned order by ability and
+/// target name. Invalid input prints one line naming the valid range and
+/// asks again without touching the world.
+fn prompt(show: &mut Show, world: &World, options: &[CombatAction]) -> Prompt {
+    let mut text = show.round_and_turn();
     for (_, combatant) in world.combatants().iter() {
         text.push_str(&format!(
             "  {} {}/{} hp\n",
