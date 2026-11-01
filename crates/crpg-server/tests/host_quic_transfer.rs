@@ -1398,7 +1398,14 @@ fn v2_held_lane0_frame_blocks_transfer_frames_behind_it() {
         })
         .expect("the held frame's ordinal");
 
-    // The transfer frame queues behind the held lane-0 frame.
+    // The transfer frame queues behind the held lane-0 frame. Count what the
+    // transport already holds so the wait can tell the new frame arrived; the
+    // held frame itself is no longer in the transport queue.
+    let conn = actor.conn;
+    let queued = qh
+        .connection_stats(conn)
+        .expect("actor connection")
+        .inbound_frames;
     let transfer = published(actor.epoch, 999);
     actor
         .quic
@@ -1406,44 +1413,57 @@ fn v2_held_lane0_frame_blocks_transfer_frames_behind_it() {
         .expect("transfer send");
     actor.sent.push(transfer);
     let transfer_ordinal = actor.sent.len() as u64;
+    until("transfer frame queued at the server", || {
+        qh.connection_stats(conn)
+            .is_some_and(|stats| stats.inbound_frames == queued + 1)
+    });
 
-    // While the lane-0 frame is held, no transfer frame is traced.
-    let report = pump(&mut qh, &mut clock);
-    assert!(!report
-        .calls
-        .iter()
-        .any(|call| matches!(call, HostCall::IngestTransfer { .. })));
-    assert!(report.calls.iter().any(|call| matches!(
-        call,
-        HostCall::Ingest { frame, result: crpg_server::host::IngestDisposition::Refused {
-            status: ReceiptStatus::Rejected(RejectionCode::QueueFull)
-        }, .. } if *frame == held_ordinal
-    )));
-
-    // Let the observer drain so admission can make room; the held frame then
-    // stages and the transfer frame is taken immediately after it.
-    let mut staged = None;
+    // While the lane-0 frame is held, no transfer frame is traced; once the
+    // held frame stages, the transfer follows it, in the same pump or a later
+    // one, never before. The loop's first pump runs only after the transfer is
+    // queued at the transport, so a transfer taken ahead of the hold cannot
+    // pass vacuously.
+    let mut staged = false;
+    let mut staged_report = None;
     let start = std::time::Instant::now();
-    while staged.is_none() {
+    while staged_report.is_none() {
         observer.read_available();
         actor.read_available();
         clock.advance(100);
         let report = qh.pump(clock.now()).expect("pump");
         let calls = &report.calls;
+        let ingest_at = calls.iter().position(|call| {
+            matches!(
+                call,
+                HostCall::Ingest {
+                    frame,
+                    result: crpg_server::host::IngestDisposition::Staged,
+                    ..
+                } if *frame == held_ordinal
+            )
+        });
         let transfer_at = calls.iter().position(|call| {
             matches!(call, HostCall::IngestTransfer { frame, .. } if *frame == transfer_ordinal)
         });
-        let ingest_at = calls.iter().position(
-            |call| matches!(call, HostCall::Ingest { frame, .. } if *frame == held_ordinal),
-        );
-        if let (Some(ingest_at), Some(transfer_at)) = (ingest_at, transfer_at) {
-            assert!(ingest_at < transfer_at, "IngestTransfer follows its Ingest");
-            staged = Some(report);
+        if let Some(transfer_at) = transfer_at {
+            assert!(
+                staged || ingest_at.is_some(),
+                "IngestTransfer while the lane-0 frame is held"
+            );
+            if let Some(ingest_at) = ingest_at {
+                assert!(ingest_at < transfer_at, "IngestTransfer follows its Ingest");
+            }
+            staged_report = Some(report);
+        } else if ingest_at.is_some() {
+            staged = true;
         }
-        assert!(start.elapsed() < DEADLINE, "deadline: held frame stages");
+        assert!(
+            start.elapsed() < DEADLINE,
+            "deadline: transfer follows its held Ingest"
+        );
         qh.wait(Duration::from_millis(5));
     }
-    let report = staged.expect("staged");
+    let report = staged_report.expect("staged");
     assert!(report.fences.is_empty());
 }
 
