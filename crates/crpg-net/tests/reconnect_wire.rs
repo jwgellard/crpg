@@ -2362,6 +2362,40 @@ fn rebind_keeps_floors_and_fails_closed() {
     assert_eq!(status.mode, GateMode::AwaitSnapshot);
     assert_eq!(expiring.staging_bytes(), 0);
 
+    // (g2) The sweep sees the clamped clock, not the raw one. The reachable
+    // state where the two differ is the saturating top of the clock: a
+    // transfer begun there has `deadline_ms == now_ms == u64::MAX`, so the
+    // clamped sweep expires it first and `discarded` is `None`, while the
+    // raw `0` would find nothing to sweep and discard `T9` in step 3.
+    let mut saturated = pool();
+    assert!(saturated.poll(u64::MAX).is_empty());
+    let s = saturated
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    let t9 = plan(E1, 9, 100, 0, 1, &body_n(1_000));
+    assert_eq!(
+        saturated.offer_transfer(s, &t9[0], 0),
+        Ok(TransferOutcome::Begun)
+    );
+    let status = saturated.status(s).expect("receiver exists");
+    assert_eq!(
+        status.in_flight.as_ref().map(|i| i.deadline_ms),
+        Some(u64::MAX)
+    );
+    assert_eq!(
+        saturated.rebind_receiver(s, 0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let status = saturated.status(s).expect("receiver exists");
+    assert!(status.in_flight.is_none());
+    assert_eq!(status.retired_through, 9);
+    assert_eq!(status.mode, GateMode::AwaitSnapshot);
+    assert_eq!(status.resync, None);
+    assert_eq!(saturated.staging_bytes(), 0);
+
     // (h) Negative control: remove-then-add loses both floors.
     let mut readded = pool();
     let first = readded

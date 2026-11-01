@@ -1079,7 +1079,7 @@ impl ReassemblyPool {
         id: ReceiverId,
         now_ms: u64,
     ) -> Result<Rebound, TransferError> {
-        let _ = self.sweep(now_ms);
+        let _ = self.sweep(now_ms.max(self.now_ms));
         let recv = self
             .receivers
             .get_mut(&id)
