@@ -833,6 +833,84 @@ fn a15_effects_at_release() {
         .is_empty());
 }
 
+/// A15's control, aimed at the write-back filter itself. The rollover removes
+/// lapsed attachments, a save carrying one does not load, and a duration is at
+/// least one round, so a lapsed attachment reaches `exit_record` only through
+/// saturation: at round `u32::MAX` a new attachment expires at `u32::MAX`.
+/// Control: the same script one round earlier stores the effect.
+#[test]
+fn a15_write_back_drops_lapsed_attachments() {
+    for (round, duration, expected) in [
+        (u32::MAX, 1, vec![]),
+        (u32::MAX, 3, vec![]),
+        (
+            u32::MAX - 1,
+            1,
+            vec![SuspendedEffect {
+                effect: id(501),
+                remaining_rounds: 1,
+            }],
+        ),
+    ] {
+        let mut fixture = Fixture::standard();
+        always_success(&mut fixture);
+        fixture.effects.insert(id(501), effect_501(duration));
+        edit_ability(&mut fixture, |ability| ability.effect = Some(id(501)));
+        let (world, ids) = fixture.start(3);
+        let mut world = with_json(&world, |save| save["combat"]["round"] = json!(round));
+        act(&mut world, ids[1], fixture.ability, ids[0]);
+        let attached = world.combatants().get(ids[0]).expect("A").attached();
+        assert_eq!(attached.len(), 1, "the effect is attached");
+        assert_eq!(attached[0].expires_round, round.saturating_add(duration));
+        let summary = end_encounter(&mut world).expect("releases");
+        assert_eq!(summary.round, round);
+        let stored = world.creatures().get(ids[0]).expect("record").suspended();
+        assert_eq!(stored, expected, "round {round}, duration {duration}");
+    }
+}
+
+/// B20: a history start journals `Spawned` for Spawn participants only, plus
+/// the initial `TurnStarted`; a release with write-back journals nothing.
+#[test]
+fn b20_history_journal_at_start_and_release() {
+    let fixture = Fixture::standard();
+    let mut history = HistoryWorld::new_in_area(5, fixture.area);
+    let a = fixture
+        .register_history(&mut history, fixture.placement_a)
+        .expect("A registers");
+    let registered = history.last_sequence();
+    assert_eq!(registered, 1, "registration journaled A's Spawned");
+
+    fixture.with_spec(|spec: &EncounterSpec<'_>| history.start_encounter(spec).expect("starts"));
+    let combatants = combatant_ids(history.world());
+    assert_eq!(combatants.len(), 2);
+    assert_eq!(combatants[0], a, "A enters under its own entity");
+    let b = combatants[1];
+    let active = history.world().combat().expect("combat").active;
+    assert_eq!(active, Some(b));
+    let page = history.read_after(registered, 16).expect("reads");
+    let payloads: Vec<HistoryEvent> = page
+        .iter()
+        .map(|envelope| envelope.payload.clone())
+        .collect();
+    assert_eq!(
+        payloads,
+        [
+            HistoryEvent::Spawned { entity: b },
+            HistoryEvent::TurnStarted { actor: b, round: 0 }
+        ],
+        "B spawns, A (an Enter participant) does not, then the first turn"
+    );
+
+    let journaled = history.last_sequence();
+    let pending = history.pending_len();
+    history.end_encounter().expect("releases");
+    assert_eq!(history.world().creatures().len(), 2, "write-back happened");
+    assert_eq!(history.last_sequence(), journaled);
+    assert_eq!(history.pending_len(), pending);
+    assert!(history.read_after(journaled, 16).expect("reads").is_empty());
+}
+
 /// A16 (B15): an entered participant's initiative bonus reads its record;
 /// a skipped participant draws nothing.
 #[test]
