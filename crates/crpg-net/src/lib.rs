@@ -37,5 +37,6 @@ pub mod protocol_resume;
 pub mod protocol_transfer;
 pub mod protocol_v2;
 pub mod reassembly;
+pub mod resume;
 pub mod sim;
 pub mod transport;

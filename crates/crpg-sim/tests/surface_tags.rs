@@ -1,8 +1,8 @@
 //! T137b tags (R12): the tag carriage gate, the union bound and its error.
 //!
-//! Creature tags are carried into combat state only in encounters whose
-//! referenced effects grant tags, so a content set without grants hashes
-//! exactly as before. The projection itself (placement tags plus unexpired
+//! Every combatant carries its creature's tags, sorted and distinct (T139
+//! D5); grants are carried on the effect definitions. The projection itself
+//! (placement tags plus unexpired
 //! grants) is pinned by the crate-private test in `combat.rs`.
 
 #[allow(dead_code)]
@@ -42,8 +42,8 @@ fn save(world: &World) -> Value {
     serde_json::to_value(world).expect("the world serializes")
 }
 
-/// R12 (B19): creature tags appear only with a granting effect, sorted and
-/// distinct; the grants are carried in authored order.
+/// R12 (B19): creature tags are carried with or without a granting effect,
+/// sorted and distinct; the grants are carried in authored order.
 #[test]
 fn tags_are_carried_only_with_a_granting_effect() {
     let mut fixture = Fixture::standard();
@@ -53,11 +53,17 @@ fn tags_are_carried_only_with_a_granting_effect() {
 
     // No effect at all: nothing is carried.
     let (world, ids) = start(&fixture, 1);
-    assert!(world.combatants().get(ids[0]).expect("A").tags().is_empty());
-    assert!(save(&world)["combatants"]
-        .to_string()
-        .find("tags")
-        .is_none());
+    assert_eq!(
+        world.combatants().get(ids[0]).expect("A").tags(),
+        ["ant", "mid", "zed"]
+    );
+    assert_eq!(
+        save(&world)["combatants"]
+            .to_string()
+            .matches("\"tags\"")
+            .count(),
+        2
+    );
 
     // An effect without grants: nothing is carried.
     attach_to_ability(
@@ -72,7 +78,10 @@ fn tags_are_carried_only_with_a_granting_effect() {
         ),
     );
     let (world, ids) = start(&fixture, 1);
-    assert!(world.combatants().get(ids[0]).expect("A").tags().is_empty());
+    assert_eq!(
+        world.combatants().get(ids[0]).expect("A").tags(),
+        ["ant", "mid", "zed"]
+    );
     assert!(!save(&world).to_string().contains("grants"));
 
     // A granting effect: the placement tags, sorted and distinct.
@@ -108,7 +117,7 @@ fn an_unreferenced_granting_effect_carries_nothing() {
     let stray = granting(151, &["stray"]);
     fixture.effects.insert(stray.id, stray);
     let (world, ids) = start(&fixture, 1);
-    assert!(world.combatants().get(ids[0]).expect("A").tags().is_empty());
+    assert_eq!(world.combatants().get(ids[0]).expect("A").tags(), ["ant"]);
     assert!(world
         .combat()
         .expect("encounter")
@@ -170,8 +179,7 @@ fn the_tag_union_is_bounded_at_the_kernel_limit() {
 }
 
 /// R12 (B21): `TooManyTags` follows the effect checks, so a duplicate
-/// modifier identity wins over it; the bound is a start check only for
-/// encounters that grant.
+/// modifier identity wins over it.
 #[test]
 fn too_many_tags_comes_after_the_effect_checks() {
     let full = names(1024);

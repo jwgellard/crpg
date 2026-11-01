@@ -99,6 +99,8 @@ Demote / promote (`MODELS.md` §4.1), in three lines:
 - Demote a model from a role when it fails 2 of its last 4 runs there (verify failure, review reject, or model-caused `no-edit`/`timeout`; `quota`/`402`/`locked` do not count); a first choice drops to second, a second drops to its tier list, twice demoted leaves the role.
 - Promote to first choice once it has at least 5 runs in the role and the best first-attempt pass rate (ties to cheaper, then faster); head-to-head runs on the same brief build the evidence.
 
+Session 28 (2026-11-01): MiMo-V2.6-Pro demoted from implement (hang 3/3); DeepSeek V4.1 Flash first-attempt passes on T025a2, T145 and T146.
+
 ## 4. Dispatch
 
 Commands (from `tools/agents/README.md`):
@@ -219,3 +221,4 @@ VERDICT: ready-for-pr | fix | reject
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Re-synced §3.5's tests row with `MODELS.md` §4 (MiMo-V2.6-Pro demoted under §4.1 after 0/2 first-attempt; DeepSeek V4 Pro or DeepSeek V4.1 Flash first), so the manager routes tests away from the demoted model.
 - 2026-10-25 (UTC) · opencode-go/beam-free + D37-record · Recorded D37b/D37c in §3.5: Beam is doc-only, fact sheets and first-pass review only, and while Go is over quota implementation and tests go to free Zen models first then the Claude implementer, never Beam.
 - 2026-10-25 (UTC) · claude-code/opus-5.5 (manager) + D38 · Recorded in §3.5 the user's D38 narrowing of Beam to new-file work, with its reports never counted as evidence.
+- 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Recorded in §3.5 the session 28 routing note: MiMo-V2.6-Pro demoted from implement (hang 3/3), and DeepSeek V4.1 Flash first-attempt passes on T025a2, T145 and T146.

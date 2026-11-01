@@ -1,22 +1,49 @@
 //! T025a1 resume wire suite (`tasks/T025a.md` S§11, cases 1–10), public API
-//! only, pure functions (no pool, no clock).
+//! only, pure functions (no pool, no clock), plus the T025a2 mechanisms
+//! (cases 11–21) with their test-local pool, replica, oracle and host
+//! stand-in.
 //!
 //! Wire bytes for the codec cases are hand-written from S§6 and are never
 //! produced by the codec under test. Requests and tickets are compared
 //! through `as_bytes()` and by re-encoding, because they have no `PartialEq`.
+//! The stand-in performs no authentication: its decision is test input, and
+//! no case here claims to prove authentication or host resume.
+
+#[allow(dead_code)]
+#[path = "support/driver.rs"]
+mod driver;
+#[allow(dead_code)]
+#[path = "support/fixture.rs"]
+mod fixture;
 
 use core::marker::PhantomData;
+use std::collections::BTreeMap;
 
+use crpg_core::EntityId;
 use crpg_net::codec;
 use crpg_net::codec_resume::{
     decode_down, decode_request, encode_down, encode_request, CodecError,
 };
 use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
-use crpg_net::protocol::{self, LANE_COMBAT, MAX_INTENT_FRAME_BYTES, SEQ_LAST};
+use crpg_net::protocol::{
+    self, DeltaFrame, DeltaOp, IntentBody, IntentFrame, NetId, ReceiptStatus, RejectionCode,
+    LANE_COMBAT, MAX_INTENT_FRAME_BYTES, SEQ_LAST,
+};
 use crpg_net::protocol_resume::*;
-use crpg_net::protocol_transfer::{self, TransferChunk, TransferDown, TransferId};
+use crpg_net::protocol_transfer::{
+    self, CancelReason, HealthFact, ResyncReason, SnapshotBody, SnapshotEntity, TransferChunk,
+    TransferDown, TransferId, TransferUp, TurnFact,
+};
 use crpg_net::protocol_v2;
+use crpg_net::reassembly::{
+    DeltaOutcome, DeltaWire, GateMode, GatedDelta, ReassemblyPool, Rebound, ReceiverId,
+    ReplicaUpdate, TransferError, TransferLimits, TransferOutcome,
+};
+use crpg_net::resume::{check_result, ResumeDecision, ResumeError, SessionFence};
+use crpg_net::sim::{InMemoryTransport, PeerId, QueueCaps, RateCaps, SimClock};
+use driver::{NetDriver, OwnershipTable, Visibility, VisibilityTable};
+use fixture::Fixture;
 
 // ---------------------------------------------------------------------------
 // Fixtures.
@@ -1364,4 +1391,2080 @@ fn resume_and_existing_codecs_refuse_each_other() {
     assert!(codec_transfer::decode_up(&resync).is_ok());
     assert!(decode_request(&l1_bytes()).is_ok());
     assert!(decode_down(&l3_bytes()).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// T025a2 harness (cases 11–21).
+// ---------------------------------------------------------------------------
+
+/// Session epoch `E1`.
+const E1: [u8; 16] = [0xE1; 16];
+/// Session epoch `E2`.
+const E2: [u8; 16] = [0xE2; 16];
+/// The resume proof `P`.
+const P: [u8; 16] = [0xAA; 16];
+/// The injected clock base, in milliseconds.
+const T0: u64 = 10_000;
+
+fn net(raw: u64) -> NetId {
+    NetId::new(raw).expect("fixture net id is nonzero")
+}
+
+fn tid(raw: u64) -> TransferId {
+    TransferId::new(raw).expect("fixture transfer id is nonzero")
+}
+
+fn health(h: u32, m: u32, dead: bool) -> HealthFact {
+    HealthFact {
+        health: h,
+        max_health: m,
+        dead,
+    }
+}
+
+/// `codec::encode_delta` for one fixture delta on lane 0.
+fn delta(seq: u64, ops: Vec<DeltaOp>) -> Vec<u8> {
+    codec::encode_delta(&DeltaFrame {
+        lane: LANE_COMBAT,
+        server_tick: 100 + seq,
+        event_seq: seq,
+        ops,
+    })
+    .expect("fixture delta encodes")
+}
+
+fn hp(entity: u64, h: u32) -> DeltaOp {
+    DeltaOp::Health {
+        entity: net(entity),
+        health: h,
+        max_health: 10,
+        dead: false,
+    }
+}
+
+/// `n` entities with `NetId` 1..=n, each at 10/10, and no turn.
+fn body_n(n: u64) -> SnapshotBody {
+    SnapshotBody {
+        entities: (1..=n)
+            .map(|i| SnapshotEntity {
+                entity: net(i),
+                health: Some(health(10, 10, false)),
+            })
+            .collect(),
+        turn: None,
+    }
+}
+
+fn plan(
+    epoch: [u8; 16],
+    id: u64,
+    base: u64,
+    cursor: u64,
+    spc: u8,
+    body: &SnapshotBody,
+) -> Vec<Vec<u8>> {
+    codec_transfer::plan_transfer(epoch, tid(id), base, cursor, spc, body)
+        .expect("fixture transfer plans")
+}
+
+fn cancel_frame(epoch: [u8; 16], id: u64, reason: CancelReason) -> Vec<u8> {
+    codec_transfer::encode_down(&TransferDown::Cancel {
+        epoch,
+        transfer: tid(id),
+        reason,
+    })
+    .expect("fixture cancel encodes")
+}
+
+fn chunk_frame(epoch: [u8; 16], id: u64, index: u8, bytes: &[u8]) -> Vec<u8> {
+    codec_transfer::encode_down(&TransferDown::Chunk(TransferChunk {
+        epoch,
+        transfer: tid(id),
+        index,
+        bytes: bytes.to_vec(),
+    }))
+    .expect("fixture chunk encodes")
+}
+
+fn chunk_payload(frame: &[u8]) -> Vec<u8> {
+    match codec_transfer::decode_down(frame).expect("fixture chunk decodes") {
+        TransferDown::Chunk(chunk) => chunk.bytes,
+        other => panic!("expected Chunk, got {other:?}"),
+    }
+}
+
+fn pool() -> ReassemblyPool {
+    ReassemblyPool::new(TransferLimits::v1()).expect("v1 limits are valid")
+}
+
+fn pop_all(pool: &mut ReassemblyPool, rid: ReceiverId) -> Vec<ReplicaUpdate> {
+    let mut out = Vec::new();
+    while let Some(update) = pool.pop_update(rid) {
+        out.push(update);
+    }
+    out
+}
+
+/// The `event_seq` of a queued delta update, if it is one.
+fn delta_seq(update: &ReplicaUpdate) -> Option<u64> {
+    match update {
+        ReplicaUpdate::Delta(GatedDelta::V1(frame)) => Some(frame.event_seq),
+        ReplicaUpdate::Delta(GatedDelta::V2(frame)) => Some(frame.event_seq),
+        ReplicaUpdate::Snapshot(_) => None,
+    }
+}
+
+/// The published cursor of a queued snapshot update, if it is one.
+fn snapshot_cursor(update: &ReplicaUpdate) -> Option<u64> {
+    match update {
+        ReplicaUpdate::Snapshot(publication) => Some(publication.cursor),
+        ReplicaUpdate::Delta(_) => None,
+    }
+}
+
+/// A request presenting `fence_raw` with claims `claims`.
+fn request_with(epoch: [u8; 16], fence_raw: u64, claims: Vec<LaneClaim>) -> ResumeRequest {
+    ResumeRequest {
+        epoch,
+        fence: fence(fence_raw),
+        proof: proof(&P),
+        claims,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The test-local replica and its independent oracle.
+// ---------------------------------------------------------------------------
+
+type HealthTuple = (u32, u32, bool);
+type TurnTuple = (Option<u64>, u64);
+
+/// A replica view as plain facts: entity -> optional health, plus the turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Facts {
+    entities: BTreeMap<u64, Option<HealthTuple>>,
+    turn: Option<TurnTuple>,
+}
+
+/// Hand-authored expected facts. Never derived from a transfer, a projection
+/// or a World hash.
+fn facts(entities: &[(u64, Option<HealthTuple>)], turn: Option<TurnTuple>) -> Facts {
+    Facts {
+        entities: entities.iter().copied().collect(),
+        turn,
+    }
+}
+
+/// Applies popped updates, in pop order, to a `BTreeMap` replica.
+///
+/// A snapshot replaces everything; `EntityEnter` starts a fresh record with no
+/// health; `Health` sets it; `EntityLeave` removes it; `Turn` sets the turn.
+#[derive(Debug, Clone, Default)]
+struct Replica {
+    facts: Facts,
+    snapshots: usize,
+}
+
+impl Replica {
+    fn apply_op(&mut self, op: &DeltaOp) {
+        match op {
+            DeltaOp::EntityEnter { entity } => {
+                self.facts.entities.insert(entity.get(), None);
+            }
+            DeltaOp::EntityLeave { entity } => {
+                self.facts.entities.remove(&entity.get());
+            }
+            DeltaOp::Health {
+                entity,
+                health,
+                max_health,
+                dead,
+            } => {
+                self.facts
+                    .entities
+                    .insert(entity.get(), Some((*health, *max_health, *dead)));
+            }
+            DeltaOp::Turn { active, round } => {
+                self.facts.turn = Some((active.map(|a| a.get()), *round));
+            }
+            DeltaOp::Spawned { .. }
+            | DeltaOp::Despawned { .. }
+            | DeltaOp::Died { .. }
+            | DeltaOp::Receipt { .. } => {}
+        }
+    }
+
+    fn apply(&mut self, update: &ReplicaUpdate) {
+        match update {
+            ReplicaUpdate::Snapshot(publication) => {
+                self.facts = Facts::default();
+                for entity in &publication.body.entities {
+                    self.facts.entities.insert(
+                        entity.entity.get(),
+                        entity
+                            .health
+                            .as_ref()
+                            .map(|h| (h.health, h.max_health, h.dead)),
+                    );
+                }
+                self.facts.turn = publication
+                    .body
+                    .turn
+                    .as_ref()
+                    .map(|t| (t.active.map(|a| a.get()), t.round));
+                self.snapshots += 1;
+            }
+            ReplicaUpdate::Delta(GatedDelta::V1(frame)) => {
+                for op in &frame.ops {
+                    self.apply_op(op);
+                }
+            }
+            ReplicaUpdate::Delta(GatedDelta::V2(frame)) => {
+                for op in &frame.ops {
+                    if let protocol_v2::DeltaOp::Legacy(op) = op {
+                        self.apply_op(op);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn drain_into(replica: &mut Replica, pool: &mut ReassemblyPool, rid: ReceiverId) -> usize {
+    let mut n = 0;
+    while let Some(update) = pool.pop_update(rid) {
+        replica.apply(&update);
+        n += 1;
+    }
+    n
+}
+
+/// Fact-by-fact comparison; empty means the replica equals `want`.
+fn diff(got: &Facts, want: &Facts) -> Vec<String> {
+    let mut out = Vec::new();
+    for (id, expected) in &want.entities {
+        match got.entities.get(id) {
+            None => out.push(format!("missing entity {id}")),
+            Some(actual) if actual != expected => out.push(match (actual, expected) {
+                (Some(_), None) => format!("leak: health of entity {id} is not permitted"),
+                (None, Some(_)) => format!("missing health of entity {id}"),
+                _ => format!("mismatch health of entity {id}: got {actual:?} want {expected:?}"),
+            }),
+            Some(_) => {}
+        }
+    }
+    for id in got.entities.keys() {
+        if !want.entities.contains_key(id) {
+            out.push(format!("leak: entity {id} is not permitted"));
+        }
+    }
+    match (&got.turn, &want.turn) {
+        (None, Some(_)) => out.push("missing turn".to_string()),
+        (Some(_), None) => out.push("leak: turn is not permitted".to_string()),
+        (Some(actual), Some(expected)) if actual != expected => {
+            out.push(format!("mismatch turn: got {actual:?} want {expected:?}"))
+        }
+        _ => {}
+    }
+    out
+}
+
+fn assert_matches(replica: &Replica, want: &Facts) {
+    let d = diff(&replica.facts, want);
+    assert!(
+        d.is_empty(),
+        "oracle mismatch ({} items), first: {:?}",
+        d.len(),
+        d.iter().take(4).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The host stand-in and the client-side resume state.
+// ---------------------------------------------------------------------------
+
+/// A client's retained resume state: the epoch and the fence it holds.
+struct Client {
+    epoch: [u8; 16],
+    fence: ConnectionFence,
+}
+
+impl Client {
+    fn new(epoch: [u8; 16]) -> Client {
+        Client {
+            epoch,
+            fence: ConnectionFence::FIRST,
+        }
+    }
+}
+
+/// Host stand-in. It performs **no authentication**: `decision` is test input
+/// that each test sets explicitly before every request, and no case here
+/// claims to prove authentication or host resume.
+struct Stand {
+    fence: SessionFence,
+    decision: ResumeDecision,
+}
+
+impl Stand {
+    fn new(epoch: [u8; 16]) -> Stand {
+        Stand {
+            fence: SessionFence::new(epoch),
+            decision: ResumeDecision::Reject(ResumeRejection::Denied),
+        }
+    }
+}
+
+/// One request/answer round trip over the resume codec, as S§18 describes it.
+fn resume_once(stand: &mut Stand, client: &mut Client) -> Result<ResumeResult, ResumeError> {
+    let request = request_with(client.epoch, client.fence.get(), vec![claim(0, 0)]);
+    let bytes = encode_request(&request).expect("request encodes");
+    let decoded = decode_request(&bytes).expect("request decodes");
+    let result = stand.fence.resolve(&decoded, &stand.decision)?;
+    let down = encode_down(&ResumeDown::Answer(result)).expect("result encodes");
+    let result = match decode_down(&down).expect("result decodes") {
+        ResumeDown::Answer(result) => result,
+        other => panic!("expected Answer, got {other:?}"),
+    };
+    check_result(client.epoch, client.fence, &result)?;
+    if let ResumeResult::Accepted(accepted) = &result {
+        client.fence = accepted.granted;
+    }
+    Ok(result)
+}
+
+fn granted_of(result: &ResumeResult) -> u64 {
+    match result {
+        ResumeResult::Accepted(accepted) => accepted.granted.get(),
+        other => panic!("expected Accepted, got {other:?}"),
+    }
+}
+
+fn state(fence: &SessionFence) -> (u64, u64) {
+    (fence.current().get(), fence.confirmed().get())
+}
+
+/// Among tags `1..=current`, exactly `current` passes `check_frame`. Probes
+/// are clones, so the probes change nothing.
+fn only_current_passes(fence_state: &SessionFence) {
+    let current = fence_state.current().get();
+    for raw in 1..=current {
+        let mut probe = fence_state.clone();
+        let outcome = probe.check_frame(fence(raw));
+        if raw == current {
+            assert_eq!(outcome, Ok(()), "tag {raw} must pass");
+            assert_eq!(probe.current(), fence_state.current());
+        } else {
+            assert_eq!(
+                outcome,
+                Err(ResumeError::Fenced),
+                "tag {raw} must be fenced"
+            );
+            assert_eq!(probe, *fence_state);
+        }
+    }
+}
+
+/// Every refusal must be the same from `check_request` and `resolve`, under
+/// all three decisions, with the fence unchanged.
+fn assert_refusal(fence_state: &mut SessionFence, request: &ResumeRequest, want: ResumeError) {
+    let before = fence_state.clone();
+    assert_eq!(fence_state.check_request(request), Err(want));
+    assert_eq!(*fence_state, before);
+    for decision in [
+        ResumeDecision::Accept {
+            progress: vec![progress(0, 0)],
+        },
+        ResumeDecision::Reject(ResumeRejection::Denied),
+        ResumeDecision::Accept { progress: vec![] },
+    ] {
+        assert_eq!(fence_state.resolve(request, &decision), Err(want));
+        assert_eq!(*fence_state, before);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Case 11.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fence_starts_at_first_and_checks_frames() {
+    let mut fence_state = SessionFence::new(E1);
+    assert_eq!(fence_state.epoch(), E1);
+    assert_eq!(fence_state.current(), ConnectionFence::FIRST);
+    assert_eq!(fence_state.confirmed(), ConnectionFence::FIRST);
+    assert_eq!(fence_state.max_fence(), u64::MAX);
+
+    assert_eq!(fence_state.check_frame(ConnectionFence::FIRST), Ok(()));
+    let before = fence_state.clone();
+    assert_eq!(
+        fence_state.check_frame(fence(2)),
+        Err(ResumeError::UnknownFence)
+    );
+    assert_eq!(fence_state, before);
+
+    for bad in [0u64, 1] {
+        assert_eq!(
+            SessionFence::with_max(E1, bad),
+            Err(ResumeError::InvalidLimit),
+            "max_fence {bad}"
+        );
+    }
+    let limited = SessionFence::with_max(E1, 2).expect("2 is a valid limit");
+    assert_eq!(limited.max_fence(), 2);
+
+    for (error, name) in [
+        (ResumeError::WrongEpoch, "WrongEpoch"),
+        (ResumeError::UnknownFence, "UnknownFence"),
+        (ResumeError::StaleFence, "StaleFence"),
+        (ResumeError::Fenced, "Fenced"),
+        (ResumeError::FenceExhausted, "FenceExhausted"),
+        (ResumeError::InvalidProgress, "InvalidProgress"),
+        (ResumeError::InvalidLimit, "InvalidLimit"),
+    ] {
+        assert_eq!(error.to_string(), format!("{name} at resume/fence"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Case 12.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_reflects_an_explicit_decision() {
+    let q = request_with(E1, 1, vec![claim(0, 0)]);
+
+    for reason in [ResumeRejection::Denied, ResumeRejection::Busy] {
+        let mut fence_state = SessionFence::new(E1);
+        let before = fence_state.clone();
+        let got = fence_state.resolve(&q, &ResumeDecision::Reject(reason));
+        assert_eq!(
+            got,
+            Ok(ResumeResult::Rejected(ResumeRejected { epoch: E1, reason }))
+        );
+        assert_eq!(fence_state, before);
+    }
+
+    let mut fence_state = SessionFence::new(E1);
+    let got = fence_state.resolve(
+        &q,
+        &ResumeDecision::Accept {
+            progress: vec![progress(0, 7)],
+        },
+    );
+    assert_eq!(
+        got,
+        Ok(ResumeResult::Accepted(ResumeAccepted {
+            epoch: E1,
+            granted: fence(2),
+            progress: vec![progress(0, 7)],
+        }))
+    );
+    assert_eq!(fence_state.current(), fence(2));
+    assert_eq!(fence_state.confirmed(), fence(1));
+
+    let invalid: Vec<Vec<LaneProgress>> = vec![
+        vec![],
+        vec![progress(1, 0)],
+        vec![progress(0, 0), progress(0, 0)],
+        vec![progress(0, 0); 5],
+        vec![progress(0, u64::MAX)],
+    ];
+    for progress_list in invalid {
+        let mut fence_state = SessionFence::new(E1);
+        let before = fence_state.clone();
+        assert_eq!(
+            fence_state.resolve(
+                &q,
+                &ResumeDecision::Accept {
+                    progress: progress_list,
+                }
+            ),
+            Err(ResumeError::InvalidProgress)
+        );
+        assert_eq!(fence_state, before);
+    }
+
+    // Control: the valid progress list then succeeds.
+    let mut fence_state = SessionFence::new(E1);
+    assert!(fence_state
+        .resolve(
+            &q,
+            &ResumeDecision::Accept {
+                progress: vec![progress(0, 7)],
+            }
+        )
+        .is_ok());
+
+    // Claims are advisory: the same accept from different claims agrees.
+    let q_high = request_with(E1, 1, vec![claim(0, 900)]);
+    let decision = ResumeDecision::Accept {
+        progress: vec![progress(0, 7)],
+    };
+    let mut left = SessionFence::new(E1);
+    let mut right = SessionFence::new(E1);
+    assert_eq!(
+        left.resolve(&q, &decision),
+        right.resolve(&q_high, &decision)
+    );
+    assert_eq!(left, right);
+}
+
+// ---------------------------------------------------------------------------
+// Case 13.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_refusal_precedence() {
+    let valid = request_with(E1, 1, vec![claim(0, 0)]);
+    let accept = ResumeDecision::Accept {
+        progress: vec![progress(0, 0)],
+    };
+
+    let mut fresh = SessionFence::new(E1);
+    for (request, want) in [
+        (
+            request_with(E2, 1, vec![claim(0, 0)]),
+            ResumeError::WrongEpoch,
+        ),
+        (
+            request_with(E2, 9, vec![claim(0, 0)]),
+            ResumeError::WrongEpoch,
+        ),
+        (
+            request_with(E1, 2, vec![claim(0, 0)]),
+            ResumeError::UnknownFence,
+        ),
+    ] {
+        assert_refusal(&mut fresh, &request, want);
+    }
+
+    let mut confirmed = SessionFence::new(E1);
+    assert!(confirmed.resolve(&valid, &accept).is_ok());
+    assert_eq!(confirmed.check_frame(fence(2)), Ok(()));
+    assert_refusal(
+        &mut confirmed,
+        &request_with(E1, 1, vec![claim(0, 0)]),
+        ResumeError::StaleFence,
+    );
+
+    let mut limited = SessionFence::with_max(E1, 2).expect("2 is a valid limit");
+    assert!(limited.resolve(&valid, &accept).is_ok());
+    assert_refusal(
+        &mut limited,
+        &request_with(E1, 2, vec![claim(0, 0)]),
+        ResumeError::FenceExhausted,
+    );
+    assert_refusal(
+        &mut limited,
+        &request_with(E1, 1, vec![claim(0, 0)]),
+        ResumeError::FenceExhausted,
+    );
+    assert_refusal(
+        &mut limited,
+        &request_with(E1, 3, vec![claim(0, 0)]),
+        ResumeError::UnknownFence,
+    );
+
+    // Controls.
+    let check_only = SessionFence::new(E1);
+    let before = check_only.clone();
+    assert_eq!(check_only.check_request(&valid), Ok(fence(2)));
+    assert_eq!(check_only, before);
+
+    let mut recovered = SessionFence::new(E1);
+    assert_eq!(
+        recovered.check_request(&request_with(E1, 2, vec![claim(0, 0)])),
+        Err(ResumeError::UnknownFence)
+    );
+    assert!(matches!(
+        recovered.resolve(&valid, &accept),
+        Ok(ResumeResult::Accepted(_))
+    ));
+
+    let mut live = SessionFence::new(E1);
+    assert_eq!(
+        live.resolve(&valid, &ResumeDecision::Accept { progress: vec![] }),
+        Err(ResumeError::InvalidProgress)
+    );
+    assert_eq!(
+        live.resolve(&valid, &ResumeDecision::Reject(ResumeRejection::Denied)),
+        Ok(ResumeResult::Rejected(ResumeRejected {
+            epoch: E1,
+            reason: ResumeRejection::Denied,
+        }))
+    );
+
+    let mut bounded = SessionFence::with_max(E1, 3).expect("3 is a valid limit");
+    for _ in 0..2 {
+        assert!(matches!(
+            bounded.resolve(&valid, &accept),
+            Ok(ResumeResult::Accepted(_))
+        ));
+    }
+    assert_eq!(
+        bounded.resolve(&valid, &accept),
+        Err(ResumeError::FenceExhausted)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Case 14.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fence_window_retries_lost_grants_without_reissuing() {
+    let mut fence_state = SessionFence::new(E1);
+    let accept = ResumeDecision::Accept {
+        progress: vec![progress(0, 0)],
+    };
+    let present = |raw: u64| request_with(E1, raw, vec![claim(0, 0)]);
+    let mut grants = Vec::new();
+
+    // Step 1.
+    let got = fence_state.resolve(&present(1), &accept);
+    grants.push(granted_of(&got.expect("step 1 resolves")));
+    assert_eq!(state(&fence_state), (2, 1));
+    only_current_passes(&fence_state);
+
+    // Step 2: the result was lost, so the client retries fence 1.
+    let got = fence_state.resolve(&present(1), &accept);
+    grants.push(granted_of(&got.expect("step 2 resolves")));
+    assert_eq!(state(&fence_state), (3, 1));
+    only_current_passes(&fence_state);
+
+    // Step 3.
+    assert_eq!(fence_state.check_frame(fence(2)), Err(ResumeError::Fenced));
+    assert_eq!(state(&fence_state), (3, 1));
+    only_current_passes(&fence_state);
+
+    // Step 4.
+    assert_eq!(fence_state.check_frame(fence(3)), Ok(()));
+    assert_eq!(state(&fence_state), (3, 3));
+    only_current_passes(&fence_state);
+
+    // Step 5.
+    assert_eq!(
+        fence_state.check_request(&present(1)),
+        Err(ResumeError::StaleFence)
+    );
+    assert_eq!(
+        fence_state.check_request(&present(2)),
+        Err(ResumeError::StaleFence)
+    );
+    assert_eq!(
+        fence_state.check_request(&present(4)),
+        Err(ResumeError::UnknownFence)
+    );
+    assert_eq!(state(&fence_state), (3, 3));
+    only_current_passes(&fence_state);
+
+    // Step 6.
+    let got = fence_state.resolve(&present(3), &accept);
+    grants.push(granted_of(&got.expect("step 6 resolves")));
+    assert_eq!(state(&fence_state), (4, 3));
+    only_current_passes(&fence_state);
+
+    // Step 7: a racing attempt on the same fence.
+    let got = fence_state.resolve(&present(3), &accept);
+    grants.push(granted_of(&got.expect("step 7 resolves")));
+    assert_eq!(state(&fence_state), (5, 3));
+    only_current_passes(&fence_state);
+
+    // Step 8.
+    assert_eq!(fence_state.check_frame(fence(4)), Err(ResumeError::Fenced));
+    assert_eq!(fence_state.check_frame(fence(5)), Ok(()));
+    assert_eq!(state(&fence_state), (5, 5));
+    only_current_passes(&fence_state);
+
+    // Step 9.
+    assert_eq!(
+        fence_state.check_request(&present(4)),
+        Err(ResumeError::StaleFence)
+    );
+    let got = fence_state.resolve(&present(5), &accept);
+    grants.push(granted_of(&got.expect("step 9 resolves")));
+    assert_eq!(state(&fence_state), (6, 5));
+    only_current_passes(&fence_state);
+
+    assert_eq!(grants, [2, 3, 4, 5, 6]);
+}
+
+// ---------------------------------------------------------------------------
+// Case 15.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn client_check_result_and_duplicates() {
+    let accepted = ResumeResult::Accepted(ResumeAccepted {
+        epoch: E1,
+        granted: fence(2),
+        progress: vec![progress(0, 0)],
+    });
+    assert_eq!(check_result(E1, ConnectionFence::FIRST, &accepted), Ok(()));
+    assert_eq!(
+        check_result(E1, fence(2), &accepted),
+        Err(ResumeError::StaleFence)
+    );
+
+    let other_epoch = ResumeResult::Accepted(ResumeAccepted {
+        epoch: E2,
+        granted: fence(2),
+        progress: vec![progress(0, 0)],
+    });
+    assert_eq!(
+        check_result(E1, ConnectionFence::FIRST, &other_epoch),
+        Err(ResumeError::WrongEpoch)
+    );
+    let rejected_other_epoch = ResumeResult::Rejected(ResumeRejected {
+        epoch: E2,
+        reason: ResumeRejection::Denied,
+    });
+    assert_eq!(
+        check_result(E1, ConnectionFence::FIRST, &rejected_other_epoch),
+        Err(ResumeError::WrongEpoch)
+    );
+    let busy = ResumeResult::Rejected(ResumeRejected {
+        epoch: E1,
+        reason: ResumeRejection::Busy,
+    });
+    assert_eq!(check_result(E1, ConnectionFence::FIRST, &busy), Ok(()));
+
+    let first_grant = ResumeResult::Accepted(ResumeAccepted {
+        epoch: E1,
+        granted: ConnectionFence::FIRST,
+        progress: vec![progress(0, 0)],
+    });
+    assert_eq!(
+        check_result(E1, ConnectionFence::FIRST, &first_grant),
+        Err(ResumeError::StaleFence)
+    );
+    assert_eq!(
+        encode_down(&ResumeDown::Answer(first_grant)),
+        Err(CodecError::Malformed)
+    );
+
+    // L4 decoded twice gives equal values and the same client answer.
+    let decode_l4 = || match decode_down(&l4_bytes()).expect("L4 decodes") {
+        ResumeDown::Answer(result) => result,
+        other => panic!("expected Answer, got {other:?}"),
+    };
+    let first = decode_l4();
+    let second = decode_l4();
+    assert_eq!(first, second);
+    let first_answer = check_result(ZERO_EPOCH, ConnectionFence::FIRST, &first);
+    let second_answer = check_result(ZERO_EPOCH, ConnectionFence::FIRST, &second);
+    assert_eq!(first_answer, Ok(()));
+    assert_eq!(first_answer, second_answer);
+}
+
+// ---------------------------------------------------------------------------
+// Case 16.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rebind_keeps_floors_and_fails_closed() {
+    let mut pool_state = pool();
+    let r = pool_state
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+
+    // (a) Three queued deltas.
+    let d1 = delta(1, vec![hp(1, 9)]);
+    let d2 = delta(2, vec![hp(1, 8)]);
+    let d3 = delta(3, vec![hp(1, 7)]);
+    for bytes in [&d1, &d2, &d3] {
+        assert_eq!(
+            pool_state.offer_delta(r, bytes, T0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+
+    // (b) A transfer in flight with two held deltas.
+    let t4 = plan(E1, 4, 200, 5, 1, &body_n(1_000));
+    assert_eq!(
+        pool_state.offer_transfer(r, &t4[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    let begin = match codec_transfer::decode_down(&t4[0]).expect("begin decodes") {
+        TransferDown::Begin(begin) => begin,
+        other => panic!("expected Begin, got {other:?}"),
+    };
+    assert_eq!(begin.chunk_count, 2);
+    assert_eq!(begin.total_bytes, 5_876);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t4[1], T0),
+        Ok(TransferOutcome::Stored {
+            received: 1,
+            chunk_count: 2,
+        })
+    );
+    assert_eq!(
+        pool_state.offer_delta(r, &delta(5, vec![hp(1, 6)]), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool_state.offer_delta(r, &delta(7, vec![hp(1, 4)]), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
+    let status = pool_state.status(r).expect("receiver exists");
+    assert_eq!(
+        status
+            .in_flight
+            .as_ref()
+            .map(|i| (i.transfer, i.received, i.chunk_count)),
+        Some((tid(4), 1, 2))
+    );
+    assert_eq!(status.held_frames, 5);
+    assert_eq!(status.next_event_seq, 4);
+    assert_eq!(status.retired_through, 0);
+    assert_eq!(status.mode, GateMode::Live);
+    assert_eq!(pool_state.staging_bytes(), 5_876);
+
+    // (c) Rebind.
+    assert_eq!(
+        pool_state.rebind_receiver(r, T0),
+        Ok(Rebound {
+            discarded: Some(tid(4)),
+            dropped_deltas: 2,
+        })
+    );
+    let status = pool_state.status(r).expect("receiver exists");
+    assert!(status.in_flight.is_none());
+    assert_eq!(status.retired_through, 4);
+    assert_eq!(status.mode, GateMode::AwaitSnapshot);
+    assert_eq!(status.resync, None);
+    assert_eq!(status.next_event_seq, 4);
+    assert_eq!(status.published, None);
+    assert_eq!(status.queued_updates, 3);
+    assert_eq!(status.held_frames, 3);
+    assert_eq!(pool_state.staging_bytes(), 0);
+    assert_eq!(
+        pool_state.held_delta_bytes(),
+        d1.len() + d2.len() + d3.len()
+    );
+
+    // (d) Late frames.
+    let settled = pool_state.clone();
+    assert_eq!(
+        pool_state.offer_transfer(r, &t4[2], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t4[0], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+    let behind = plan(E1, 6, 300, 1, 8, &body_n(2));
+    assert_eq!(
+        pool_state.offer_transfer(r, &behind[0], T0),
+        Err(TransferError::BehindReplica)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_delta(r, &d3, T0),
+        Ok(DeltaOutcome::Superseded)
+    );
+    assert_eq!(
+        pool_state.offer_delta(r, &delta(4, vec![hp(1, 6)]), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
+
+    // (e) The resume snapshot installs before post-cutover deltas.
+    let t5 = plan(E1, 5, 300, 6, 8, &body_n(2));
+    assert_eq!(
+        pool_state.offer_transfer(r, &t5[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t5[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(5),
+            released: 0,
+        })
+    );
+    let updates = pop_all(&mut pool_state, r);
+    assert_eq!(updates.len(), 4);
+    assert_eq!(delta_seq(&updates[0]), Some(1));
+    assert_eq!(delta_seq(&updates[1]), Some(2));
+    assert_eq!(delta_seq(&updates[2]), Some(3));
+    assert_eq!(snapshot_cursor(&updates[3]), Some(6));
+    assert_eq!(pool_state.pop_update(r), None);
+
+    assert_eq!(
+        pool_state.offer_delta(r, &delta(7, vec![hp(1, 4)]), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    let popped = pool_state.pop_update(r).expect("delta 7 pops");
+    assert_eq!(delta_seq(&popped), Some(7));
+    assert_eq!(
+        pool_state.offer_delta(r, &delta(6, vec![hp(1, 5)]), T0),
+        Ok(DeltaOutcome::Superseded)
+    );
+
+    // (f) Idempotence and unknown ids.
+    let status_before = pool_state.status(r).expect("receiver exists");
+    assert_eq!(
+        pool_state.rebind_receiver(r, T0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let status_after = pool_state.status(r).expect("receiver exists");
+    let mut expected = status_before;
+    expected.mode = GateMode::AwaitSnapshot;
+    assert_eq!(status_after, expected);
+
+    let mut unknown = pool();
+    let gone = unknown
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    unknown.remove_receiver(gone);
+    // The step-1 sweep clamps the pool clock first; after that the unknown id
+    // changes nothing.
+    assert!(unknown.poll(T0).is_empty());
+    let before = unknown.clone();
+    assert_eq!(
+        unknown.rebind_receiver(gone, T0),
+        Err(TransferError::UnknownReceiver)
+    );
+    assert_eq!(unknown, before);
+
+    // (g) The expiry sweep runs first.
+    let mut expiring = pool();
+    let g = expiring
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    let t1 = plan(E1, 1, 100, 0, 1, &body_n(1_000));
+    assert_eq!(
+        expiring.offer_transfer(g, &t1[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        expiring.offer_transfer(g, &t1[1], T0),
+        Ok(TransferOutcome::Stored {
+            received: 1,
+            chunk_count: 2,
+        })
+    );
+    assert_eq!(
+        expiring.rebind_receiver(g, T0 + 5_000),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let status = expiring.status(g).expect("receiver exists");
+    assert_eq!(status.retired_through, 1);
+    assert_eq!(status.resync, None);
+    assert_eq!(status.mode, GateMode::AwaitSnapshot);
+    assert_eq!(expiring.staging_bytes(), 0);
+
+    // (g2) The sweep sees the clamped clock, not the raw one. The reachable
+    // state where the two differ is the saturating top of the clock: a
+    // transfer begun there has `deadline_ms == now_ms == u64::MAX`, so the
+    // clamped sweep expires it first and `discarded` is `None`, while the
+    // raw `0` would find nothing to sweep and discard `T9` in step 3.
+    let mut saturated = pool();
+    assert!(saturated.poll(u64::MAX).is_empty());
+    let s = saturated
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    let t9 = plan(E1, 9, 100, 0, 1, &body_n(1_000));
+    assert_eq!(
+        saturated.offer_transfer(s, &t9[0], 0),
+        Ok(TransferOutcome::Begun)
+    );
+    let status = saturated.status(s).expect("receiver exists");
+    assert_eq!(
+        status.in_flight.as_ref().map(|i| i.deadline_ms),
+        Some(u64::MAX)
+    );
+    assert_eq!(
+        saturated.rebind_receiver(s, 0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let status = saturated.status(s).expect("receiver exists");
+    assert!(status.in_flight.is_none());
+    assert_eq!(status.retired_through, 9);
+    assert_eq!(status.mode, GateMode::AwaitSnapshot);
+    assert_eq!(status.resync, None);
+    assert_eq!(saturated.staging_bytes(), 0);
+
+    // (h) Negative control: remove-then-add loses both floors.
+    let mut readded = pool();
+    let first = readded
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    for bytes in [&d1, &d2, &d3] {
+        assert_eq!(
+            readded.offer_delta(first, bytes, T0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+    assert_eq!(
+        readded.offer_transfer(first, &t4[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        readded.offer_transfer(first, &t4[1], T0),
+        Ok(TransferOutcome::Stored {
+            received: 1,
+            chunk_count: 2,
+        })
+    );
+    readded.remove_receiver(first);
+    let second = readded
+        .add_receiver(E1, DeltaWire::V1, GateMode::AwaitSnapshot)
+        .expect("receiver admitted");
+    assert_eq!(
+        readded.offer_transfer(second, &t4[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    let third = readded
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    let t6 = plan(E1, 6, 100, 1, 8, &body_n(2));
+    assert_eq!(
+        readded.offer_transfer(third, &t6[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Case 17.
+// ---------------------------------------------------------------------------
+
+/// A live client that has popped deltas 1–4 and holds `{1: 7/10}`.
+fn resumed_history() -> (ReassemblyPool, ReceiverId, Replica) {
+    let mut pool_state = pool();
+    let r = pool_state
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    let mut replica = Replica::default();
+    let d1 = delta(1, vec![DeltaOp::EntityEnter { entity: net(1) }, hp(1, 10)]);
+    for bytes in [
+        d1,
+        delta(2, vec![hp(1, 9)]),
+        delta(3, vec![hp(1, 8)]),
+        delta(4, vec![hp(1, 7)]),
+    ] {
+        assert_eq!(
+            pool_state.offer_delta(r, &bytes, T0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+        for update in pop_all(&mut pool_state, r) {
+            replica.apply(&update);
+        }
+    }
+    (pool_state, r, replica)
+}
+
+#[test]
+fn resume_cutover_installs_snapshot_before_post_cutover_deltas() {
+    let (mut pool_state, r, history) = resumed_history();
+    assert_matches(&history, &facts(&[(1, Some((7, 10, false)))], None));
+
+    // Resume.
+    assert_eq!(
+        pool_state.rebind_receiver(r, T0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let mut stand = Stand::new(E1);
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(0, 0)],
+    };
+    let mut client = Client::new(E1);
+    let got = resume_once(&mut stand, &mut client).expect("resume answers");
+    assert_eq!(
+        got,
+        ResumeResult::Accepted(ResumeAccepted {
+            epoch: E1,
+            granted: fence(2),
+            progress: vec![progress(0, 0)],
+        })
+    );
+
+    // Run A: the clearing host.
+    let body = SnapshotBody {
+        entities: vec![SnapshotEntity {
+            entity: net(1),
+            health: Some(health(6, 10, false)),
+        }],
+        turn: None,
+    };
+    let t1 = plan(E1, 1, 60, 5, 8, &body);
+    assert_eq!(
+        chunk_payload(&t1[1]),
+        [0x01, 0x01, 0x01, 0x06, 0x0A, 0x00, 0x00]
+    );
+    assert_eq!(
+        pool_state.offer_delta(r, &delta(6, vec![hp(1, 5)]), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 1,
+        })
+    );
+    assert_eq!(
+        pool_state.offer_delta(r, &delta(7, vec![hp(1, 4)]), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+
+    let updates = pop_all(&mut pool_state, r);
+    assert_eq!(updates.len(), 3);
+    assert_eq!(snapshot_cursor(&updates[0]), Some(5));
+    assert_eq!(delta_seq(&updates[1]), Some(6));
+    assert_eq!(delta_seq(&updates[2]), Some(7));
+    let mut view = Replica::default();
+    for (update, want) in updates.iter().zip([
+        facts(&[(1, Some((6, 10, false)))], None),
+        facts(&[(1, Some((5, 10, false)))], None),
+        facts(&[(1, Some((4, 10, false)))], None),
+    ]) {
+        view.apply(update);
+        assert_matches(&view, &want);
+    }
+
+    // Duplicates and late frames.
+    let settled = pool_state.clone();
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[1], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[0], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+    for bytes in [
+        delta(5, vec![hp(1, 6)]),
+        delta(6, vec![hp(1, 5)]),
+        delta(7, vec![hp(1, 4)]),
+    ] {
+        assert_eq!(
+            pool_state.offer_delta(r, &bytes, T0),
+            Ok(DeltaOutcome::Superseded)
+        );
+        assert_eq!(pool_state, settled);
+    }
+
+    // Run B: a host that re-sends delta 5 before the Begin.
+    let (mut run_b, rb, _) = resumed_history();
+    assert_eq!(
+        run_b.rebind_receiver(rb, T0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    assert_eq!(
+        run_b.offer_delta(rb, &delta(5, vec![hp(1, 6)]), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        run_b.offer_transfer(rb, &t1[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        run_b.offer_transfer(rb, &t1[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    assert_eq!(
+        run_b.offer_delta(rb, &delta(6, vec![hp(1, 5)]), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    let run_b_updates = pop_all(&mut run_b, rb);
+    assert_eq!(run_b_updates.len(), 2);
+    assert_eq!(snapshot_cursor(&run_b_updates[0]), Some(5));
+    assert_eq!(delta_seq(&run_b_updates[1]), Some(6));
+    assert!(run_b_updates
+        .iter()
+        .filter_map(delta_seq)
+        .all(|seq| seq > 5));
+
+    // Negative control: the same frames on a receiver that was not rebound.
+    let (mut live, rl, _) = resumed_history();
+    assert_eq!(
+        live.offer_delta(rl, &delta(5, vec![hp(1, 6)]), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        live.offer_transfer(rl, &t1[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        live.offer_transfer(rl, &t1[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    assert_eq!(
+        live.offer_delta(rl, &delta(6, vec![hp(1, 5)]), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    let live_updates = pop_all(&mut live, rl);
+    assert_eq!(live_updates.len(), 3);
+    assert_eq!(delta_seq(&live_updates[0]), Some(5));
+    assert_eq!(snapshot_cursor(&live_updates[1]), Some(5));
+    assert_eq!(delta_seq(&live_updates[2]), Some(6));
+    assert!(live_updates
+        .iter()
+        .filter_map(delta_seq)
+        .any(|seq| seq <= 5));
+}
+
+// ---------------------------------------------------------------------------
+// Driver rig for cases 18–19 (copied from `tests/conformance.rs`).
+// ---------------------------------------------------------------------------
+
+fn generous_rates() -> RateCaps {
+    RateCaps {
+        frames_per_sec: 1_000_000,
+        burst_frames: 1_000_000,
+        bytes_per_sec: 1_000_000_000,
+        burst_bytes: 1_000_000_000,
+        fail_per_sec: 1_000_000,
+        burst_fail: 1_000_000,
+        fail_bytes_per_sec: 1_000_000_000,
+        burst_fail_bytes: 1_000_000_000,
+    }
+}
+
+/// One fabric peer bound to `E1` that owns both combatants, fully visible, at
+/// `server_tick = 1_000`.
+fn rig() -> (NetDriver, PeerId, EntityId, EntityId) {
+    let fixture = Fixture::standard();
+    let (world, ids) = fixture.start(7);
+    assert_eq!(ids.len(), 2, "standard fixture fields two combatants");
+    let (first, second) = (ids[0], ids[1]);
+    let mut transport = InMemoryTransport::new(
+        QueueCaps {
+            per_peer_frames: 10_000,
+            per_peer_bytes: 64 * 1024 * 1024,
+            host_frames: 100_000,
+            host_bytes: 512 * 1024 * 1024,
+        },
+        generous_rates(),
+        SimClock(0),
+    );
+    let peer = transport.add_peer(E1).expect("peer admitted");
+    let mut visibility = VisibilityTable::new();
+    for entity in [first, second] {
+        visibility.set(peer, entity, Visibility::full());
+    }
+    let mut ownership = OwnershipTable::new();
+    ownership.set(peer, vec![first, second]);
+    let mut driver = NetDriver::new(world, visibility, ownership);
+    driver.server_tick = 1_000;
+    driver
+        .bind_peer(peer, E1, &generous_rates())
+        .expect("peer binds");
+    driver.assign(peer);
+    (driver, peer, first, second)
+}
+
+fn end_turn_bytes(epoch: [u8; 16], seq: u64, observed: u64, actor: NetId) -> Vec<u8> {
+    codec::encode_intent(&IntentFrame {
+        epoch,
+        lane: LANE_COMBAT,
+        seq,
+        observed_tick: observed,
+        actor,
+        body: IntentBody::EndTurn,
+    })
+    .expect("fixture intent encodes")
+}
+
+/// A fresh rig that has admitted `B1` and lost its receipt, then resumed.
+fn rig_after_lost_receipt() -> (NetDriver, PeerId, EntityId, EntityId, Vec<u8>, NetId) {
+    let (mut driver, peer, first, second) = rig();
+    let x = driver
+        .world
+        .combat()
+        .expect("encounter started")
+        .active
+        .expect("a turn is active");
+    let net_x = driver.net_of(peer, x).expect("X mapped");
+    let b1 = end_turn_bytes(E1, 1, 1_000, net_x);
+    let _ = driver.admit(peer, &b1);
+    assert_eq!(driver.next_seq(peer), Some(2));
+    let mut stand = Stand::new(E1);
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(
+            0,
+            driver.next_seq(peer).expect("peer is bound") - 1,
+        )],
+    };
+    let mut client = Client::new(E1);
+    let _ = resume_once(&mut stand, &mut client).expect("resume answers");
+    (driver, peer, first, second, b1, net_x)
+}
+
+// ---------------------------------------------------------------------------
+// Case 18.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn retry_identity_across_resume() {
+    let (mut driver, peer, first, second) = rig();
+    let x = driver
+        .world
+        .combat()
+        .expect("encounter started")
+        .active
+        .expect("a turn is active");
+    let y = if x == first { second } else { first };
+    let net_x = driver.net_of(peer, x).expect("X mapped");
+    let b1 = end_turn_bytes(E1, 1, 1_000, net_x);
+
+    // Step 1: the receipt is lost.
+    let lost = driver.admit(peer, &b1);
+    assert!(!lost.is_empty(), "the lost receipt is a real receipt");
+    let executions = driver.executions();
+    let hash = driver.authoritative_hash();
+    assert_eq!(executions, 1);
+    assert_eq!(driver.next_seq(peer), Some(2));
+
+    // Step 2: resume, reporting the retained ledger.
+    let mut stand = Stand::new(E1);
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(
+            0,
+            driver.next_seq(peer).expect("peer is bound") - 1,
+        )],
+    };
+    let mut client = Client::new(E1);
+    let got = resume_once(&mut stand, &mut client).expect("resume answers");
+    assert_eq!(
+        got,
+        ResumeResult::Accepted(ResumeAccepted {
+            epoch: E1,
+            granted: fence(2),
+            progress: vec![progress(0, 1)],
+        })
+    );
+    assert_eq!(client.fence, fence(2));
+
+    // Step 3: the stored bytes retry as the cached receipt.
+    assert_eq!(driver.admit_status(peer, &b1), ReceiptStatus::Applied);
+    assert_eq!(driver.executions(), executions);
+    assert_eq!(driver.authoritative_hash(), hash);
+    assert_eq!(driver.next_seq(peer), Some(2));
+    let receipt = driver.admit(peer, &b1);
+    let frame = codec::decode_delta(&receipt).expect("receipt decodes");
+    assert_eq!(
+        frame.ops,
+        vec![DeltaOp::Receipt {
+            epoch: E1,
+            lane: LANE_COMBAT,
+            seq: 1,
+            processed_tick: 1_000,
+            status: ReceiptStatus::Applied,
+        }]
+    );
+
+    // Step 4: Y now holds the turn; the ledger continues at seq 2.
+    let net_y = driver.net_of(peer, y).expect("Y mapped");
+    let b2 = end_turn_bytes(E1, 2, 1_000, net_y);
+    assert_eq!(driver.admit_status(peer, &b2), ReceiptStatus::Applied);
+    assert_eq!(driver.next_seq(peer), Some(3));
+    assert_eq!(driver.executions(), executions + 1);
+
+    // Negative control (a): re-encoding seq 1 changes the canonical bytes.
+    let (mut driver, peer, _, _, _b1, net_x) = rig_after_lost_receipt();
+    let reencoded = end_turn_bytes(E1, 1, 999, net_x);
+    assert_eq!(
+        driver.admit_status(peer, &reencoded),
+        ReceiptStatus::Rejected(RejectionCode::SeqConflict)
+    );
+
+    // Negative control (b): a reset ledger judges seq 1 as new.
+    let (mut driver, peer, _, _, b1, _) = rig_after_lost_receipt();
+    driver
+        .bind_peer(peer, E1, &generous_rates())
+        .expect("peer rebinds");
+    assert_eq!(
+        driver.admit_status(peer, &b1),
+        ReceiptStatus::Rejected(RejectionCode::IllegalAction)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Case 19.
+// ---------------------------------------------------------------------------
+
+/// Routes one inbound frame through the connection's fence before admission.
+fn route(
+    fence_state: &mut SessionFence,
+    conns: &BTreeMap<u32, ConnectionFence>,
+    conn: u32,
+    driver: &mut NetDriver,
+    peer: PeerId,
+    bytes: &[u8],
+) -> Result<ReceiptStatus, ResumeError> {
+    let tag = *conns.get(&conn).expect("connection is known");
+    fence_state.check_frame(tag)?;
+    Ok(driver.admit_status(peer, bytes))
+}
+
+/// Routes one resume request through the connection's fence before `resolve`.
+fn route_resume(
+    fence_state: &mut SessionFence,
+    conns: &BTreeMap<u32, ConnectionFence>,
+    conn: u32,
+    bytes: &[u8],
+    decision: &ResumeDecision,
+) -> Result<ResumeResult, ResumeError> {
+    let tag = *conns.get(&conn).expect("connection is known");
+    fence_state.check_frame(tag)?;
+    let request = decode_request(bytes).expect("request decodes");
+    fence_state.resolve(&request, decision)
+}
+
+#[test]
+fn fenced_connection_frames_never_reach_admission() {
+    let (mut driver, peer, first, second) = rig();
+    let x = driver
+        .world
+        .combat()
+        .expect("encounter started")
+        .active
+        .expect("a turn is active");
+    let y = if x == first { second } else { first };
+    let net_x = driver.net_of(peer, x).expect("X mapped");
+    let net_y = driver.net_of(peer, y).expect("Y mapped");
+    let b1 = end_turn_bytes(E1, 1, 1_000, net_x);
+    let b2 = end_turn_bytes(E1, 2, 1_000, net_y);
+
+    let mut stand = Stand::new(E1);
+    let mut conns: BTreeMap<u32, ConnectionFence> = BTreeMap::new();
+    conns.insert(1, ConnectionFence::FIRST);
+
+    // Control: conn 1 is the current fence.
+    assert_eq!(
+        route(&mut stand.fence, &conns, 1, &mut driver, peer, &b1),
+        Ok(ReceiptStatus::Applied)
+    );
+    let executions = driver.executions();
+    let hash = driver.authoritative_hash();
+    assert_eq!(driver.next_seq(peer), Some(2));
+
+    // Resume on conn 2.
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(0, 1)],
+    };
+    let mut client = Client::new(E1);
+    let got = resume_once(&mut stand, &mut client).expect("resume answers");
+    let granted = granted_of(&got);
+    assert_eq!(granted, 2);
+    conns.insert(2, fence(granted));
+
+    // Conn 1 is fenced: no admission, no state change.
+    assert_eq!(
+        route(&mut stand.fence, &conns, 1, &mut driver, peer, &b1),
+        Err(ResumeError::Fenced)
+    );
+    assert_eq!(
+        route(&mut stand.fence, &conns, 1, &mut driver, peer, &b2),
+        Err(ResumeError::Fenced)
+    );
+    assert_eq!(driver.executions(), executions);
+    assert_eq!(driver.authoritative_hash(), hash);
+    assert_eq!(driver.next_seq(peer), Some(2));
+
+    // A resume request on conn 1 is fenced before `resolve` is reached.
+    let request = request_with(E1, 2, vec![claim(0, 0)]);
+    let request_bytes = encode_request(&request).expect("request encodes");
+    assert_eq!(
+        route_resume(
+            &mut stand.fence,
+            &conns,
+            1,
+            &request_bytes,
+            &ResumeDecision::Accept {
+                progress: vec![progress(0, 1)],
+            }
+        ),
+        Err(ResumeError::Fenced)
+    );
+
+    // Conn 2 works: the cached retry and the new command.
+    assert_eq!(
+        route(&mut stand.fence, &conns, 2, &mut driver, peer, &b1),
+        Ok(ReceiptStatus::Applied)
+    );
+    assert_eq!(driver.executions(), executions);
+    assert_eq!(
+        route(&mut stand.fence, &conns, 2, &mut driver, peer, &b2),
+        Ok(ReceiptStatus::Applied)
+    );
+    assert_eq!(driver.next_seq(peer), Some(3));
+
+    // A second resume on conn 3, presenting the now-confirmed fence 2.
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(0, 2)],
+    };
+    let mut client = Client::new(E1);
+    client.fence = fence(2);
+    let got = resume_once(&mut stand, &mut client).expect("resume answers");
+    let granted = granted_of(&got);
+    assert_eq!(granted, 3);
+    conns.insert(3, fence(granted));
+
+    assert_eq!(
+        route(&mut stand.fence, &conns, 2, &mut driver, peer, &b2),
+        Err(ResumeError::Fenced)
+    );
+    assert_eq!(
+        route(&mut stand.fence, &conns, 3, &mut driver, peer, &b2),
+        Ok(ReceiptStatus::Applied)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Case 20.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn obsolete_transfer_never_overwrites_the_resume_snapshot() {
+    let mut pool_state = pool();
+    let r = pool_state
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    let mut replica = Replica::default();
+
+    // Step 1: T1 publishes and pops; deltas 1–2 release and pop.
+    let t1 = plan(E1, 1, 10, 0, 8, &body_n(2));
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    drain_into(&mut replica, &mut pool_state, r);
+    for (seq, entity) in [(1, 1), (2, 2)] {
+        assert_eq!(
+            pool_state.offer_delta(r, &delta(seq, vec![hp(entity, 9)]), T0),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+        drain_into(&mut replica, &mut pool_state, r);
+    }
+
+    // Step 2: T2 is in flight when the connection drops.
+    let t2 = plan(E1, 2, 20, 2, 1, &body_n(1_000));
+    assert_eq!(
+        pool_state.offer_transfer(r, &t2[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t2[1], T0),
+        Ok(TransferOutcome::Stored {
+            received: 1,
+            chunk_count: 2,
+        })
+    );
+    assert_eq!(
+        pool_state.rebind_receiver(r, T0),
+        Ok(Rebound {
+            discarded: Some(tid(2)),
+            dropped_deltas: 0,
+        })
+    );
+
+    // Step 3: resume #1, then a cancel and T3 in flight.
+    let mut stand = Stand::new(E1);
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(0, 1)],
+    };
+    let mut client = Client::new(E1);
+    let got = resume_once(&mut stand, &mut client).expect("resume answers");
+    assert_eq!(granted_of(&got), 2);
+    assert_eq!(
+        pool_state.offer_transfer(r, &cancel_frame(E1, 2, CancelReason::Superseded), T0),
+        Ok(TransferOutcome::Cancelled { discarded: false })
+    );
+    let t3 = plan(E1, 3, 30, 2, 1, &body_n(1_000));
+    assert_eq!(
+        pool_state.offer_transfer(r, &t3[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t3[1], T0),
+        Ok(TransferOutcome::Stored {
+            received: 1,
+            chunk_count: 2,
+        })
+    );
+
+    // Step 4: a second disconnect.
+    assert_eq!(
+        pool_state.rebind_receiver(r, T0),
+        Ok(Rebound {
+            discarded: Some(tid(3)),
+            dropped_deltas: 0,
+        })
+    );
+
+    // Step 5: resume #2, cancel T3, then T4 publishes.
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(0, 2)],
+    };
+    let got = resume_once(&mut stand, &mut client).expect("resume answers");
+    assert_eq!(granted_of(&got), 3);
+    assert_eq!(
+        pool_state.offer_transfer(r, &cancel_frame(E1, 3, CancelReason::Superseded), T0),
+        Ok(TransferOutcome::Cancelled { discarded: false })
+    );
+    let t4 = plan(E1, 4, 40, 2, 8, &body_n(3));
+    assert_eq!(
+        pool_state.offer_transfer(r, &t4[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t4[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(4),
+            released: 0,
+        })
+    );
+    drain_into(&mut replica, &mut pool_state, r);
+
+    // Step 6: late frames of both retired transfers are stale.
+    let settled = pool_state.clone();
+    assert_eq!(
+        pool_state.offer_transfer(r, &t2[2], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t3[2], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t2[0], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t3[0], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    assert_eq!(pool_state, settled);
+
+    // Step 7: cross-epoch frames are refused, with a same-epoch control.
+    let other = plan(E2, 6, 40, 2, 8, &body_n(2));
+    assert_eq!(
+        pool_state.offer_transfer(r, &other[0], T0),
+        Err(TransferError::WrongEpoch)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_transfer(r, &other[1], T0),
+        Err(TransferError::WrongEpoch)
+    );
+    assert_eq!(pool_state, settled);
+    assert_eq!(
+        pool_state.offer_transfer(r, &cancel_frame(E2, 6, CancelReason::Superseded), T0),
+        Err(TransferError::WrongEpoch)
+    );
+    assert_eq!(pool_state, settled);
+
+    let t5 = plan(E1, 5, 40, 2, 8, &body_n(2));
+    assert_eq!(
+        pool_state.offer_transfer(r, &t5[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &cancel_frame(E1, 5, CancelReason::Superseded), T0),
+        Ok(TransferOutcome::Cancelled { discarded: true })
+    );
+
+    // Step 8: behind the replica.
+    let behind_cursor = plan(E1, 6, 40, 1, 8, &body_n(2));
+    assert_eq!(
+        pool_state.offer_transfer(r, &behind_cursor[0], T0),
+        Err(TransferError::BehindReplica)
+    );
+    let behind_tick = plan(E1, 6, 39, 2, 8, &body_n(2));
+    assert_eq!(
+        pool_state.offer_transfer(r, &behind_tick[0], T0),
+        Err(TransferError::BehindReplica)
+    );
+
+    // Only T1's and T4's snapshots ever reached the replica.
+    assert_eq!(replica.snapshots, 2);
+    assert_eq!(
+        replica.facts,
+        facts(
+            &[
+                (1, Some((10, 10, false))),
+                (2, Some((10, 10, false))),
+                (3, Some((10, 10, false))),
+            ],
+            None,
+        )
+    );
+    assert!(replica.facts.entities.keys().all(|id| *id <= 3));
+}
+
+// ---------------------------------------------------------------------------
+// Case 21.
+// ---------------------------------------------------------------------------
+
+/// The pre-gap body, hand-written from S§18 case 21.
+const PRE_GAP_BODY: [u8; 20] = [
+    0x03, 0x01, 0x01, 0x0A, 0x0A, 0x00, 0x02, 0x01, 0x07, 0x0A, 0x00, 0x03, 0x01, 0x03, 0x03, 0x00,
+    0x01, 0x01, 0x01, 0x02,
+];
+/// The post-gap body: A 8/10, B present without health, C absent.
+const POST_GAP_BODY: [u8; 12] = [
+    0x02, 0x01, 0x01, 0x08, 0x0A, 0x00, 0x02, 0x00, 0x01, 0x01, 0x01, 0x02,
+];
+
+#[derive(Debug, Clone)]
+struct Row {
+    entity: u64,
+    present: bool,
+    health: HealthTuple,
+    health_granted: bool,
+}
+
+/// The host stand-in's facts and grants for case 21. The body is built from
+/// granted facts only.
+#[derive(Debug, Clone)]
+struct Truth {
+    rows: Vec<Row>,
+    turn: Option<u64>,
+    round: u64,
+    turn_granted: bool,
+}
+
+impl Truth {
+    fn body(&self) -> SnapshotBody {
+        let entities: Vec<SnapshotEntity> = self
+            .rows
+            .iter()
+            .filter(|row| row.present)
+            .map(|row| SnapshotEntity {
+                entity: net(row.entity),
+                health: row
+                    .health_granted
+                    .then(|| health(row.health.0, row.health.1, row.health.2)),
+            })
+            .collect();
+        let turn = self.turn_granted.then(|| TurnFact {
+            active: self
+                .turn
+                .filter(|active| entities.iter().any(|e| e.entity.get() == *active))
+                .map(net),
+            round: self.round,
+        });
+        SnapshotBody { entities, turn }
+    }
+
+    fn pre_gap() -> Truth {
+        Truth {
+            rows: vec![
+                Row {
+                    entity: 1,
+                    present: true,
+                    health: (10, 10, false),
+                    health_granted: true,
+                },
+                Row {
+                    entity: 2,
+                    present: true,
+                    health: (7, 10, false),
+                    health_granted: true,
+                },
+                Row {
+                    entity: 3,
+                    present: true,
+                    health: (3, 3, false),
+                    health_granted: true,
+                },
+            ],
+            turn: Some(1),
+            round: 2,
+            turn_granted: true,
+        }
+    }
+
+    fn post_gap() -> Truth {
+        Truth {
+            rows: vec![
+                Row {
+                    entity: 1,
+                    present: true,
+                    health: (8, 10, false),
+                    health_granted: true,
+                },
+                Row {
+                    entity: 2,
+                    present: true,
+                    health: (7, 10, false),
+                    health_granted: false,
+                },
+                Row {
+                    entity: 3,
+                    present: false,
+                    health: (3, 3, false),
+                    health_granted: true,
+                },
+            ],
+            turn: Some(1),
+            round: 2,
+            turn_granted: true,
+        }
+    }
+
+    /// The stale-grant stand-in: the post-gap health, but the pre-gap grants.
+    fn stale_grants() -> Truth {
+        Truth {
+            rows: vec![
+                Row {
+                    entity: 1,
+                    present: true,
+                    health: (8, 10, false),
+                    health_granted: true,
+                },
+                Row {
+                    entity: 2,
+                    present: true,
+                    health: (7, 10, false),
+                    health_granted: true,
+                },
+                Row {
+                    entity: 3,
+                    present: true,
+                    health: (3, 3, false),
+                    health_granted: true,
+                },
+            ],
+            turn: Some(1),
+            round: 2,
+            turn_granted: true,
+        }
+    }
+}
+
+fn pre_gap_facts() -> Facts {
+    facts(
+        &[
+            (1, Some((10, 10, false))),
+            (2, Some((7, 10, false))),
+            (3, Some((3, 3, false))),
+        ],
+        Some((Some(1), 2)),
+    )
+}
+
+fn post_gap_facts() -> Facts {
+    facts(&[(1, Some((8, 10, false))), (2, None)], Some((Some(1), 2)))
+}
+
+/// A client that has published and popped the pre-gap `T1`.
+fn pre_gap_receiver(pre: &Truth) -> (ReassemblyPool, ReceiverId, Replica) {
+    let mut pool_state = pool();
+    let r = pool_state
+        .add_receiver(E1, DeltaWire::V1, GateMode::Live)
+        .expect("receiver admitted");
+    let mut replica = Replica::default();
+    let t1 = plan(E1, 1, 10, 0, 1, &pre.body());
+    assert_eq!(chunk_payload(&t1[1]), PRE_GAP_BODY);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t1[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    drain_into(&mut replica, &mut pool_state, r);
+    assert_matches(&replica, &pre_gap_facts());
+    (pool_state, r, replica)
+}
+
+#[test]
+fn resume_snapshot_oracle_and_corruption() {
+    let pre = Truth::pre_gap();
+    let post = Truth::post_gap();
+
+    // The unmodified resume transfer matches the hand-authored view.
+    let (mut pool_state, r, mut replica) = pre_gap_receiver(&pre);
+    assert_eq!(
+        pool_state.rebind_receiver(r, T0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let mut stand = Stand::new(E1);
+    stand.decision = ResumeDecision::Accept {
+        progress: vec![progress(0, 0)],
+    };
+    let mut client = Client::new(E1);
+    let _ = resume_once(&mut stand, &mut client).expect("resume answers");
+    let t2 = plan(E1, 2, 50, 0, 1, &post.body());
+    assert_eq!(chunk_payload(&t2[1]), POST_GAP_BODY);
+    assert_eq!(
+        pool_state.offer_transfer(r, &t2[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool_state.offer_transfer(r, &t2[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(2),
+            released: 0,
+        })
+    );
+    drain_into(&mut replica, &mut pool_state, r);
+    assert_matches(&replica, &post_gap_facts());
+
+    // (a) Corruption: the chunk payload's byte 3 changes 08 -> 09.
+    let mut corrupted = POST_GAP_BODY.to_vec();
+    assert_eq!(corrupted[3], 0x08);
+    corrupted[3] = 0x09;
+    let (mut corrupt_pool, corrupt_r, mut corrupt_replica) = pre_gap_receiver(&pre);
+    assert_eq!(
+        corrupt_pool.rebind_receiver(corrupt_r, T0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let begin = plan(E1, 2, 50, 0, 1, &post.body())[0].clone();
+    let chunk = chunk_frame(E1, 2, 0, &corrupted);
+    assert_eq!(
+        corrupt_pool.offer_transfer(corrupt_r, &begin, T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        corrupt_pool.offer_transfer(corrupt_r, &chunk, T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(2),
+            released: 0,
+        })
+    );
+    drain_into(&mut corrupt_replica, &mut corrupt_pool, corrupt_r);
+    let mismatch = diff(&corrupt_replica.facts, &post_gap_facts());
+    assert!(
+        mismatch.iter().any(|m| m.contains("entity 1")),
+        "corruption must be visible: {mismatch:?}"
+    );
+
+    // (b) Dropped chunk: the transfer expires; the replica keeps the pre-gap
+    // view until a resync replaces it.
+    let (mut drop_pool, drop_r, mut drop_replica) = pre_gap_receiver(&pre);
+    assert_eq!(
+        drop_pool.rebind_receiver(drop_r, T0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    assert_eq!(
+        drop_pool.offer_transfer(drop_r, &t2[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(drop_pool.poll(T0 + 4_999), Vec::<ReceiverId>::new());
+    assert_eq!(drop_pool.poll(T0 + 5_000), vec![drop_r]);
+    assert_eq!(drop_pool.pop_update(drop_r), None);
+    assert_matches(&drop_replica, &pre_gap_facts());
+    let stale_view = diff(&drop_replica.facts, &post_gap_facts());
+    assert!(stale_view.iter().any(|m| m.contains("entity 2")));
+    assert!(stale_view.iter().any(|m| m.contains("entity 3")));
+
+    // Recovery: the client's Resync makes the stand-in send T3.
+    let resync = codec_transfer::encode_up(&TransferUp::Resync {
+        epoch: E1,
+        after: Some(tid(2)),
+        reason: ResyncReason::Expired,
+    })
+    .expect("resync encodes");
+    assert!(codec_transfer::decode_up(&resync).is_ok());
+    let t3 = plan(E1, 3, 50, 0, 1, &post.body());
+    assert_eq!(
+        drop_pool.offer_transfer(drop_r, &t3[0], T0 + 5_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        drop_pool.offer_transfer(drop_r, &t3[1], T0 + 5_000),
+        Ok(TransferOutcome::Published {
+            transfer: tid(3),
+            released: 0,
+        })
+    );
+    drain_into(&mut drop_replica, &mut drop_pool, drop_r);
+    assert_matches(&drop_replica, &post_gap_facts());
+
+    // (c) Stale grants: the old grants leak B's health and C's presence.
+    let stale = Truth::stale_grants();
+    let (mut stale_pool, stale_r, mut stale_replica) = pre_gap_receiver(&pre);
+    assert_eq!(
+        stale_pool.rebind_receiver(stale_r, T0),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    let t2_stale = plan(E1, 2, 50, 0, 1, &stale.body());
+    assert_eq!(
+        chunk_payload(&t2_stale[1]),
+        [
+            0x03, 0x01, 0x01, 0x08, 0x0A, 0x00, 0x02, 0x01, 0x07, 0x0A, 0x00, 0x03, 0x01, 0x03,
+            0x03, 0x00, 0x01, 0x01, 0x01, 0x02,
+        ]
+    );
+    assert_eq!(
+        stale_pool.offer_transfer(stale_r, &t2_stale[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        stale_pool.offer_transfer(stale_r, &t2_stale[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(2),
+            released: 0,
+        })
+    );
+    drain_into(&mut stale_replica, &mut stale_pool, stale_r);
+    let leaks = diff(&stale_replica.facts, &post_gap_facts());
+    assert!(
+        leaks.iter().any(|m| m.contains("entity 2")),
+        "B's health must leak: {leaks:?}"
+    );
+    assert!(
+        leaks.iter().any(|m| m.contains("entity 3")),
+        "C must leak: {leaks:?}"
+    );
 }

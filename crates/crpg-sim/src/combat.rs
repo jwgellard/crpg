@@ -28,10 +28,10 @@ use serde::{Deserialize, Serialize};
 
 use crpg_core::{DeterministicRng, EntityId, Fx16_16, GenerationalArena, Interners, Tick, Ulid};
 use crpg_data::{
-    Ability as AuthoredAbility, Creature as AuthoredCreature, Effect as AuthoredEffect,
-    Encounter as AuthoredEncounter, ExprWire, OutcomeTable as AuthoredOutcomeTable,
-    Placement as AuthoredPlacement, RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset,
-    StatKindWire, StatValueWire,
+    Ability as AuthoredAbility, Creature as AuthoredCreature, CreaturePersistenceWire,
+    Effect as AuthoredEffect, EffectsOnExitWire, Encounter as AuthoredEncounter, ExprWire,
+    OutcomeTable as AuthoredOutcomeTable, Placement as AuthoredPlacement,
+    RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset, StatKindWire, StatValueWire,
 };
 use crpg_rules::{
     resolve, Against, DiceExpr, DiceRoll, Expr, ModOp, ModTypeId, Modifier, ModifierPipeline,
@@ -41,6 +41,7 @@ use crpg_rules::{
     StackingPolicy, StatBlock, StatDefinition, StatKind, StatValue, TagSet, MAX_TAGS,
 };
 
+use crate::creature::{CreatureState, SuspendedEffect};
 use crate::event::SimEvent;
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
@@ -197,7 +198,8 @@ pub struct AttachedEffect {
 
 /// One combatant's authoritative mutable state, keyed by entity in a
 /// [`ComponentStore`](crate::ComponentStore). Insertion order is authored
-/// participant order, giving the deterministic placement-to-entity mapping.
+/// participant order, skipped participants omitted, then members, giving the
+/// deterministic placement-to-entity mapping.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Combatant {
     placement: Ulid,
@@ -216,10 +218,18 @@ pub struct Combatant {
     /// The RT standing order; always `None` in TB (ADR-0029 T8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     order: Option<StandingOrder>,
-    /// Placement tags, ascending and distinct; carried only when an effect
-    /// of the encounter grants tags. Skipped when empty.
+    /// Creature tags, ascending and distinct, carried by every combatant
+    /// (T139 D5); grants are never among them. Skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+    /// Base non-derived `Fixed` stats in authored order (T139 D6); skipped
+    /// when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fixed: Vec<(String, Fx16_16)>,
+    /// Whether this combatant entered from a record (T139 D2); skipped when
+    /// false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    entered: bool,
 }
 
 impl Combatant {
@@ -243,7 +253,7 @@ impl Combatant {
         self.health
     }
 
-    /// Health at encounter start; never exceeded after.
+    /// Health maximum at entry; never exceeded after.
     pub fn max_health(&self) -> u32 {
         self.max_health
     }
@@ -273,9 +283,19 @@ impl Combatant {
         self.order
     }
 
-    /// Placement tags, ascending and distinct.
+    /// Creature tags, ascending and distinct.
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    /// Base `Fixed` stats in authored stat order.
+    pub fn fixed(&self) -> &[(String, Fx16_16)] {
+        &self.fixed
+    }
+
+    /// Whether this combatant entered from a record.
+    pub fn entered(&self) -> bool {
+        self.entered
     }
 }
 
@@ -755,6 +775,42 @@ impl<'de> Deserialize<'de> for CombatDefinition {
     }
 }
 
+fn is_suspend(value: &EffectsOnExit) -> bool {
+    *value == EffectsOnExit::Suspend
+}
+
+fn lifecycle_is_default(value: &Lifecycle) -> bool {
+    *value == Lifecycle::default()
+}
+
+/// What a creature's attached effects become at exit (ruleset
+/// `effects_on_exit`, T139 D9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectsOnExit {
+    /// Stored as remaining rounds at leave and at release.
+    #[default]
+    Suspend,
+    /// Dropped at leave and at release.
+    Strip,
+    /// Dropped at release; stored at leave.
+    StripAtRelease,
+}
+
+/// The creature-lifecycle rules one encounter runs under, fixed at start
+/// (T139 D13). Skipped from `CombatState` when every field is at its default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lifecycle {
+    /// Authored participants spawn fresh and are never written back: the
+    /// encounter's `respawns`, or a `registered` ruleset (D2).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub respawns: bool,
+    /// What attached effects become at exit.
+    #[serde(default, skip_serializing_if = "is_suspend")]
+    pub effects_on_exit: EffectsOnExit,
+}
+
 /// Encounter-level state; `None` when no encounter is active.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CombatState {
@@ -773,6 +829,9 @@ pub struct CombatState {
     /// The requested mode, applied at the next round boundary (ADR-0029 T9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_mode: Option<EncounterMode>,
+    /// The encounter's creature-lifecycle rules (T139); omitted at defaults.
+    #[serde(default, skip_serializing_if = "lifecycle_is_default")]
+    pub lifecycle: Lifecycle,
 }
 
 /// One authored participant's resolved references for the adapter.
@@ -1464,6 +1523,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
         attributes: Vec<(String, i32)>,
         health: u32,
         tags: Vec<String>,
+        fixed: Vec<(String, Fx16_16)>,
     }
 
     let mut pending = Vec::with_capacity(encounter.participants.len());
@@ -1478,7 +1538,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
             attributes,
             health,
             tags,
-            ..
+            fixed,
         } = read_creature_stats(ruleset, creature)?;
         pending.push(Pending {
             placement: resolved.placement.id,
@@ -1486,6 +1546,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
             attributes,
             health,
             tags,
+            fixed,
         });
     }
 
@@ -1796,30 +1857,23 @@ pub(crate) fn start_encounter_in_mode_tracked(
         }
     }
 
-    // T137 B19, B20: creature tags are carried only when an effect grants.
-    let carries_grants = referenced.iter().any(|effect| {
-        spec.effects
+    // T137 B20, T139 D5: every combatant carries its creature's tags; the
+    // bound holds with or without grants.
+    let mut granted: BTreeSet<&str> = BTreeSet::new();
+    for effect in &referenced {
+        if let Some(grants) = spec
+            .effects
             .get(effect)
-            .and_then(|authored| authored.grants.as_ref())
-            .is_some_and(|grants| !grants.is_empty())
-    });
-    if carries_grants {
-        let mut granted: BTreeSet<&str> = BTreeSet::new();
-        for effect in &referenced {
-            if let Some(grants) = spec
-                .effects
-                .get(effect)
-                .and_then(|item| item.grants.as_ref())
-            {
-                granted.extend(grants.iter().map(String::as_str));
-            }
+            .and_then(|item| item.grants.as_ref())
+        {
+            granted.extend(grants.iter().map(String::as_str));
         }
-        for member in &pending {
-            let mut union = granted.clone();
-            union.extend(member.tags.iter().map(String::as_str));
-            if union.len() > MAX_TAGS {
-                return Err(TooManyTags);
-            }
+    }
+    for member in &pending {
+        let mut union = granted.clone();
+        union.extend(member.tags.iter().map(String::as_str));
+        if union.len() > MAX_TAGS {
+            return Err(TooManyTags);
         }
     }
 
@@ -1950,8 +2004,49 @@ pub(crate) fn start_encounter_in_mode_tracked(
         initiative: initiative_rule,
     };
 
+    // T139 B11: the lifecycle rules this encounter runs under.
+    let lifecycle = Lifecycle {
+        respawns: encounter.respawns == Some(true)
+            || ruleset.creature_persistence == Some(CreaturePersistenceWire::Registered),
+        effects_on_exit: match ruleset.effects_on_exit {
+            None | Some(EffectsOnExitWire::Suspend) => EffectsOnExit::Suspend,
+            Some(EffectsOnExitWire::Strip) => EffectsOnExit::Strip,
+            Some(EffectsOnExitWire::StripAtRelease) => EffectsOnExit::StripAtRelease,
+        },
+    };
+
+    // T139 B13: each participant spawns, enters from its record, or is
+    // skipped. Nothing here mutates the world.
+    let mut sources: Vec<Source> = Vec::with_capacity(pending.len());
+    for member in pending.iter_mut() {
+        if lifecycle.respawns {
+            sources.push(Source::Spawn);
+            continue;
+        }
+        let found = world
+            .creatures()
+            .iter()
+            .find(|(_, record)| record.placement == member.placement);
+        let Some((entity, record)) = found else {
+            sources.push(Source::Spawn);
+            continue;
+        };
+        if record.dead() {
+            sources.push(Source::Skip);
+            continue;
+        }
+        check_entry(world, &definition, &granted, entity, record)?;
+        member.health = record.health;
+        member.attributes = record.attributes.clone();
+        sources.push(Source::Enter(entity));
+    }
+    // S4.
+    if sources.iter().all(|source| matches!(source, Source::Skip)) {
+        return Err(CombatError::NoEntrants);
+    }
+
     // T137 B17: roll each participant's key in authored order, after every
-    // check and before the spawn loop.
+    // check and before the spawn loop. A skipped participant draws nothing.
     if let Some(rule) = &definition.initiative {
         let mut scratch = world.interners().clone();
         let definitions = int_definitions(
@@ -1965,7 +2060,10 @@ pub(crate) fn start_encounter_in_mode_tracked(
         let mut probe_arena: GenerationalArena<()> = GenerationalArena::new();
         let probe = probe_arena.insert(());
         let no_tags = TagSet::new();
-        for member in pending.iter_mut() {
+        for (member, source) in pending.iter_mut().zip(&sources) {
+            if matches!(source, Source::Skip) {
+                continue;
+            }
             let block = base_block(
                 &definition.health_stat,
                 member.health,
@@ -1995,8 +2093,25 @@ pub(crate) fn start_encounter_in_mode_tracked(
         }
     }
 
-    for member in pending {
-        let id = world.spawn(EntityMeta {});
+    for (member, source) in pending.into_iter().zip(sources) {
+        let id = match source {
+            Source::Skip => continue,
+            Source::Enter(entity) => {
+                let record = world
+                    .creatures_mut()
+                    .remove(entity)
+                    .expect("the resolution above found this record");
+                let entered = enter_combatant(&definition, record, 0, member.initiative);
+                world.combatants_mut().insert(entity, entered);
+                let key = match mode {
+                    EncounterMode::TurnBased => member.initiative,
+                    EncounterMode::RealTime => 0,
+                };
+                world.timeline_mut().insert(InitiativeKey(key), entity);
+                continue;
+            }
+            Source::Spawn => world.spawn(EntityMeta {}),
+        };
         let mut extra = Vec::new();
         for template in definition.pools.iter().skip(1) {
             let pool = ResourcePool::new(
@@ -2028,11 +2143,9 @@ pub(crate) fn start_encounter_in_mode_tracked(
                 extra_pools: extra,
                 attached: Vec::new(),
                 order: None,
-                tags: if carries_grants {
-                    member.tags
-                } else {
-                    Vec::new()
-                },
+                tags: member.tags,
+                fixed: member.fixed,
+                entered: false,
             },
         );
         let key = match mode {
@@ -2063,9 +2176,196 @@ pub(crate) fn start_encounter_in_mode_tracked(
         mode,
         clock,
         pending_mode: None,
+        lifecycle,
     });
     Ok(StartFacts {
         initial_turn: active.map(|actor| (actor, 0)),
+    })
+}
+
+/// Where one authored participant's combatant comes from (T139 B13).
+enum Source {
+    /// A fresh entity built from the prefab.
+    Spawn,
+    /// The live entity holding the participant's alive record.
+    Enter(EntityId),
+    /// The participant's record is dead, so it is not an entrant.
+    Skip,
+}
+
+/// Evaluates the definition's derived stats on one base block, naming the
+/// first that fails (T139 S2); `None` when all evaluate or none is derived.
+fn derived_failure(
+    world: &World,
+    definition: &CombatDefinition,
+    health: u32,
+    attributes: &[(String, i32)],
+) -> Option<String> {
+    if definition.derived.is_empty() {
+        return None;
+    }
+    let mut scratch = world.interners().clone();
+    let definitions = int_definitions(
+        &definition.health_stat,
+        &definition.attribute_names,
+        &definition.derived,
+        &mut scratch,
+    );
+    let pipeline = ModifierPipeline::new(definitions, BTreeMap::new())
+        .unwrap_or_else(|_| panic!("{DERIVED_PRECONDITION}"));
+    let mut probe_arena: GenerationalArena<()> = GenerationalArena::new();
+    let probe = probe_arena.insert(());
+    let no_tags = TagSet::new();
+    let block = base_block(&definition.health_stat, health, attributes, &mut scratch);
+    let context = QueryContext {
+        entity: probe,
+        stats: &block,
+        tags: &no_tags,
+        modifiers: &[],
+    };
+    definition
+        .derived
+        .iter()
+        .find(|stat| query_int(&pipeline, probe, &stat.name, &scratch, &context).is_none())
+        .map(|stat| stat.name.clone())
+}
+
+/// The entry checks of one alive record against the definition (T139 S1-S3):
+/// `RulesetMismatch`, `InvalidStatValue`, then `TooManyTags`.
+fn check_entry(
+    world: &World,
+    definition: &CombatDefinition,
+    granted: &BTreeSet<&str>,
+    entity: EntityId,
+    record: &CreatureState,
+) -> Result<(), CombatError> {
+    // S1.
+    let names_agree = record.attributes.len() == definition.attribute_names.len()
+        && record
+            .attributes
+            .iter()
+            .zip(&definition.attribute_names)
+            .all(|((name, _), declared)| name == declared);
+    let pools_agree = record.pools.len() == definition.pools.len()
+        && record
+            .pools
+            .iter()
+            .zip(&definition.pools)
+            .all(|(pool, template)| {
+                pool.id().0 == template.id
+                    && pool.max() == template.max
+                    && pool.refresh_trigger() == template.refresh
+            });
+    if record.ruleset != definition.ruleset || !names_agree || !pools_agree {
+        return Err(CombatError::RulesetMismatch { entity });
+    }
+    // S2.
+    if let Some(stat) = derived_failure(world, definition, record.health, &record.attributes) {
+        return Err(CombatError::InvalidStatValue { stat });
+    }
+    // S3.
+    let mut union = granted.clone();
+    union.extend(record.tags.iter().map(String::as_str));
+    if union.len() > MAX_TAGS {
+        return Err(CombatError::TooManyTags);
+    }
+    Ok(())
+}
+
+/// The `Combatant` one record becomes on entry at `round` (T139 B14). Pools
+/// keep their balances, a suspended effect the definition knows resumes as
+/// `round + remaining_rounds`, and no refresh applies.
+fn enter_combatant(
+    definition: &CombatDefinition,
+    record: CreatureState,
+    round: u32,
+    initiative: i32,
+) -> Combatant {
+    let CreatureState {
+        placement,
+        attributes,
+        fixed,
+        health,
+        max_health,
+        pools,
+        suspended,
+        tags,
+        ..
+    } = record;
+    let mut pools = pools.into_iter();
+    let action_pool = pools.next().expect("a record declares at least one pool");
+    let attached = suspended
+        .iter()
+        .filter(|entry| effect_entry(definition, entry.effect).is_some())
+        .map(|entry| AttachedEffect {
+            effect: entry.effect,
+            expires_round: round.saturating_add(entry.remaining_rounds),
+        })
+        .collect();
+    Combatant {
+        placement,
+        initiative,
+        attributes,
+        health,
+        max_health,
+        dead: false,
+        action_pool,
+        extra_pools: pools.collect(),
+        attached,
+        order: None,
+        tags,
+        fixed,
+        entered: true,
+    }
+}
+
+/// The record one exiting combatant becomes, when one is due (T139 B16): it
+/// entered from a record, or its encounter does not respawn. `round` is the
+/// round the exit happens in; `release` is false for a leave.
+fn exit_record(
+    combatant: &Combatant,
+    ruleset: Ulid,
+    round: u32,
+    lifecycle: Lifecycle,
+    release: bool,
+) -> Option<CreatureState> {
+    if !(combatant.entered || !lifecycle.respawns) {
+        return None;
+    }
+    let keeps_effects = match lifecycle.effects_on_exit {
+        EffectsOnExit::Suspend => true,
+        EffectsOnExit::Strip => false,
+        EffectsOnExit::StripAtRelease => !release,
+    };
+    let suspended = if keeps_effects {
+        combatant
+            .attached
+            .iter()
+            .filter(|attached| attached.expires_round > round)
+            .map(|attached| SuspendedEffect {
+                effect: attached.effect,
+                remaining_rounds: attached.expires_round - round,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut tags = combatant.tags.clone();
+    tags.sort();
+    tags.dedup();
+    let mut pools = Vec::with_capacity(1 + combatant.extra_pools.len());
+    pools.push(combatant.action_pool.clone());
+    pools.extend(combatant.extra_pools.iter().cloned());
+    Some(CreatureState {
+        placement: combatant.placement,
+        ruleset,
+        attributes: combatant.attributes.clone(),
+        fixed: combatant.fixed.clone(),
+        health: combatant.health,
+        max_health: combatant.max_health,
+        pools,
+        suspended,
+        tags,
     })
 }
 
@@ -3785,10 +4085,18 @@ pub fn end_encounter(world: &mut World) -> Result<EncounterSummary, CombatError>
             })
             .collect(),
     };
+    let (round, ruleset, lifecycle) = (state.round, state.definition.ruleset, state.lifecycle);
     let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
     for id in ids {
         world.timeline_mut().remove(id);
-        world.combatants_mut().remove(id);
+        let combatant = world
+            .combatants_mut()
+            .remove(id)
+            .expect("listed ids are combatants");
+        // T139 B16, B17: survivors and the dead become records.
+        if let Some(record) = exit_record(&combatant, ruleset, round, lifecycle, true) {
+            world.creatures_mut().insert(id, record);
+        }
     }
     *world.combat_mut() = None;
     Ok(summary)
@@ -4230,7 +4538,7 @@ mod draw_tests {
 
     /// B19: the projection is the placement tags plus the grants of every
     /// unexpired attachment, as scratch handles; the placement tags are
-    /// carried sorted and distinct, and only when an effect grants.
+    /// carried sorted and distinct.
     #[test]
     fn the_tag_projection_follows_the_attachments() {
         let mut fixture = Fixture::standard();

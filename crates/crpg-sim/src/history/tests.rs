@@ -671,7 +671,8 @@ fn directed_cap_cases() {
     assert_eq!(a, b, "(c) acknowledgement diverged");
     assert_eq!(b, Ok(()));
     assert_eq!(fresh.pending_len(), 4095);
-    let fixture = Fixture::standard();
+    let mut fixture = Fixture::standard();
+    fixture.encounter.respawns = Some(true);
     let bundle = fixture.bundle();
     let spec = spec_for(&fixture, &bundle);
     let a = reference::start_encounter(&mut oracle, &spec);

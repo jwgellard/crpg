@@ -44,6 +44,25 @@ not break.
    never detect the platform at runtime and never skip the scoped check into
    a false green. Portable cases (divergence, malformed, missing, usage) run
    everywhere.
+8. **`demo` is a viewer, not a second path (T145).** `crpgc demo <replay>
+   --campaign <dir> [--delay-ms N]` reads and plays the replay through
+   testkit and the private `combat_apply` adapter (`step` is the additive
+   observation; `apply` still discards it, so `replay` is byte-identical),
+   then prints header, per-intent blocks, round/turn/death lines, and a
+   summary. It adds no rules, RNG, replay ordering, sim state, or new
+   dependency; every printed fact is a campaign document value or an
+   existing public `crpg-sim` read. Its names resolve through the campaign
+   locale table and its sides are faction-else-creature groupings; changing
+   either is a contract reading, not a bug fix.
+9. **`play` is a chooser, not a rules path (T146).** `crpgc play --campaign
+   <dir> [--encounter <ulid>] [--side <name>] [--seed N]` offers exactly
+   `crpg_sim::legal_actions` in returned order and performs the chosen one
+   through `crpg_sim::perform_action`, by way of the private adapter's
+   `perform`; the computer's rule also picks only from that list. It adds no
+   action, rule, RNG, or combat state. It reuses `demo`'s `Show` and the
+   adapter's `start` (visibility moved, nothing copied), prints `Quit.` on
+   `q` or end of stdin, and keeps the 0/1/2 buckets: a campaign failure or a
+   campaign with no encounter is 1, an unknown `--side`/`--encounter` is 2.
 
 Per-subcommand invariants (validate, migrate, T013, combat replay) moved to
 `docs/architecture/crpg-cli.md` (§Validate invariants, §Migrate invariants,
@@ -146,4 +165,6 @@ Command-specific traps (validate/migrate/T013/lock/LLM trials) moved to
 - 2026-09-27 (UTC) · opencode/muse-spark + T017f implementation · Aligned the contract with the as-built proof (end decode with result-shape guard, 10-test srd_replay suite, B4 artifacts read-only); no commit/push/PR.
 - 2026-10-16 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving detailed contracts/invariants/traps into the architecture doc, leaving crate-wide rules, gates, and cross-cutting traps here.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Clarified invariant 4's byte-identical scope (apply semantics, not diagnostic wording) and pinned the CLI's own `unknown intent payload` wording per D29k; nothing else changed.
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T145 · Added invariant 8 so the terminal demo stays a viewer over testkit playback and the private adapter, and recorded that its name/side/round readings are contract choices rather than free-form presentation.
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T146 · Added invariant 9 so playable combat chooses only from `legal_actions`, performs only through `perform_action`, and shares demo's printer and the adapter's bind glue instead of growing a second rules or presentation path.
 """

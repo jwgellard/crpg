@@ -11,6 +11,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crpg_net::protocol::{MAX_DELTA_FRAME_BYTES, MAX_INTENT_FRAME_BYTES};
+use crpg_net::protocol_resume::MAX_RESUME_FRAME_BYTES;
 use crpg_net::sim::QueueCaps;
 use crpg_net::transport::Transport;
 use quinn::{
@@ -18,15 +19,18 @@ use quinn::{
     TokioRuntime, TransportErrorCode, WriteError,
 };
 
-use crate::close::{CloseCode, CloseMode, CloseReason, ConnectionStats, SendError};
+use crate::close::{
+    ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, SendError,
+};
 use crate::handshake::{
-    Hello, Welcome, FRAME_HEADER_BYTES, MAX_HELLO_BYTES, TLS_SERVER_NAME, WELCOME_BYTES,
+    parse_channel_frame_header, Channel, Framing, Hello, Welcome, ALPN_LANE0_V2,
+    FRAME_HEADER_BYTES, MAX_HELLO_BYTES, TLS_SERVER_NAME, WELCOME_BYTES,
 };
 use crate::limits::{ClientConfig, ClientLimits, ConfigError};
 use crate::queue::{
-    close_quinn, deadline_after, framed, lane_control, lane_reader, lane_writer, race, reason_from,
-    wait_stop, Conn, ConnWake, Either, FailGuard, FlushRequest, Phase, Shared, State, Stop,
-    SYNC_GRACE,
+    close_quinn, deadline_after, framed, framed_channel, lane_control, lane_reader, lane_writer,
+    race, reason_from, wait_stop, Conn, ConnWake, Either, FailGuard, FlushRequest, LaneDirection,
+    Phase, ReadSpec, Shared, State, Stop, SYNC_GRACE,
 };
 use crate::tls;
 
@@ -53,10 +57,13 @@ pub enum ConnectError {
         /// The server's raw application close code.
         code: u64,
     },
-    /// The connection ended otherwise before the welcome.
+    /// The connection ended otherwise before the welcome or answer.
     Lost(CloseReason),
-    /// Welcome malformed or with a different wire version (client then closes
-    /// with `ProtocolViolation`).
+    /// The welcome (or, on a resume connection, the answer frame) is
+    /// malformed or with a different wire version; on a resume connection
+    /// the answer's header is malformed (byte 0 not `0x91`, or a length of
+    /// 0 or above 65,536) and the client closes with `ProtocolViolation`
+    /// (S§4.6 of `tasks/T024q.md`).
     InvalidWelcome,
     /// `connect_timeout_ms` elapsed.
     TimedOut,
@@ -98,6 +105,8 @@ pub struct QuicClient {
     local_addr: SocketAddr,
     welcome: Welcome,
     limits: ClientLimits,
+    /// The framing this client asked for and negotiated.
+    framing: Framing,
 }
 
 impl QuicClient {
@@ -106,6 +115,17 @@ impl QuicClient {
         config: ClientConfig,
         server: SocketAddr,
         hello: &Hello,
+    ) -> Result<QuicClient, ConnectError> {
+        Self::connect_framed(config, server, hello, Framing::V1)
+    }
+
+    /// `connect` with an explicit framing; offers exactly `framing.alpn()`.
+    /// Blocks as `connect`, bounded by `connect_timeout_ms`.
+    pub fn connect_framed(
+        config: ClientConfig,
+        server: SocketAddr,
+        hello: &Hello,
+        framing: Framing,
     ) -> Result<QuicClient, ConnectError> {
         let limits = config.limits;
         limits.validate().map_err(ConnectError::Config)?;
@@ -116,10 +136,10 @@ impl QuicClient {
             .ok()
             .and_then(|payload| framed(&payload, MAX_HELLO_BYTES).ok())
             .ok_or(ConnectError::Handshake)?;
-        let wire_version = hello.wire_version;
         let mismatch = Arc::new(AtomicBool::new(false));
-        let quinn_config = tls::client_config(config.pin, mismatch.clone(), &limits)
-            .ok_or(ConnectError::Handshake)?;
+        let quinn_config =
+            tls::client_config(config.pin, mismatch.clone(), framing.alpn(), &limits)
+                .ok_or(ConnectError::Handshake)?;
         let socket = UdpSocket::bind(config.bind).map_err(|e| ConnectError::Io(e.kind()))?;
         let local_addr = socket
             .local_addr()
@@ -142,39 +162,30 @@ impl QuicClient {
         let attempt = Attempt {
             config: quinn_config,
             server,
-            hello_frame,
-            wire_version,
+            kind: Kind::Hello {
+                hello_frame,
+                wire_version: hello.wire_version,
+            },
+            framing,
             mismatch,
             limits,
         };
-        let thread = std::thread::Builder::new()
-            .name("crpg-quic-client".into())
-            .spawn(move || {
-                let guard = FailGuard::new(thread_shared.clone());
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_io()
-                    .enable_time()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        let _ = ready_tx.send(Err(ConnectError::Runtime));
-                        guard.clean();
-                        return;
-                    }
-                };
-                runtime.block_on(client_main(thread_shared, socket, attempt, ready_tx));
-                guard.clean();
-            })
-            .map_err(|_| ConnectError::Runtime)?;
+        let thread = spawn_attempt(thread_shared, socket, attempt, ready_tx)?;
         match ready_rx.recv() {
-            Ok(Ok(welcome)) => Ok(QuicClient {
-                shared,
-                thread: Some(thread),
-                local_addr,
+            Ok(Ok(Connected {
                 welcome,
-                limits,
-            }),
+                resume_answer,
+            })) => {
+                debug_assert!(resume_answer.is_none(), "a hello opening reads no answer");
+                Ok(QuicClient {
+                    shared,
+                    thread: Some(thread),
+                    local_addr,
+                    welcome,
+                    limits,
+                    framing,
+                })
+            }
             Ok(Err(error)) => {
                 let _ = thread.join();
                 Err(error)
@@ -186,7 +197,107 @@ impl QuicClient {
         }
     }
 
-    /// The welcome the server sent.
+    /// A `crpg-lane0/2` connection opened with `request` (S§4.6 of
+    /// `tasks/T024q.md`): TLS over `/2` only, then `[0x91][len24]` +
+    /// `request` as the opening, then the server's answer read and checked
+    /// for form only. The one timer covers TLS, the request and the whole
+    /// answer read. Returns the client and the answer payload;
+    /// [`welcome`](Self::welcome) then returns `session`. Before any I/O,
+    /// limits invalid → `Config`, an unencodable `session` or an empty or
+    /// over-4,096-byte `request` → `Handshake`, and no socket is bound.
+    pub fn connect_resume(
+        config: ClientConfig,
+        server: SocketAddr,
+        session: Welcome,
+        request: &[u8],
+    ) -> Result<(QuicClient, Vec<u8>), ConnectError> {
+        let limits = config.limits;
+        limits.validate().map_err(ConnectError::Config)?;
+        // Resume keeps the session's epoch and wire version, so the caller
+        // supplies the session's welcome in place of a received one (D39d
+        // Q4); an unencodable session is a handshake that cannot start.
+        session.encode().map_err(|_| ConnectError::Handshake)?;
+        if request.is_empty() || request.len() > MAX_RESUME_FRAME_BYTES {
+            return Err(ConnectError::Handshake);
+        }
+        let request_frame = framed_channel(Channel::Resume, request, MAX_RESUME_FRAME_BYTES)
+            .map_err(|_| ConnectError::Handshake)?;
+        let mismatch = Arc::new(AtomicBool::new(false));
+        let quinn_config =
+            tls::client_config(config.pin, mismatch.clone(), Framing::V2.alpn(), &limits)
+                .ok_or(ConnectError::Handshake)?;
+        let socket = UdpSocket::bind(config.bind).map_err(|e| ConnectError::Io(e.kind()))?;
+        let local_addr = socket
+            .local_addr()
+            .map_err(|e| ConnectError::Io(e.kind()))?;
+        let inbound = QueueCaps {
+            per_peer_frames: limits.inbound_frames,
+            per_peer_bytes: limits.inbound_bytes,
+            host_frames: limits.inbound_frames,
+            host_bytes: limits.inbound_bytes,
+        };
+        let outbound = QueueCaps {
+            per_peer_frames: limits.outbound_frames,
+            per_peer_bytes: limits.outbound_bytes,
+            host_frames: limits.outbound_frames,
+            host_bytes: limits.outbound_bytes,
+        };
+        let shared = Arc::new(Shared::new(State::new(inbound, outbound, false)));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let thread_shared = shared.clone();
+        let attempt = Attempt {
+            config: quinn_config,
+            server,
+            kind: Kind::Resume {
+                request_frame,
+                welcome: session,
+            },
+            framing: Framing::V2,
+            mismatch,
+            limits,
+        };
+        let thread = spawn_attempt(thread_shared, socket, attempt, ready_tx)?;
+        match ready_rx.recv() {
+            Ok(Ok(Connected {
+                welcome,
+                resume_answer,
+            })) => match resume_answer {
+                Some(answer) => Ok((
+                    QuicClient {
+                        shared,
+                        thread: Some(thread),
+                        local_addr,
+                        welcome,
+                        limits,
+                        framing: Framing::V2,
+                    },
+                    answer,
+                )),
+                // A resume attempt always reads an answer (S§4.6).
+                None => {
+                    let _ = thread.join();
+                    Err(ConnectError::Runtime)
+                }
+            },
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(ConnectError::Runtime)
+            }
+        }
+    }
+
+    /// The framing this client asked for and negotiated.
+    pub fn framing(&self) -> Framing {
+        self.framing
+    }
+
+    /// The welcome the server sent; on a resumed connection the session
+    /// welcome the caller passed (the transport does not decode the answer;
+    /// T025a C4).
     pub fn welcome(&self) -> Welcome {
         self.welcome
     }
@@ -196,29 +307,85 @@ impl QuicClient {
         self.local_addr
     }
 
-    /// Queues one lane frame (≤ 4,096 bytes). Precedence: `Closed` →
-    /// `EmptyFrame` → `FrameTooLarge` → `QueueFull` (retryable; nothing queued).
+    /// Queues one lane-0 frame (≤ 4,096 bytes): `try_send_channel` on
+    /// `Channel::Lane0`, whose `ChannelUnavailable` cannot occur.
     pub fn try_send(&mut self, frame: &[u8]) -> Result<(), SendError> {
-        let endpoint_failed = SendError::Closed(CloseReason::EndpointFailed);
+        match self.try_send_channel(Channel::Lane0, frame) {
+            Ok(()) => Ok(()),
+            Err(ChannelSendError::Send(error)) => Err(error),
+            // Lane 0 is available on every framing; treat the impossible arm
+            // as an endpoint-level failure, not a panic.
+            Err(ChannelSendError::ChannelUnavailable) => {
+                Err(SendError::Closed(CloseReason::EndpointFailed))
+            }
+        }
+    }
+
+    /// Queues one lane frame (≤ 4,096 bytes) on `channel`. Precedence:
+    /// `Send(Closed(_))` → `ChannelUnavailable` (`Resume` always;
+    /// `Transfer` on a `/1` connection) → `Send(EmptyFrame)` →
+    /// `Send(FrameTooLarge)` → `Send(QueueFull)` (retryable; nothing
+    /// queued).
+    pub fn try_send_channel(
+        &mut self,
+        channel: Channel,
+        frame: &[u8],
+    ) -> Result<(), ChannelSendError> {
+        let endpoint_failed =
+            ChannelSendError::Send(SendError::Closed(CloseReason::EndpointFailed));
         let mut state = self.shared.lock().ok_or(endpoint_failed)?;
         let record = state.conns.get(&LANE).ok_or(endpoint_failed)?;
         if let Some(reason) = record.close_state() {
-            return Err(SendError::Closed(reason));
+            return Err(ChannelSendError::Send(SendError::Closed(reason)));
+        }
+        // The resume channel is directional: upstream, a `0x91` frame is
+        // legal only as the opening (S§5.2); and a `/1` connection has no
+        // transfer channel.
+        if channel == Channel::Resume
+            || (channel == Channel::Transfer && record.framing == Framing::V1)
+        {
+            return Err(ChannelSendError::ChannelUnavailable);
         }
         if frame.is_empty() {
-            return Err(SendError::EmptyFrame);
+            return Err(ChannelSendError::Send(SendError::EmptyFrame));
         }
         if frame.len() > MAX_INTENT_FRAME_BYTES {
-            return Err(SendError::FrameTooLarge);
+            return Err(ChannelSendError::Send(SendError::FrameTooLarge));
         }
-        state.queue_outbound(LANE, frame)
+        state
+            .queue_outbound(LANE, channel, frame)
+            .map_err(ChannelSendError::Send)
     }
 
-    /// `Ok(None)` when empty; `Err(reason)` once closed **and** drained.
+    /// `Ok(None)` when empty; `Err(reason)` once closed **and** drained. A
+    /// view: while a transfer or resume frame is at the head it returns
+    /// `Ok(None)` and leaves it queued; only `try_recv_channel` can take it
+    /// (S§8.3).
     pub fn try_recv(&mut self) -> Result<Option<Vec<u8>>, CloseReason> {
         let mut state = self.shared.lock().ok_or(CloseReason::EndpointFailed)?;
-        if let Some(frame) = state.pop_inbound(LANE) {
+        if let Some(frame) = state.pop_inbound_lane0(LANE) {
             return Ok(Some(frame));
+        }
+        let record = state.conns.get(&LANE).ok_or(CloseReason::EndpointFailed)?;
+        if record
+            .inbound_head()
+            .is_some_and(|channel| channel != Channel::Lane0)
+        {
+            return Ok(None);
+        }
+        if record.published {
+            return Err(record.reason.unwrap_or(CloseReason::EndpointFailed));
+        }
+        Ok(None)
+    }
+
+    /// As `try_recv`, with the frame's channel: on a `crpg-lane0/2`
+    /// connection all three channels arrive; on a `/1` connection every
+    /// frame is `Channel::Lane0`.
+    pub fn try_recv_channel(&mut self) -> Result<Option<(Channel, Vec<u8>)>, CloseReason> {
+        let mut state = self.shared.lock().ok_or(CloseReason::EndpointFailed)?;
+        if let Some(next) = state.pop_inbound(LANE) {
+            return Ok(Some(next));
         }
         let record = state.conns.get(&LANE).ok_or(CloseReason::EndpointFailed)?;
         if record.published {
@@ -374,20 +541,73 @@ impl fmt::Debug for QuicClient {
 // I/O thread.
 // ---------------------------------------------------------------------------
 
+/// What a successful handshake hands the connecting call.
+#[derive(Debug)]
+struct Connected {
+    welcome: Welcome,
+    /// The resume answer payload, on a resume opening only (S§4.6).
+    resume_answer: Option<Vec<u8>>,
+}
+
+/// Which opening the attempt presents on the lane stream.
+enum Kind {
+    /// A hello frame; answered with exactly one 17-byte welcome.
+    Hello {
+        hello_frame: Vec<u8>,
+        wire_version: u8,
+    },
+    /// A resume request frame (an `0x91` channel frame); answered with the
+    /// server's answer payload, checked for form only.
+    Resume {
+        request_frame: Vec<u8>,
+        /// The session welcome the caller supplied as the client's welcome.
+        welcome: Welcome,
+    },
+}
+
 struct Attempt {
     config: quinn::ClientConfig,
     server: SocketAddr,
-    hello_frame: Vec<u8>,
-    wire_version: u8,
+    kind: Kind,
+    framing: Framing,
     mismatch: Arc<AtomicBool>,
     limits: ClientLimits,
+}
+
+/// The thread skeleton shared by `connect_framed` and `connect_resume`.
+fn spawn_attempt(
+    thread_shared: Arc<Shared>,
+    socket: UdpSocket,
+    attempt: Attempt,
+    ready_tx: mpsc::SyncSender<Result<Connected, ConnectError>>,
+) -> Result<JoinHandle<()>, ConnectError> {
+    std::thread::Builder::new()
+        .name("crpg-quic-client".into())
+        .spawn(move || {
+            let guard = FailGuard::new(thread_shared.clone());
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_) => {
+                    let _ = ready_tx.send(Err(ConnectError::Runtime));
+                    guard.clean();
+                    return;
+                }
+            };
+            runtime.block_on(client_main(thread_shared, socket, attempt, ready_tx));
+            guard.clean();
+        })
+        .map_err(|_| ConnectError::Runtime)
 }
 
 async fn client_main(
     shared: Arc<Shared>,
     socket: UdpSocket,
     attempt: Attempt,
-    ready: mpsc::SyncSender<Result<Welcome, ConnectError>>,
+    ready: mpsc::SyncSender<Result<Connected, ConnectError>>,
 ) {
     let endpoint = match quinn::Endpoint::new(
         EndpointConfig::default(),
@@ -404,7 +624,7 @@ async fn client_main(
     let limits = attempt.limits;
     let connect_timeout = Duration::from_millis(u64::from(limits.connect_timeout_ms));
     let outcome = tokio::time::timeout(connect_timeout, handshake(&endpoint, attempt)).await;
-    let (connection, send, recv, welcome) = match outcome {
+    let (connection, send, recv, ready_outcome) = match outcome {
         Ok(Ok(parts)) => parts,
         Ok(Err(error)) => {
             finish_endpoint(&endpoint, CloseCode::Normal, limits).await;
@@ -417,9 +637,11 @@ async fn client_main(
             return;
         }
     };
+    let (welcome, resume_answer, framing) = ready_outcome;
     let wake = Arc::new(ConnWake::default());
     if let Some(mut state) = shared.lock_any() {
         let mut record = Conn::new(Phase::Accepted, connection.clone(), wake.clone());
+        record.framing = framing;
         record.reader_active = true;
         state.conns.insert(LANE, record);
     }
@@ -435,10 +657,17 @@ async fn client_main(
         LANE,
         connection.clone(),
         recv,
-        MAX_DELTA_FRAME_BYTES,
+        ReadSpec {
+            framing,
+            direction: LaneDirection::Downstream,
+            cap: MAX_DELTA_FRAME_BYTES,
+        },
         wake.clone(),
     ));
-    let _ = ready.send(Ok(welcome));
+    let _ = ready.send(Ok(Connected {
+        welcome,
+        resume_answer,
+    }));
     let stop = match race(
         lane_control(shared.clone(), LANE, connection, wake),
         wait_stop(&shared),
@@ -466,14 +695,33 @@ async fn finish_endpoint(endpoint: &quinn::Endpoint, code: CloseCode, limits: Cl
     let _ = tokio::time::timeout(flush, endpoint.wait_idle()).await;
 }
 
-/// E§5 client sequence: TLS with the pinned verifier, open the bidi stream,
-/// write the hello, read exactly one 17-byte welcome and check its version.
+/// E§5 client sequence with the S§4.3/S§4.6 additions: TLS with the pinned
+/// verifier (plus the `/2` negotiated-ALPN re-check), open the bidi stream,
+/// write the opening (hello, or `[0x91][len24]` + request), and read the
+/// welcome, or the resume answer checked for form only. On success the
+/// record's framing is returned for the lane reader.
 async fn handshake(
     endpoint: &quinn::Endpoint,
     attempt: Attempt,
-) -> Result<(Connection, SendStream, RecvStream, Welcome), ConnectError> {
+) -> Result<
+    (
+        Connection,
+        SendStream,
+        RecvStream,
+        (Welcome, Option<Vec<u8>>, Framing),
+    ),
+    ConnectError,
+> {
+    let Attempt {
+        config,
+        server,
+        kind,
+        framing,
+        mismatch,
+        ..
+    } = attempt;
     let connecting = endpoint
-        .connect_with(attempt.config, attempt.server, TLS_SERVER_NAME)
+        .connect_with(config, server, TLS_SERVER_NAME)
         .map_err(|error| match error {
             quinn::ConnectError::InvalidRemoteAddress(_) => {
                 ConnectError::Io(ErrorKind::InvalidInput)
@@ -482,29 +730,81 @@ async fn handshake(
         })?;
     let connection = connecting
         .await
-        .map_err(|error| handshake_error(&error, &attempt.mismatch))?;
+        .map_err(|error| handshake_error(&error, &mismatch))?;
+    // S§4.3: under `/2`, a negotiated protocol other than `crpg-lane0/2` is
+    // a protocol violation (defence in depth; the pinned rustls client
+    // refuses it first).
+    if framing == Framing::V2 {
+        let negotiated = connection
+            .handshake_data()
+            .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+            .is_some_and(|data| data.protocol.as_deref() == Some(ALPN_LANE0_V2));
+        if !negotiated {
+            close_quinn(&connection, CloseCode::ProtocolViolation);
+            return Err(ConnectError::Handshake);
+        }
+    }
     let (mut send, mut recv) = connection
         .open_bi()
         .await
         .map_err(|error| lost_error(&error))?;
-    send.write_all(&attempt.hello_frame)
-        .await
-        .map_err(|error| match error {
-            WriteError::ConnectionLost(lost) => lost_error(&lost),
-            _ => invalid_welcome(&connection),
-        })?;
-    let mut header = [0u8; FRAME_HEADER_BYTES];
-    read_welcome_part(&connection, &mut recv, &mut header).await?;
-    if usize::try_from(u32::from_be_bytes(header)).ok() != Some(WELCOME_BYTES) {
-        return Err(invalid_welcome(&connection));
+    match kind {
+        Kind::Hello {
+            hello_frame,
+            wire_version,
+        } => {
+            send.write_all(&hello_frame)
+                .await
+                .map_err(|error| match error {
+                    WriteError::ConnectionLost(lost) => lost_error(&lost),
+                    _ => invalid_welcome(&connection),
+                })?;
+            let mut header = [0u8; FRAME_HEADER_BYTES];
+            read_welcome_part(&connection, &mut recv, &mut header).await?;
+            if usize::try_from(u32::from_be_bytes(header)).ok() != Some(WELCOME_BYTES) {
+                return Err(invalid_welcome(&connection));
+            }
+            let mut body = [0u8; WELCOME_BYTES];
+            read_welcome_part(&connection, &mut recv, &mut body).await?;
+            let welcome = Welcome::decode(&body).map_err(|_| invalid_welcome(&connection))?;
+            if welcome.wire_version != wire_version {
+                return Err(invalid_welcome(&connection));
+            }
+            Ok((connection, send, recv, (welcome, None, framing)))
+        }
+        Kind::Resume {
+            request_frame,
+            welcome,
+        } => {
+            send.write_all(&request_frame)
+                .await
+                .map_err(|error| match error {
+                    WriteError::ConnectionLost(lost) => lost_error(&lost),
+                    _ => invalid_welcome(&connection),
+                })?;
+            // S§4.6 step 4: the answer header is a `/2` `[0x91][24-bit
+            // length]` frame with 1..=65,536 bytes; anything else is an
+            // `InvalidWelcome` after closing with code 2.
+            let mut header = [0u8; FRAME_HEADER_BYTES];
+            read_welcome_part(&connection, &mut recv, &mut header).await?;
+            if header[0] != Channel::Resume.as_u8() {
+                return Err(invalid_welcome(&connection));
+            }
+            let len = parse_answer_len(header).ok_or_else(|| invalid_welcome(&connection))?;
+            let mut body = vec![0u8; len];
+            read_welcome_part(&connection, &mut recv, &mut body).await?;
+            Ok((connection, send, recv, (welcome, Some(body), framing)))
+        }
     }
-    let mut body = [0u8; WELCOME_BYTES];
-    read_welcome_part(&connection, &mut recv, &mut body).await?;
-    let welcome = Welcome::decode(&body).map_err(|_| invalid_welcome(&connection))?;
-    if welcome.wire_version != attempt.wire_version {
-        return Err(invalid_welcome(&connection));
+}
+
+/// The `/2` answer header's payload length, `Ok` only for 1..=65,536 bytes
+/// (S§4.6 step 4; the 24-bit length is checked against the direction cap).
+fn parse_answer_len(header: [u8; FRAME_HEADER_BYTES]) -> Option<usize> {
+    match parse_channel_frame_header(header, MAX_DELTA_FRAME_BYTES) {
+        Ok((_, len)) => Some(len),
+        Err(_) => None,
     }
-    Ok((connection, send, recv, welcome))
 }
 
 async fn read_welcome_part(
