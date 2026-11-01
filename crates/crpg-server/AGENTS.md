@@ -32,6 +32,12 @@ T024h's additive `host` items (ADR-0031): `DeliveryKind`,
 ordinal meaning and makes `take_delivery` carry transfer frames in a
 snapshot session; their signatures do not change.
 
+T024h2's `quic` items (the ADR-0026 addendum): `HostCall::BindSnapshotPeer`
+and `HostCall::IngestTransfer`, and `GrantChange::SnapshotStaged`.
+`HostCall::Ingest`'s `frame` counts every channel, `TakeDelivery`'s result
+is an entry count, and `AcknowledgeDelivery`'s `through` is a delivery
+ordinal. On `/1` every traced and reported value is T023b's.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no

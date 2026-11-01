@@ -720,6 +720,17 @@ fn replay(
                         return Err(format!("step {index}: bind {got:?} != {result:?}"));
                     }
                 }
+                HostCall::BindSnapshotPeer {
+                    invitation, result, ..
+                } => {
+                    let (control, grants) = grants.get(invitation).ok_or("unknown invitation")?;
+                    let got = host.bind_snapshot_peer(control.clone(), grants.clone(), *now);
+                    if got != *result {
+                        return Err(format!(
+                            "step {index}: snapshot bind {got:?} != {result:?}"
+                        ));
+                    }
+                }
                 HostCall::UnbindPeer { peer } => host.unbind_peer(*peer),
                 HostCall::Ingest {
                     conn,
@@ -738,6 +749,25 @@ fn replay(
                     let got = host.ingest(*peer, bytes, *now);
                     if got != Ok(result.clone()) {
                         return Err(format!("step {index}: ingest {got:?} != {result:?}"));
+                    }
+                }
+                HostCall::IngestTransfer {
+                    conn,
+                    peer,
+                    frame,
+                    len,
+                    result,
+                } => {
+                    let bytes = sent
+                        .get(conn)
+                        .and_then(|log| log.get(*frame as usize - 1))
+                        .ok_or(format!("step {index}: no frame {frame} on {conn:?}"))?;
+                    if bytes.len() != *len {
+                        return Err(format!("step {index}: length differs"));
+                    }
+                    let got = host.ingest_transfer(*peer, bytes, *now);
+                    if got != Ok(result.clone()) {
+                        return Err(format!("step {index}: transfer {got:?} != {result:?}"));
                     }
                 }
                 HostCall::Pump { summary } => {
