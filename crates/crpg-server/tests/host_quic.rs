@@ -726,9 +726,7 @@ fn replay(
                     let (control, grants) = grants.get(invitation).ok_or("unknown invitation")?;
                     let got = host.bind_snapshot_peer(control.clone(), grants.clone(), *now);
                     if got != *result {
-                        return Err(format!(
-                            "step {index}: snapshot bind {got:?} != {result:?}"
-                        ));
+                        return Err(format!("step {index}: snapshot bind {got:?} != {result:?}"));
                     }
                 }
                 HostCall::UnbindPeer { peer } => host.unbind_peer(*peer),

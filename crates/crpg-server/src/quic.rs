@@ -39,9 +39,9 @@ use crpg_net_quic::{
 
 use crate::checkpoint::CheckpointError;
 use crate::host::{
-    is_narrowing, normalize_control, normalize_grants, AdmissionResult, ControlGrant,
-    DeliveryKind, DisclosureGrants, GrantUpdate, Host, HostError, IngestDisposition, PeerHandle,
-    PumpSummary, TransferDisposition, TransferRefusal,
+    is_narrowing, normalize_control, normalize_grants, AdmissionResult, ControlGrant, DeliveryKind,
+    DisclosureGrants, GrantUpdate, Host, HostError, IngestDisposition, PeerHandle, PumpSummary,
+    TransferDisposition, TransferRefusal,
 };
 
 // ---------------------------------------------------------------------------
@@ -652,9 +652,10 @@ impl QuicHost {
                 self.host
                     .bind_snapshot_peer(record.control.clone(), record.grants.clone(), now_ms)
             }
-            Framing::V1 => self
-                .host
-                .bind_peer(record.control.clone(), record.grants.clone(), now_ms),
+            Framing::V1 => {
+                self.host
+                    .bind_peer(record.control.clone(), record.grants.clone(), now_ms)
+            }
         };
         report.calls.push(match framing {
             Framing::V2 => HostCall::BindSnapshotPeer {
@@ -1232,9 +1233,10 @@ impl QuicHost {
             .get(&id)
             .ok_or(QuicHostError::UnknownInvitation)?;
         let grants = normalize_grants(grants).map_err(QuicHostError::Host)?;
-        let live = record
-            .live
-            .and_then(|conn| self.bound(conn).map(|bound| (conn, bound.peer, bound.framing)));
+        let live = record.live.and_then(|conn| {
+            self.bound(conn)
+                .map(|bound| (conn, bound.peer, bound.framing))
+        });
         let Some((conn, peer, framing)) = live else {
             self.store_grants(id, grants);
             return Ok(GrantChange::Stored);

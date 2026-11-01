@@ -178,10 +178,22 @@ git diff --check
 - **Acknowledge by ordinal, never by count.** `acknowledge_delivery`'s
   `through` is a delivery ordinal; a cleared entry counts as retired, so
   `acked + n` falls short. In a lane-0 session the ordinal equals the
-  entry's `event_seq`.
+  entry's `event_seq`. Live delivery, a departed peer and the shutdown
+  flush alike acknowledge the last entry taken or accepted, never a count
+  (T024h2).
 - **Never pick a channel from frame bytes.** Use `DeliveryKind` from
   `take_delivery_entries`; reading the first byte is the adapter's job to
   avoid, not to do.
+- **Never call the legacy `try_send`/`try_recv` on a connection that may be
+  `/2`.** Every adapter read and write uses `try_send_channel`/
+  `try_recv_channel`: the legacy send tags a transfer entry `Lane0`, and a
+  `Transfer` frame at the head of a retired connection reads as `Ok(None)`
+  for ever, leaking the record (T024h2).
+- **`QuicHost::start` takes a server from `bind` or `bind_dual`, never
+  `bind_resumable`, until T025b.** The adapter polls only `poll_event`,
+  which stops for good at a resume notice, and no public call tells a
+  resumable server apart, so this is a documented precondition on `start`
+  (T024h2).
 - **Staging is atomic, never pending.** Narrowing and an honoured `Resync`
   determine, check room against the cleared log, then commit in the same
   call, or change nothing. No stage point exists in `pump` or
@@ -224,3 +236,4 @@ git diff --check
 - 2026-10-05 (UTC) · claude-code + T039 · Added the `save` module to the surface, fenced filesystem I/O to `save.rs` through `crpg-persist` (invariant 7 amended, not weakened), recorded the approved `crpg-persist` edge and the `host_save` gate, and listed the save-adapter traps.
 - 2026-10-06 (UTC) · claude-code + T023b · Added the `quic` module to the surface, amended invariant 7 to fence network I/O to `quic.rs` through `crpg-net-quic`, replaced the QUIC-crates sentence with the path edge, added the `host_quic` gate, and listed the adapter traps, including the approved correction that a hold can lose frames to the rate budget.
 - 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session public surface and host traps (opt-in kind, ordinal acks, `DeliveryKind`, atomic staging) and replaced the old "narrowing fences" trap with the per-kind rule, so the crate contract matches ADR-0031.
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Added the adapter surface and traps for the `/2` path (ordinal acks live/departed/shutdown, no legacy `try_send`/`try_recv`, `bind`/`bind_dual` only), so the crate contract matches the as-built QUIC adapter and the ADR-0026 addendum.

@@ -84,8 +84,6 @@ fn a_no_health(mut grants: DisclosureGrants) -> DisclosureGrants {
 // Literal T024 S§5.4 bodies.
 // ---------------------------------------------------------------------------
 
-
-
 fn a_no_health_b_body() -> Vec<u8> {
     vec![
         0x03, 0x01, 0x00, 0x02, 0x01, 0x07, 0x0A, 0x00, 0x03, 0x01, 0x03, 0x03, 0x00, 0x01, 0x01,
@@ -294,7 +292,10 @@ fn expected(items: &[(u64, (u32, u32, bool))], turn: Option<(Option<u64>, u64)>)
 }
 
 /// A's presence is disclosed but its health is not: the replica holds `None`.
-fn expected_hidden_a(items: &[(u64, (u32, u32, bool))], turn: Option<(Option<u64>, u64)>) -> Replica {
+fn expected_hidden_a(
+    items: &[(u64, (u32, u32, bool))],
+    turn: Option<(Option<u64>, u64)>,
+) -> Replica {
     let mut replica = expected(items, turn);
     replica.health.insert(1, None);
     replica
@@ -317,8 +318,12 @@ fn bind_dual_server(limits: ServerLimits) -> QuicServer {
 /// A started adapter over the fixture host and a `bind_dual` server.
 fn start_dual(protocol: ProtocolSelection) -> (QuicHost, TestClock) {
     let clock = TestClock::new();
-    let qh = QuicHost::start(new_host(protocol), bind_dual_server(ServerLimits::v1()), clock.now())
-        .expect("starts over a fresh host");
+    let qh = QuicHost::start(
+        new_host(protocol),
+        bind_dual_server(ServerLimits::v1()),
+        clock.now(),
+    )
+    .expect("starts over a fresh host");
     (qh, clock)
 }
 
@@ -429,7 +434,6 @@ impl TxClient {
     fn epoch(&self) -> [u8; 16] {
         self.client.epoch
     }
-
 
     fn send_transfer(&mut self, bytes: Vec<u8>) {
         self.client
@@ -567,12 +571,7 @@ impl TxClient {
     }
 
     /// Guard: reads until `cond` holds.
-    fn read_until(
-        &mut self,
-        now: u64,
-        what: &str,
-        mut cond: impl FnMut(&TxClient) -> bool,
-    ) {
+    fn read_until(&mut self, now: u64, what: &str, mut cond: impl FnMut(&TxClient) -> bool) {
         let start = std::time::Instant::now();
         loop {
             self.read_available(now);
@@ -626,7 +625,6 @@ fn take_count(report: &QuicPumpReport, peer: PeerHandle) -> Option<usize> {
     })
 }
 
-
 /// The highest acknowledgement traced for `peer`.
 fn highest_ack(steps: &[Step], peer: PeerHandle) -> u64 {
     steps
@@ -655,7 +653,8 @@ fn close_code(reason: CloseReason) -> Option<u64> {
 fn v2_hello_binds_a_snapshot_session(protocol: ProtocolSelection) {
     let (mut qh, mut clock) = start_dual(protocol);
     let id = register(&mut qh, &cred_bytes(0), control(&[]), full_grants());
-    let (mut watcher, steps) = connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
+    let (mut watcher, steps) =
+        connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
     let deciding = &steps.last().expect("deciding pump").1;
     assert_eq!(
         deciding.calls,
@@ -692,8 +691,13 @@ fn v2_hello_binds_a_snapshot_session(protocol: ProtocolSelection) {
     // Control: a `/1` client on an equivalent dual server is a lane-0 session.
     let (mut lane_qh, mut lane_clock) = start_dual(protocol);
     register(&mut lane_qh, &cred_bytes(1), control(&[]), full_grants());
-    let (lane, lane_steps) =
-        connect_raw(&mut lane_qh, &mut lane_clock, protocol, &cred_bytes(1), Framing::V1);
+    let (lane, lane_steps) = connect_raw(
+        &mut lane_qh,
+        &mut lane_clock,
+        protocol,
+        &cred_bytes(1),
+        Framing::V1,
+    );
     let deciding = &lane_steps.last().expect("deciding pump").1;
     assert_eq!(
         deciding.calls,
@@ -784,10 +788,8 @@ fn v2_narrowing_is_seamless(protocol: ProtocolSelection) {
     let (mut qh, mut clock) = start_dual(protocol);
     let watch_id = register(&mut qh, &cred_bytes(0), control(&[]), full_grants());
     register(&mut qh, &cred_bytes(1), all_actors(), full_grants());
-    let (watcher, _) =
-        connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
-    let (mut actor, _) =
-        connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(1), Framing::V1);
+    let (watcher, _) = connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
+    let (mut actor, _) = connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(1), Framing::V1);
     let mut watcher = TxClient::new(watcher, protocol);
     read_n(&mut watcher, clock.now(), 1, "watcher state");
     actor.read_until("actor state", |c| !c.frames.is_empty());
@@ -810,9 +812,13 @@ fn v2_narrowing_is_seamless(protocol: ProtocolSelection) {
         qh.set_invitation_grants(watch_id, narrowed),
         Ok(GrantChange::SnapshotStaged)
     );
-    let transfer_steps = pump_until(&mut qh, &mut clock, 100, "snapshot delivered", |_, report| {
-        report.frames_sent >= 2
-    });
+    let transfer_steps = pump_until(
+        &mut qh,
+        &mut clock,
+        100,
+        "snapshot delivered",
+        |_, report| report.frames_sent >= 2,
+    );
     assert!(transfer_steps
         .iter()
         .all(|(_, report)| report.fences.is_empty()));
@@ -843,24 +849,18 @@ fn v2_narrowing_is_seamless(protocol: ProtocolSelection) {
     );
 
     // The publication is sent and traced.
-    let publish_steps = pump_until(
-        &mut qh,
-        &mut clock,
-        100,
-        "Published traced",
-        |_, report| {
-            report.calls.iter().any(|call| {
-                matches!(
-                    call,
-                    HostCall::IngestTransfer {
-                        peer,
-                        result: TransferDisposition::Published,
-                        ..
-                    } if *peer == watcher.peer()
-                )
-            })
-        },
-    );
+    let publish_steps = pump_until(&mut qh, &mut clock, 100, "Published traced", |_, report| {
+        report.calls.iter().any(|call| {
+            matches!(
+                call,
+                HostCall::IngestTransfer {
+                    peer,
+                    result: TransferDisposition::Published,
+                    ..
+                } if *peer == watcher.peer()
+            )
+        })
+    });
     assert!(publish_steps
         .iter()
         .all(|(_, report)| report.fences.is_empty()));
@@ -913,28 +913,36 @@ fn v2_narrowing_is_seamless(protocol: ProtocolSelection) {
     let (mut lane_qh, mut lane_clock) = start_dual(protocol);
     let lane_id = register(&mut lane_qh, &cred_bytes(2), control(&[]), full_grants());
     register(&mut lane_qh, &cred_bytes(3), all_actors(), full_grants());
-    let (mut lane_watch, _) =
-        connect_raw(&mut lane_qh, &mut lane_clock, protocol, &cred_bytes(2), Framing::V1);
-    let (mut lane_actor, _) =
-        connect_raw(&mut lane_qh, &mut lane_clock, protocol, &cred_bytes(3), Framing::V1);
+    let (mut lane_watch, _) = connect_raw(
+        &mut lane_qh,
+        &mut lane_clock,
+        protocol,
+        &cred_bytes(2),
+        Framing::V1,
+    );
+    let (mut lane_actor, _) = connect_raw(
+        &mut lane_qh,
+        &mut lane_clock,
+        protocol,
+        &cred_bytes(3),
+        Framing::V1,
+    );
     lane_watch.read_until("lane watcher state", |c| !c.frames.is_empty());
     lane_actor.read_until("lane actor state", |c| !c.frames.is_empty());
-    let seq1 = declare(
-        lane_actor.version,
-        lane_actor.epoch,
-        1,
-        0,
-        1,
-        strike(),
-        2,
-    );
+    let seq1 = declare(lane_actor.version, lane_actor.epoch, 1, 0, 1, strike(), 2);
     lane_actor.send(seq1);
-    pump_until(&mut lane_qh, &mut lane_clock, 100, "lane seq 1", |_, report| {
-        report
-            .calls
-            .iter()
-            .any(|call| matches!(call, HostCall::Ingest { frame: 1, .. }))
-    });
+    pump_until(
+        &mut lane_qh,
+        &mut lane_clock,
+        100,
+        "lane seq 1",
+        |_, report| {
+            report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::Ingest { frame: 1, .. }))
+        },
+    );
     let change = lane_qh
         .set_invitation_grants(lane_id, a_no_health_b(full_grants()))
         .expect("narrowing a live `/1` binding returns a fence");
@@ -956,8 +964,7 @@ fn v2_upstream_transfer_frames_are_traced_in_order() {
     let protocol = V2;
     let (mut qh, mut clock) = start_dual(protocol);
     register(&mut qh, &cred_bytes(0), all_actors(), full_grants());
-    let (mut client, _) =
-        connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
+    let (mut client, _) = connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
     client.read_until("state", |c| !c.frames.is_empty());
     let epoch = client.epoch;
     let other = [0xFF; 16];
@@ -989,7 +996,12 @@ fn v2_upstream_transfer_frames_are_traced_in_order() {
     let ingest_calls: Vec<HostCall> = report
         .calls
         .iter()
-        .filter(|call| matches!(call, HostCall::Ingest { .. } | HostCall::IngestTransfer { .. }))
+        .filter(|call| {
+            matches!(
+                call,
+                HostCall::Ingest { .. } | HostCall::IngestTransfer { .. }
+            )
+        })
         .cloned()
         .collect();
     assert_eq!(
@@ -1016,9 +1028,7 @@ fn v2_upstream_transfer_frames_are_traced_in_order() {
                 peer: client.peer,
                 frame: 3,
                 len: 3,
-                result: TransferDisposition::Refused(
-                    crpg_server::host::TransferRefusal::Malformed
-                ),
+                result: TransferDisposition::Refused(crpg_server::host::TransferRefusal::Malformed),
             },
             HostCall::IngestTransfer {
                 conn,
@@ -1059,23 +1069,17 @@ fn v2_upstream_transfer_frames_are_traced_in_order() {
     client
         .sent
         .push(resync(epoch, None, ResyncReason::Overflow));
-    let steps = pump_until(
-        &mut qh,
-        &mut clock,
-        100,
-        "Resynced traced",
-        |_, report| {
-            report.calls.iter().any(|call| {
-                matches!(
-                    call,
-                    HostCall::IngestTransfer {
-                        result: TransferDisposition::Resynced,
-                        ..
-                    }
-                )
-            })
-        },
-    );
+    let steps = pump_until(&mut qh, &mut clock, 100, "Resynced traced", |_, report| {
+        report.calls.iter().any(|call| {
+            matches!(
+                call,
+                HostCall::IngestTransfer {
+                    result: TransferDisposition::Resynced,
+                    ..
+                }
+            )
+        })
+    });
     assert!(steps.iter().all(|(_, report)| report.fences.is_empty()));
     // Read the transfer channel explicitly.
     let mut transfers = Vec::new();
@@ -1099,7 +1103,6 @@ fn v2_upstream_transfer_frames_are_traced_in_order() {
         TransferDown::Chunk(_)
     ));
 }
-
 
 // ---------------------------------------------------------------------------
 // S§16 case 4.
@@ -1127,9 +1130,13 @@ fn v2_resync_after_client_expiry_restores_the_replica() {
         Ok(GrantChange::SnapshotStaged)
     );
     watcher.withhold_chunk = true;
-    pump_until(&mut qh, &mut clock, 100, "snapshot delivered", |_, report| {
-        report.frames_sent >= 2
-    });
+    pump_until(
+        &mut qh,
+        &mut clock,
+        100,
+        "snapshot delivered",
+        |_, report| report.frames_sent >= 2,
+    );
     read_n(&mut watcher, clock.now(), 4, "begin and withheld chunk");
     let begin = decode_begin(&watcher.recv[2].1);
     assert_eq!(begin.transfer, transfer_id(1));
@@ -1152,24 +1159,18 @@ fn v2_resync_after_client_expiry_restores_the_replica() {
     assert_eq!(status.resync, Some(ResyncReason::Expired));
 
     watcher.send_transfer(resync(watcher.epoch(), Some(1), ResyncReason::Expired));
-    let steps = pump_until(
-        &mut qh,
-        &mut clock,
-        100,
-        "Resynced traced",
-        |_, report| {
-            report.calls.iter().any(|call| {
-                matches!(
-                    call,
-                    HostCall::IngestTransfer {
-                        peer,
-                        result: TransferDisposition::Resynced,
-                        ..
-                    } if *peer == watcher.peer()
-                )
-            })
-        },
-    );
+    let steps = pump_until(&mut qh, &mut clock, 100, "Resynced traced", |_, report| {
+        report.calls.iter().any(|call| {
+            matches!(
+                call,
+                HostCall::IngestTransfer {
+                    peer,
+                    result: TransferDisposition::Resynced,
+                    ..
+                } if *peer == watcher.peer()
+            )
+        })
+    });
     assert!(steps.iter().all(|(_, report)| report.fences.is_empty()));
     read_n(&mut watcher, clock.now(), 7, "cancel and replacement");
     let cancel = decode_cancel(&watcher.recv[4].1);
@@ -1210,8 +1211,7 @@ fn v2_resync_after_client_expiry_restores_the_replica() {
     register(&mut cqh, &cred_bytes(0), control(&[]), full_grants());
     register(&mut cqh, &cred_bytes(1), all_actors(), full_grants());
     let (cwatch, _) = connect_raw(&mut cqh, &mut cclock, protocol, &cred_bytes(0), Framing::V2);
-    let (mut cactor, _) =
-        connect_raw(&mut cqh, &mut cclock, protocol, &cred_bytes(1), Framing::V1);
+    let (mut cactor, _) = connect_raw(&mut cqh, &mut cclock, protocol, &cred_bytes(1), Framing::V1);
     let mut cwatch = TxClient::new(cwatch, protocol);
     read_n(&mut cwatch, cclock.now(), 1, "control state");
     cactor.read_until("control actor state", |c| !c.frames.is_empty());
@@ -1358,8 +1358,7 @@ fn v2_held_lane0_frame_blocks_transfer_frames_behind_it() {
     let (mut qh, mut clock) = start_dual(protocol);
     register(&mut qh, &cred_bytes(0), all_actors(), full_grants());
     register(&mut qh, &cred_bytes(1), control(&[]), observer_grants());
-    let (mut actor, _) =
-        connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
+    let (mut actor, _) = connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
     let addr = qh.local_addr();
     let (mut observer, _) = connect(
         &mut qh,
@@ -1434,9 +1433,9 @@ fn v2_held_lane0_frame_blocks_transfer_frames_behind_it() {
         let transfer_at = calls.iter().position(|call| {
             matches!(call, HostCall::IngestTransfer { frame, .. } if *frame == transfer_ordinal)
         });
-        let ingest_at = calls
-            .iter()
-            .position(|call| matches!(call, HostCall::Ingest { frame, .. } if *frame == held_ordinal));
+        let ingest_at = calls.iter().position(
+            |call| matches!(call, HostCall::Ingest { frame, .. } if *frame == held_ordinal),
+        );
         if let (Some(ingest_at), Some(transfer_at)) = (ingest_at, transfer_at) {
             assert!(ingest_at < transfer_at, "IngestTransfer follows its Ingest");
             staged = Some(report);
@@ -1570,10 +1569,7 @@ fn replay(
                         let mut keep = Vec::new();
                         for entry in entries.drain(..) {
                             if entry.ordinal <= *through {
-                                delivered
-                                    .entry(*peer)
-                                    .or_default()
-                                    .push(entry.bytes);
+                                delivered.entry(*peer).or_default().push(entry.bytes);
                             } else {
                                 keep.push(entry);
                             }
@@ -1620,9 +1616,7 @@ fn exchange_all(
             matches!(call, HostCall::Ingest { conn: c, frame, .. } if *c == conn && *frame == ordinal)
         })
     });
-    assert!(steps
-        .iter()
-        .all(|(_, report)| report.fences.is_empty()));
+    assert!(steps.iter().all(|(_, report)| report.fences.is_empty()));
     steps
 }
 
@@ -1657,28 +1651,26 @@ fn v2_schedule_replays_in_memory(protocol: ProtocolSelection) {
         qh.set_invitation_grants(watch_id, narrowing),
         Ok(GrantChange::SnapshotStaged)
     );
-    let more = pump_until(&mut qh, &mut clock, 100, "snapshot delivered", |_, report| {
-        report.frames_sent >= 2
-    });
-    steps.extend(more);
-    read_n(&mut watcher, clock.now(), 4, "begin and chunk");
     let more = pump_until(
         &mut qh,
         &mut clock,
         100,
-        "Published traced",
-        |_, report| {
-            report.calls.iter().any(|call| {
-                matches!(
-                    call,
-                    HostCall::IngestTransfer {
-                        result: TransferDisposition::Published,
-                        ..
-                    }
-                )
-            })
-        },
+        "snapshot delivered",
+        |_, report| report.frames_sent >= 2,
     );
+    steps.extend(more);
+    read_n(&mut watcher, clock.now(), 4, "begin and chunk");
+    let more = pump_until(&mut qh, &mut clock, 100, "Published traced", |_, report| {
+        report.calls.iter().any(|call| {
+            matches!(
+                call,
+                HostCall::IngestTransfer {
+                    result: TransferDisposition::Published,
+                    ..
+                }
+            )
+        })
+    });
     steps.extend(more);
 
     let seq2 = declare(actor.version, actor.epoch, 2, 0, 2, strike(), 3);
@@ -1703,50 +1695,30 @@ fn v2_schedule_replays_in_memory(protocol: ProtocolSelection) {
     expected_delivered.insert(watcher.peer(), watcher.received_bytes());
     expected_delivered.insert(
         actor.peer,
-        actor.frames.iter().map(|frame| frame.bytes.clone()).collect(),
+        actor
+            .frames
+            .iter()
+            .map(|frame| frame.bytes.clone())
+            .collect(),
     );
     let mirrors = vec![mirror];
 
-    let outcome = replay(
-        protocol,
-        &steps,
-        &sent,
-        &grants,
-        &mirrors,
-        false,
-        true,
-    )
-    .expect("the `/2` trace replays");
+    let outcome = replay(protocol, &steps, &sent, &grants, &mirrors, false, true)
+        .expect("the `/2` trace replays");
     assert_eq!(outcome.hash, qh.host().authority_hash());
     assert_eq!(outcome.executions, qh.host().executions());
     assert_eq!(outcome.last_capture, qh.host().last_capture());
     assert_eq!(outcome.delivered, expected_delivered);
 
     // Negative control 1: a lane-0 bind diverges at the mirrored narrowing.
-    let error = replay(
-        protocol,
-        &steps,
-        &sent,
-        &grants,
-        &mirrors,
-        true,
-        true,
-    )
-    .expect_err("bind_peer in place of bind_snapshot_peer must diverge");
+    let error = replay(protocol, &steps, &sent, &grants, &mirrors, true, true)
+        .expect_err("bind_peer in place of bind_snapshot_peer must diverge");
     assert!(error.contains("grants"), "{error}");
 
     // Negative control 2: with the grant check skipped, the trace alone
     // diverges at the next pump's watcher delivery count.
-    let error = replay(
-        protocol,
-        &steps,
-        &sent,
-        &grants,
-        &mirrors,
-        true,
-        false,
-    )
-    .expect_err("a lane-0 session delivers one reset frame, not two");
+    let error = replay(protocol, &steps, &sent, &grants, &mirrors, true, false)
+        .expect_err("a lane-0 session delivers one reset frame, not two");
     assert!(error.contains("take"), "{error}");
     assert!(!error.contains("transfer"), "{error}");
 }
@@ -1777,9 +1749,7 @@ fn v2_shutdown_flushes_transfer_entries_by_channel_and_ordinal() {
     let shutdown = qh.shutdown(false);
     assert_eq!(shutdown.undelivered_frames, 0);
     watcher.feed = false;
-    watcher.read_until(clock.now(), "shutdown close", |t| {
-        t.client.closed.is_some()
-    });
+    watcher.read_until(clock.now(), "shutdown close", |t| t.client.closed.is_some());
     let received = &watcher.recv;
     assert_eq!(received.len(), 4, "{received:?}");
     let transfers: Vec<&(Channel, Vec<u8>)> = received[1..].iter().collect();
@@ -1811,8 +1781,7 @@ fn v2_retiring_connection_drains_transfer_frames() {
     let protocol = V2;
     let (mut qh, mut clock) = start_dual(protocol);
     let id = register(&mut qh, &cred_bytes(0), all_actors(), full_grants());
-    let (mut client, _) =
-        connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
+    let (mut client, _) = connect_raw(&mut qh, &mut clock, protocol, &cred_bytes(0), Framing::V2);
     client.read_until("state", |c| !c.frames.is_empty());
 
     client
@@ -1843,14 +1812,16 @@ fn v2_retiring_connection_drains_transfer_frames() {
             .sum::<usize>(),
         2
     );
-    assert!(!steps.iter().any(|(_, report)| report.calls.iter().any(|call| {
-        match call {
-            HostCall::Ingest { conn: c, .. } | HostCall::IngestTransfer { conn: c, .. } => {
-                *c == conn
+    assert!(!steps
+        .iter()
+        .any(|(_, report)| report.calls.iter().any(|call| {
+            match call {
+                HostCall::Ingest { conn: c, .. } | HostCall::IngestTransfer { conn: c, .. } => {
+                    *c == conn
+                }
+                _ => false,
             }
-            _ => false,
-        }
-    })));
+        })));
     assert_eq!(qh.transport_totals().inbound_frames, 0);
 }
 
@@ -1892,7 +1863,9 @@ fn v2_departed_peer_acknowledges_through_the_last_ordinal() {
     let calls = &report.calls;
     let take_at = calls
         .iter()
-        .position(|call| matches!(call, HostCall::TakeDelivery { peer: p, result: Ok(3) } if *p == peer))
+        .position(
+            |call| matches!(call, HostCall::TakeDelivery { peer: p, result: Ok(3) } if *p == peer),
+        )
         .expect("the departed peer's three entries are taken");
     let ack_at = calls
         .iter()
