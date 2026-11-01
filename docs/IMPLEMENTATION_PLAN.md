@@ -244,14 +244,16 @@ Windows/MSVC, through the embedded server.
 
 | Id | Kind | Crate | Prerequisites | Notes |
 |---|---|---|---|---|
-| T045 | A | — | M4 4A done | Bridge ADR: §11.3 FFI surface, threading, embedded host via `crpg-server`, error mapping, `net_id`↔`EntityId` view, `client/` project layout (E012/E022) |
+| T045 | A | — | M4 4A done | Bridge ADR: §11.3 FFI surface, threading, embedded host via `crpg-server`, error mapping, `net_id`↔`EntityId` view, `apps/client/` project layout (E012/E022) |
 | T046 | C → I | crpg-net | T024, T027b | Replica storage, delta application, engine-neutral read queries |
-| T047 | C → I, S | crpg-godot | T045, T046, D27d, T105 | Bridge skeleton: gdext extension, `client/` project, embedded host, proxy spawn from a bulk snapshot (§19.1 #22), Windows client build (gate 12). Opens the crate. H-unsafe |
+| T047 | C → I, S | crpg-godot | T045, T046, D27d, T047a | Bridge skeleton: gdext extension, `apps/client/` project, embedded host, proxy spawn from a bulk snapshot (§19.1 #22), Windows client build (gate 12). Opens the crate. H-unsafe |
+| T047a | C → I | crpg-server | T045 | Host::legal_intents and Host::replica_id (ADR-0033) |
+| T047c | C → I, S | .github/workflows | T047 | Client CI job (ADR-0033); lands in T047's batch |
 | T048 | C → I | crpg-godot | T047 | Scene sync and proxy lifecycle (§19.2 #12) |
 | T049 | C → I | crpg-godot | T047 | Interpolation buffer (§19.1 #23) |
 | T026 | C → I | crpg-godot | T026p, T037, T049 | Own-movement prediction and reconciliation |
 | T050 | C → I | crpg-godot | T048, T104 | Camera, click-to-move, selection |
-| T051 | C → I | crpg-godot | T048, T104, T108 | HUD, combat log, `SimEvent`-driven VFX/audio hooks |
+| T051 | C → I | crpg-godot | T048, T104, T108 | HUD, combat log, `SimEvent`-driven VFX/audio hooks. Cut-down demo version has no T104/T108 prerequisite (ADR-0033). |
 
 **Player experience and art (added 2026-10-16 with D28j's method).** H-play
 above checks only that the game runs; these check that it reads well and has
@@ -450,3 +452,4 @@ estimates slip.
 - 2026-10-16 (UTC) · claude-code + D28m · Added the four further gaps the user approved: a custom-content angle in T099 and T101, ruleset-driven player UI in T104 and T108 (gating T051), module updates versus player saves (T111), mod combination in T107, and an automated module playtester (T112).
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Re-scoped T109 to data-only after T136/T137 and listed the ten ADR-0029 follow-on contract packages (T134–T143); no contract approved.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Added the user-ordered demo-first row above the later row (T027b, T046, T045, T047, T048, cut-down T051 ahead of movement, nav and the rest of M4).
+- 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S29-bookkeeping · Pointed T045/T047 at `apps/client`, split T047a/T047c out of T047, and noted the cut-down T051 has no T104/T108 prerequisite.
