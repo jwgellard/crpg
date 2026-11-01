@@ -23,8 +23,11 @@ use quinn::{
 use tokio::sync::Notify;
 
 use crate::close::{CloseCode, CloseReason, ConnectionStats, SendError};
-use crate::handshake::{frame_header, parse_frame_header, FrameError, Welcome, FRAME_HEADER_BYTES};
-use crate::server::{ConnectionId, ServerEvent};
+use crate::handshake::{
+    channel_frame_header, frame_header, parse_channel_frame_header, parse_frame_header, Channel,
+    FrameError, Framing, Welcome, FRAME_HEADER_BYTES,
+};
+use crate::server::{ConnectionId, ServerEvent, ServerNotice};
 
 /// Extra time a sync waiter allows beyond a close deadline before it stops
 /// waiting for the I/O thread (a liveness guard, not a protocol timer).
@@ -68,6 +71,20 @@ pub(crate) fn framed(payload: &[u8], cap: usize) -> Result<Vec<u8>, FrameError> 
     Ok(out)
 }
 
+/// The `/2` 4-byte `[channel][24-bit length]` header followed by `payload`,
+/// checked against `cap`.
+pub(crate) fn framed_channel(
+    channel: Channel,
+    payload: &[u8],
+    cap: usize,
+) -> Result<Vec<u8>, FrameError> {
+    let header = channel_frame_header(channel, payload.len(), cap)?;
+    let mut out = Vec::with_capacity(FRAME_HEADER_BYTES + payload.len());
+    out.extend_from_slice(&header);
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
 /// The E§8.1 mapping from quinn's connection error to a close reason.
 pub(crate) fn reason_from(error: &ConnectionError) -> CloseReason {
     match error {
@@ -102,6 +119,24 @@ pub(crate) enum Phase {
     Accepted,
 }
 
+/// Which opening a pending connection presented (`tasks/T024q.md` S§4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Opening {
+    /// A hello frame; answered with `accept(welcome)`.
+    Hello,
+    /// A resume request frame; answered with `accept_resume(answer)`.
+    Resume,
+}
+
+/// What the host queued in place of the welcome for an accepted connection.
+#[derive(Debug, Clone)]
+pub(crate) enum Answer {
+    /// The hello/welcome handshake, as version 1's wire layout.
+    Welcome(Welcome),
+    /// The resume answer payload, written as a `Resume` channel frame.
+    Resume(Vec<u8>),
+}
+
 /// Wakeups for one connection's async tasks.
 #[derive(Default)]
 pub(crate) struct ConnWake {
@@ -121,12 +156,17 @@ pub(crate) struct FlushRequest {
 /// One connection's record.
 pub(crate) struct Conn {
     pub(crate) phase: Phase,
+    /// The framing the ALPN negotiated; fixed for the connection's life.
+    pub(crate) framing: Framing,
+    /// Which opening this connection presented (hello or resume).
+    pub(crate) opening: Opening,
     pub(crate) hello_version: u8,
-    /// Set by `accept`; taken by the control task, which writes it first.
-    pub(crate) welcome: Option<Welcome>,
-    inbound: VecDeque<Vec<u8>>,
+    /// Set by `accept`/`accept_resume`; taken by the control task, which
+    /// writes it first.
+    pub(crate) answer: Option<Answer>,
+    inbound: VecDeque<(Channel, Vec<u8>)>,
     inbound_bytes: usize,
-    parked: Option<Vec<u8>>,
+    parked: Option<(Channel, Vec<u8>)>,
     /// Header-prefixed frames; accounting uses payload bytes.
     outbound: VecDeque<Vec<u8>>,
     outbound_bytes: usize,
@@ -162,8 +202,10 @@ impl Conn {
     pub(crate) fn new(phase: Phase, connection: Connection, wake: Arc<ConnWake>) -> Conn {
         Conn {
             phase,
+            framing: Framing::V1,
+            opening: Opening::Hello,
             hello_version: 0,
-            welcome: None,
+            answer: None,
             inbound: VecDeque::new(),
             inbound_bytes: 0,
             parked: None,
@@ -196,6 +238,11 @@ impl Conn {
     /// No inbound frame queued or parked.
     pub(crate) fn drained(&self) -> bool {
         self.inbound.is_empty() && self.parked.is_none()
+    }
+
+    /// The channel of the inbound frame at the head, if any.
+    pub(crate) fn inbound_head(&self) -> Option<Channel> {
+        self.inbound.front().map(|(channel, _)| *channel)
     }
 
     /// Frames queued plus the parked one.
@@ -239,7 +286,7 @@ pub(crate) struct State {
     pub(crate) outbound_frames: usize,
     pub(crate) outbound_bytes: usize,
     emit_events: bool,
-    pub(crate) events: VecDeque<ServerEvent>,
+    pub(crate) events: VecDeque<ServerNotice>,
     /// Connection slots held (`max_connections` accounting).
     pub(crate) live: usize,
     pub(crate) refused_handshakes: u64,
@@ -275,8 +322,8 @@ impl State {
         }
     }
 
-    /// Queues or parks one complete inbound frame.
-    fn offer_inbound(&mut self, id: u64, frame: Vec<u8>) -> Offer {
+    /// Queues or parks one complete inbound frame with its channel.
+    fn offer_inbound(&mut self, id: u64, channel: Channel, frame: Vec<u8>) -> Offer {
         let caps = self.inbound_caps;
         let (host_frames, host_bytes) = (self.inbound_frames, self.inbound_bytes);
         let Some(conn) = self.conns.get_mut(&id) else {
@@ -284,40 +331,56 @@ impl State {
         };
         let len = frame.len();
         if inbound_room(&caps, conn, host_frames, host_bytes, len) {
-            conn.inbound.push_back(frame);
+            conn.inbound.push_back((channel, frame));
             conn.inbound_bytes += len;
             self.inbound_frames += 1;
             self.inbound_bytes += len;
             Offer::Queued
         } else {
-            conn.parked = Some(frame);
+            conn.parked = Some((channel, frame));
             Offer::Parked
         }
     }
 
-    /// Takes the next inbound frame, then lets parked frames in (ascending
-    /// connection order) while room allows.
-    pub(crate) fn pop_inbound(&mut self, id: u64) -> Option<Vec<u8>> {
+    /// Takes the next inbound frame (with its channel), then lets parked
+    /// frames in (ascending connection order) while room allows.
+    pub(crate) fn pop_inbound(&mut self, id: u64) -> Option<(Channel, Vec<u8>)> {
         let conn = self.conns.get_mut(&id)?;
-        let frame = conn.inbound.pop_front()?;
+        let (channel, frame) = conn.inbound.pop_front()?;
         conn.inbound_bytes -= frame.len();
         self.inbound_frames -= 1;
         self.inbound_bytes -= frame.len();
         self.promote_parked();
-        Some(frame)
+        Some((channel, frame))
+    }
+
+    /// Takes the next inbound frame only when the head is a lane-0 frame
+    /// (the legacy `try_recv` view, `tasks/T024q.md` S§8.3); a transfer or
+    /// resume head stays queued.
+    pub(crate) fn pop_inbound_lane0(&mut self, id: u64) -> Option<Vec<u8>> {
+        let is_lane0 = self
+            .conns
+            .get(&id)
+            .and_then(|conn| conn.inbound.front().map(|(channel, _)| *channel))
+            == Some(Channel::Lane0);
+        if is_lane0 {
+            self.pop_inbound(id).map(|(_, frame)| frame)
+        } else {
+            None
+        }
     }
 
     fn promote_parked(&mut self) {
         let caps = self.inbound_caps;
         for conn in self.conns.values_mut() {
-            let Some(len) = conn.parked.as_ref().map(Vec::len) else {
+            let Some(len) = conn.parked.as_ref().map(|(_, frame)| frame.len()) else {
                 continue;
             };
             if !inbound_room(&caps, conn, self.inbound_frames, self.inbound_bytes, len) {
                 continue;
             }
-            if let Some(frame) = conn.parked.take() {
-                conn.inbound.push_back(frame);
+            if let Some((channel, frame)) = conn.parked.take() {
+                conn.inbound.push_back((channel, frame));
                 conn.inbound_bytes += len;
                 self.inbound_frames += 1;
                 self.inbound_bytes += len;
@@ -326,9 +389,15 @@ impl State {
         }
     }
 
-    /// Queues one outbound payload, or `QueueFull` with nothing changed
-    /// (per-connection frames, then bytes, then host-wide frames, then bytes).
-    pub(crate) fn queue_outbound(&mut self, id: u64, payload: &[u8]) -> Result<(), SendError> {
+    /// Queues one outbound payload under `channel` (`QueueFull` with nothing
+    /// changed: per-connection frames, then bytes, then host-wide frames,
+    /// then bytes). The header follows the connection's framing.
+    pub(crate) fn queue_outbound(
+        &mut self,
+        id: u64,
+        channel: Channel,
+        payload: &[u8],
+    ) -> Result<(), SendError> {
         let caps = self.outbound_caps;
         let len = payload.len();
         let host_frames_ok = self.outbound_frames < caps.host_frames;
@@ -352,7 +421,11 @@ impl State {
         }
         // The caller checked the send cap, so the header cannot fail; if it
         // ever did, nothing is queued.
-        let frame = framed(payload, usize::MAX).map_err(|_| SendError::FrameTooLarge)?;
+        let framed = match conn.framing {
+            Framing::V1 => framed(payload, usize::MAX),
+            Framing::V2 => framed_channel(channel, payload, usize::MAX),
+        };
+        let frame = framed.map_err(|_| SendError::FrameTooLarge)?;
         conn.outbound.push_back(frame);
         conn.outbound_bytes += len;
         self.outbound_frames += 1;
@@ -420,10 +493,11 @@ impl State {
         conn.held_frames = !conn.drained();
         conn.published = true;
         if self.emit_events && conn.phase != Phase::Hello {
-            self.events.push_back(ServerEvent::Closed {
-                conn: ConnectionId::from_raw(id),
-                reason,
-            });
+            self.events
+                .push_back(ServerNotice::Event(ServerEvent::Closed {
+                    conn: ConnectionId::from_raw(id),
+                    reason,
+                }));
         }
     }
 
@@ -594,6 +668,16 @@ pub(crate) async fn wait_stop(shared: &Shared) -> Stop {
     }
 }
 
+/// Which side of a lane stream a reader drains (the close-code mapping of
+/// `tasks/T024q.md` S§6.3 is per direction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaneDirection {
+    /// A server reading an upstream frame (cap 4,096; `Resume` refuses).
+    Upstream,
+    /// A client reading a downstream frame (cap 65,536; all three channels).
+    Downstream,
+}
+
 /// Why reading one frame stopped.
 pub(crate) enum ReadFail {
     /// Close the connection with this code.
@@ -602,29 +686,52 @@ pub(crate) enum ReadFail {
     Lost,
 }
 
-/// Reads one length-prefixed frame: `Ok(None)` on a FIN exactly at a frame
-/// boundary. The header is checked against `cap` before any allocation, and
-/// a header over the cap is never followed by a body read.
-pub(crate) async fn read_frame(
+/// Maps a header failure to its close code (`tasks/T024q.md` S§6.3): an
+/// unknown channel or zero length is a protocol violation, an over-cap
+/// length is `FrameTooLarge` with no body read.
+pub(crate) fn frame_error_code(error: FrameError) -> CloseCode {
+    match error {
+        FrameError::Empty | FrameError::UnknownChannel => CloseCode::ProtocolViolation,
+        FrameError::TooLarge => CloseCode::FrameTooLarge,
+    }
+}
+
+/// Reads one lane frame under the connection's framing and direction:
+/// `Ok(None)` on a FIN exactly at a frame boundary. `/1` connections keep
+/// the legacy reader's behaviour exactly; `/2` headers carry a channel byte.
+pub(crate) async fn read_lane_frame(
     recv: &mut RecvStream,
+    framing: Framing,
+    direction: LaneDirection,
     cap: usize,
-) -> Result<Option<Vec<u8>>, ReadFail> {
+) -> Result<Option<(Channel, Vec<u8>)>, ReadFail> {
     let mut header = [0u8; FRAME_HEADER_BYTES];
     match recv.read_exact(&mut header).await {
         Ok(()) => {}
         Err(ReadExactError::FinishedEarly(0)) => return Ok(None),
         Err(error) => return Err(read_fail(error)),
     }
-    let len = parse_frame_header(header, cap).map_err(|error| match error {
-        FrameError::Empty => ReadFail::Code(CloseCode::ProtocolViolation),
-        FrameError::TooLarge => ReadFail::Code(CloseCode::FrameTooLarge),
-    })?;
+    if framing == Framing::V1 {
+        let len = parse_frame_header(header, cap)
+            .map_err(frame_error_code)
+            .map_err(ReadFail::Code)?;
+        let mut body = vec![0u8; len];
+        recv.read_exact(&mut body).await.map_err(read_fail)?;
+        return Ok(Some((Channel::Lane0, body)));
+    }
+    // `/2` upstream: the direction rule comes before the length (`S§6.3`).
+    if direction == LaneDirection::Upstream && header[0] == Channel::Resume.as_u8() {
+        return Err(ReadFail::Code(CloseCode::ProtocolViolation));
+    }
+    let (channel, len) = parse_channel_frame_header(header, cap)
+        .map_err(frame_error_code)
+        .map_err(ReadFail::Code)?;
     let mut body = vec![0u8; len];
     recv.read_exact(&mut body).await.map_err(read_fail)?;
-    Ok(Some(body))
+    Ok(Some((channel, body)))
 }
 
-fn read_fail(error: ReadExactError) -> ReadFail {
+pub(crate) fn read_fail(error: ReadExactError) -> ReadFail {
     match error {
         // FIN mid-frame or a RESET_STREAM on the lane.
         ReadExactError::FinishedEarly(_) | ReadExactError::ReadError(ReadError::Reset(_)) => {
@@ -646,19 +753,30 @@ pub(crate) fn local_close(shared: &Shared, id: u64, connection: &Connection, cod
     }
 }
 
+/// How one lane reader interprets its frames (`tasks/T024q.md` S§6.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReadSpec {
+    /// The connection's framing.
+    pub(crate) framing: Framing,
+    /// The side of the lane stream being read.
+    pub(crate) direction: LaneDirection,
+    /// The direction's payload cap.
+    pub(crate) cap: usize,
+}
+
 /// Reads lane frames into the inbound queue until FIN, close or violation.
 pub(crate) async fn lane_reader(
     shared: Arc<Shared>,
     id: u64,
     connection: Connection,
     mut recv: RecvStream,
-    cap: usize,
+    spec: ReadSpec,
     wake: Arc<ConnWake>,
 ) {
     loop {
-        match read_frame(&mut recv, cap).await {
-            Ok(Some(frame)) => {
-                if !deliver(&shared, id, frame, &wake).await {
+        match read_lane_frame(&mut recv, spec.framing, spec.direction, spec.cap).await {
+            Ok(Some((channel, frame))) => {
+                if !deliver(&shared, id, channel, frame, &wake).await {
                     break;
                 }
             }
@@ -683,9 +801,15 @@ pub(crate) async fn lane_reader(
 /// reader goes on reading it, and the close is published only when the
 /// reader finds nothing more (E§7: frames fully received before a close stay
 /// drainable after it).
-async fn deliver(shared: &Shared, id: u64, frame: Vec<u8>, wake: &ConnWake) -> bool {
+async fn deliver(
+    shared: &Shared,
+    id: u64,
+    channel: Channel,
+    frame: Vec<u8>,
+    wake: &ConnWake,
+) -> bool {
     let offer = match shared.lock_any() {
-        Some(mut state) => state.offer_inbound(id, frame),
+        Some(mut state) => state.offer_inbound(id, channel, frame),
         None => return false,
     };
     shared.notify_sync();

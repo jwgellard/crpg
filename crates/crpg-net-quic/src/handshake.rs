@@ -6,10 +6,14 @@
 
 use std::fmt;
 
-use crpg_net::{protocol, protocol_v2};
+use crpg_net::{protocol, protocol_resume, protocol_transfer, protocol_v2};
 
 /// ALPN identifier: lane-0 framing + hello/welcome layout version 1.
 pub const ALPN_LANE0_V1: &[u8] = b"crpg-lane0/1";
+/// ALPN identifier: lane framing version 2 (byte 0 of each lane-frame
+/// header is a channel selector). Hello/welcome layout as version 1; a
+/// `bind_resumable` server also accepts a resume opening.
+pub const ALPN_LANE0_V2: &[u8] = b"crpg-lane0/2";
 /// SNI sent by clients. Ignored by verification (the pin is the trust root).
 pub const TLS_SERVER_NAME: &str = "crpg.invalid";
 /// Length-prefix size: one big-endian u32.
@@ -30,6 +34,9 @@ pub enum FrameError {
     Empty,
     /// A length above the direction's cap.
     TooLarge,
+    /// A channel selector that is not `0x00`, `0x81` or `0x91`
+    /// (`parse_channel_frame_header` only; the `/1` header never returns it).
+    UnknownChannel,
 }
 
 /// The 4-byte header for a `len`-byte payload under `cap`.
@@ -58,6 +65,117 @@ pub fn parse_frame_header(
     }
     Ok(len)
 }
+
+/// The lane framing a connection negotiated by ALPN; fixed for its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// `crpg-lane0/1`: 4-byte length header, lane 0 only.
+    V1,
+    /// `crpg-lane0/2`: `[channel][24-bit length]` header; lane 0,
+    /// transfer and resume channels.
+    V2,
+}
+
+impl Framing {
+    /// `ALPN_LANE0_V1` or `ALPN_LANE0_V2`.
+    pub fn alpn(self) -> &'static [u8] {
+        match self {
+            Framing::V1 => ALPN_LANE0_V1,
+            Framing::V2 => ALPN_LANE0_V2,
+        }
+    }
+
+    /// Exact match against the two ALPNs, else `None`.
+    pub fn from_alpn(alpn: &[u8]) -> Option<Framing> {
+        if alpn == ALPN_LANE0_V1 {
+            Some(Framing::V1)
+        } else if alpn == ALPN_LANE0_V2 {
+            Some(Framing::V2)
+        } else {
+            None
+        }
+    }
+}
+
+/// A `crpg-lane0/2` lane channel. The value is the header's first byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Channel {
+    /// Lane-0 intents and deltas (wire version fixed by the hello).
+    Lane0 = 0x00,
+    /// Snapshot-transfer frames (`crpg_net::codec_transfer`, version 0x81).
+    Transfer = 0x81,
+    /// Resume frames (`crpg_net::codec_resume`, version 0x91): the opening
+    /// request upstream; the answer and tickets downstream.
+    Resume = 0x91,
+}
+
+impl Channel {
+    /// The channel's selector byte.
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// `Some` only for 0x00, 0x81 and 0x91.
+    pub fn from_u8(raw: u8) -> Option<Channel> {
+        match raw {
+            0x00 => Some(Channel::Lane0),
+            0x81 => Some(Channel::Transfer),
+            0x91 => Some(Channel::Resume),
+            _ => None,
+        }
+    }
+}
+
+/// The 4-byte `/2` header `[channel][24-bit length]`, checked against `cap`.
+///
+/// Precedence (`tasks/T024q.md` S§5.4): `Empty`, then `TooLarge` (either
+/// above `cap` or above the 24-bit maximum), then the channel byte.
+pub fn channel_frame_header(
+    channel: Channel,
+    len: usize,
+    cap: usize,
+) -> Result<[u8; FRAME_HEADER_BYTES], FrameError> {
+    if len == 0 {
+        return Err(FrameError::Empty);
+    }
+    if len > cap || len > 0x00FF_FFFF {
+        return Err(FrameError::TooLarge);
+    }
+    Ok([
+        channel.as_u8(),
+        ((len >> 16) & 0xFF) as u8,
+        ((len >> 8) & 0xFF) as u8,
+        (len & 0xFF) as u8,
+    ])
+}
+
+/// The channel and payload length a `/2` header declares, checked against
+/// `cap` (no allocation). The channel is checked first, so a header with an
+/// unknown selector is `UnknownChannel` even when its length exceeds `cap`.
+pub fn parse_channel_frame_header(
+    header: [u8; FRAME_HEADER_BYTES],
+    cap: usize,
+) -> Result<(Channel, usize), FrameError> {
+    let channel = Channel::from_u8(header[0]).ok_or(FrameError::UnknownChannel)?;
+    let len = usize::try_from(u32::from_be_bytes([0, header[1], header[2], header[3]]))
+        .map_err(|_| FrameError::TooLarge)?;
+    if len == 0 {
+        return Err(FrameError::Empty);
+    }
+    if len > cap {
+        return Err(FrameError::TooLarge);
+    }
+    Ok((channel, len))
+}
+
+// The S§5.4 channel/protocol agreements, checked at compile time.
+const _: () = assert!(Channel::Transfer as u8 == protocol_transfer::TRANSFER_VERSION);
+const _: () = assert!(Channel::Resume as u8 == protocol_resume::RESUME_VERSION);
+const _: () = assert!(protocol_transfer::MAX_DOWN_FRAME_BYTES == protocol::MAX_DELTA_FRAME_BYTES);
+const _: () = assert!(protocol_transfer::MAX_UP_FRAME_BYTES == protocol::MAX_INTENT_FRAME_BYTES);
+const _: () = assert!(protocol_resume::MAX_RESUME_FRAME_BYTES == protocol::MAX_INTENT_FRAME_BYTES);
+const _: () = assert!(protocol::MAX_DELTA_FRAME_BYTES <= 0x00FF_FFFF);
 
 /// An invitation credential: opaque bytes, `MIN..=MAX_CREDENTIAL_BYTES` long.
 ///
@@ -220,6 +338,7 @@ impl fmt::Display for FrameError {
         let name = match self {
             FrameError::Empty => "Empty",
             FrameError::TooLarge => "TooLarge",
+            FrameError::UnknownChannel => "UnknownChannel",
         };
         write!(f, "{name} at quic/frame")
     }

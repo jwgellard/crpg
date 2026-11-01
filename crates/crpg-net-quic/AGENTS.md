@@ -27,6 +27,17 @@ items:
   fixed values, floors 4,100 / 65,540 by direction, connection ≥ stream);
 - `CloseCode`, `CloseMode`, `CloseReason`, `SendError`, `ConnectionStats`.
 
+Since [T024q](../../tasks/T024q.md) the crate also re-exports:
+- `ALPN_LANE0_V2`, `Framing`, `Channel`, `channel_frame_header` and
+  `parse_channel_frame_header` (handshake);
+- `ChannelSendError` (close);
+- `ResumeReceived` and `ServerNotice` (server).
+
+`QuicServer` gains `bind_dual`, `bind_resumable`, `poll_notice`,
+`accept_resume`, `framing`, `try_send_channel` and `try_recv_channel`;
+`QuicClient` gains `connect_framed`, `connect_resume`, `framing`,
+`try_send_channel` and `try_recv_channel`.
+
 The submodules are private. Changing a public item, a wire byte, a cap, a
 close code, an ALPN or a `Display` text (`<VariantName> at quic/<area>`)
 needs an ADR. A wire change also needs a new ALPN.
@@ -42,13 +53,16 @@ needs an ADR. A wire change also needs a new ALPN.
    quinn or rustls type appears in a public signature.
 3. **Never touch simulation state.** No `World`, RNG, event queue or sim
    clock. quinn's and ring's randomness never reaches the host.
-4. **Bytes are opaque.** Lane payloads are never decoded here. The caps are
-   checked on the length prefix before any allocation.
+4. **Bytes are opaque.** Lane payloads are never decoded here. The `/2`
+   selector is a header byte; payloads, resume requests and resume answers
+   stay opaque. The caps are checked on the length prefix before any
+   allocation.
 5. **Every queue is bounded** in frames and bytes, per connection and
    host-wide. `QueueFull` is retryable and changes nothing. A full inbound
    queue parks one frame and stops reading, and nothing is dropped.
 6. **Ordering.** Within a connection and a direction, frames are delivered
-   exactly once, in `try_send` order. Across connections there is no order.
+   exactly once, in `try_send` order, across channels too. Across connections
+   there is no order.
 7. **Closes are recorded first-wins, then published.** A close becomes
    visible through the `Closed` event and `try_recv`'s error only after the
    reader has stopped adding frames. Frames QUIC already received stay
@@ -77,7 +91,9 @@ record and approval. `deny.toml` changes follow ADR-0023 and its addendum.
 ```text
 cargo fmt --all -- --check
 cargo clippy -p crpg-net-quic --all-targets --locked -- -D warnings
-cargo test -p crpg-net-quic --test quic --locked   # 30 cases (T023: 1–23, T023c: 24–27, T023v: 28, T023d: 29–30)
+cargo test -p crpg-net-quic --test quic --locked   # 32 cases (T023: 1–23, T023c: 24–27, T023v: 28, T023d: 29–30)
+cargo test -p crpg-net-quic --test quic_gaps --locked
+cargo test -p crpg-net-quic --test channel --locked # 21 cases (T024q S§10)
 cargo test -p crpg-net --locked
 cargo tree -p crpg-net -e normal,build --target all   # must name no tokio/quinn/rustls/ring/mio/socket2
 cargo test --workspace --locked
@@ -134,6 +150,17 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
   case 17 or 28 now means the vendoring regressed: check
   `[patch.crates-io]`, `Cargo.lock` and VENDOR.md. Never loosen the
   assertion.
+- Never choose a channel from payload bytes: the `/2` selector is explicit.
+- Never give a channel its own queue or hold: one queue per direction keeps
+  the total order across channels.
+- `bind` must stay `/1`-only (`foreign_alpn_refused` pins it).
+- `bind_dual` must never take a resume opening, and `poll_event` must never
+  return or skip a resume notice.
+- Never accept an upstream `0x91` after the opening (close code 2).
+- Never decode a resume request, and never put its bytes in `Debug`, a log or
+  a close reason: it carries a proof.
+- Never add a variant to `ServerEvent`, `SendError` or `ServerError` without
+  the `crpg-server` task that matches them exhaustively.
 
 ## Agent log
 
@@ -142,3 +169,4 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - 2026-10-05 (UTC) · claude-code + T023v-b · Marked the quinn-proto pin as vendored, raised the suite count to 28 and replaced the close-gating trap with the regression check, so a future `Reset` in case 17 or 28 is traced to the vendoring instead of answered by loosening an assertion.
 - 2026-10-06 (UTC) · claude-code + T023d · Added the release-not-remove trap and raised the suite count to 30, so later work never deletes a record its control task still needs to send a close.
 - 2026-10-16 (UTC) · claude-code + S002 · Moved the `rustls` pin line to =0.23.46 with the advisories that forced it, so the crate's rules match its manifest.
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + T024q · Added the `/2` framing, channel and resume-opening surface, extended invariants 4 and 6 and added the channel traps, so later channel work keeps one queue, one opaque payload and the `bind`/`bind_dual` refusal rules.

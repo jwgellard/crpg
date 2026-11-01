@@ -134,6 +134,28 @@ impl fmt::Display for SendError {
 
 impl std::error::Error for SendError {}
 
+/// Why `try_send_channel` queued nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelSendError {
+    /// `Transfer` or `Resume` on a `crpg-lane0/1` connection, or `Resume`
+    /// from a client.
+    ChannelUnavailable,
+    /// The `try_send` refusal for the same frame.
+    Send(SendError),
+}
+
+impl fmt::Display for ChannelSendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            ChannelSendError::ChannelUnavailable => "ChannelUnavailable",
+            ChannelSendError::Send(_) => "Send",
+        };
+        write!(f, "{name} at quic/channel")
+    }
+}
+
+impl std::error::Error for ChannelSendError {}
+
 /// A per-connection snapshot of this crate's queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectionStats {

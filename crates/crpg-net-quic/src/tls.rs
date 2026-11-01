@@ -12,7 +12,6 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{CertificateError, DigitallySignedStruct, PeerIncompatible, SignatureScheme};
 
-use crate::handshake::ALPN_LANE0_V1;
 use crate::identity::{CertificatePin, ServerIdentity};
 use crate::limits::{ClientLimits, ServerLimits};
 
@@ -62,12 +61,14 @@ fn transport(windows: &Windows, idle_timeout_ms: u32, keep_alive_ms: u32) -> Tra
 }
 
 /// The server's quinn config: TLS 1.3 only, ring, no client auth, the
-/// single identity certificate, ALPN `crpg-lane0/1`, no 0-RTT, no
-/// migration, `max_incoming = max_connections`, and the windows from
-/// `limits`. `None` when the identity does not load (bad DER, key not
-/// matching the certificate).
+/// single identity certificate, the ALPN list in order (`/1` alone for
+/// `bind`; `[crpg-lane0/2, crpg-lane0/1]` for `bind_dual` and
+/// `bind_resumable`), no 0-RTT, no migration, `max_incoming =
+/// max_connections`, and the windows from `limits`. `None` when the
+/// identity does not load (bad DER, key not matching the certificate).
 pub(crate) fn server_config(
     identity: &ServerIdentity,
+    alpns: &'static [&'static [u8]],
     limits: &ServerLimits,
 ) -> Option<quinn::ServerConfig> {
     let cert = CertificateDer::from(identity.cert_der().to_vec());
@@ -78,7 +79,7 @@ pub(crate) fn server_config(
         .with_no_client_auth()
         .with_single_cert(vec![cert], key)
         .ok()?;
-    tls.alpn_protocols = vec![ALPN_LANE0_V1.to_vec()];
+    tls.alpn_protocols = alpns.iter().map(|alpn| alpn.to_vec()).collect();
     tls.max_early_data_size = 0;
     let crypto = QuicServerConfig::try_from(tls).ok()?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
@@ -100,11 +101,12 @@ pub(crate) fn server_config(
 }
 
 /// The client's quinn config: TLS 1.3 only, ring, the pinned verifier, no
-/// client auth, ALPN `crpg-lane0/1`, no 0-RTT and no session resumption,
-/// and the windows from `limits`.
+/// client auth, exactly the one ALPN `alpn` to offer, no 0-RTT and no
+/// session resumption, and the windows from `limits`.
 pub(crate) fn client_config(
     pin: CertificatePin,
     mismatch: Arc<AtomicBool>,
+    alpn: &'static [u8],
     limits: &ClientLimits,
 ) -> Option<quinn::ClientConfig> {
     let provider = provider();
@@ -119,7 +121,7 @@ pub(crate) fn client_config(
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
-    tls.alpn_protocols = vec![ALPN_LANE0_V1.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     tls.enable_early_data = false;
     tls.resumption = rustls::client::Resumption::disabled();
     let crypto = QuicClientConfig::try_from(tls).ok()?;

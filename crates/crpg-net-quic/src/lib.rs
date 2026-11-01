@@ -19,6 +19,11 @@
 //! intents and deltas stay `crpg-net`'s, and this crate re-exports nothing
 //! from it.
 //!
+//! Under the `crpg-lane0/2` ALPN the first byte of each lane-frame header is
+//! a channel selector (`0x00` lane 0, `0x81` transfer, `0x91` resume), and a
+//! `bind_resumable` server also accepts a connection opened with a resume
+//! request in place of the hello (`tasks/T024q.md` S§4–S§6).
+//!
 //! `crpg-net` keeps its no-I/O rule; sockets, threads, clocks, tokio, quinn
 //! and rustls live only in this crate (ADR-0024).
 
@@ -32,15 +37,16 @@ mod server;
 mod tls;
 
 pub use client::{CloseReport, ConnectError, QuicClient};
-pub use close::{CloseCode, CloseMode, CloseReason, ConnectionStats, SendError};
+pub use close::{ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, SendError};
 pub use handshake::{
-    frame_header, parse_frame_header, Credential, CredentialError, FrameError, HandshakeError,
-    Hello, Welcome, ALPN_LANE0_V1, FRAME_HEADER_BYTES, MAX_CREDENTIAL_BYTES, MAX_HELLO_BYTES,
+    channel_frame_header, frame_header, parse_channel_frame_header, parse_frame_header, Channel,
+    Credential, CredentialError, FrameError, Framing, HandshakeError, Hello, Welcome,
+    ALPN_LANE0_V1, ALPN_LANE0_V2, FRAME_HEADER_BYTES, MAX_CREDENTIAL_BYTES, MAX_HELLO_BYTES,
     MIN_CREDENTIAL_BYTES, TLS_SERVER_NAME, WELCOME_BYTES,
 };
 pub use identity::{CertificatePin, ServerIdentity};
 pub use limits::{ClientConfig, ClientLimits, ConfigError, ServerConfig, ServerLimits};
 pub use server::{
-    BindError, ConnectionId, QueueTotals, QuicServer, ServerError, ServerEvent, ServerLane,
-    ShutdownReport,
+    BindError, ConnectionId, QueueTotals, QuicServer, ResumeReceived, ServerError, ServerEvent,
+    ServerLane, ServerNotice, ShutdownReport,
 };
