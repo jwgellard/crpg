@@ -172,14 +172,9 @@ pub fn parse_channel_frame_header(
 // The S§5.4 channel/protocol agreements, checked at compile time.
 const _: () = assert!(Channel::Transfer as u8 == protocol_transfer::TRANSFER_VERSION);
 const _: () = assert!(Channel::Resume as u8 == protocol_resume::RESUME_VERSION);
-const _: () = assert!(
-    protocol_transfer::MAX_DOWN_FRAME_BYTES == protocol::MAX_DELTA_FRAME_BYTES
-);
-const _: () =
-    assert!(protocol_transfer::MAX_UP_FRAME_BYTES == protocol::MAX_INTENT_FRAME_BYTES);
-const _: () = assert!(
-    protocol_resume::MAX_RESUME_FRAME_BYTES == protocol::MAX_INTENT_FRAME_BYTES
-);
+const _: () = assert!(protocol_transfer::MAX_DOWN_FRAME_BYTES == protocol::MAX_DELTA_FRAME_BYTES);
+const _: () = assert!(protocol_transfer::MAX_UP_FRAME_BYTES == protocol::MAX_INTENT_FRAME_BYTES);
+const _: () = assert!(protocol_resume::MAX_RESUME_FRAME_BYTES == protocol::MAX_INTENT_FRAME_BYTES);
 const _: () = assert!(protocol::MAX_DELTA_FRAME_BYTES <= 0x00FF_FFFF);
 
 /// An invitation credential: opaque bytes, `MIN..=MAX_CREDENTIAL_BYTES` long.

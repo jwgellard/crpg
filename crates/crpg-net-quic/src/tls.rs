@@ -12,7 +12,6 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{CertificateError, DigitallySignedStruct, PeerIncompatible, SignatureScheme};
 
-use crate::handshake::{ALPN_LANE0_V1, ALPN_LANE0_V2};
 use crate::identity::{CertificatePin, ServerIdentity};
 use crate::limits::{ClientLimits, ServerLimits};
 

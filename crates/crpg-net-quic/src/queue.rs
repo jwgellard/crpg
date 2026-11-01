@@ -24,8 +24,8 @@ use tokio::sync::Notify;
 
 use crate::close::{CloseCode, CloseReason, ConnectionStats, SendError};
 use crate::handshake::{
-    channel_frame_header, frame_header, parse_channel_frame_header, parse_frame_header,
-    Channel, Framing, FrameError, Welcome, FRAME_HEADER_BYTES,
+    channel_frame_header, frame_header, parse_channel_frame_header, parse_frame_header, Channel,
+    FrameError, Framing, Welcome, FRAME_HEADER_BYTES,
 };
 use crate::server::{ConnectionId, ServerEvent, ServerNotice};
 
@@ -238,6 +238,11 @@ impl Conn {
     /// No inbound frame queued or parked.
     pub(crate) fn drained(&self) -> bool {
         self.inbound.is_empty() && self.parked.is_none()
+    }
+
+    /// The channel of the inbound frame at the head, if any.
+    pub(crate) fn inbound_head(&self) -> Option<Channel> {
+        self.inbound.front().map(|(channel, _)| *channel)
     }
 
     /// Frames queued plus the parked one.
@@ -488,10 +493,11 @@ impl State {
         conn.held_frames = !conn.drained();
         conn.published = true;
         if self.emit_events && conn.phase != Phase::Hello {
-            self.events.push_back(ServerNotice::Event(ServerEvent::Closed {
-                conn: ConnectionId::from_raw(id),
-                reason,
-            }));
+            self.events
+                .push_back(ServerNotice::Event(ServerEvent::Closed {
+                    conn: ConnectionId::from_raw(id),
+                    reason,
+                }));
         }
     }
 
@@ -680,27 +686,6 @@ pub(crate) enum ReadFail {
     Lost,
 }
 
-/// Reads one length-prefixed frame: `Ok(None)` on a FIN exactly at a frame
-/// boundary. The header is checked against `cap` before any allocation, and
-/// a header over the cap is never followed by a body read.
-pub(crate) async fn read_frame(
-    recv: &mut RecvStream,
-    cap: usize,
-) -> Result<Option<Vec<u8>>, ReadFail> {
-    let mut header = [0u8; FRAME_HEADER_BYTES];
-    match recv.read_exact(&mut header).await {
-        Ok(()) => {}
-        Err(ReadExactError::FinishedEarly(0)) => return Ok(None),
-        Err(error) => return Err(read_fail(error)),
-    }
-    let len = parse_frame_header(header, cap)
-        .map_err(|error| frame_error_code(error))
-        .map_err(ReadFail::Code)?;
-    let mut body = vec![0u8; len];
-    recv.read_exact(&mut body).await.map_err(read_fail)?;
-    Ok(Some(body))
-}
-
 /// Maps a header failure to its close code (`tasks/T024q.md` S§6.3): an
 /// unknown channel or zero length is a protocol violation, an over-cap
 /// length is `FrameTooLarge` with no body read.
@@ -713,7 +698,7 @@ pub(crate) fn frame_error_code(error: FrameError) -> CloseCode {
 
 /// Reads one lane frame under the connection's framing and direction:
 /// `Ok(None)` on a FIN exactly at a frame boundary. `/1` connections keep
-/// `read_frame`'s behaviour exactly; `/2` headers carry a channel byte.
+/// the legacy reader's behaviour exactly; `/2` headers carry a channel byte.
 pub(crate) async fn read_lane_frame(
     recv: &mut RecvStream,
     framing: Framing,
@@ -746,7 +731,7 @@ pub(crate) async fn read_lane_frame(
     Ok(Some((channel, body)))
 }
 
-fn read_fail(error: ReadExactError) -> ReadFail {
+pub(crate) fn read_fail(error: ReadExactError) -> ReadFail {
     match error {
         // FIN mid-frame or a RESET_STREAM on the lane.
         ReadExactError::FinishedEarly(_) | ReadExactError::ReadError(ReadError::Reset(_)) => {
@@ -768,19 +753,28 @@ pub(crate) fn local_close(shared: &Shared, id: u64, connection: &Connection, cod
     }
 }
 
+/// How one lane reader interprets its frames (`tasks/T024q.md` S§6.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReadSpec {
+    /// The connection's framing.
+    pub(crate) framing: Framing,
+    /// The side of the lane stream being read.
+    pub(crate) direction: LaneDirection,
+    /// The direction's payload cap.
+    pub(crate) cap: usize,
+}
+
 /// Reads lane frames into the inbound queue until FIN, close or violation.
 pub(crate) async fn lane_reader(
     shared: Arc<Shared>,
     id: u64,
     connection: Connection,
     mut recv: RecvStream,
-    framing: Framing,
-    direction: LaneDirection,
-    cap: usize,
+    spec: ReadSpec,
     wake: Arc<ConnWake>,
 ) {
     loop {
-        match read_lane_frame(&mut recv, framing, direction, cap).await {
+        match read_lane_frame(&mut recv, spec.framing, spec.direction, spec.cap).await {
             Ok(Some((channel, frame))) => {
                 if !deliver(&shared, id, channel, frame, &wake).await {
                     break;

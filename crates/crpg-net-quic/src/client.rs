@@ -23,14 +23,14 @@ use crate::close::{
     ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, SendError,
 };
 use crate::handshake::{
-    Hello, Welcome, Channel, Framing, ALPN_LANE0_V2, FRAME_HEADER_BYTES, MAX_HELLO_BYTES,
-    TLS_SERVER_NAME, WELCOME_BYTES,
+    parse_channel_frame_header, Channel, Framing, Hello, Welcome, ALPN_LANE0_V2,
+    FRAME_HEADER_BYTES, MAX_HELLO_BYTES, TLS_SERVER_NAME, WELCOME_BYTES,
 };
 use crate::limits::{ClientConfig, ClientLimits, ConfigError};
 use crate::queue::{
-    close_quinn, deadline_after, framed, framed_channel, frame_error_code, lane_control,
-    lane_reader, lane_writer, race, read_fail, reason_from, wait_stop, Conn, ConnWake, Either,
-    FailGuard, FlushRequest, LaneDirection, Phase, ReadFail, Shared, State, Stop, SYNC_GRACE,
+    close_quinn, deadline_after, framed, framed_channel, lane_control, lane_reader, lane_writer,
+    race, reason_from, wait_stop, Conn, ConnWake, Either, FailGuard, FlushRequest, LaneDirection,
+    Phase, ReadSpec, Shared, State, Stop, SYNC_GRACE,
 };
 use crate::tls;
 
@@ -137,8 +137,9 @@ impl QuicClient {
             .and_then(|payload| framed(&payload, MAX_HELLO_BYTES).ok())
             .ok_or(ConnectError::Handshake)?;
         let mismatch = Arc::new(AtomicBool::new(false));
-        let quinn_config = tls::client_config(config.pin, mismatch.clone(), framing.alpn(), &limits)
-            .ok_or(ConnectError::Handshake)?;
+        let quinn_config =
+            tls::client_config(config.pin, mismatch.clone(), framing.alpn(), &limits)
+                .ok_or(ConnectError::Handshake)?;
         let socket = UdpSocket::bind(config.bind).map_err(|e| ConnectError::Io(e.kind()))?;
         let local_addr = socket
             .local_addr()
@@ -171,8 +172,11 @@ impl QuicClient {
         };
         let thread = spawn_attempt(thread_shared, socket, attempt, ready_tx)?;
         match ready_rx.recv() {
-            Ok(Ok(Connected { welcome, answer })) => {
-                debug_assert!(answer.is_none(), "a hello opening reads no answer");
+            Ok(Ok(Connected {
+                welcome,
+                resume_answer,
+            })) => {
+                debug_assert!(resume_answer.is_none(), "a hello opening reads no answer");
                 Ok(QuicClient {
                     shared,
                     thread: Some(thread),
@@ -183,11 +187,11 @@ impl QuicClient {
                 })
             }
             Ok(Err(error)) => {
-                drop(thread);
+                let _ = thread.join();
                 Err(error)
             }
             Err(_) => {
-                drop(thread);
+                let _ = thread.join();
                 Err(ConnectError::Runtime)
             }
         }
@@ -216,9 +220,8 @@ impl QuicClient {
         if request.is_empty() || request.len() > MAX_RESUME_FRAME_BYTES {
             return Err(ConnectError::Handshake);
         }
-        let request_frame =
-            framed_channel(Channel::Resume, request, MAX_RESUME_FRAME_BYTES)
-                .map_err(|_| ConnectError::Handshake)?;
+        let request_frame = framed_channel(Channel::Resume, request, MAX_RESUME_FRAME_BYTES)
+            .map_err(|_| ConnectError::Handshake)?;
         let mismatch = Arc::new(AtomicBool::new(false));
         let quinn_config =
             tls::client_config(config.pin, mismatch.clone(), Framing::V2.alpn(), &limits)
@@ -255,7 +258,10 @@ impl QuicClient {
         };
         let thread = spawn_attempt(thread_shared, socket, attempt, ready_tx)?;
         match ready_rx.recv() {
-            Ok(Ok(Connected { welcome, answer })) => match answer {
+            Ok(Ok(Connected {
+                welcome,
+                resume_answer,
+            })) => match resume_answer {
                 Some(answer) => Ok((
                     QuicClient {
                         shared,
@@ -269,16 +275,16 @@ impl QuicClient {
                 )),
                 // A resume attempt always reads an answer (S§4.6).
                 None => {
-                    drop(thread);
+                    let _ = thread.join();
                     Err(ConnectError::Runtime)
                 }
             },
             Ok(Err(error)) => {
-                drop(thread);
+                let _ = thread.join();
                 Err(error)
             }
             Err(_) => {
-                drop(thread);
+                let _ = thread.join();
                 Err(ConnectError::Runtime)
             }
         }
@@ -346,7 +352,9 @@ impl QuicClient {
         if frame.len() > MAX_INTENT_FRAME_BYTES {
             return Err(ChannelSendError::Send(SendError::FrameTooLarge));
         }
-        state.queue_outbound(LANE, channel, frame).map_err(ChannelSendError::Send)
+        state
+            .queue_outbound(LANE, channel, frame)
+            .map_err(ChannelSendError::Send)
     }
 
     /// `Ok(None)` when empty; `Err(reason)` once closed **and** drained. A
@@ -359,7 +367,10 @@ impl QuicClient {
             return Ok(Some(frame));
         }
         let record = state.conns.get(&LANE).ok_or(CloseReason::EndpointFailed)?;
-        if record.inbound_head().is_some_and(|channel| channel != Channel::Lane0) {
+        if record
+            .inbound_head()
+            .is_some_and(|channel| channel != Channel::Lane0)
+        {
             return Ok(None);
         }
         if record.published {
@@ -646,9 +657,11 @@ async fn client_main(
         LANE,
         connection.clone(),
         recv,
-        framing,
-        LaneDirection::Downstream,
-        MAX_DELTA_FRAME_BYTES,
+        ReadSpec {
+            framing,
+            direction: LaneDirection::Downstream,
+            cap: MAX_DELTA_FRAME_BYTES,
+        },
         wake.clone(),
     ));
     let _ = ready.send(Ok(Connected {
@@ -790,7 +803,7 @@ async fn handshake(
 fn parse_answer_len(header: [u8; FRAME_HEADER_BYTES]) -> Option<usize> {
     match parse_channel_frame_header(header, MAX_DELTA_FRAME_BYTES) {
         Ok((_, len)) => Some(len),
-        Err(frame_error_code(error)) => match error {},
+        Err(_) => None,
     }
 }
 
