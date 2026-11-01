@@ -129,3 +129,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Trimmed AGENTS.md to how-to-work by moving Public surface, Invariants, and Allowed dependencies to the architecture doc; no rules changed.
 
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Added the resume subprotocol modules (`protocol_resume`, `codec_resume`) to the architecture pointer, the SessionFence-orders-and-authorises-nothing note on the No-host-invention trap, and the T025a1 traps with the DoD count 175.
+
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T025a2 · Landed the resume mechanisms (`resume`: `SessionFence`, `ResumeDecision`, `check_result`; additive `reassembly::rebind_receiver`) behind the same architecture pointer, with cases 11–21 in `reconnect_wire` and the DoD count 186. The existing T025a1 traps already state the fence/epoch/rebind/proof rules; this entry records that they are now enforced by code and tests.
