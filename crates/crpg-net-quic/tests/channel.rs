@@ -1142,10 +1142,12 @@ fn v2_send_precedence_and_caps() {
     let max = vec![0u8; 65_536];
     let too_big = vec![0u8; 65_537];
     for channel in [Channel::Lane0, Channel::Transfer, Channel::Resume] {
+        let before = queue_fields(server.stats(c4).expect("stats"));
         assert_eq!(
             server.try_send_channel(c4, channel, &too_big),
             Err(ChannelSendError::Send(SendError::FrameTooLarge))
         );
+        assert_eq!(queue_fields(server.stats(c4).expect("stats")), before);
         server
             .try_send_channel(c4, channel, &max)
             .unwrap_or_else(|error| panic!("{channel:?} max: {error:?}"));
@@ -1210,15 +1212,19 @@ fn v2_send_precedence_and_caps() {
         } else {
             Channel::Resume
         };
+        let before = queue_fields(closed_v2.stats());
         assert_eq!(
             closed_v2.try_send_channel(channel, frame),
             Err(ChannelSendError::Send(SendError::Closed(peer_zero)))
         );
+        assert_eq!(queue_fields(closed_v2.stats()), before);
     }
+    let before = queue_fields(closed_v1.stats());
     assert_eq!(
         closed_v1.try_send_channel(Channel::Transfer, b"x"),
         Err(ChannelSendError::Send(SendError::Closed(peer_zero)))
     );
+    assert_eq!(queue_fields(closed_v1.stats()), before);
 }
 
 // ---------------------------------------------------------------------------
@@ -1550,6 +1556,74 @@ fn v2_legacy_entry_points_are_lane0_views() {
         let mut lane = server.lane(conn).expect("lane");
         assert_eq!(lane.recv(), Some(l));
     }
+
+    // A closed connection whose head is a Transfer or Resume frame:
+    // `try_recv` returns `Ok(None)` and never reports `Closed` while such a
+    // frame is queued, and `wait` still reports work (S§8.3).
+    let (mut closing, closing_conn) =
+        connect_framed_accepted(&mut server, client_limits(), 1, Framing::V2);
+    let t = b"T".to_vec();
+    let l = b"L".to_vec();
+    closing
+        .try_send_channel(Channel::Transfer, &t)
+        .expect("closing t");
+    closing
+        .try_send_channel(Channel::Lane0, &l)
+        .expect("closing l");
+    closing.close(CloseCode::Normal, CloseMode::Flush);
+    assert_eq!(
+        next_closed(&mut server),
+        (closing_conn, CloseReason::Peer { code: 0 })
+    );
+    assert_eq!(server.stats(closing_conn).expect("stats").inbound_frames, 2);
+    assert_eq!(server.try_recv(closing_conn), Ok(None));
+    assert!(server.wait(Duration::ZERO));
+    assert_eq!(server.stats(closing_conn).expect("stats").inbound_frames, 2);
+    assert_eq!(
+        server.try_recv_channel(closing_conn),
+        Ok(Some((Channel::Transfer, t)))
+    );
+    assert_eq!(server.try_recv(closing_conn), Ok(Some(l)));
+    assert_eq!(
+        server.try_recv(closing_conn),
+        Err(ServerError::Closed(CloseReason::Peer { code: 0 }))
+    );
+
+    // On the client, where the head can be a Resume frame too.
+    let (mut closed_client, closed_conn) =
+        connect_framed_accepted(&mut server, client_limits(), 1, Framing::V2);
+    let r = b"R".to_vec();
+    let t = b"T".to_vec();
+    let l = b"L".to_vec();
+    server
+        .try_send_channel(closed_conn, Channel::Resume, &r)
+        .expect("closed r");
+    server
+        .try_send_channel(closed_conn, Channel::Transfer, &t)
+        .expect("closed t");
+    server
+        .try_send_channel(closed_conn, Channel::Lane0, &l)
+        .expect("closed l");
+    server
+        .close(closed_conn, CloseCode::Normal, CloseMode::Flush)
+        .expect("close closed");
+    until("client closed with three frames", || {
+        closed_client.close_reason().is_some() && closed_client.stats().inbound_frames == 3
+    });
+    assert_eq!(closed_client.try_recv(), Ok(None));
+    assert!(closed_client.wait(Duration::ZERO));
+    assert_eq!(closed_client.stats().inbound_frames, 3);
+    assert_eq!(
+        closed_client.try_recv_channel(),
+        Ok(Some((Channel::Resume, r)))
+    );
+    assert_eq!(closed_client.try_recv(), Ok(None));
+    assert_eq!(
+        closed_client.try_recv_channel(),
+        Ok(Some((Channel::Transfer, t)))
+    );
+    assert_eq!(closed_client.try_recv(), Ok(Some(l)));
+    assert_eq!(closed_client.try_recv(), Err(CloseReason::Peer { code: 0 }));
 
     // Control: on `/1` every frame is lane 0.
     let mut plain = bind_server(ServerLimits::v1());
@@ -2011,33 +2085,50 @@ fn resume_pending_decisions() {
         wire_version: 2,
         epoch: epoch(2),
     };
+    // Snapshots before the refusals: every refusal below must leave both
+    // pending connections' queue fields exactly as they were.
+    let r_stats = queue_fields(server.stats(r.conn).expect("stats"));
+    let h_stats = queue_fields(server.stats(h).expect("stats"));
     assert_eq!(
         server.accept(r.conn, welcome),
         Err(ServerError::InvalidWelcome)
     );
+    assert_eq!(server.totals().pending, 2);
+    assert_eq!(queue_fields(server.stats(r.conn).expect("stats")), r_stats);
+    assert_eq!(queue_fields(server.stats(h).expect("stats")), h_stats);
     assert_eq!(
         server.accept_resume(h, b"x"),
         Err(ServerError::InvalidWelcome)
     );
+    assert_eq!(server.totals().pending, 2);
+    assert_eq!(queue_fields(server.stats(r.conn).expect("stats")), r_stats);
+    assert_eq!(queue_fields(server.stats(h).expect("stats")), h_stats);
     assert_eq!(
         server.accept_resume(r.conn, b""),
         Err(ServerError::InvalidWelcome)
     );
+    assert_eq!(server.totals().pending, 2);
+    assert_eq!(queue_fields(server.stats(r.conn).expect("stats")), r_stats);
+    assert_eq!(queue_fields(server.stats(h).expect("stats")), h_stats);
     assert_eq!(
         server.accept_resume(r.conn, &vec![0u8; 65_537]),
         Err(ServerError::InvalidWelcome)
     );
+    assert_eq!(server.totals().pending, 2);
+    assert_eq!(queue_fields(server.stats(r.conn).expect("stats")), r_stats);
+    assert_eq!(queue_fields(server.stats(h).expect("stats")), h_stats);
     assert_eq!(
         server.try_send_channel(r.conn, Channel::Lane0, b"x"),
         Err(ChannelSendError::Send(SendError::NotAccepted))
     );
+    assert_eq!(server.totals().pending, 2);
+    assert_eq!(queue_fields(server.stats(r.conn).expect("stats")), r_stats);
+    assert_eq!(queue_fields(server.stats(h).expect("stats")), h_stats);
     assert_eq!(
         server.try_recv_channel(r.conn),
         Err(ServerError::NotAccepted)
     );
     assert_eq!(server.totals().pending, 2);
-    let r_stats = queue_fields(server.stats(r.conn).expect("stats"));
-    let h_stats = queue_fields(server.stats(h).expect("stats"));
     assert_eq!(queue_fields(server.stats(r.conn).expect("stats")), r_stats);
     assert_eq!(queue_fields(server.stats(h).expect("stats")), h_stats);
 
