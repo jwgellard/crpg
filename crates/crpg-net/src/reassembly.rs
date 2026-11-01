@@ -313,6 +313,15 @@ pub enum TransferOutcome {
     },
 }
 
+/// What `rebind_receiver` discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rebound {
+    /// The in-flight transfer it discarded and retired, if any.
+    pub discarded: Option<TransferId>,
+    /// Held (not yet queued) deltas it dropped.
+    pub dropped_deltas: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeltaOutcome {
     Released { count: usize },
@@ -1057,5 +1066,41 @@ impl ReassemblyPool {
     }
     pub fn held_delta_bytes(&self) -> usize {
         self.held_delta_bytes
+    }
+    /// Re-anchor a retained receiver for a resumed connection (S§16).
+    ///
+    /// In one call, in this order: clamp `now_ms` and run the pool-wide
+    /// expiry sweep; unknown `id` is `UnknownReceiver`; discard and retire the
+    /// in-flight transfer; drop every held delta; set `AwaitSnapshot` and
+    /// clear `resync`. `epoch`, `wire`, `published`, `next_event_seq`,
+    /// `retired_through` and every already-queued update are kept.
+    pub fn rebind_receiver(
+        &mut self,
+        id: ReceiverId,
+        now_ms: u64,
+    ) -> Result<Rebound, TransferError> {
+        let _ = self.sweep(now_ms.max(self.now_ms));
+        let recv = self
+            .receivers
+            .get_mut(&id)
+            .ok_or(TransferError::UnknownReceiver)?;
+        let mut discarded = None;
+        if let Some(inf) = recv.in_flight.take() {
+            self.staging_bytes = self.staging_bytes.saturating_sub(inf.reserved_bytes);
+            if inf.begin.transfer.get() > recv.retired_through {
+                recv.retired_through = inf.begin.transfer.get();
+            }
+            discarded = Some(inf.begin.transfer);
+        }
+        let dropped_deltas = recv.held.len();
+        self.held_delta_bytes = self.held_delta_bytes.saturating_sub(recv.held_bytes);
+        recv.held_bytes = 0;
+        recv.held.clear();
+        recv.mode = GateMode::AwaitSnapshot;
+        recv.resync = None;
+        Ok(Rebound {
+            discarded,
+            dropped_deltas,
+        })
     }
 }

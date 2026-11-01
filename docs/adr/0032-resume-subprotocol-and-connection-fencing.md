@@ -124,3 +124,4 @@ Mechanism lives here; authenticated policy lives in `crpg-server` (T025b).
 
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Filed ADR-0032 Accepted per D39d S§26 item 9, recording S§2 and H1–H8 with the contract as authoritative.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Restored H1, H4, H5 and H6 in full from S§21 (review 1): H1's `poll_event`-only warning, H4's `accept_resume`/`close(.., Flush)`, H5's `base_tick` = current server tick and unacknowledged-log clearing, H6's `finalized_through = next_new_seq − 1`.
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T025a2 · Addendum: the fence, explicit-decision and rebind mechanisms landed in `crates/crpg-net/src/resume.rs` and the additive `reassembly::rebind_receiver`, proved by `reconnect_wire` cases 11–21.

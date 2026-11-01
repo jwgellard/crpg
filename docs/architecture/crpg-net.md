@@ -416,6 +416,8 @@ Mechanism here, authenticated policy in `crpg-server`.
 
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Added Resume and reconnect section.
 
+- 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T025a2 · Recorded the as-built mechanisms behind the same section: `resume`'s fence window and explicit decision, `rebind_receiver`'s keep-the-floors steps, and cases 11–21 as the mechanism evidence (mechanism here, authenticated policy in `crpg-server`).
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
