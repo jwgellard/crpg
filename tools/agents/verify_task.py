@@ -22,7 +22,7 @@ Options:
     --full         lift the 12-line per-check and 40-line total caps
 
 Checks, in order: scope, gates, doc-only, protected, goldens, weakening, unsafe,
-lints, docsig, todo. In a doc-only slot (`slot-3` … `slot-6`, or a brief whose
+lints, docsig, todo, asserts. In a doc-only slot (`slot-3` … `slot-6`, or a brief whose
 `Route:` line says `doc-only`) the gates never run cargo: with a crate owned
 they report `skipped (doc-only slot)`, and with no crate owned they run the
 tool unittests when `tools/`, `.opencode/` or `opencode.json` changed (else
@@ -56,6 +56,7 @@ CHECKS = [
     "lints",
     "docsig",
     "todo",
+    "asserts",
 ]
 
 TOTAL = len(CHECKS)
@@ -77,6 +78,32 @@ _ASSERT_MARKERS = re.compile(r"\bassert\w*")
 _IGNORE_MARKERS = re.compile(r"#\[ignore")
 _UNSAFE = re.compile(r"\bunsafe\b")
 _TODO = re.compile(r"todo!\(|unimplemented!\(")
+
+# `asserts`: a new or changed Rust test must contain an assertion.
+_TEST_ATTR = re.compile(r"#\s*\[\s*(?:\w+\s*::\s*)*test\b")
+_SHOULD_PANIC = re.compile(r"#\s*\[\s*should_panic\b")
+_CFG_TEST_MOD = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+([A-Za-z_]\w*)")
+_ASSERT_MACRO = re.compile(r"\b(?:debug_assert\w*|assert\w*)\s*!")
+_PROP_ASSERT = re.compile(r"\bprop_assert\w*\s*!")
+_PANIC = re.compile(r"\bpanic\s*!")
+_UNREACHABLE = re.compile(r"\bunreachable\s*!")
+_UNWRAP_ERR = re.compile(r"\.\s*unwrap_err\s*\(")
+_EXPECT_ERR = re.compile(r"\.\s*expect_err\s*\(")
+# `.unwrap()` panics on Err/None, so it asserts like `.expect()` does: the
+# bare `expect` prefix below already matches `.expect(`, and this marker
+# covers `.unwrap()`.
+_UNWRAP = re.compile(r"\.\s*unwrap\s*\(")
+# Turbofish with one level of nested angles (`::<T>`, `::<Vec<u8>>`).
+_TURBOFISH = r"(?:\s*::\s*<(?:[^;{}<>]|<[^;{}<>]*>)*>)?"
+# Assertion-helper prefixes, with or without the `_` (`check(` counts) and
+# with optional turbofish (`assert_send_sync::<T>()` counts).
+_HELPER_CALL = re.compile(
+    r"\b(?:assert|check|expect|validate)(?:_\w*)?" + _TURBOFISH + r"\s*\("
+)
+# A call to any function, with optional turbofish; the callee resolves
+# against functions defined in the same file (method calls do not).
+_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)" + _TURBOFISH + r"\s*\(")
+_MACRO_RULES_RE = re.compile(r"\bmacro_rules\s*!\s*([A-Za-z_]\w*)")
 
 
 class UsageError(Exception):
@@ -677,6 +704,91 @@ def check_lints(ctx: Context) -> dict:
     return _ok()
 
 
+# A0-15 (lesson L8): a doc trim must not delete, edit or reorder a dated
+# agent-log entry, corrupt its `·` separator, or leave heredoc debris.
+_AGENT_LOG_HEADING = re.compile(r"^##\s+Agent log\s*$")
+_AGENT_LOG_ENTRY = re.compile(r"^- \d{4}-\d{2}-\d{2}\b")
+_AGENT_LOG_SIGNATURE = re.compile(r"^- \d{4}-\d{2}-\d{2} \(UTC\) · ")
+_HEREDOC_REMNANTS = frozenset({"EOF", "PY", "MD", "END", '"', "'", '"""', "'''"})
+DETAIL_CAP = 20
+
+
+def agent_log_entries(text: str) -> list[tuple[int, str]]:
+    """The (1-based line number, line) of dated entries in `## Agent log`.
+
+    The section ends at the next level-1 or level-2 heading, so an entry
+    elsewhere in the file is not an agent-log line.
+    """
+    entries: list[tuple[int, str]] = []
+    inside = False
+    for number, line in enumerate(text.splitlines(), 1):
+        if _AGENT_LOG_HEADING.match(line):
+            inside = True
+            continue
+        if inside and re.match(r"^#{1,2} ", line):
+            inside = False
+            continue
+        if inside and _AGENT_LOG_ENTRY.match(line):
+            entries.append((number, line))
+    return entries
+
+
+def _last_nonblank(text: str | None) -> str | None:
+    """The final line holding any non-whitespace, stripped, if there is one."""
+    if text is None:
+        return None
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line.strip()
+    return None
+
+
+def _bad_separator(line: str) -> bool:
+    """Whether a new dated entry's field separators are not ` · ` (U+00B7).
+
+    A field separator is the middot with one space on each side: anything
+    else (`Â·`, a replacement character, a plain `.`/`-`/`?` after the date)
+    means the line was mangled. The signature separator after `(UTC)` is
+    always required; any other middot must be spaced the same way.
+    """
+    if _AGENT_LOG_SIGNATURE.match(line) is None:
+        return True
+    if "\ufffd" in line:
+        return True
+    for found in re.finditer("·", line):
+        before = line[found.start() - 1] if found.start() else ""
+        after = line[found.end()] if found.end() < len(line) else ""
+        if before != " " or after != " ":
+            return True
+    return False
+
+
+def agent_log_problems(path: str, base: str | None, new: str) -> list[str]:
+    """A0-15 details for one changed `.md`: prior entries kept, no debris."""
+    problems: list[str] = []
+    base_entries = agent_log_entries(base or "")
+    new_entries = agent_log_entries(new)
+    new_lines = [line for _, line in new_entries]
+    positions: list[int] = []
+    for _, line in base_entries:
+        try:
+            positions.append(new_lines.index(line))
+        except ValueError:
+            problems.append(f'{path}: deleted agent-log line "{line[:60]}"')
+    if any(later <= earlier for earlier, later in zip(positions, positions[1:])):
+        problems.append(f"{path}: agent-log line moved")
+
+    base_lines = {line for _, line in base_entries}
+    for number, line in new_entries:
+        if line not in base_lines and _bad_separator(line):
+            problems.append(f"{path}:{number} bad separator")
+
+    last_new = _last_nonblank(new)
+    if last_new in _HEREDOC_REMNANTS and last_new != _last_nonblank(base):
+        problems.append(f'{path}: trailing heredoc remnant "{last_new}"')
+    return problems
+
+
 def check_docsig(ctx: Context) -> dict:
     today = os.environ.get("CRPG_TODAY") or datetime.datetime.now(
         datetime.timezone.utc
@@ -710,8 +822,17 @@ def check_docsig(ctx: Context) -> dict:
             continue
         if not any(signed(line) for line in ctx.added_lines(path)):
             offenders.append(f"{path}: no added agent-log entry dated {wanted} (UTC)")
+        new = ctx.new_text(path)
+        if new is not None:
+            offenders.extend(agent_log_problems(path, ctx.base_text(path), new))
     if offenders:
-        return _fail(f"{len(offenders)} .md file(s) without a signature dated {wanted}", offenders)
+        shown = offenders[:DETAIL_CAP]
+        if len(offenders) > DETAIL_CAP:
+            shown.append(f"… and {len(offenders) - DETAIL_CAP} more")
+        return _fail(
+            f"{len(offenders)} docsig problem(s); new entries dated {wanted} (UTC)",
+            shown,
+        )
     return _ok()
 
 
@@ -736,6 +857,378 @@ def check_todo(ctx: Context) -> dict:
     return _ok()
 
 
+# --------------------------------------------------------------------------
+# asserts (A0-14, lesson L6): a new or changed Rust test must assert.
+
+
+def _mask_rust(text: str) -> str:
+    """Mask comments and string/char literals with spaces, keeping newlines.
+
+    The mask is the same length as the input, so offsets and line numbers
+    still line up; braces inside comments or literals become spaces, which
+    keeps the small brace matcher honest.
+    """
+    out = list(text)
+    n = len(text)
+    i = 0
+    while i < n:
+        two = text[i : i + 2]
+        if two == "//":
+            end = text.find("\n", i)
+            if end == -1:
+                end = n
+            for k in range(i, end):
+                out[k] = " "
+            i = end
+        elif two == "/*":
+            depth = 1
+            out[i] = " "
+            out[i + 1] = " "
+            i += 2
+            while i < n and depth > 0:
+                if text[i : i + 2] == "/*":
+                    out[i] = " "
+                    out[i + 1] = " "
+                    depth += 1
+                    i += 2
+                elif text[i : i + 2] == "*/":
+                    out[i] = " "
+                    out[i + 1] = " "
+                    depth -= 1
+                    i += 2
+                else:
+                    if text[i] != "\n":
+                        out[i] = " "
+                    i += 1
+        elif re.match(r"b?r(#+)?\"", text[i:]):
+            hashes = re.match(r"b?r(#+)?\"", text[i:]).group(1) or ""
+            opener_len = len(re.match(r"b?r(#+)?\"", text[i:]).group(0))
+            closer = '"' + hashes
+            end = text.find(closer, i + opener_len)
+            end = n if end == -1 else end + len(closer)
+            for k in range(i, end):
+                if text[k] != "\n":
+                    out[k] = " "
+            i = end
+        elif text[i] == "b" and i + 1 < n and text[i + 1] in "\"'":
+            quote = text[i + 1]
+            if quote == '"':
+                j = i + 2
+                while j < n:
+                    if text[j] == "\\":
+                        j += 2
+                        continue
+                    if text[j] == '"':
+                        j += 1
+                        break
+                    j += 1
+                for k in range(i, min(j, n)):
+                    if text[k] != "\n":
+                        out[k] = " "
+                i = j
+            else:
+                match = re.match(r"b'(?:\\.|[^'\\\n])'", text[i:])
+                if match:
+                    for k in range(i, i + len(match.group(0))):
+                        out[k] = " "
+                    i += len(match.group(0))
+                else:
+                    i += 1
+        elif text[i] == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                if text[j] == "\n":
+                    break
+                j += 1
+            for k in range(i, min(j, n)):
+                if text[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif text[i] == "'":
+            match = re.match(r"'(?:\\.|[^'\\\n])'", text[i:])
+            if match:
+                for k in range(i, i + len(match.group(0))):
+                    out[k] = " "
+                i += len(match.group(0))
+            else:
+                # A lifetime (`'a`), not a literal.
+                i += 1
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _match_brace(masked: str, opener: int) -> int | None:
+    """The offset of the `}` closing the `{` at `opener` (masked text)."""
+    depth = 0
+    for i in range(opener, len(masked)):
+        if masked[i] == "{":
+            depth += 1
+        elif masked[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _match_pair(masked: str, opener: int, open_ch: str, close_ch: str) -> int | None:
+    depth = 0
+    for i in range(opener, len(masked)):
+        if masked[i] == open_ch:
+            depth += 1
+        elif masked[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _in_tests_dir(path: str) -> bool:
+    """Whether `path` is a `crates/**/tests/` integration-test file."""
+    if not path.endswith(".rs"):
+        return False
+    parts = path.split("/")
+    if parts[0] != "crates":
+        return False
+    if os.path.basename(path) == "tests.rs":
+        return True
+    return "tests" in parts[:-1]
+
+
+_FN_RE = re.compile(
+    r"(?P<attrs>(?:#\s*\[[^\]]*\]\s*|#\s*test\b\s*)*)"
+    r"(?P<decl>(?:pub\s*(?:\([^)]*\))?\s*)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?"
+    r"fn\s+(?P<name>[A-Za-z_]\w*))"
+)
+_PROptest_RE = re.compile(r"\bproptest\s*!")
+
+
+def _macro_rules_ranges(masked: str) -> list[tuple[int, int]]:
+    """Ranges of `macro_rules!` bodies; tests generated inside are not checked.
+
+    A `#[test] fn v1() { super::$name(super::V1); }` inside a `macro_rules!`
+    body only delegates to the function it names, so the check exempts it
+    and judges the delegate instead.
+    """
+    closers = {"{": "}", "(": ")", "[": "]"}
+    ranges: list[tuple[int, int]] = []
+    for found in _MACRO_RULES_RE.finditer(masked):
+        j = found.end()
+        while j < len(masked) and masked[j] in " \t\n\r":
+            j += 1
+        if j < len(masked) and masked[j] in closers:
+            close = _match_pair(masked, j, masked[j], closers[masked[j]])
+            if close is not None:
+                ranges.append((j, close))
+    return ranges
+
+
+def _file_functions(masked: str) -> dict[str, list[str]]:
+    """Every `fn name` in the file mapped to its masked bodies."""
+    found: dict[str, list[str]] = {}
+    for match in _FN_RE.finditer(masked):
+        brace = masked.find("{", match.end())
+        if brace == -1:
+            continue
+        if ";" in masked[match.end() : brace]:
+            continue
+        close = _match_brace(masked, brace)
+        if close is None:
+            continue
+        found.setdefault(match.group("name"), []).append(masked[brace + 1 : close])
+    return found
+
+
+def _body_asserts(code: str) -> bool:
+    """Whether masked code holds an assertion marker (A0-14 Behaviour 2)."""
+    return bool(
+        _ASSERT_MACRO.search(code)
+        or _PROP_ASSERT.search(code)
+        or _PANIC.search(code)
+        or _UNREACHABLE.search(code)
+        or _UNWRAP_ERR.search(code)
+        or _EXPECT_ERR.search(code)
+        or _UNWRAP.search(code)
+        or _HELPER_CALL.search(code)
+    )
+
+
+def _helper_passes(
+    name: str, helpers: dict[str, list[str]], seen: frozenset[str], depth: int
+) -> bool:
+    """Whether the same-file function `name` asserts, transitively to depth 3."""
+    if depth <= 0 or name in seen:
+        return False
+    bodies = helpers.get(name)
+    if not bodies:
+        return False
+    seen = seen | {name}
+    for body in bodies:
+        if body.strip() == "":
+            continue
+        if _body_asserts(body):
+            return True
+    for body in bodies:
+        if body.strip() == "":
+            continue
+        for call in _CALL_RE.finditer(body):
+            if call.start() > 0 and body[call.start() - 1] == ".":
+                continue
+            if _helper_passes(call.group(1), helpers, seen, depth - 1):
+                return True
+    return False
+
+
+def _calls_asserting_helper(code: str, helpers: dict[str, list[str]]) -> bool:
+    """Whether masked code calls a same-file function whose body asserts."""
+    for call in _CALL_RE.finditer(code):
+        if call.start() > 0 and code[call.start() - 1] == ".":
+            continue
+        if _helper_passes(call.group(1), helpers, frozenset(), 3):
+            return True
+    return False
+
+
+def _rust_tests(masked: str, original: str, tests_dir: bool) -> list[dict]:
+    """Test functions in a file: name, line, bodies, `should_panic`.
+
+    `masked` is `_mask_rust(original)`; offsets line up. In an integration
+    tests dir every `#[test]`-style function counts; elsewhere only ones
+    inside a `#[cfg(test)]` module do. Any function inside a `proptest!`
+    block counts, including its `#test` functions. Functions inside a
+    `macro_rules!` body never count: they only delegate to the function
+    they name.
+    """
+    cfg_ranges: list[tuple[int, int]] = []
+    for found in _CFG_TEST_MOD.finditer(masked):
+        brace = masked.find("{", found.end())
+        if brace == -1:
+            continue
+        if ";" in masked[found.end() : brace]:
+            continue
+        close = _match_brace(masked, brace)
+        if close is not None:
+            cfg_ranges.append((brace, close))
+    proptest_ranges: list[tuple[int, int]] = []
+    for found in _PROptest_RE.finditer(masked):
+        j = found.end()
+        while j < len(masked) and masked[j] in " \t\n\r":
+            j += 1
+        if j < len(masked) and masked[j] in "{(":
+            close = _match_pair(
+                masked, j, masked[j], "}" if masked[j] == "{" else ")"
+            )
+            if close is not None:
+                proptest_ranges.append((j, close))
+
+    tests: list[dict] = []
+    macro_ranges = _macro_rules_ranges(masked)
+    for found in _FN_RE.finditer(masked):
+        attrs = found.group("attrs") or ""
+        name = found.group("name")
+        if any(s <= found.start() < e for s, e in macro_ranges):
+            continue
+        in_proptest = any(s <= found.start() < e for s, e in proptest_ranges)
+        in_cfg = any(s <= found.start() < e for s, e in cfg_ranges)
+        if in_proptest:
+            is_test = True
+        elif tests_dir:
+            is_test = bool(_TEST_ATTR.search(attrs))
+        else:
+            is_test = bool(_TEST_ATTR.search(attrs)) and in_cfg
+        if not is_test:
+            continue
+        brace = masked.find("{", found.end())
+        if brace == -1:
+            continue
+        if ";" in masked[found.end() : brace]:
+            continue
+        close = _match_brace(masked, brace)
+        if close is None:
+            continue
+        line = original.count("\n", 0, found.start("name")) + 1
+        tests.append(
+            {
+                "name": name,
+                "line": line,
+                "body_masked": masked[brace + 1 : close],
+                "body_raw": original[brace + 1 : close],
+                "should_panic": bool(_SHOULD_PANIC.search(attrs)),
+                "in_proptest": in_proptest,
+            }
+        )
+    return tests
+
+
+def check_asserts(ctx: Context) -> dict:
+    """A new or changed Rust test must contain an assertion (A0-14, L6)."""
+    doc_only = is_doc_only(ctx)
+    failures: list[tuple[str, int, str]] = []
+    for path in sorted(ctx.files):
+        if not path.endswith(".rs"):
+            continue
+        new = ctx.new_text(path)
+        if new is None:
+            continue
+        tests_dir = _in_tests_dir(path)
+        new_tests = _rust_tests(_mask_rust(new), new, tests_dir)
+        if not new_tests:
+            continue
+        helpers = _file_functions(_mask_rust(new))
+        base = ctx.base_text(path)
+        if base is None:
+            changed = new_tests
+        else:
+            base_tests = _rust_tests(_mask_rust(base), base, tests_dir)
+            by_name: dict[str, list[tuple[str, bool]]] = {}
+            for item in base_tests:
+                by_name.setdefault(item["name"], []).append(
+                    (item["body_raw"], item["should_panic"])
+                )
+            changed = [
+                item
+                for item in new_tests
+                if not any(
+                    body == item["body_raw"] and panic == item["should_panic"]
+                    for body, panic in by_name.get(item["name"], [])
+                )
+            ]
+        for item in changed:
+            # An empty (or comment-only) body fails whatever else surrounds it.
+            if item["body_masked"].strip() == "":
+                failures.append((path, item["line"], item["name"]))
+                continue
+            if item["should_panic"]:
+                continue
+            code = item["body_masked"]
+            if _body_asserts(code):
+                continue
+            # A proptest! property holds without an explicit assertion: the
+            # property itself is "does not panic". Only empty bodies fail.
+            if item["in_proptest"]:
+                continue
+            if _calls_asserting_helper(code, helpers):
+                continue
+            failures.append((path, item["line"], item["name"]))
+    if failures:
+        if doc_only:
+            # A doc-only slot already fails `doc-only` on any `.rs` change,
+            # so `asserts` never piles on: like `gates`, it skips instead.
+            return _result("ok", DOC_ONLY_GATE_DETAIL)
+        failures.sort()
+        shown = [f"{path}:{line} {name}" for path, line, name in failures[:20]]
+        if len(failures) > 20:
+            shown.append(f"… and {len(failures) - 20} more")
+        return _fail(f"{len(failures)} test(s) without assertion", shown)
+    return _ok()
+
+
 CHECK_FUNCTIONS = {
     "scope": check_scope,
     "gates": check_gates,
@@ -747,6 +1240,7 @@ CHECK_FUNCTIONS = {
     "lints": check_lints,
     "docsig": check_docsig,
     "todo": check_todo,
+    "asserts": check_asserts,
 }
 
 

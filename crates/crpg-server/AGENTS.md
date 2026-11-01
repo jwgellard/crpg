@@ -16,13 +16,21 @@ as amended by A§0–A§7, with the reasoning in
 
 The library exposes five modules, `host`, `capture`, `checkpoint`, `save`,
 `quic`, with no glob re-export; changing any public type, field, variant,
-signature, cap or `Display` text needs an ADR. Inventory: T022 §1, T039 §2
-and T023b B§3. `quic` re-exports nothing from `crpg_net_quic` or
+signature, cap or `Display` text needs an ADR. Inventory: T022 §1, T039 §2,
+T023b B§3 and T024h S§5. `quic` re-exports nothing from `crpg_net_quic` or
 `crpg_net`; callers name `crpg_net_quic::{QuicServer, Credential, ...}`
 themselves. Beyond
 those lists the as-built crate adds only `Copy` on `ProtocolSelection`
 (required by `as_u8(self)`). The binary (`src/main.rs`) is a wiring shell: no host
 policy lives there.
+
+T024h's additive `host` items (ADR-0031): `DeliveryKind`,
+`DeliveryEntry`, `GrantUpdate::SnapshotStaged`, `TransferDisposition`,
+`TransferRefusal`, `TransferState`, `Host::bind_snapshot_peer`,
+`Host::take_delivery_entries`, `Host::ingest_transfer` and
+`Host::transfer_state`. The same ADR gives `acknowledge_delivery` an
+ordinal meaning and makes `take_delivery` carry transfer frames in a
+snapshot session; their signatures do not change.
 
 ## Invariants
 
@@ -153,10 +161,25 @@ git diff --check
   acknowledged to the host once `try_send` accepts it, and `acked` must
   stay equal to the host's watermark. Never acknowledge frames the
   transport refused.
-- **Narrowing fences; it never calls `set_grants`.** A narrowing
-  `set_invitation_grants` closes the connection with `SessionFenced`, so no
-  resync generation ever reaches `take_delivery`. Seamless narrowing is
-  T024/T025a.
+- **Narrowing fences `/1` bindings; `/2` bindings are snapshot sessions and
+  narrow by transfer (T024h2).** A narrowing `set_invitation_grants` on a
+  `/1` connection closes it with `SessionFenced`, so no resync generation
+  ever reaches `take_delivery`. `bind_peer` sessions keep the T022 reset.
+- **Never reset `event_seq` or ordinals in a snapshot session.** Narrowing
+  and `Resync` clear the unacknowledged log, cancel in-flight, and stage
+  `Begin`/`Chunk` above the current cursor; `next_event_seq`,
+  `next_transfer` and the epoch never go back.
+- **Acknowledge by ordinal, never by count.** `acknowledge_delivery`'s
+  `through` is a delivery ordinal; a cleared entry counts as retired, so
+  `acked + n` falls short. In a lane-0 session the ordinal equals the
+  entry's `event_seq`.
+- **Never pick a channel from frame bytes.** Use `DeliveryKind` from
+  `take_delivery_entries`; reading the first byte is the adapter's job to
+  avoid, not to do.
+- **Staging is atomic, never pending.** Narrowing and an honoured `Resync`
+  determine, check room against the cleared log, then commit in the same
+  call, or change nothing. No stage point exists in `pump` or
+  `take_delivery`.
 - **Never read a held connection further.** After an `ingest` `QueueFull`,
   the one held frame is retried first and nothing behind it is taken, or
   per-connection order breaks.
@@ -194,3 +217,4 @@ git diff --check
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the crate contract with the host invariants, the D20 dependency boundary, the gate list and the traps found while implementing T022, so later transport and persistence tasks start from the as-built rules.
 - 2026-10-05 (UTC) · claude-code + T039 · Added the `save` module to the surface, fenced filesystem I/O to `save.rs` through `crpg-persist` (invariant 7 amended, not weakened), recorded the approved `crpg-persist` edge and the `host_save` gate, and listed the save-adapter traps.
 - 2026-10-06 (UTC) · claude-code + T023b · Added the `quic` module to the surface, amended invariant 7 to fence network I/O to `quic.rs` through `crpg-net-quic`, replaced the QUIC-crates sentence with the path edge, added the `host_quic` gate, and listed the adapter traps, including the approved correction that a hold can lose frames to the rate budget.
+- 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session public surface and host traps (opt-in kind, ordinal acks, `DeliveryKind`, atomic staging) and replaced the old "narrowing fences" trap with the per-kind rule, so the crate contract matches ADR-0031.

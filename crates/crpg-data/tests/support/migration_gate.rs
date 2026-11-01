@@ -417,6 +417,9 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             abilities: vec![id(21)],
             round_ticks: None,
             initiative: None,
+            creature_persistence: None,
+            late_join: None,
+            effects_on_exit: None,
         }),
         Document::Ability(Ability {
             id: id(21),
@@ -464,6 +467,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
                 placement: id(30),
                 initiative: 0,
             }],
+            respawns: None,
         }),
         Document::Effect(Effect {
             id: id(25),

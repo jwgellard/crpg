@@ -21,15 +21,19 @@
 //! version selection, and [`projection_v2`] maps host-authorized per-field
 //! candidates to ordered event ops. The T024 [`protocol_transfer`]/
 //! [`codec_transfer`] / [`reassembly`] triple carries the separate versioned
-//! snapshot-transfer subprotocol (first byte `0x81`, lane 2). Real QUIC,
-//! movement wire, reconnect, prediction, and host auth/perception are named
-//! follow-ons, not here.
+//! snapshot-transfer subprotocol (first byte `0x81`, lane 2), and the T025a1
+//! [`protocol_resume`] / [`codec_resume`] pair carries the separate versioned
+//! resume subprotocol (first byte `0x91`, lane 3). Real QUIC,
+//! movement wire, reconnect policy, prediction, and host auth/perception are
+//! named follow-ons, not here.
 
 pub mod codec;
+pub mod codec_resume;
 pub mod codec_transfer;
 pub mod codec_v2;
 pub mod projection_v2;
 pub mod protocol;
+pub mod protocol_resume;
 pub mod protocol_transfer;
 pub mod protocol_v2;
 pub mod reassembly;

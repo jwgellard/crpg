@@ -269,6 +269,9 @@ fn documents(
             abilities: vec![id],
             round_ticks: None,
             initiative: None,
+            creature_persistence: None,
+            late_join: None,
+            effects_on_exit: None,
         }));
     }
     result.push(Document::Ability(Ability {
@@ -373,6 +376,7 @@ fn documents(
             placement: id,
             initiative: raw,
         }],
+        respawns: None,
     }));
     for document in &mut result {
         match document {

@@ -27,6 +27,41 @@
       ],
       "type": "object"
     },
+    "CreaturePersistenceWire": {
+      "description": "Which placed creatures keep their state after an encounter.",
+      "oneOf": [
+        {
+          "const": "survivors",
+          "description": "Every placed creature that leaves or outlives an encounter keeps its state, and the dead stay dead.",
+          "type": "string"
+        },
+        {
+          "const": "registered",
+          "description": "Only creatures that entered from a kept state keep it; authored participants spawn fresh at every start.",
+          "type": "string"
+        }
+      ]
+    },
+    "EffectsOnExitWire": {
+      "description": "What a creature's attached effects become when it leaves an encounter or the encounter ends.",
+      "oneOf": [
+        {
+          "const": "suspend",
+          "description": "They keep their remaining rounds and resume at the next entry.",
+          "type": "string"
+        },
+        {
+          "const": "strip",
+          "description": "They are removed at leave and at release.",
+          "type": "string"
+        },
+        {
+          "const": "strip_at_release",
+          "description": "They are removed at release and kept at leave.",
+          "type": "string"
+        }
+      ]
+    },
     "ExprWire": {
       "description": "One derived-stat expression node; mirrors the kernel expression tree.",
       "oneOf": [
@@ -287,6 +322,21 @@
         "bonus_stats"
       ],
       "type": "object"
+    },
+    "LateJoinWire": {
+      "description": "Where a turn-based first-round joiner acts when its initiative slot has passed.",
+      "oneOf": [
+        {
+          "const": "next_round",
+          "description": "It waits for the next round.",
+          "type": "string"
+        },
+        {
+          "const": "after_active",
+          "description": "It acts right after the current turn.",
+          "type": "string"
+        }
+      ]
     },
     "PackageId": {
       "description": "Immutable publication coordinate, distinct from an object ULID or slug.",
@@ -646,6 +696,28 @@
           },
           "type": "array"
         },
+        "creature_persistence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CreaturePersistenceWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who keeps creature state after an encounter; absent means survivors."
+        },
+        "effects_on_exit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffectsOnExitWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What attached effects become at exit; absent means suspend."
+        },
         "health_stat": {
           "description": "Name of the declared health stat.",
           "type": "string"
@@ -664,6 +736,17 @@
             }
           ],
           "description": "Rolled initiative rule; absent means each participant's authored key alone."
+        },
+        "late_join": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LateJoinWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where a late first-round joiner acts; absent means the next round."
         },
         "name": {
           "description": "Locale key for the display name.",

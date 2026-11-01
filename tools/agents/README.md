@@ -45,7 +45,13 @@ task ID and the same `--slug` only: `--slug draft-a` and `--slug draft-b`
 under T136b both start at attempt 1, while rerunning `draft-a` is attempt
 2, and a run with no slug counts only slug-less runs. A slug run's files
 are named `<attempt>-<slug>-<model>.{jsonl,result.json,report.md}`; a
-slug-less run keeps `<attempt>-<model>…`, so `stats` reads both.
+slug-less run keeps `<attempt>-<model>…`, so `stats` reads both. A new run
+reserves its number before anything starts by creating
+`<attempt>-<model>.claim` (or `<attempt>-<slug>-<model>.claim`) with an
+exclusive create, writing its PID and a UTC stamp; `next_attempt_number`
+counts claims too, so two parallel runs of one task and slug can never share
+an attempt, and the claim stays after the run as its marker (`--dry-run`
+writes none).
 
 Environment: `$CRPG_REPO` (repo root, default: the main worktree),
 `$CRPG_SLOTS`, `$CRPG_OPENCODE` (executable; a `.py` path runs under
@@ -193,6 +199,29 @@ They use temporary git repositories and worktrees only — never the real
 python -m unittest discover -s tools/tests -p "test_oc.py" -v
 ```
 
+## lost.py — doc-move check for trims (A0-16, lesson L8)
+
+Checks that a documentation trim did not drop whole blocks, the failure mode
+behind L8. Stdlib only, Python 3.11+.
+
+```text
+python tools/agents/lost.py --base REF [--head REF]
+                            --from PATH [--from PATH ...]
+                            [--to PATH ...] [--min-chars N]
+                            [--threshold F] [--json]
+```
+
+Every `--from` file's base text is split into blocks (blank lines and `#`
+headings end one; a list item or table row starts one) and checked against
+the concatenated head text of every `--to` file (`--to` defaults to `--from`,
+`--head` defaults to the working tree). Blocks shorter than `--min-chars`
+(default 25) are skipped; a block is lost when fewer than `--threshold`
+(default 0.5) of its 8-word shingles appear in the head. A missing path on
+either side is empty text. The verdict line comes first, then up to 40
+`<ratio>  <path>:<line>  <text>` lines and `… and K more`; `--json` prints
+`{verdict, checked, lost: [{path, line, ratio, text}]}` instead. Exits 0 when
+nothing is lost, 1 when a block is, 2 on a usage or bad-ref error.
+
 ## Neighbours (other workers, not this script)
 
 - `tools/agents/verify_task.py` — the verifier `oc.py` runs (A0-4). Faked in
@@ -209,7 +238,17 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
   `.rs`, `Cargo.toml` or `Cargo.lock`. Its `docsig` check accepts an added
   agent-log entry dated from the UTC day of the oldest commit in
   `base..HEAD` up to today (today only with no commits; `$CRPG_TODAY`
-  overrides today).
+  overrides today). It also keeps every prior dated agent-log line in order
+  (a deleted, edited or reordered one fails), rejects a new entry whose `·`
+  separators are mangled (mojibake, `?`, `-`, replacement characters) or that
+  is not the ` · ` form, and flags a trailing heredoc remnant (`EOF`, `PY`,
+  `"`, …) the base did not have; details cap at 20 plus `… and N more`
+  (A0-15, L8). Its `asserts` check fails a new or changed `#[test]`-style
+  test whose body is empty, comment-only, or holds no assertion; calls to
+  same-file helpers whose bodies assert (transitively, bare `check(` and
+  turbofish included), tests inside a `macro_rules!` body, and non-empty
+  `proptest!` properties all pass (skipped
+  with `--skip asserts`).
 - `tools/agents/brief.py`, `tools/agents/recall.py` — brief generation and
   memory search (A0-5). `oc.py` calls `brief.py` when `--brief` is omitted.
 
@@ -228,3 +267,8 @@ python -m unittest discover -s tools/tests -p "test_oc.py" -v
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4b attempt 3 · Corrected the doc-only gate rule: no cargo ever, but a tool change still runs the tool unittests (no tool change reports `skipped (no tool change)`), so a tools task's own tests are not silently skipped.
 - 2026-10-23 (UTC) · opencode-go/deepseek-v4.1-flash + A0-4c · Documented `ask --diff/--base`, the diff file beside the run log, the exact question sentence, the recorded `diff` key, and the non-fault `bad-ref`/`empty-diff` exits, so a reviewer can read a slot branch's diff from the main checkout without loosening a permission.
 - 2026-10-24 (UTC) · opencode-go/deepseek-v4.1-flash + A0-12 · Documented the occupied-slot guard: auto-pick skips (and `--slot` refuses with `slot-occupied`) a slot holding another task's uncommitted work or commits no other ref holds, so a dispatcher never reads a neighbour's work as its base.
+- 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 · Named the new `asserts` check above so workers know a new or changed Rust test must assert, per lesson L6.
+- 2026-10-30 (UTC) · opencode-go/muse-spark-1.3-contributor + A0-14 attempt 2 · Extended the `asserts` line above: same-file asserting helpers (transitive, bare prefixes, turbofish), `macro_rules!` delegates, and non-empty `proptest!` properties pass, so the check no longer flags legitimate assertion routes.
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-13 · Documented the per-run `.claim` reservation so the manager knows parallel runs of one task and slug get distinct attempts and leave a marker, per lesson L5.
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-15 · Documented the extended `docsig` above (prior entries kept in order, bad separators and trailing heredoc remnants flagged, details capped) so a doc trim cannot silently drop or corrupt an agent-log line.
+- 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-16 · Documented `lost.py`, the block/shingle doc-move check that replaces the manager's private script, so a trim that drops whole blocks fails a named check instead of a "no info lost" report (L8).

@@ -543,6 +543,14 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
   each damage total. The authoring example
   (`examples/generate_surface_golden.rs`) shares the schedule source.
 
+## Persistent creature records (T139a1)
+
+- `World.creatures` is the only copy of a creature outside an encounter. An entity holds a `CreatureState` or a `Combatant`, never both; the loader enforces it (K1-K12).
+- Public additions: `CreatureState`, `SuspendedEffect`, `CreatureSpec`, `register_creature`, `HistoryWorld::register_creature`, `World::creatures`, `AreaError::PlacementInUse`, and the `CombatError` variants `PlacementInUse`, `RulesetMismatch`, `NoEntrants` (the last two are T139a2's to raise).
+- Start's per-prefab stat reading lives in `combat::read_creature_stats` and is shared with registration; change the two together. A registration check order change is a precedence change (R1-R6).
+- Trap: T139a1 leaves `Combatant`, `CombatState` and `end_encounter` alone. A start does not read the store yet, so a record and a combatant for one placement can coexist until T139a2; registration (R5) and transfer (T1) refuse to create that.
+- Tests: `tests/creature_state.rs`, `tests/creature_lifecycle.rs`; the helpers are `support::creature`.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -569,3 +577,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137a · Replaced the bridge section with the kernel-range section (public additions, the `Int`-only rule, the scratch-interner trap, the B21 start order) and added the stat evaluation stage to invariant 12, so later tasks extend the one legality source instead of a copy.
 - 2026-10-24 (UTC) · claude-code (Sonnet 5.5) + T137b · Removed the bridge text from the kernel-range section and added the `Opposed`/damage-dice/initiative draw order, the tag carriage rule and the new start-order steps, so the section describes the whole executed surface and warns against a new refusal list.
 - 2026-10-24 (UTC) · opencode-go/beam-free + T137c · Added the surface golden paragraph with the pinned seed-42 schedule, example, test and Windows baseline, so the generalized surface carries a per-target golden with a hand-written value oracle.
+- 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139a1 · Added the creature-record contract, its public additions and the shared stat-reading trap; the start/release lifecycle is deferred to T139a2.

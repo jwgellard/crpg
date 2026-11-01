@@ -30,12 +30,17 @@ use std::fmt;
 
 use crpg_core::{EntityId, Ulid};
 use crpg_net::codec::{self, CodecError};
+use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
 use crpg_net::projection_v2::{project_events, EventCandidate};
 use crpg_net::protocol::{
     self, IntentBody, IntentFrame, NetId, ReceiptStatus, RejectionCode, LANE_COMBAT, MAX_DELTA_OPS,
     MAX_INTENT_FRAME_BYTES, MAX_VISIBLE_ENTITIES, POLICY_OBSERVED_TICK_WINDOW, POLICY_PROOF_PEERS,
     POLICY_RETRY_CACHE_BYTES_PER_PEER_LANE, POLICY_RETRY_CACHE_PER_PEER_LANE, SEQ_LAST,
+};
+use crpg_net::protocol_transfer::{
+    CancelReason, HealthFact, SnapshotBody, SnapshotEntity, TransferDown, TransferId, TransferUp,
+    TurnFact,
 };
 use crpg_net::protocol_v2;
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
@@ -65,6 +70,10 @@ pub const MAX_GRANT_IDENTITIES: usize = MAX_VISIBLE_ENTITIES;
 /// Bound peers per host (aliases
 /// [`POLICY_PROOF_PEERS`](crpg_net::protocol::POLICY_PROOF_PEERS), 8).
 pub const MAX_PEERS: usize = POLICY_PROOF_PEERS;
+
+/// Segments packed into each snapshot-transfer chunk (S§7). Every valid v1
+/// body fits in one chunk, so a transfer is one `Begin` plus one `Chunk`.
+const SNAPSHOT_SEGMENTS_PER_CHUNK: u8 = 8;
 
 // ---------------------------------------------------------------------------
 // Public value types (§1).
@@ -170,6 +179,28 @@ pub struct DisclosureGrants {
     pub turn_state: bool,
 }
 
+/// What a delivery entry carries, so an adapter picks the channel without
+/// reading bytes (T024 S§4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryKind {
+    /// A lane-0 delta frame (the host's `ProtocolSelection`).
+    Delta,
+    /// A snapshot-transfer frame (`crpg_net::codec_transfer`, first byte 0x81).
+    Transfer,
+}
+
+/// One unacknowledged delivery entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryEntry {
+    /// Position in this session's delivery order, from 1, never reused
+    /// within the session (S§6).
+    pub ordinal: u64,
+    /// Delta or transfer frame.
+    pub kind: DeliveryKind,
+    /// The encoded frame.
+    pub bytes: Vec<u8>,
+}
+
 /// The delivery effect of [`Host::set_grants`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GrantUpdate {
@@ -179,6 +210,48 @@ pub enum GrantUpdate {
     /// at 1 with a fresh filtered state; the adapter must fence bytes it
     /// already took.
     RebindRequired,
+    /// Narrowing of a snapshot session: unacknowledged entries were
+    /// discarded and a snapshot transfer staged; delivery continuity kept.
+    SnapshotStaged,
+}
+
+/// The outcome of [`Host::ingest_transfer`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferDisposition {
+    /// `Published` for the in-flight transfer: it is retired.
+    Published,
+    /// `Resync`: a fresh snapshot transfer was staged.
+    Resynced,
+    /// `Published` for an issued transfer that is no longer in flight.
+    Stale,
+    /// Refused; nothing changed (rate tokens aside, S§9.2).
+    Refused(TransferRefusal),
+}
+
+/// Why [`Host::ingest_transfer`] refused a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferRefusal {
+    /// The handle is not bound.
+    Unbound,
+    /// The session was bound with `bind_peer` (no transfer channel).
+    NotSnapshotPeer,
+    /// The session's intent rate budget is spent.
+    RateLimited,
+    /// `crpg_net::codec_transfer::decode_up` failed.
+    Malformed,
+    /// The frame's epoch is not the session's.
+    WrongEpoch,
+    /// The frame names a transfer id this session never issued.
+    UnknownTransfer,
+}
+
+/// A snapshot session's transfer ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferState {
+    /// The id the next staged transfer will take (1 at bind).
+    pub next_transfer: u64,
+    /// The issued transfer not yet answered by `Published` or cancelled.
+    pub in_flight: Option<u64>,
 }
 
 /// The byte-level outcome of [`Host::ingest`].
@@ -338,18 +411,40 @@ struct CacheEntry {
     canonical: Vec<u8>,
     status: ReceiptStatus,
     processed_tick: u64,
-    /// `(delivery generation, event_seq)` of the most recently issued
+    /// `(delivery generation, ordinal)` of the most recently issued
     /// receipt frame, if any.
     receipt: Option<(u64, u64)>,
     /// Ledger bytes: canonical intent plus the receipt-only template.
     bytes: usize,
 }
 
-/// One unacknowledged delivery frame.
+/// One unacknowledged delivery frame. `event_seq` is `Some` for a lane-0
+/// delta and `None` for a snapshot-transfer frame; `ordinal` is assigned by
+/// [`push_frames`] when the entry enters the log.
 #[derive(Debug)]
 struct LoggedFrame {
-    event_seq: u64,
+    ordinal: u64,
+    event_seq: Option<u64>,
     bytes: Vec<u8>,
+}
+
+/// Why a snapshot is being staged: the cancel reason it emits for an
+/// in-flight transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotCause {
+    /// Narrowing grants: `Cancel(Aborted)`.
+    Narrowed,
+    /// Upstream `Resync`: `Cancel(Superseded)`.
+    Resync,
+}
+
+impl SnapshotCause {
+    fn cancel_reason(self) -> CancelReason {
+        match self {
+            Self::Narrowed => CancelReason::Aborted,
+            Self::Resync => CancelReason::Superseded,
+        }
+    }
 }
 
 /// One binding's session state.
@@ -376,6 +471,14 @@ struct Session {
     delivered: u64,
     generation: u64,
     resync_pending: bool,
+    /// Whether the session carries the transfer subprotocol (`bind_snapshot_peer`).
+    snapshot: bool,
+    /// The next delivery ordinal (starts at 1; advances per pushed entry).
+    next_ordinal: u64,
+    /// The id the next staged transfer will take (1 at bind).
+    next_transfer: u64,
+    /// The issued transfer not yet `Published` or cancelled.
+    in_flight: Option<u64>,
 }
 
 impl Session {
@@ -591,6 +694,29 @@ impl Host {
         grants: DisclosureGrants,
         now_ms: u64,
     ) -> Result<PeerHandle, HostError> {
+        self.bind(control, grants, now_ms, false)
+    }
+
+    /// As [`bind_peer`](Self::bind_peer) (same precedence, errors and first
+    /// delivery), but the session is a snapshot session (S§6.1): its delivery
+    /// channel also carries the `0x81` transfer subprotocol in one total order
+    /// with lane-0 frames.
+    pub fn bind_snapshot_peer(
+        &mut self,
+        control: ControlGrant,
+        grants: DisclosureGrants,
+        now_ms: u64,
+    ) -> Result<PeerHandle, HostError> {
+        self.bind(control, grants, now_ms, true)
+    }
+
+    fn bind(
+        &mut self,
+        control: ControlGrant,
+        grants: DisclosureGrants,
+        now_ms: u64,
+        snapshot: bool,
+    ) -> Result<PeerHandle, HostError> {
         if self.closed {
             return Err(HostError::Closed);
         }
@@ -642,6 +768,10 @@ impl Host {
             delivered: 0,
             generation: 0,
             resync_pending: false,
+            snapshot,
+            next_ordinal: 1,
+            next_transfer: 1,
+            in_flight: None,
         };
         session.install_map(map, next_net);
         let frames = self.state_frames(&session)?;
@@ -680,6 +810,12 @@ impl Host {
     /// [`take_delivery`](Self::take_delivery)). Purely widening changes stage
     /// the newly permitted state and return [`GrantUpdate::Unchanged`]; with
     /// no room they fail with `QueueFull` and change nothing.
+    ///
+    /// Narrowing a *snapshot* session instead follows S§8: the unacknowledged
+    /// entries are discarded and a snapshot transfer is staged under the new
+    /// grants and map, returning [`GrantUpdate::SnapshotStaged`] with no reset
+    /// of `event_seq`, ordinals or the transfer ledger (an S§7 failure changes
+    /// nothing, grants included).
     pub fn set_grants(
         &mut self,
         peer: PeerHandle,
@@ -688,15 +824,24 @@ impl Host {
         if self.closed {
             return Err(HostError::Closed);
         }
-        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
-        let grants = normalize_grants(grants)?;
-        let (map, next_net) = plan_map(
-            &session.map,
-            session.next_net,
-            &grants,
-            self.history.world(),
-        )?;
-        if is_narrowing(&session.grants, &grants) {
+        let (grants, map, next_net, narrowing, snapshot) = {
+            let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+            let grants = normalize_grants(grants)?;
+            let (map, next_net) = plan_map(
+                &session.map,
+                session.next_net,
+                &grants,
+                self.history.world(),
+            )?;
+            let narrowing = is_narrowing(&session.grants, &grants);
+            let snapshot = session.snapshot;
+            (grants, map, next_net, narrowing, snapshot)
+        };
+        if narrowing {
+            if snapshot {
+                self.stage_snapshot(peer, grants, map, next_net, SnapshotCause::Narrowed)?;
+                return Ok(GrantUpdate::SnapshotStaged);
+            }
             let session = self.sessions.get_mut(&peer).expect("checked above");
             session.grants = grants;
             session.install_map(map, next_net);
@@ -705,11 +850,13 @@ impl Host {
             session.log_bytes = 0;
             session.generation += 1;
             session.next_event_seq = 1;
+            session.next_ordinal = 1;
             session.delivered = 0;
             session.resync_pending = true;
             self.try_resync(peer)?;
             return Ok(GrantUpdate::RebindRequired);
         }
+        let session = self.sessions.get(&peer).expect("checked above");
         let ops = if session.resync_pending {
             Vec::new()
         } else {
@@ -1068,15 +1215,16 @@ impl Host {
             .find(|entry| entry.seq == seq)
             .expect("hit by caller");
         let status = entry.status;
-        let deliverable = entry.receipt.is_some_and(|(generation, event_seq)| {
-            generation == session.generation && event_seq > session.delivered
+        let deliverable = entry.receipt.is_some_and(|(generation, ordinal)| {
+            generation == session.generation && ordinal > session.delivered
         });
         let mut dropped = false;
         if !deliverable && !session.resync_pending {
             let ops = vec![receipt_op(session.epoch, seq, entry.processed_tick, status)];
             let frame = encode_frame(protocol, server_tick, session.next_event_seq, &ops)?;
             let frame = LoggedFrame {
-                event_seq: session.next_event_seq,
+                ordinal: 0,
+                event_seq: Some(session.next_event_seq),
                 bytes: frame,
             };
             // Best effort under the egress caps: a cache hit reserves nothing,
@@ -1091,14 +1239,14 @@ impl Host {
                 };
                 if spend {
                     let generation = session.generation;
-                    let event_seq = frame.event_seq;
+                    let ordinal = session.next_ordinal;
                     push_frames(&mut self.egress_bytes, session, vec![frame])?;
                     let entry = session
                         .cache
                         .iter_mut()
                         .find(|entry| entry.seq == seq)
                         .expect("hit by caller");
-                    entry.receipt = Some((generation, event_seq));
+                    entry.receipt = Some((generation, ordinal));
                 } else {
                     dropped = true;
                 }
@@ -1132,7 +1280,8 @@ impl Host {
             &ops,
         )?;
         Ok(LoggedFrame {
-            event_seq: session.next_event_seq,
+            ordinal: 0,
+            event_seq: Some(session.next_event_seq),
             bytes,
         })
     }
@@ -1166,7 +1315,7 @@ impl Host {
         let dropped = if session.resync_pending {
             false
         } else if try_consume_failure(session, now_ms, receipt.bytes.len()) {
-            entry.receipt = Some((session.generation, receipt.event_seq));
+            entry.receipt = Some((session.generation, session.next_ordinal));
             push_frames(&mut self.egress_bytes, session, vec![receipt])?;
             false
         } else {
@@ -1257,12 +1406,13 @@ impl Host {
                 ));
             }
             if *handle == peer {
-                receipt_ref = Some((session.generation, session.next_event_seq));
+                receipt_ref = Some((session.generation, session.next_ordinal));
             }
             deliveries.push((
                 *handle,
                 LoggedFrame {
-                    event_seq: session.next_event_seq,
+                    ordinal: 0,
+                    event_seq: Some(session.next_event_seq),
                     bytes,
                 },
             ));
@@ -1385,7 +1535,11 @@ impl Host {
         let mut event_seq = session.next_event_seq;
         for chunk in ops.chunks(MAX_DELTA_OPS) {
             let bytes = encode_frame(self.config.protocol, self.server_tick(), event_seq, chunk)?;
-            frames.push(LoggedFrame { event_seq, bytes });
+            frames.push(LoggedFrame {
+                ordinal: 0,
+                event_seq: Some(event_seq),
+                bytes,
+            });
             event_seq = event_seq
                 .checked_add(1)
                 .ok_or(HostError::CounterExhausted)?;
@@ -1397,6 +1551,108 @@ impl Host {
     fn state_frames(&self, session: &Session) -> Result<Vec<LoggedFrame>, HostError> {
         let ops = session.view().full_state_ops(self.history.world());
         self.chunk_frames(session, &ops)
+    }
+
+    /// S§7: stages one snapshot transfer for `peer`, atomically. Steps 1–5
+    /// only read; step 6 commits. `cause` picks the `Cancel` reason for an
+    /// in-flight transfer (`Aborted` on narrowing, `Superseded` on `Resync`).
+    fn stage_snapshot(
+        &mut self,
+        peer: PeerHandle,
+        grants: DisclosureGrants,
+        map: BTreeMap<EntityId, NetId>,
+        next_net: u64,
+        cause: SnapshotCause,
+    ) -> Result<(), HostError> {
+        // Steps 1–5: determine, reading only.
+        let (transfer_id, cancel, frames) = {
+            let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+            // 1. Transfer-id counter sentinel.
+            if session.next_transfer == u64::MAX {
+                return Err(HostError::CounterExhausted);
+            }
+            let transfer_id = session.next_transfer;
+            let epoch = session.epoch;
+            let cursor = session.last_event_seq();
+            // 2. Cancel the in-flight transfer first, if any.
+            let cancel: Option<Vec<u8>> =
+                match session.in_flight {
+                    Some(old) => {
+                        let message = TransferDown::Cancel {
+                            epoch,
+                            transfer: TransferId::new(old).expect("in-flight id is nonzero"),
+                            reason: cause.cancel_reason(),
+                        };
+                        Some(codec_transfer::encode_down(&message).map_err(|_| {
+                            HostError::Invariant("snapshot transfer failed to encode")
+                        })?)
+                    }
+                    None => None,
+                };
+            // 3. Body from the (current or new) grants and map.
+            let view = PeerView {
+                grants: &grants,
+                map: &map,
+            };
+            let body = view.snapshot_body(self.history.world());
+            // 4. Canonical `plan_transfer` bytes.
+            let frames = codec_transfer::plan_transfer(
+                epoch,
+                TransferId::new(transfer_id).expect("nonzero by the step-1 check"),
+                self.server_tick(),
+                cursor,
+                SNAPSHOT_SEGMENTS_PER_CHUNK,
+                &body,
+            )
+            .map_err(|_| HostError::Invariant("snapshot transfer failed to encode"))?;
+            // 5. Room against the cleared log; the ordinal counter must stay
+            //    below `u64::MAX`.
+            let count = frames.len() + usize::from(cancel.is_some());
+            let bytes: usize =
+                frames.iter().map(Vec::len).sum::<usize>() + cancel.as_ref().map_or(0, Vec::len);
+            let caps = self.egress_caps;
+            let ordinal_room = (u64::MAX - 1).saturating_sub(session.next_ordinal);
+            if count as u64 > ordinal_room {
+                return Err(HostError::CounterExhausted);
+            }
+            if count > caps.per_peer_frames
+                || bytes > caps.per_peer_bytes
+                || self.egress_bytes - session.log_bytes + bytes > caps.host_bytes
+            {
+                return Err(HostError::QueueFull);
+            }
+            (transfer_id, cancel, frames)
+        };
+
+        // Step 6: commit (cannot fail).
+        let session = self.sessions.get_mut(&peer).expect("checked above");
+        if matches!(cause, SnapshotCause::Narrowed) {
+            session.grants = grants;
+            session.install_map(map, next_net);
+        }
+        self.egress_bytes -= session.log_bytes;
+        session.log.clear();
+        session.log_bytes = 0;
+        session.delivered = session.next_ordinal - 1;
+        let mut entries = Vec::new();
+        if let Some(cancel) = cancel {
+            entries.push(LoggedFrame {
+                ordinal: 0,
+                event_seq: None,
+                bytes: cancel,
+            });
+        }
+        for bytes in frames {
+            entries.push(LoggedFrame {
+                ordinal: 0,
+                event_seq: None,
+                bytes,
+            });
+        }
+        push_frames(&mut self.egress_bytes, session, entries)?;
+        session.in_flight = Some(transfer_id);
+        session.next_transfer += 1;
+        Ok(())
     }
 
     /// Stages a pending resync state if there is room.
@@ -1417,9 +1673,12 @@ impl Host {
 
     // -- delivery ------------------------------------------------------------
 
-    /// Every unacknowledged frame for `peer`, in `event_seq` order; repeated
-    /// calls return the same bytes until acknowledged. Stages a pending
-    /// resync first ([`HostError::QueueFull`] when it still has no room).
+    /// Every unacknowledged frame for `peer`, in delivery (ordinal) order;
+    /// repeated calls return the same bytes until acknowledged. A snapshot
+    /// session's log carries transfer frames in the same total order as its
+    /// deltas. Stages a pending resync first ([`HostError::QueueFull`] when
+    /// it still has no room). Callers that must route the two kinds apart use
+    /// [`take_delivery_entries`](Self::take_delivery_entries).
     pub fn take_delivery(&mut self, peer: PeerHandle) -> Result<Vec<Vec<u8>>, HostError> {
         self.try_resync(peer)?;
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
@@ -1430,16 +1689,42 @@ impl Host {
             .collect())
     }
 
-    /// Retires delivery frames through `through`. At or below the watermark
-    /// is an idempotent no-op; past the last issued sequence is
-    /// [`HostError::FutureDeliveryCursor`].
+    /// As [`take_delivery`](Self::take_delivery), with each entry's ordinal
+    /// and kind so an adapter picks a channel without reading frame bytes
+    /// (T024 S§4).
+    pub fn take_delivery_entries(
+        &mut self,
+        peer: PeerHandle,
+    ) -> Result<Vec<DeliveryEntry>, HostError> {
+        self.try_resync(peer)?;
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        Ok(session
+            .log
+            .iter()
+            .map(|frame| DeliveryEntry {
+                ordinal: frame.ordinal,
+                kind: if frame.event_seq.is_some() {
+                    DeliveryKind::Delta
+                } else {
+                    DeliveryKind::Transfer
+                },
+                bytes: frame.bytes.clone(),
+            })
+            .collect())
+    }
+
+    /// Retires delivery entries through the delivery **ordinal** `through`.
+    /// At or below the watermark is an idempotent no-op; past the last issued
+    /// ordinal is [`HostError::FutureDeliveryCursor`]. In a `bind_peer`
+    /// session every ordinal equals its entry's `event_seq`, so nothing
+    /// changes there.
     pub fn acknowledge_delivery(
         &mut self,
         peer: PeerHandle,
         through: u64,
     ) -> Result<(), HostError> {
         let session = self.sessions.get_mut(&peer).ok_or(HostError::UnknownPeer)?;
-        let last = session.last_event_seq();
+        let last = session.next_ordinal - 1;
         if through > last {
             return Err(HostError::FutureDeliveryCursor {
                 requested: through,
@@ -1452,7 +1737,7 @@ impl Host {
         while session
             .log
             .front()
-            .is_some_and(|frame| frame.event_seq <= through)
+            .is_some_and(|frame| frame.ordinal <= through)
         {
             let frame = session.log.pop_front().expect("checked front");
             session.log_bytes -= frame.bytes.len();
@@ -1460,6 +1745,118 @@ impl Host {
         }
         session.delivered = through;
         Ok(())
+    }
+
+    /// The snapshot session's transfer ledger, or `Ok(None)` for a
+    /// `bind_peer` session; `Err(UnknownPeer)` if unbound.
+    pub fn transfer_state(&self, peer: PeerHandle) -> Result<Option<TransferState>, HostError> {
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        if !session.snapshot {
+            return Ok(None);
+        }
+        Ok(Some(TransferState {
+            next_transfer: session.next_transfer,
+            in_flight: session.in_flight,
+        }))
+    }
+
+    /// One upstream transfer frame (S§9): `Published` or `Resync`, decoded by
+    /// `crpg_net::codec_transfer::decode_up`. Refusals are a disposition and
+    /// change nothing but the shared intent rate tokens; an honoured `Resync`
+    /// stages a fresh snapshot transfer atomically.
+    pub fn ingest_transfer(
+        &mut self,
+        peer: PeerHandle,
+        bytes: &[u8],
+        now_ms: u64,
+    ) -> Result<TransferDisposition, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        self.last_now_ms = now_ms;
+
+        enum Effect {
+            Reply(TransferDisposition),
+            Resync {
+                grants: DisclosureGrants,
+                map: BTreeMap<EntityId, NetId>,
+                next_net: u64,
+            },
+        }
+
+        let effect = {
+            let Some(session) = self.sessions.get_mut(&peer) else {
+                return Ok(TransferDisposition::Refused(TransferRefusal::Unbound));
+            };
+            if !session.snapshot {
+                return Ok(TransferDisposition::Refused(
+                    TransferRefusal::NotSnapshotPeer,
+                ));
+            }
+            // Both budgets deduct per attempt, so neither short-circuits the
+            // other (exactly `ingest`'s rule).
+            let frames_ok = session.intent_frames.consume(now_ms, 1);
+            let bytes_ok = session.intent_bytes.consume(now_ms, bytes.len() as u64);
+            if !frames_ok || !bytes_ok {
+                return Ok(TransferDisposition::Refused(TransferRefusal::RateLimited));
+            }
+            let message = match codec_transfer::decode_up(bytes) {
+                Ok(message) => message,
+                Err(_) => {
+                    return Ok(TransferDisposition::Refused(TransferRefusal::Malformed));
+                }
+            };
+            let epoch = match &message {
+                TransferUp::Published { epoch, .. } | TransferUp::Resync { epoch, .. } => *epoch,
+            };
+            if epoch != session.epoch {
+                return Ok(TransferDisposition::Refused(TransferRefusal::WrongEpoch));
+            }
+            match message {
+                TransferUp::Published { transfer, .. } => {
+                    let t = transfer.get();
+                    let issued = session.next_transfer - 1;
+                    if session.in_flight == Some(t) {
+                        session.in_flight = None;
+                        Effect::Reply(TransferDisposition::Published)
+                    } else if t <= issued {
+                        Effect::Reply(TransferDisposition::Stale)
+                    } else {
+                        Effect::Reply(TransferDisposition::Refused(
+                            TransferRefusal::UnknownTransfer,
+                        ))
+                    }
+                }
+                TransferUp::Resync { after, .. } => {
+                    let issued = session.next_transfer - 1;
+                    let a = after.map_or(0, TransferId::get);
+                    if a > issued {
+                        Effect::Reply(TransferDisposition::Refused(
+                            TransferRefusal::UnknownTransfer,
+                        ))
+                    } else {
+                        Effect::Resync {
+                            grants: session.grants.clone(),
+                            map: session.map.clone(),
+                            next_net: session.next_net,
+                        }
+                    }
+                }
+            }
+        };
+
+        match effect {
+            Effect::Reply(reply) => Ok(reply),
+            Effect::Resync {
+                grants,
+                map,
+                next_net,
+            } => {
+                self.stage_snapshot(peer, grants, map, next_net, SnapshotCause::Resync)?;
+                Ok(TransferDisposition::Resynced)
+            }
+        }
     }
 
     /// The retained retry-cache status for `seq`, if still cached.
@@ -1678,12 +2075,19 @@ fn push_frames(
     session: &mut Session,
     frames: Vec<LoggedFrame>,
 ) -> Result<(), HostError> {
-    for frame in frames {
-        debug_assert_eq!(frame.event_seq, session.next_event_seq);
-        session.next_event_seq = session
-            .next_event_seq
+    for mut frame in frames {
+        frame.ordinal = session.next_ordinal;
+        session.next_ordinal = session
+            .next_ordinal
             .checked_add(1)
             .ok_or(HostError::CounterExhausted)?;
+        if let Some(event_seq) = frame.event_seq {
+            debug_assert_eq!(event_seq, session.next_event_seq);
+            session.next_event_seq = session
+                .next_event_seq
+                .checked_add(1)
+                .ok_or(HostError::CounterExhausted)?;
+        }
         session.log_bytes += frame.bytes.len();
         *host_total += frame.bytes.len();
         session.log.push_back(frame);
@@ -2052,6 +2456,34 @@ impl PeerView<'_> {
         }
         ops
     }
+
+    /// The S§7.1 snapshot body: one [`SnapshotEntity`] per mapped entity,
+    /// ascending `NetId`, plus the permitted turn, from the same predicates
+    /// as [`full_state_ops`](Self::full_state_ops). Nothing else can enter.
+    fn snapshot_body(&self, world: &World) -> SnapshotBody {
+        let mut mapped: Vec<(NetId, EntityId)> = self
+            .map
+            .iter()
+            .map(|(entity, net)| (*net, *entity))
+            .collect();
+        mapped.sort();
+        let entities: Vec<SnapshotEntity> = mapped
+            .iter()
+            .map(|(net, entity)| SnapshotEntity {
+                entity: *net,
+                health: self.health(world, *entity).map(|entry| HealthFact {
+                    health: entry.health,
+                    max_health: entry.max_health,
+                    dead: entry.dead,
+                }),
+            })
+            .collect();
+        let turn = self.turn(world).map(|turn| TurnFact {
+            active: turn.active,
+            round: turn.round,
+        });
+        SnapshotBody { entities, turn }
+    }
 }
 
 /// The ops a purely widening grant change adds: `EntityEnter` for newly
@@ -2140,6 +2572,230 @@ mod tests {
         ];
         for (error, code) in pairs {
             assert_eq!(map_codec(error), code);
+        }
+    }
+
+    // -- snapshot-session defence-in-depth unit cases (S§11 cases 12–13) ----
+
+    fn eid(index: u32) -> EntityId {
+        serde_json::from_value(serde_json::json!({ "index": index, "generation": 1 }))
+            .expect("valid entity id")
+    }
+
+    fn full_grants() -> DisclosureGrants {
+        let full = |index: u32| EntityDisclosure {
+            entity: eid(index),
+            present: true,
+            health: true,
+            spawn: true,
+            despawn: true,
+            died: true,
+            action_actor: true,
+            action_target: true,
+            action_outcome: true,
+            action_damage: true,
+            turn_start: true,
+        };
+        DisclosureGrants {
+            entities: vec![full(0), full(1), full(2)],
+            abilities: vec![
+                Ulid::from_u128(603),
+                Ulid::from_u128(604),
+                Ulid::from_u128(605),
+            ],
+            encounters: vec![Ulid::from_u128(601)],
+            turn_round: true,
+            encounter_end: true,
+            turn_state: true,
+        }
+    }
+
+    fn hide_b(mut grants: DisclosureGrants) -> DisclosureGrants {
+        grants.entities[1].present = false;
+        grants
+    }
+
+    fn fixture_host() -> Host {
+        let mut history: HistoryWorld =
+            serde_json::from_str(include_str!("../tests/fixtures/three_combatants.json"))
+                .expect("fixture loads");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        Host::from_history(
+            history,
+            HostConfig {
+                protocol: ProtocolSelection::V1,
+                incarnation: 1,
+            },
+            0,
+        )
+        .expect("wraps an acknowledged authority")
+    }
+
+    fn ack_all(host: &mut Host, peer: PeerHandle) {
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        if let Some(last) = entries.last() {
+            host.acknowledge_delivery(peer, last.ordinal).expect("acks");
+        }
+    }
+
+    /// The S§7 no-change field list (rate buckets excluded; the caller checks
+    /// those separately when a `Resync` spends them).
+    #[derive(Debug, PartialEq, Eq)]
+    struct SessionEvidence {
+        grants: DisclosureGrants,
+        map: BTreeMap<EntityId, NetId>,
+        log: Vec<(u64, Option<u64>, Vec<u8>)>,
+        log_bytes: usize,
+        delivered: u64,
+        next_ordinal: u64,
+        next_transfer: u64,
+        in_flight: Option<u64>,
+        egress_bytes: usize,
+    }
+
+    fn session_evidence(host: &Host, peer: PeerHandle) -> SessionEvidence {
+        let session = host.sessions.get(&peer).expect("bound");
+        SessionEvidence {
+            grants: session.grants.clone(),
+            map: session.map.clone(),
+            log: session
+                .log
+                .iter()
+                .map(|frame| (frame.ordinal, frame.event_seq, frame.bytes.clone()))
+                .collect(),
+            log_bytes: session.log_bytes,
+            delivered: session.delivered,
+            next_ordinal: session.next_ordinal,
+            next_transfer: session.next_transfer,
+            in_flight: session.in_flight,
+            egress_bytes: host.egress_bytes,
+        }
+    }
+
+    #[test]
+    fn snapshot_staging_without_room_changes_nothing() {
+        let mut host = fixture_host();
+        let peer = host
+            .bind_snapshot_peer(ControlGrant { actors: vec![] }, full_grants(), 0)
+            .expect("binds");
+        let caps = host.egress_caps;
+        let original_egress = host.egress_bytes;
+        host.egress_bytes = caps.host_bytes + 1;
+        let before = session_evidence(&host, peer);
+        assert_eq!(
+            host.set_grants(peer, hide_b(full_grants())),
+            Err(HostError::QueueFull)
+        );
+        assert_eq!(session_evidence(&host, peer), before);
+
+        let resync = codec_transfer::encode_up(&TransferUp::Resync {
+            epoch: host.epoch(peer).expect("bound"),
+            after: None,
+            reason: crpg_net::protocol_transfer::ResyncReason::Overflow,
+        })
+        .expect("encodes");
+        assert_eq!(
+            host.ingest_transfer(peer, &resync, 0),
+            Err(HostError::QueueFull)
+        );
+        assert_eq!(session_evidence(&host, peer), before);
+
+        // Control: with egress restored, both succeed.
+        host.egress_bytes = original_egress;
+        assert_eq!(
+            host.set_grants(peer, hide_b(full_grants())),
+            Ok(GrantUpdate::SnapshotStaged)
+        );
+        assert_eq!(
+            host.ingest_transfer(peer, &resync, 1),
+            Ok(TransferDisposition::Resynced)
+        );
+    }
+
+    #[test]
+    fn snapshot_counter_exhaustion_changes_nothing() {
+        // (a) next_transfer sentinel.
+        {
+            let mut host = fixture_host();
+            let peer = host
+                .bind_snapshot_peer(ControlGrant { actors: vec![] }, full_grants(), 0)
+                .expect("binds");
+            ack_all(&mut host, peer);
+            host.sessions.get_mut(&peer).expect("bound").next_transfer = u64::MAX;
+            let before = session_evidence(&host, peer);
+            assert_eq!(
+                host.set_grants(peer, hide_b(full_grants())),
+                Err(HostError::CounterExhausted)
+            );
+            assert_eq!(session_evidence(&host, peer), before);
+            let resync = codec_transfer::encode_up(&TransferUp::Resync {
+                epoch: host.epoch(peer).expect("bound"),
+                after: None,
+                reason: crpg_net::protocol_transfer::ResyncReason::Overflow,
+            })
+            .expect("encodes");
+            assert_eq!(
+                host.ingest_transfer(peer, &resync, 0),
+                Err(HostError::CounterExhausted)
+            );
+            assert_eq!(session_evidence(&host, peer), before);
+            // Control: u64::MAX − 1 stages Begin for that id and advances.
+            host.sessions.get_mut(&peer).expect("bound").next_transfer = u64::MAX - 1;
+            assert_eq!(
+                host.set_grants(peer, hide_b(full_grants())),
+                Ok(GrantUpdate::SnapshotStaged)
+            );
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.next_transfer, u64::MAX);
+            assert_eq!(session.in_flight, Some(u64::MAX - 1));
+        }
+        // (b) next_ordinal bound.
+        {
+            let mut host = fixture_host();
+            let peer = host
+                .bind_snapshot_peer(ControlGrant { actors: vec![] }, full_grants(), 0)
+                .expect("binds");
+            ack_all(&mut host, peer);
+            {
+                let session = host.sessions.get_mut(&peer).expect("bound");
+                session.next_ordinal = u64::MAX - 2;
+                session.delivered = u64::MAX - 3;
+            }
+            let before = session_evidence(&host, peer);
+            assert_eq!(
+                host.set_grants(peer, hide_b(full_grants())),
+                Err(HostError::CounterExhausted)
+            );
+            assert_eq!(session_evidence(&host, peer), before);
+            let resync = codec_transfer::encode_up(&TransferUp::Resync {
+                epoch: host.epoch(peer).expect("bound"),
+                after: None,
+                reason: crpg_net::protocol_transfer::ResyncReason::Overflow,
+            })
+            .expect("encodes");
+            assert_eq!(
+                host.ingest_transfer(peer, &resync, 0),
+                Err(HostError::CounterExhausted)
+            );
+            assert_eq!(session_evidence(&host, peer), before);
+            // Control: u64::MAX − 3 stages at u64::MAX − 3 and u64::MAX − 2.
+            {
+                let session = host.sessions.get_mut(&peer).expect("bound");
+                session.next_ordinal = u64::MAX - 3;
+                session.delivered = u64::MAX - 4;
+            }
+            assert_eq!(
+                host.set_grants(peer, hide_b(full_grants())),
+                Ok(GrantUpdate::SnapshotStaged)
+            );
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.next_ordinal, u64::MAX - 1);
+            let entries = host.take_delivery_entries(peer).expect("bound");
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].ordinal, u64::MAX - 3);
+            assert_eq!(entries[1].ordinal, u64::MAX - 2);
         }
     }
 }
