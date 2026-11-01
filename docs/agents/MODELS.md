@@ -511,6 +511,13 @@ The free Zen limit is account-wide: with at most three concurrent runs it refuse
 | `opencode-go/mimo-v2.6-pro` | tests | T136a-tests fail, T138a-tests hang: 0/2 first-attempt, demoted from the tests row under §4.1 |
 | `opencode-go/deepseek-v4-pro` | tests | T136b-tests and T138a-tests attempt 2: first choice for the tests row, with `opencode-go/deepseek-v4.1-flash` as the other-lab alternative |
 
+**Record, session 28 (2026-11-01).**
+
+| Model | Role | Runs and outcome |
+|---|---|---|
+| `opencode-go/mimo-v2.6-pro` | implement | Demoted from implement under §4.1: hang 3/3 |
+| `opencode-go/deepseek-v4.1-flash` | implement | First-attempt passes on T025a2, T145 and T146 |
+
 ## 5. Bake-off method
 
 Run 2026-10-16. The harness, fixtures and scored results are in
@@ -576,3 +583,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-24 (UTC) · opencode-go/muse-spark-1.3-contributor + S18-bookkeeping · Demoted MiMo-V2.6-Pro from the tests row under §4.1 (0/2 first-attempt: T136a-tests fail, T138a-tests hang) to first-choice DeepSeek V4 Pro or DeepSeek V4.1 Flash, so the routing table follows the session 18 field record.
 - 2026-10-25 (UTC) · opencode-go/beam-free + D37-record · Recorded D37b/D37c: Beam is limited to doc-only work, fact sheets and first-pass review, and while Go is over quota implementation and tests go to free Zen models first then the Claude implementer, never Beam.
 - 2026-10-25 (UTC) · claude-code/opus-5.5 (manager) + D38 · Recorded in §4 the user's D38 narrowing of Beam to new-file work, with its reports never counted as evidence.
+- 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Recorded the session 28 field record in §4.1: MiMo-V2.6-Pro demoted from implement (hang 3/3), and DeepSeek V4.1 Flash first-attempt passes on T025a2, T145 and T146.
