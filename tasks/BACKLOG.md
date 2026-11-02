@@ -240,8 +240,8 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T146b | in session 29 batch | — | `crpgc play` no longer prints `Turn: -` or repeated Round/Turn lines; DeepSeek V4.1 Flash attempt 1 |
 | T045 | ADR-0033 Proposed | — | `docs/adr/0033-godot-bridge.md`; awaits D41d and D41c |
 | T047a | implemented in session 31 batch (DeepSeek V4.1 Flash impl 1st attempt; Muse two-keys tests, 1 fix round; Claude review, 10/10 mutants killed after fix) | — | `crpg-server` `Host::legal_intents` and `Host::replica_id`; before T047 |
-| T047 | session 32 batch: T047-1, T047-2 (core), T047b (shell, S-set, H-unsafe pending), T047d (client) merged into `mgr/session-32-batch`; PR pending T047c | — | `crpg-godot` bridge skeleton (ADR-0033) |
-| T047c | contract approved 2026-11-02 (D42a); implementation running in session 32 (Claude Sonnet, slot 2) | — | the client CI job; must land in T047's batch |
+| T047 | PR #78 open (session 32): T047-1, T047-2, T047b, T047d, T047c; waits on user S-set + H-unsafe review | — | `crpg-godot` bridge skeleton (ADR-0033) |
+| T047c | in PR #78; verify passed; CI W14/W15 and Claude S-set review pending | — | the client CI job; must land in T047's batch |
 
 ## ADR-0029 follow-on contracts
 
@@ -559,3 +559,4 @@ Record it here, one line per week.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S29-bookkeeping · Marked the session 28 batch merged (PR #75), parked T147 after two timed-out runs, and indexed the session 29 batch rows without deciding any contract.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 31 bookkeeping · Updated the T027b, T047a and T047c rows and added a T047 row for the session 31 batch, so the backlog matches the handover.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 32 bookkeeping · Updated the T047 and T047c rows to the session 32 batch state.
+- 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 32 final bookkeeping · Moved the T047 and T047c rows to PR #78.
