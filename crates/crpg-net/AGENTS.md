@@ -17,7 +17,8 @@ live in `docs/architecture/crpg-net.md` (§Scope, §Module flow, §Public
 surface, §Invariants, §Allowed dependencies, §Conformance, §v2 event wire,
 §Snapshot transfer, §Resume and reconnect (T025a)). The resume modules
 (`protocol_resume`, `codec_resume`, and `resume` in T025a2) and the T027b
-`interest` module follow that pointer. This file keeps only how-to-work rules.
+`interest` module follow that pointer; so does the T046 `replica` module.
+This file keeps only how-to-work rules.
 
 ## Definition of done for any change
 
@@ -110,6 +111,14 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   path to `InterestView` — notices stay in `project_events`, and a removal is
   exactly one `EntityLeave`/`Despawned`. DoD count: 191 passed (186 + 5
   `interest` unit tests, I15 among them).
+- *2026-11-02 (UTC), T046:* **The replica applies, it never buffers or
+  re-derives.** Never buffer or skip a frame, never add an in-band reset, a
+  restore constructor or a `Serialize` path, never add a retired-id table
+  (retirement is the `high_water` mark), never let a `Died` notice set `dead`,
+  and keep the conformance `Replica` an independent oracle. A failed call
+  leaves the replica equal to its pre-call clone; live rows may reach 2,048
+  mid-page (D8). DoD count: 226 passed (the base suites plus 17 `replica`
+  unit tests).
 
 ## Agent log
 
@@ -140,3 +149,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T025a2 · Landed the resume mechanisms (`resume`: `SessionFence`, `ResumeDecision`, `check_result`; additive `reassembly::rebind_receiver`) behind the same architecture pointer, with cases 11–21 in `reconnect_wire` and the DoD count 186. The existing T025a1 traps already state the fence/epoch/rebind/proof rules; this entry records that they are now enforced by code and tests.
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T027b · Added the `interest` pointer and the per-epoch-view/derived-retirement/notice-ownership traps, with the DoD count 191 (five `interest` unit tests, I15 included).
+
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T046 · Added the `replica` pointer and the apply-only/no-reset/no-grave/`Died`-is-a-notice traps, with the DoD count 226 (the base suites plus 17 `replica` unit tests).
