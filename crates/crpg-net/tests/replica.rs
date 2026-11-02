@@ -394,6 +394,44 @@ fn r2_enter_health_leave_despawn_run() {
     c.apply_delta(&frame(4, 4, vec![]))
         .expect("control skips despawn");
     assert_eq!(c.entities(), &[row(2, None)]);
+
+    // Control without the Enter op: omitting Enter 1 leaves exactly that
+    // row missing while the rest of the run is unchanged.
+    let mut c = ReplicaWorld::new(epoch(EPOCH_BYTE));
+    c.apply_delta(&frame(1, 1, vec![enter(2)]))
+        .expect("control enters without 1");
+    c.apply_delta(&frame(2, 2, vec![health_op(2, 7, 10, false)]))
+        .expect("control health on 2");
+    assert_eq!(c.entities(), &[row(2, Some(health(7, 10, false)))]);
+    assert_eq!(c.entity(net(1)), None);
+
+    // Despawned integration on a non-empty replica: after a despawn the
+    // id is unknown to later ops and reuse on re-enter.
+    let mut d = ReplicaWorld::new(epoch(EPOCH_BYTE));
+    d.apply_delta(&frame(1, 1, vec![enter(1), enter(2), enter(3)]))
+        .expect("despawn setup enters");
+    d.apply_delta(&frame(2, 2, vec![despawn(2)]))
+        .expect("despawn applies");
+    assert_eq!(d.entities(), &[row(1, None), row(3, None)]);
+    let before = d.clone();
+    assert_eq!(
+        d.apply_delta(&frame(3, 3, vec![health_op(2, 1, 1, false)])),
+        Err(ReplicaError::UnknownEntity { entity: net(2) }),
+        "op after despawn is unknown"
+    );
+    assert_clone_equal_after_err(&before, &d);
+    assert_eq!(
+        d.apply_delta(&frame(3, 3, vec![enter(2)])),
+        Err(ReplicaError::ReusedEntityId { entity: net(2) }),
+        "re-enter after despawn is reuse"
+    );
+    assert_clone_equal_after_err(&before, &d);
+    // Despawn of a non-live id is an error on a non-empty replica.
+    assert_eq!(
+        d.apply_delta(&frame(3, 3, vec![despawn(99)])),
+        Err(ReplicaError::UnknownEntity { entity: net(99) }),
+    );
+    assert_clone_equal_after_err(&before, &d);
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +529,14 @@ fn r5_notices_events_receipts_inert_and_faults() {
         "actor unknown first"
     );
     assert_clone_equal_after_err(&before, &r);
+    // Both ids unknown still reports the actor (item 6 order: actor,
+    // then target).
+    assert_eq!(
+        r.apply_delta(&frame(4, 4, vec![action_op(77, 78)])),
+        Err(ReplicaError::UnknownEntity { entity: net(77) }),
+        "both unknown reports actor"
+    );
+    assert_clone_equal_after_err(&before, &r);
     assert_eq!(
         r.apply_delta(&frame(4, 4, vec![action_op(1, 78)])),
         Err(ReplicaError::UnknownEntity { entity: net(78) }),
@@ -541,21 +587,26 @@ fn r6_turn_stored_verbatim_and_kept() {
         Err(ReplicaError::UnknownEntity { entity: net(4) }),
     );
     assert_clone_equal_after_err(&before, &r);
-    // Removed actor in Turn is UnknownEntity.
+    // Removed actor in Turn is UnknownEntity: leave 2 first, then a
+    // Turn naming the entered-then-removed 2 fails.
+    r.apply_delta(&frame(5, 5, vec![leave(2)]))
+        .expect("remove 2 for turn check");
+    let before = r.clone();
     assert_eq!(
-        r.apply_delta(&frame(5, 5, vec![turn_op(Some(9), 6)])),
-        Err(ReplicaError::UnknownEntity { entity: net(9) }),
+        r.apply_delta(&frame(6, 6, vec![turn_op(Some(2), 6)])),
+        Err(ReplicaError::UnknownEntity { entity: net(2) }),
+        "entered-then-removed active is unknown"
     );
     assert_clone_equal_after_err(&before, &r);
     // After the actor leaves, and after EncounterEnded, turn is unchanged.
-    r.apply_delta(&frame(5, 5, vec![leave(3)]))
+    r.apply_delta(&frame(6, 6, vec![leave(3)]))
         .expect("actor leaves");
     assert_eq!(r.turn(), Some(&turn(Some(3), 5)), "turn keeps stale active");
-    r.apply_delta(&frame(6, 6, vec![ended()]))
+    r.apply_delta(&frame(7, 7, vec![ended()]))
         .expect("end applies");
     assert_eq!(r.turn(), Some(&turn(Some(3), 5)), "end never clears turn");
     // Control: a new Turn replaces it.
-    r.apply_delta(&frame(7, 7, vec![turn_op(Some(1), 8)]))
+    r.apply_delta(&frame(8, 8, vec![turn_op(Some(1), 8)]))
         .expect("replacement applies");
     assert_eq!(r.turn(), Some(&turn(Some(1), 8)));
 }
@@ -819,6 +870,16 @@ fn r10_mid_page_bound_and_swap() {
         .expect("leave-then-enter at cap applies");
     assert_eq!(r.len(), 2048);
     assert!(r.entity(net(2049)).is_some());
+    // Order at the cap (item 6): a retired id is ReusedEntityId even
+    // when the replica is full, not TooManyEntities. Live here is
+    // 2..2049 (2,048 rows), high-water 2049, and 1 is retired.
+    let before = r.clone();
+    assert_eq!(
+        r.apply_delta(&frame(10, 10, vec![enter(1)])),
+        Err(ReplicaError::ReusedEntityId { entity: net(1) }),
+        "reuse beats the cap"
+    );
+    assert_clone_equal_after_err(&before, &r);
 
     // Swap page over 1,024 live rows: 1,024 enters then 1,024 leaves.
     let mut s = ReplicaWorld::new(epoch(EPOCH_BYTE));
@@ -918,6 +979,44 @@ fn r11_snapshot_replacement_and_empty_body() {
     assert_clone_equal_after_err(&before, &e);
     e.apply_delta(&frame(3, 61, vec![enter(5)]))
         .expect("enter above high-water applies");
+
+    // Snapshot-raised mark: a body {10} raises high-water from 3 to 10.
+    let mut m = ReplicaWorld::new(epoch(EPOCH_BYTE));
+    m.apply_delta(&frame(1, 1, vec![enter(1), enter(2), enter(3)]))
+        .expect("base applies");
+    m.apply_snapshot(&publication(1, 70, body_of(&[(10, None)], None)))
+        .expect("snapshot to 10 applies");
+    assert_eq!(m.entities(), &[row(10, None)]);
+    assert_eq!(m.next_event_seq(), 2);
+    let before = m.clone();
+    assert_eq!(
+        m.apply_delta(&frame(2, 71, vec![enter(5)])),
+        Err(ReplicaError::ReusedEntityId { entity: net(5) }),
+        "below snapshot-raised mark is reuse"
+    );
+    assert_clone_equal_after_err(&before, &m);
+    m.apply_delta(&frame(2, 71, vec![enter(11)]))
+        .expect("above snapshot-raised mark applies");
+    assert!(m.entity(net(11)).is_some());
+
+    // A body whose last id is below the mark keeps the larger mark.
+    let mut k = ReplicaWorld::new(epoch(EPOCH_BYTE));
+    let base: Vec<OpV2> = (1..=10).map(enter).collect();
+    k.apply_delta(&frame(1, 1, base))
+        .expect("base 1..10 applies");
+    k.apply_snapshot(&publication(1, 80, body_of(&[(2, None), (3, None)], None)))
+        .expect("narrowing body applies");
+    assert_eq!(k.entities(), &[row(2, None), row(3, None)]);
+    assert_eq!(k.next_event_seq(), 2);
+    let before = k.clone();
+    assert_eq!(
+        k.apply_delta(&frame(2, 81, vec![enter(5)])),
+        Err(ReplicaError::ReusedEntityId { entity: net(5) }),
+        "mark keeps larger value after narrowing body"
+    );
+    assert_clone_equal_after_err(&before, &k);
+    k.apply_delta(&frame(2, 81, vec![enter(11)]))
+        .expect("above kept mark applies");
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,6 +1145,22 @@ fn r13_snapshot_faults_and_order() {
         Err(ReplicaError::ReusedEntityId { entity: net(4) }),
     );
     assert_clone_equal_after_err(&before, &r);
+    // Boundary: a row equal to the high-water mark while not live is
+    // reuse (`<=`, not `<`). Retire 5 itself first on a scratch copy.
+    let mut q = r.clone();
+    q.apply_delta(&frame(4, 4, vec![leave(5)]))
+        .expect("retire the mark itself");
+    assert!(!q.entities().iter().any(|row| row.net_id == net(5)));
+    let q_before = q.clone();
+    assert_eq!(
+        q.apply_snapshot(&publication(4, 1, body_of(&[(5, None)], None))),
+        Err(ReplicaError::ReusedEntityId { entity: net(5) }),
+        "row equal to high-water while not live is reuse"
+    );
+    assert_clone_equal_after_err(&q_before, &q);
+    // Control: a row at high-water + 1 applies.
+    q.apply_snapshot(&publication(4, 1, body_of(&[(6, None)], None)))
+        .expect("high-water + 1 applies");
     // Active outside the body.
     assert_eq!(
         r.apply_snapshot(&publication(
@@ -1116,7 +1231,7 @@ fn r14_atomicity_all_variants_and_multi_op_frame() {
     let mut r = two_live();
     r.apply_delta(&frame(2, 30, vec![enter(3), health_op(1, 1, 5, false)]))
         .expect("non-empty setup");
-    // All ten variants on this non-empty replica (next is 3, last is 2).
+    // All ten variants on non-empty replicas (here next is 3, last is 2).
     let big: Vec<(u64, Option<HealthFact>)> =
         (50_000..50_000 + 1025).map(|id| (id, None)).collect();
     let many: Vec<OpV2> = (0..257).map(|_| died(1)).collect();
@@ -1126,26 +1241,55 @@ fn r14_atomicity_all_variants_and_multi_op_frame() {
         event_seq: 3,
         ops: vec![],
     };
-    let delta_cases: Vec<FrameV2> = vec![
-        bad_lane,
-        frame(3, 1, many),
-        frame(99, 1, vec![]),
-        frame(3, 1, vec![health_op(77, 1, 1, false)]),
-        frame(3, 1, vec![enter(1)]),
-        frame(3, 1, vec![enter(2)]),
-        frame(3, 1, vec![health_op(1, 1, 1, false), leave(1), enter(1)]),
-        frame(3, 1, vec![receipt_op([FOREIGN_BYTE; 16])]),
+    let delta_cases: Vec<(FrameV2, ReplicaError)> = vec![
+        (bad_lane, ReplicaError::WrongLane { got: 1 }),
+        (frame(3, 1, many), ReplicaError::TooManyOps { got: 257 }),
+        (
+            frame(99, 1, vec![]),
+            ReplicaError::EventSeq {
+                expected: 3,
+                got: 99,
+            },
+        ),
+        (
+            frame(3, 1, vec![health_op(77, 1, 1, false)]),
+            ReplicaError::UnknownEntity { entity: net(77) },
+        ),
+        (
+            frame(3, 1, vec![enter(1)]),
+            ReplicaError::DuplicateEntity { entity: net(1) },
+        ),
+        (
+            frame(3, 1, vec![leave(1), enter(1)]),
+            ReplicaError::ReusedEntityId { entity: net(1) },
+        ),
+        (
+            frame(3, 1, vec![receipt_op([FOREIGN_BYTE; 16])]),
+            ReplicaError::WrongEpoch,
+        ),
     ];
-    for f in &delta_cases {
+    for (f, want) in &delta_cases {
         let before = r.clone();
-        assert!(r.apply_delta(f).is_err(), "delta fault applies nothing");
+        assert_eq!(r.apply_delta(f), Err(*want));
         assert_clone_equal_after_err(&before, &r);
     }
-    // The 9th delta case above covers reuse-via-leave; TooManyEntities
-    // needs a full replica, checked on its own clone below.
+    // Delta TooManyEntities on a full non-empty replica.
+    let mut full = ReplicaWorld::new(epoch(EPOCH_BYTE));
+    for f in 0..8 {
+        let ops: Vec<OpV2> = (1..=256).map(|i| enter(f * 256 + i)).collect();
+        full.apply_delta(&frame(f + 1, f + 1, ops))
+            .expect("fill applies");
+    }
+    assert_eq!(full.len(), 2048);
+    let before = full.clone();
+    assert_eq!(
+        full.apply_delta(&frame(9, 9, vec![enter(2049)])),
+        Err(ReplicaError::TooManyEntities),
+    );
+    assert_clone_equal_after_err(&before, &full);
     let snapshot_cases: Vec<(Publication, ReplicaError)> = vec![
         (
-            publication(1, 1, body_of(&big, None)),
+            publication(2, 1, body_of(&big, None)),
             ReplicaError::TooManyEntities,
         ),
         (
@@ -1157,14 +1301,33 @@ fn r14_atomicity_all_variants_and_multi_op_frame() {
             ReplicaError::SnapshotCursor { min: 2, got: 1 },
         ),
     ];
-    for (p, _want) in &snapshot_cases {
+    for (p, want) in &snapshot_cases {
         let before = r.clone();
-        assert!(
-            r.apply_snapshot(p).is_err(),
-            "snapshot fault applies nothing"
-        );
+        assert_eq!(r.apply_snapshot(p), Err(*want));
         assert_clone_equal_after_err(&before, &r);
     }
+    // Snapshot ReusedEntityId and UnknownEntity on non-empty mutated
+    // replicas of their own (each with a pre-call clone).
+    let mut q = two_live();
+    q.apply_delta(&frame(2, 2, vec![leave(2)]))
+        .expect("retire 2");
+    q.apply_delta(&frame(3, 3, vec![enter(3), enter(5)]))
+        .expect("raise mark to 5");
+    let before = q.clone();
+    assert_eq!(
+        q.apply_snapshot(&publication(3, 1, body_of(&[(2, None)], None))),
+        Err(ReplicaError::ReusedEntityId { entity: net(2) }),
+    );
+    assert_clone_equal_after_err(&before, &q);
+    assert_eq!(
+        q.apply_snapshot(&publication(
+            3,
+            1,
+            body_of(&[(1, None)], Some(turn(Some(99), 1)))
+        )),
+        Err(ReplicaError::UnknownEntity { entity: net(99) }),
+    );
+    assert_clone_equal_after_err(&before, &q);
     // One frame [Enter 9, Leave 1, Health 2, Turn{9}, Enter 9] fails on
     // op 5 and changes nothing.
     let mut s = ReplicaWorld::new(epoch(EPOCH_BYTE));
@@ -1299,8 +1462,12 @@ fn r16_scripted_convergence_two_chunkings() {
         let mut ops: Vec<OpV2> = Vec::new();
         match pick {
             0 | 1 => {
-                // Enters, a few at a time.
-                let n = (stream.next_u32() % 4 + 1) as usize;
+                // Enters, a few at a time, capped so live never tops
+                // 1,024 (publications must stay applicable).
+                let mut n = (stream.next_u32() % 4 + 1) as usize;
+                if live.len() + n > MAX_VISIBLE_ENTITIES {
+                    n = MAX_VISIBLE_ENTITIES.saturating_sub(live.len());
+                }
                 for id in script.mint(n) {
                     ops.push(enter(id));
                 }
@@ -1389,10 +1556,11 @@ fn r16_scripted_convergence_two_chunkings() {
                 }
             }
             7 => {
-                // Publication, sometimes skipping frames ahead.
+                // Publication, sometimes skipping frames ahead. Skipped
+                // when live already tops the body bound.
                 let skip = (stream.next_u32() % 4) as u64;
                 let cursor = script.last() + skip;
-                if cursor <= SEQ_LAST {
+                if cursor <= SEQ_LAST && script.live_ids().len() <= MAX_VISIBLE_ENTITIES {
                     let base = 2_000 + step as u64;
                     let pub_now = script.publication(cursor, base);
                     a.apply_snapshot(&pub_now).expect("snapshot applies");
@@ -1405,7 +1573,11 @@ fn r16_scripted_convergence_two_chunkings() {
             }
             _ => {
                 // Mixed page in T027b order: enters, events, healths, turn.
-                for id in script.mint((stream.next_u32() % 3) as usize) {
+                let mut want = (stream.next_u32() % 3) as usize;
+                if live.len() + want > MAX_VISIBLE_ENTITIES {
+                    want = MAX_VISIBLE_ENTITIES.saturating_sub(live.len());
+                }
+                for id in script.mint(want) {
                     ops.push(enter(id));
                 }
                 let cur: Vec<u64> = script.live_ids();
@@ -1429,13 +1601,18 @@ fn r16_scripted_convergence_two_chunkings() {
         // Cap guard: keep pages small so the bound is never the story
         // here (R10 proves the bound itself).
         ops.truncate(MAX_DELTA_OPS);
-        // Two chunkings with equal frame counts but different split
-        // points, so both waterlines agree: A [1, n-1], B [n-1, 1].
+        // Two chunkings with the same frame count but different seeded
+        // split points, so both waterlines agree.
         let n = ops.len();
         let (sizes_a, sizes_b): (Vec<usize>, Vec<usize>) = if n < 2 {
             (vec![1], vec![1])
         } else {
-            (vec![1, n - 1], vec![n - 1, 1])
+            let k1 = 1 + (stream.next_u32() as usize % (n - 1));
+            let mut k2 = 1 + (stream.next_u32() as usize % (n - 1));
+            if k2 == k1 {
+                k2 = if k1 == 1 { n - 1 } else { 1 };
+            }
+            (vec![k1, n - k1], vec![k2, n - k2])
         };
         let fa = script.chunk(ops.clone(), &sizes_a, 5_000);
         let mut fb = Vec::new();
@@ -1471,22 +1648,146 @@ fn r16_scripted_convergence_two_chunkings() {
         assert_matches_script(&b, &script);
         assert_eq!(a, b);
     }
-    // Control: identical inputs are equal under PartialEq, and one
-    // changed health value makes them unequal.
-    assert_eq!(a, b);
-    let c = a.clone();
-    assert_eq!(a, c);
-    if let Some(first) = c.entities().first().cloned() {
-        let flipped = ReplicaEntity {
-            net_id: first.net_id,
-            health: Some(health(999, 999, true)),
-        };
-        let mut rows = c.entities().to_vec();
-        rows[0] = flipped;
-        let other = ReplicaWorld::new(epoch(EPOCH_BYTE));
-        let _ = other;
-        assert_ne!(rows.as_slice(), a.entities());
+    // Swap at the cap: grow to 1,024 live, then a page of 1,024
+    // enters followed by 1,024 leaves. Mid-page the replicas hold
+    // 2,048 rows (D8). Both chunkings use 9 frames with different
+    // seeded final splits.
+    {
+        let mut live_now: Vec<u64> = script.live_ids();
+        while live_now.len() < 1024 {
+            let need = (1024 - live_now.len()).min(64) as u64;
+            let fresh = script.mint(need as usize);
+            let enter_ops: Vec<OpV2> = fresh.into_iter().map(enter).collect();
+            let fa = script.chunk(enter_ops.clone(), &[enter_ops.len()], 9_000);
+            assert_eq!(fa.len(), 1);
+            for f in &fa {
+                a.apply_delta(f).expect("grow applies to A");
+                b.apply_delta(f).expect("grow applies to B");
+            }
+            live_now = script.live_ids();
+        }
+        while live_now.len() > 1024 {
+            let drop_n = (live_now.len() - 1024).min(64);
+            let gone: Vec<u64> = live_now.drain(..drop_n).collect();
+            for id in &gone {
+                script.remove(*id);
+            }
+            let leave_ops: Vec<OpV2> = gone.into_iter().map(leave).collect();
+            let fa = script.chunk(leave_ops.clone(), &[leave_ops.len()], 9_100);
+            for f in &fa {
+                a.apply_delta(f).expect("shrink applies to A");
+                b.apply_delta(f).expect("shrink applies to B");
+            }
+            live_now = script.live_ids();
+        }
+        assert_eq!(a.len(), 1024);
+        assert_eq!(b.len(), 1024);
+        let cur: Vec<u64> = script.live_ids();
+        assert_eq!(cur.len(), 1024);
+        let fresh_ids = script.mint(1024);
+        let mut swap_ops: Vec<OpV2> = Vec::with_capacity(2048);
+        for id in &fresh_ids {
+            swap_ops.push(enter(*id));
+        }
+        for id in &cur {
+            script.remove(*id);
+            swap_ops.push(leave(*id));
+        }
+        assert_eq!(swap_ops.len(), 2048);
+        let k1 = 1 + (stream.next_u32() as usize % 255);
+        let mut k2 = 1 + (stream.next_u32() as usize % 255);
+        if k2 == k1 {
+            k2 = if k1 == 1 { 255 } else { 1 };
+        }
+        let sizes_a = vec![256, 256, 256, k1, 256 - k1, 256, 256, 256, 256];
+        let sizes_b = vec![256, 256, 256, k2, 256 - k2, 256, 256, 256, 256];
+        let fa = script.chunk(swap_ops.clone(), &sizes_a, 20_000);
+        assert_eq!(fa.len(), 9);
+        let mut fb = Vec::new();
+        {
+            let mut at = 0;
+            for (i, want) in sizes_b.iter().enumerate() {
+                let take = (*want).min(swap_ops.len() - at);
+                fb.push(frame(
+                    fa[i].event_seq,
+                    fa[i].server_tick,
+                    swap_ops[at..at + take].to_vec(),
+                ));
+                at += take;
+            }
+            assert_eq!(at, swap_ops.len());
+            assert_eq!(fb.len(), fa.len());
+        }
+        for (i, f) in fa.iter().enumerate() {
+            a.apply_delta(f).expect("swap applies to A");
+            if i == 4 {
+                assert_eq!(a.len(), 2048, "mid-page peak is 2,048");
+            }
+        }
+        for (i, f) in fb.iter().enumerate() {
+            b.apply_delta(f).expect("swap applies to B");
+            if i == 4 {
+                assert_eq!(b.len(), 2048, "mid-page peak is 2,048");
+            }
+        }
+        assert_eq!(a.next_event_seq(), b.next_event_seq());
+        assert_matches_script(&a, &script);
+        assert_matches_script(&b, &script);
+        assert_eq!(a, b);
     }
+    // Control: two replicas from identical inputs are equal, and one
+    // changed health value through a frame makes them unequal.
+    assert_eq!(a, b);
+    assert!(!a.entities().is_empty(), "control needs rows");
+    let mut c = ReplicaWorld::new(epoch(EPOCH_BYTE));
+    let mut d = ReplicaWorld::new(epoch(EPOCH_BYTE));
+    let rep_ops: Vec<OpV2> = a
+        .entities()
+        .iter()
+        .take(4)
+        .map(|row| enter(row.net_id.get()))
+        .collect();
+    assert!(!rep_ops.is_empty(), "control needs rows");
+    c.apply_delta(&frame(1, 1, rep_ops.clone()))
+        .expect("identical inputs apply to C");
+    d.apply_delta(&frame(1, 1, rep_ops))
+        .expect("identical inputs apply to D");
+    assert_eq!(c, d);
+    let first_id = c.entities()[0].net_id;
+    let cur_h = c.entities()[0].health.clone();
+    let flipped = match cur_h {
+        Some(h) => health(h.health + 1, h.max_health, h.dead),
+        None => health(1, 10, false),
+    };
+    c.apply_delta(&frame(
+        2,
+        2,
+        vec![health_op(
+            first_id.get(),
+            flipped.health,
+            flipped.max_health,
+            flipped.dead,
+        )],
+    ))
+    .expect("changed health applies");
+    d.apply_delta(&frame(2, 2, vec![receipt_op(ep_bytes())]))
+        .expect("other replica advances");
+    // Advance C's peer so sequences match, then values differ.
+    d.apply_delta(&frame(
+        3,
+        3,
+        vec![health_op(
+            first_id.get(),
+            flipped.health.wrapping_add(1),
+            flipped.max_health,
+            flipped.dead,
+        )],
+    ))
+    .expect("divergent health applies");
+    c.apply_delta(&frame(3, 3, vec![receipt_op(ep_bytes())]))
+        .expect("sequences converge");
+    assert_eq!(c.next_event_seq(), d.next_event_seq());
+    assert_ne!(c, d);
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,16 +1834,24 @@ fn r17_drops_swaps_and_reorders_fail_loudly() {
         }),
     );
     assert_clone_equal_after_err(&before, &r);
-    // Swapping two frames gives EventSeq.
+    // Swapping two adjacent frames gives EventSeq: after the first
+    // frame, applying the third before the second is a swap of the
+    // adjacent pair (2, 3).
     let mut r = ReplicaWorld::new(epoch(EPOCH_BYTE));
     r.apply_delta(&frames[0]).expect("first applies");
+    let before = r.clone();
     assert_eq!(
         r.apply_delta(&frames[2]),
         Err(ReplicaError::EventSeq {
             expected: 2,
             got: 3
         }),
+        "adjacent swap of frames 2 and 3"
     );
+    assert_clone_equal_after_err(&before, &r);
+    r.apply_delta(&frames[1])
+        .expect("second applies after swap fault");
+    r.apply_delta(&frames[2]).expect("third applies in order");
     // Moving a Health before its enter gives UnknownEntity.
     let mut r = ReplicaWorld::new(epoch(EPOCH_BYTE));
     let before = r.clone();
