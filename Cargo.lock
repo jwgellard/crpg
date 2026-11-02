@@ -176,6 +176,11 @@ dependencies = [
 [[package]]
 name = "crpg-godot"
 version = "0.1.0"
+dependencies = [
+ "crpg-core",
+ "crpg-net",
+ "crpg-server",
+]
 
 [[package]]
 name = "crpg-nav"
