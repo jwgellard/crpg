@@ -1,6 +1,6 @@
 # Decision D42 — Godot slice: client CI contract and two contract corrections
 
-Status: **open**, drafted by the manager in session 32 (2026-11-02). Nothing waits on these yet: T047b (shell) and T047d (GDScript client) land first, and T047c's implementation needs D42a.
+Status: **Answered by the user, 2026-11-02: D42a approved with 1–4 as recommended; D42b (a).** Drafted by the manager in session 32 (2026-11-02). Nothing waits on these yet: T047b (shell) and T047d (GDScript client) land first, and T047c's implementation needs D42a.
 
 ## D42a — Approve the T047c contract (the Windows `client` CI job)
 
@@ -27,3 +27,4 @@ Building the core showed two places where the approved T047 text does not match 
 ## Agent log
 
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 32 · Drafted the decisions for the T047c contract and the two T047 text corrections found in the T047-2 review, so the user can answer them in one pass.
+- 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + D42 answered · Recorded the user's answers: T047c contract approved with questions 1–4 as recommended, and the T047 correction note (D42b a).
