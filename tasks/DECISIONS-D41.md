@@ -1,8 +1,9 @@
 # Decision D41 — Godot demo gates
 
-Status: **Draft; not yet answered.** Nothing here is decided until the user
-answers. Reply with, for example, "D41: all as recommended". All four must be
-settled before any Godot code can start.
+Status: **Answered by the user, 2026-11-02: D41a (a), D41b (a), D41c (a),
+D41d (a), all as recommended.** On D41c the user first asked whether MPL-2.0
+posed any problem; after the file-level obligations were explained, they chose
+the eight-package exception.
 
 ## D41a — What a player is allowed to see
 
@@ -60,3 +61,4 @@ uses plain shapes and a basic combat screen.
 ## Agent log
 
 - 2026-11-01 (UTC) · claude-code/opus-5.5 (manager) + session 29 · Collected the four user gates on the Godot demo path in one batch, each with a recommendation.
+- 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + D41 answered · Recorded the user's answers: all four as recommended, D41c after a clarifying question on MPL-2.0.
