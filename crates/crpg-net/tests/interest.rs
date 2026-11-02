@@ -22,7 +22,7 @@ use crpg_net::protocol::{
     DeltaFrame, DeltaOp, NetId, SessionEpoch, DELTA_TAG_ENTITY_ENTER, DELTA_TAG_HEALTH,
     DELTA_TAG_TURN, LANE_COMBAT, MAX_DELTA_OPS, MAX_VISIBLE_ENTITIES, PROTOCOL_VERSION,
 };
-use crpg_net::protocol_transfer::{HealthFact, SnapshotBody, SnapshotEntity, TransferId, TurnFact};
+use crpg_net::protocol_transfer::{HealthFact, SnapshotBody, TransferId, TurnFact};
 use crpg_net::protocol_v2::{DeltaFrame as DeltaFrameV2, DeltaOp as DeltaOpV2};
 
 // ---------------------------------------------------------------------------
@@ -348,12 +348,25 @@ impl Oracle {
                 self.health.remove(&id.get());
             }
         }
+        // Delta mode never clears `Health` or `Turn` (contract item 6-7,
+        // T046 N6): the client keeps the last disclosed value until replaced.
         for k in &visible {
             let id = self.live.get(k).copied().expect("visible mapped");
-            self.health
-                .insert(id.get(), Self::rendered_health(facts, *k));
+            let rendered = Self::rendered_health(facts, *k);
+            match self.health.entry(id.get()) {
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    if rendered.is_some() {
+                        e.insert(rendered);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(rendered);
+                }
+            }
         }
-        self.turn = Self::rendered_turn(turn, granted, interest, &self.live);
+        if let Some(rendered) = Self::rendered_turn(turn, granted, interest, &self.live) {
+            self.turn = Some(rendered);
+        }
         Ok(())
     }
 
@@ -364,7 +377,40 @@ impl Oracle {
         turn: Option<TurnState>,
         granted: bool,
     ) -> Result<(), InterestError> {
-        self.step_delta(facts, interest, turn, granted)
+        // Snapshot replaces the whole replica (contract items 12-13): the body
+        // carries rendered health/turn exactly, including `None`.
+        let visible = Self::visible_keys(facts, interest);
+        let entering: Vec<EntityKey> = visible
+            .iter()
+            .copied()
+            .filter(|k| !self.live.contains_key(k))
+            .collect();
+        if entering.len() as u64 > u64::MAX - self.next {
+            return Err(InterestError::IdExhausted);
+        }
+        let removed: Vec<EntityKey> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|k| !visible.contains(k))
+            .collect();
+        for k in &entering {
+            let id = net(self.next);
+            self.next += 1;
+            self.live.insert(*k, id);
+        }
+        for k in &removed {
+            if let Some(id) = self.live.remove(k) {
+                self.health.remove(&id.get());
+            }
+        }
+        for k in &visible {
+            let id = self.live.get(k).copied().expect("visible mapped");
+            self.health
+                .insert(id.get(), Self::rendered_health(facts, *k));
+        }
+        self.turn = Self::rendered_turn(turn, granted, interest, &self.live);
+        Ok(())
     }
 }
 
@@ -641,6 +687,62 @@ fn i03_field_by_field_suppression() {
             .expect("no value");
         assert_eq!(p.ops, vec![DeltaOp::EntityEnter { entity: net(1) }]);
     }
+    // All 8 combinations of presence, health grant and `turn_granted` over one
+    // row with a distinctive secret health, each with its exact ops.
+    for (presence, hgrant, tgrant) in [
+        (false, false, false),
+        (false, false, true),
+        (false, true, false),
+        (false, true, true),
+        (true, false, false),
+        (true, false, true),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let mut v = InterestView::new(ep);
+        let f = vec![fact(k, presence, hgrant, secret.clone(), false)];
+        let p = v
+            .project_delta(&context(ep, 1, 1, &f, &empty, turn, tgrant, false))
+            .expect("combo projects");
+        let want: Vec<DeltaOp> = match (presence, hgrant, tgrant) {
+            (false, _, false) => vec![],
+            (false, _, true) => vec![DeltaOp::Turn {
+                active: None,
+                round: 4,
+            }],
+            (true, false, false) => vec![DeltaOp::EntityEnter { entity: net(1) }],
+            (true, false, true) => vec![
+                DeltaOp::EntityEnter { entity: net(1) },
+                DeltaOp::Turn {
+                    active: Some(net(1)),
+                    round: 4,
+                },
+            ],
+            (true, true, false) => vec![
+                DeltaOp::EntityEnter { entity: net(1) },
+                DeltaOp::Health {
+                    entity: net(1),
+                    health: 7,
+                    max_health: 10,
+                    dead: false,
+                },
+            ],
+            (true, true, true) => vec![
+                DeltaOp::EntityEnter { entity: net(1) },
+                DeltaOp::Health {
+                    entity: net(1),
+                    health: 7,
+                    max_health: 10,
+                    dead: false,
+                },
+                DeltaOp::Turn {
+                    active: Some(net(1)),
+                    round: 4,
+                },
+            ],
+        };
+        assert_eq!(p.ops, want, "combo {presence}/{hgrant}/{tgrant}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -894,37 +996,55 @@ fn i06_death_stays_mapped() {
 #[test]
 fn i07_despawn_leave_equivalence() {
     let ep = epoch(0x17);
-    let run_case = |despawned: Vec<EntityKey>| {
-        let (_arena, ids) = arena_n(1);
+    // Removal of a live key `k` (viewer area 1) with explicit facts/despawned.
+    let run_case = |facts: Vec<EntityFact>, despawned: Vec<EntityKey>| {
+        let (_arena, ids) = arena_n(2);
         let _ = _arena;
+        // arena_n(2) mints two distinct ids; use the first for the live key so
+        // every case mints the same EntityId and thus the same NetId 1.
         let k = key(1, ids[0]);
+        let other_area = key(2, ids[0]);
+        let _ = other_area;
         let mut v = InterestView::new(ep);
         let f = vec![fact(k, true, false, None, false)];
         let empty: Vec<EntityKey> = vec![];
         v.project_delta(&context(ep, 1, 1, &f, &empty, None, false, false))
             .expect("enter");
-        // Removal inputs: hidden despawn (present=false + listed), area move
-        // (key gone), presence revoke (present=false unlisted).
-        let gone: Vec<EntityFact> = vec![];
-        let hidden_listed = vec![fact(k, false, false, None, false)];
-        let (facts, ds): (Vec<EntityFact>, Vec<EntityKey>) = match despawned.len() {
-            0 => (gone, vec![]),
-            _ => (hidden_listed, despawned),
-        };
-        v.project_delta(&context(ep, 2, 1, &facts, &ds, None, false, false))
+        v.project_delta(&context(ep, 2, 1, &facts, &despawned, None, false, false))
             .expect("remove")
     };
 
-    // Hidden despawn, area move and presence revoke give equal EntityLeave.
-    let k_probe = {
-        let (_arena, ids) = arena_n(1);
-        let _ = _arena;
-        key(1, ids[0])
-    };
-    let _ = k_probe;
-    let leave_unlisted = run_case(vec![]);
-    assert_eq!(leave_unlisted.ops.len(), 1);
-    assert!(matches!(leave_unlisted.ops[0], DeltaOp::EntityLeave { .. }));
+    // A still-present `presence: false` row, unlisted.
+    let (_arena_p, ids_p) = arena_n(2);
+    let _ = _arena_p;
+    let kp = key(1, ids_p[0]);
+    let still_present = vec![fact(kp, false, false, None, false)];
+    // An area move: the same entity now has a row in area 2 only.
+    let moved = vec![fact(key(2, ids_p[0]), true, false, None, false)];
+    // A presence revoke: the row is gone entirely.
+    let gone: Vec<EntityFact> = vec![];
+
+    // Hidden despawn (still-present, unlisted), area move and presence revoke
+    // give equal ops: exactly one EntityLeave, carrying no cause.
+    let leave_present = run_case(still_present.clone(), vec![]);
+    let leave_moved = run_case(moved, vec![]);
+    let leave_gone = run_case(gone.clone(), vec![]);
+    for page in [&leave_present, &leave_moved, &leave_gone] {
+        assert_eq!(page.ops.len(), 1);
+        assert!(matches!(page.ops[0], DeltaOp::EntityLeave { .. }));
+    }
+    assert_eq!(leave_present.ops, leave_moved.ops);
+    assert_eq!(leave_present.ops, leave_gone.ops);
+
+    // The same still-present row, listed in despawned, gives Despawned; so
+    // does the gone row listed. Both are exactly one Despawned.
+    let despawn_present = run_case(still_present, vec![kp]);
+    let despawn_gone = run_case(gone, vec![kp]);
+    assert_eq!(
+        despawn_present.ops,
+        vec![DeltaOp::Despawned { entity: net(1) }]
+    );
+    assert_eq!(despawn_present.ops, despawn_gone.ops);
 
     // Control: listing the key in despawned gives Despawned, no EntityLeave.
     {
@@ -1207,6 +1327,57 @@ fn i10_resend_reemits_once() {
         .project_delta(&context(ep, 4, 1, &base, &empty, t, true, false))
         .expect("after resend");
     assert!(after.ops.is_empty());
+    // Clear a grant, then re-grant it with the same value: this must re-emit
+    // Health (and Turn). A cleared grant emits nothing and retracts nothing.
+    let cleared = vec![
+        fact(ka, true, false, Some(health(4, 10, false)), false),
+        fact(kb, true, true, Some(health(6, 10, false)), false),
+    ];
+    let pc = v
+        .project_delta(&context(ep, 5, 1, &cleared, &empty, t, false, false))
+        .expect("clear grants");
+    assert!(pc.ops.is_empty());
+    assert_eq!(v.len(), 2);
+    let regranted = v
+        .project_delta(&context(ep, 6, 1, &base, &empty, t, true, false))
+        .expect("re-grant same values");
+    assert_eq!(
+        regranted.ops,
+        vec![
+            DeltaOp::Health {
+                entity: net(1),
+                health: 4,
+                max_health: 10,
+                dead: false
+            },
+            DeltaOp::Turn {
+                active: Some(net(1)),
+                round: 1
+            },
+        ]
+    );
+    // Health is emitted after an enter with the grant off and then granted.
+    {
+        let mut w = InterestView::new(ep);
+        let enter_off = vec![fact(ka, true, false, Some(health(4, 10, false)), false)];
+        let pe = w
+            .project_delta(&context(ep, 1, 1, &enter_off, &empty, None, false, false))
+            .expect("enter grant off");
+        assert_eq!(pe.ops, vec![DeltaOp::EntityEnter { entity: net(1) }]);
+        let grant_on = vec![fact(ka, true, true, Some(health(4, 10, false)), false)];
+        let pg2 = w
+            .project_delta(&context(ep, 2, 1, &grant_on, &empty, None, false, false))
+            .expect("grant after enter");
+        assert_eq!(
+            pg2.ops,
+            vec![DeltaOp::Health {
+                entity: net(1),
+                health: 4,
+                max_health: 10,
+                dead: false
+            }]
+        );
+    }
     // Resend never overrides a missing grant.
     let mut nogrant = vec![
         fact(ka, true, false, Some(health(4, 10, false)), true),
@@ -1214,7 +1385,7 @@ fn i10_resend_reemits_once() {
     ];
     let _ = &mut nogrant;
     let pg = v
-        .project_delta(&context(ep, 5, 1, &nogrant, &empty, t, false, true))
+        .project_delta(&context(ep, 7, 1, &nogrant, &empty, t, false, true))
         .expect("resend without grant");
     assert!(pg.ops.is_empty());
 }
@@ -1226,12 +1397,14 @@ fn i10_resend_reemits_once() {
 #[test]
 fn i11_t022_layout_parity() {
     let ep = epoch(0x1B);
-    let (_arena, ids) = arena_n(2);
+    let (_arena, ids) = arena_n(3);
     let a = ids[0];
     let b = ids[1];
+    let cc = ids[2];
     let _ = _arena;
     let ka = key(1, a);
     let kb = key(1, b);
+    let kc = key(1, cc);
     let empty: Vec<EntityKey> = vec![];
     let mut v = InterestView::new(ep);
     let facts = vec![
@@ -1275,10 +1448,12 @@ fn i11_t022_layout_parity() {
             },
         ]
     );
-    // Widening: add nothing new but change one health and the round.
+    // Widening: change one health and the round, with a page that contains
+    // enters (kc enters here). Layout stays enters, healths, turn.
     let facts2 = vec![
         fact(ka, true, true, Some(health(3, 12, false)), false),
         fact(kb, true, true, Some(health(6, 10, false)), false),
+        fact(kc, true, true, Some(health(9, 9, false)), false),
     ];
     let t2 = Some(turn_state(1, Some(b), 3));
     let active2 = v.net_id(if ordered.contains(&ka) { kb } else { ka });
@@ -1286,15 +1461,25 @@ fn i11_t022_layout_parity() {
     let w = v
         .project_delta(&context(ep, 11, 1, &facts2, &empty, t2, true, false))
         .expect("widening");
-    // Widening order is the same layout: healths then turn.
+    // Widening order is the same layout: enters, healths, then turn.
     let want_active = v.net_id(kb).expect("kb still live");
+    let want_enter = v.net_id(kc).expect("kc entered");
+    assert_eq!(w.enters, 1);
+    assert_eq!(want_enter, net(3));
     assert_eq!(
         w.ops,
         vec![
+            DeltaOp::EntityEnter { entity: net(3) },
             DeltaOp::Health {
                 entity: v.net_id(ka).expect("ka"),
                 health: 3,
                 max_health: 12,
+                dead: false
+            },
+            DeltaOp::Health {
+                entity: net(3),
+                health: 9,
+                max_health: 9,
                 dead: false
             },
             DeltaOp::Turn {
@@ -1308,9 +1493,10 @@ fn i11_t022_layout_parity() {
         .project_snapshot(&context(ep, 11, 1, &facts2, &empty, t2, true, false))
         .expect("snapshot");
     let body = snap.body;
-    assert_eq!(body.entities.len(), 2);
+    assert_eq!(body.entities.len(), 3);
     assert_eq!(body.entities[0].entity, net(1));
     assert_eq!(body.entities[1].entity, net(2));
+    assert_eq!(body.entities[2].entity, net(3));
     assert_eq!(
         body.turn,
         Some(TurnFact {
@@ -1327,14 +1513,16 @@ fn i11_t022_layout_parity() {
 #[test]
 fn i12_snapshot_cutover_cursor() {
     let ep = epoch(0x1C);
-    let (_arena, ids) = arena_n(3);
+    let (_arena, ids) = arena_n(4);
     let a = ids[0];
     let b = ids[1];
     let c = ids[2];
+    let d = ids[3];
     let _ = _arena;
     let ka = key(1, a);
     let kb = key(1, b);
     let kc = key(1, c);
+    let kd = key(1, d);
     let empty: Vec<EntityKey> = vec![];
     let mut v = InterestView::new(ep);
     assert_eq!(v.cursor(), ViewCursor::default());
@@ -1351,11 +1539,12 @@ fn i12_snapshot_cutover_cursor() {
     let after_delta = v.cursor();
     assert_eq!(after_delta.tick, 10);
     assert_eq!(after_delta.revision, 1);
-    // Mid-epoch snapshot drops kc, keeps live ids, health only where granted,
-    // hidden active renders None.
+    // Mid-epoch snapshot drops kc, changes ka's health, enters kd, keeps live
+    // ids, health only where granted, hidden active renders None.
     let snap_facts = vec![
-        fact(ka, true, true, Some(health(4, 10, false)), false),
+        fact(ka, true, true, Some(health(5, 10, false)), false),
         fact(kb, true, false, Some(health(9, 9, false)), false),
+        fact(kd, true, true, Some(health(2, 8, false)), false),
     ];
     let t_hidden = Some(turn_state(1, Some(c), 2));
     let snap = v
@@ -1370,12 +1559,14 @@ fn i12_snapshot_cutover_cursor() {
             false,
         ))
         .expect("snapshot");
-    assert_eq!(snap.body.entities.len(), 2);
-    // Ascending ids with live ids kept.
+    assert_eq!(snap.body.entities.len(), 3);
+    // Ascending ids with live ids kept; kd enters with the next id.
     assert_eq!(snap.body.entities[0].entity, net(1));
     assert_eq!(snap.body.entities[1].entity, net(2));
-    assert_eq!(snap.body.entities[0].health, Some(health(4, 10, false)));
+    assert_eq!(snap.body.entities[2].entity, net(4));
+    assert_eq!(snap.body.entities[0].health, Some(health(5, 10, false)));
     assert_eq!(snap.body.entities[1].health, None);
+    assert_eq!(snap.body.entities[2].health, Some(health(2, 8, false)));
     assert_eq!(
         snap.body.turn,
         Some(TurnFact {
@@ -1386,9 +1577,12 @@ fn i12_snapshot_cutover_cursor() {
     // Dropped key retired.
     assert_eq!(v.net_id(kc), None);
     assert_eq!(v.entity(net(3)), None);
+    assert_eq!(v.net_id(kd), Some(net(4)));
     assert_eq!(v.cursor().revision, 2);
     assert_eq!(v.cursor().tick, 11);
-    // The next delta re-emits nothing unchanged.
+    // The next delta with the same facts re-emits nothing unchanged, so
+    // `project_snapshot` must have updated `last_health` (and the entering
+    // key's image) to exactly what the body says.
     let q = v
         .project_delta(&context(
             ep,
@@ -1408,18 +1602,19 @@ fn i12_snapshot_cutover_cursor() {
     assert_eq!(q.cursor, v.cursor());
     // A key dropped by a snapshot re-enters with a new id.
     let reenter = vec![
-        fact(ka, true, true, Some(health(4, 10, false)), false),
+        fact(ka, true, true, Some(health(5, 10, false)), false),
         fact(kb, true, false, None, false),
         fact(kc, true, true, Some(health(1, 5, false)), false),
+        fact(kd, true, true, Some(health(2, 8, false)), false),
     ];
     let r = v
         .project_delta(&context(ep, 13, 1, &reenter, &empty, t, true, false))
         .expect("re-enter dropped");
     assert!(r.ops.iter().any(|op| matches!(
         op,
-        DeltaOp::EntityEnter { entity } if entity.get() == 4
+        DeltaOp::EntityEnter { entity } if entity.get() == 5
     )));
-    assert_eq!(v.net_id(kc), Some(net(4)));
+    assert_eq!(v.net_id(kc), Some(net(5)));
     assert_eq!(v.cursor().revision, 3);
 }
 
@@ -1462,6 +1657,24 @@ fn i13_bounds_maximal_page_and_cycles() {
         v_big.project_delta(&context(ep, 1, 3, &[], &despawned, None, false, false)),
         Err(InterestError::TooManyFacts)
     );
+    assert_eq!(
+        v_big.project_snapshot(&context(ep, 1, 3, &[], &despawned, None, false, false)),
+        Err(InterestError::TooManyFacts)
+    );
+    // 1,024 despawned keys pass on both functions (nothing live, empty page).
+    let (_arena3, ids3) = arena_n(MAX_VISIBLE_ENTITIES);
+    let _ = _arena3;
+    let despawned_ok: Vec<EntityKey> = ids3.iter().map(|e| key(9, *e)).collect();
+    let mut v_ok = InterestView::new(ep);
+    let pok = v_ok
+        .project_delta(&context(ep, 1, 3, &[], &despawned_ok, None, false, false))
+        .expect("1024 despawned pass delta");
+    assert!(pok.ops.is_empty());
+    let mut v_oks = InterestView::new(ep);
+    let sok = v_oks
+        .project_snapshot(&context(ep, 1, 3, &[], &despawned_ok, None, false, false))
+        .expect("1024 despawned pass snapshot");
+    assert!(sok.body.entities.is_empty());
 
     // Maximal page: 1,024 live replaced by 1,024 entering with health + turn.
     let (_arena_a, ids_a) = arena_n(MAX_VISIBLE_ENTITIES);
@@ -1525,21 +1738,40 @@ fn i13_bounds_maximal_page_and_cycles() {
     }
     assert_eq!(vc.len(), 0);
 
-    // A 1,024-entity all-health body passes encode_body and plan_transfer.
-    let body = SnapshotBody {
-        entities: (0..MAX_VISIBLE_ENTITIES as u64)
-            .map(|i| SnapshotEntity {
-                entity: net(500_000 + i + 1),
-                health: Some(health(u32::MAX, u32::MAX, true)),
-            })
-            .collect(),
-        turn: Some(TurnFact {
-            active: Some(net(500_001)),
-            round: u64::MAX,
-        }),
-    };
-    encode_body(&body).expect("max body encodes");
-    plan_transfer([0x1D; 16], TransferId::new(1).expect("tid"), 1, 0, 1, &body).expect("max plans");
+    // A 1,024-entity all-health body produced by `project_snapshot` passes
+    // `encode_body` and `plan_transfer`.
+    let (_arena_m, ids_m) = arena_n(MAX_VISIBLE_ENTITIES);
+    let _ = _arena_m;
+    let max_facts: Vec<EntityFact> = ids_m
+        .iter()
+        .map(|e| {
+            fact(
+                key(1, *e),
+                true,
+                true,
+                Some(health(u32::MAX, u32::MAX, true)),
+                false,
+            )
+        })
+        .collect();
+    let max_turn = Some(turn_state(1, Some(ids_m[0]), u64::MAX));
+    let mut v_max = InterestView::new(ep);
+    let max_snap = v_max
+        .project_snapshot(&context(
+            ep, 9, 1, &max_facts, &empty, max_turn, true, false,
+        ))
+        .expect("max snapshot");
+    assert_eq!(max_snap.body.entities.len(), MAX_VISIBLE_ENTITIES);
+    encode_body(&max_snap.body).expect("max body encodes");
+    plan_transfer(
+        [0x1D; 16],
+        TransferId::new(1).expect("tid"),
+        1,
+        0,
+        1,
+        &max_snap.body,
+    )
+    .expect("max plans");
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,6 +1874,86 @@ fn i14_error_precedence_atomicity_display() {
         Err(InterestError::DuplicateFact)
     );
 
+    // Repeat the rejections on a view with live mappings and a remembered
+    // image, after a retirement and a mint, each compared with a pre-call
+    // clone (contract item 2: `Err` changes nothing).
+    {
+        let (_arena_l, ids_l) = arena_n(3);
+        let _ = _arena_l;
+        let kla = key(1, ids_l[0]);
+        let klb = key(1, ids_l[1]);
+        let klc = key(1, ids_l[2]);
+        let mut vl = InterestView::new(ep);
+        let enter = vec![
+            fact(kla, true, true, Some(health(4, 10, false)), false),
+            fact(klb, true, true, Some(health(6, 10, false)), false),
+        ];
+        let t_live = Some(turn_state(1, Some(ids_l[0]), 1));
+        vl.project_delta(&context(ep, 1, 1, &enter, &empty, t_live, true, false))
+            .expect("live mappings with image");
+        // Retirement: drop klb.
+        let retire = vec![fact(kla, true, true, Some(health(4, 10, false)), false)];
+        vl.project_delta(&context(ep, 2, 1, &retire, &empty, t_live, true, false))
+            .expect("retire one");
+        assert_eq!(vl.net_id(klb), None);
+        // Mint: enter klc with a new id.
+        let mint = vec![
+            fact(kla, true, true, Some(health(4, 10, false)), false),
+            fact(klc, true, true, Some(health(1, 2, false)), false),
+        ];
+        vl.project_delta(&context(ep, 3, 1, &mint, &empty, t_live, true, false))
+            .expect("mint new");
+        assert_eq!(vl.len(), 2);
+        // Now provoke each rejection on both functions.
+        let (_arena_t, ids_t) = arena_n(MAX_VISIBLE_ENTITIES + 1);
+        let _ = _arena_t;
+        let too_many: Vec<EntityFact> = ids_t
+            .iter()
+            .map(|e| fact(key(1, *e), true, false, None, false))
+            .collect();
+        let dup = vec![
+            fact(kla, true, false, None, false),
+            fact(kla, true, false, None, false),
+        ];
+        for (facts_bad, ds_bad, want) in [
+            (mint.clone(), vec![], InterestError::WrongEpoch),
+            (too_many.clone(), vec![], InterestError::TooManyFacts),
+            (dup.clone(), vec![], InterestError::DuplicateFact),
+        ] {
+            let before = vl.clone();
+            let epoch_use = if want == InterestError::WrongEpoch {
+                bad_ep
+            } else {
+                ep
+            };
+            assert_eq!(
+                vl.project_delta(&context(
+                    epoch_use, 9, 1, &facts_bad, &ds_bad, None, false, false
+                )),
+                Err(want)
+            );
+            assert_eq!(vl, before, "delta {want:?} must not mutate");
+            let before_s = vl.clone();
+            assert_eq!(
+                vl.project_snapshot(&context(
+                    epoch_use, 9, 1, &facts_bad, &ds_bad, None, false, false
+                )),
+                Err(want)
+            );
+            assert_eq!(vl, before_s, "snapshot {want:?} must not mutate");
+        }
+        // A valid context then gives the expected page (unchanged: empty).
+        let ok = vl
+            .project_delta(&context(ep, 4, 1, &mint, &empty, t_live, true, false))
+            .expect("valid after errors on live view");
+        assert!(ok.ops.is_empty());
+    }
+    // `IdExhausted` precedence after `DuplicateFact` is not reachable from the
+    // public API: exhaustion needs `next_id` near `u64::MAX`, which no bounded
+    // call (at most 1,024 entering keys) can approach from `next_id == 1`.
+    // Exhaustion is covered by the `#[cfg(test)] force_next_id` unit test
+    // (I15 in `src/interest.rs`).
+
     // Display strings are exact.
     assert_eq!(
         format!("{}", InterestError::WrongEpoch),
@@ -1679,27 +1991,34 @@ fn i16_hidden_inputs_do_not_move_bytes() {
     let kh = key(1, hidden);
     let kf = key(2, foreign_e);
 
-    let run = |noise: u32| {
+    type StepRecord = (
+        Vec<DeltaOp>,
+        Vec<u8>,
+        ViewCursor,
+        usize,
+        Option<NetId>,
+        Option<NetId>,
+    );
+    let run = |with_extra: bool, active: EntityId| {
         let mut view = InterestView::new(ep);
-        let mut out: Vec<(Vec<u8>, ViewCursor, usize)> = Vec::new();
+        let mut out: Vec<StepRecord> = Vec::new();
         for step in 0..50u64 {
             let h = 10 + (step % 5) as u32;
             let mut facts = vec![
                 fact(ka, true, true, Some(health(h, 20, false)), false),
                 fact(kb, true, true, Some(health(3, 7, false)), false),
-                // Hidden-only differences: ungranted secrets, extra hidden
-                // and foreign rows.
-                fact(kh, false, false, Some(health(noise, 99, false)), false),
-                fact(kf, true, true, Some(health(noise, 50, false)), false),
             ];
-            // Hidden active differs per run but never renders.
-            let t = if noise.is_multiple_of(2) {
-                Some(turn_state(1, Some(hidden), step))
-            } else {
-                Some(turn_state(1, Some(foreign_e), step))
-            };
-            // Foreign row kf is outside viewer area 1, so suppressed.
-            let _ = &mut facts;
+            if with_extra {
+                // Hidden-only differences: an ungranted secret row and a
+                // foreign row, present in one run and absent in the other.
+                facts.push(fact(kh, false, false, Some(health(77, 99, false)), false));
+                facts.push(fact(kf, true, true, Some(health(77, 50, false)), false));
+            }
+            // Hidden active differs between the runs but never renders: one
+            // run names the hidden row, the other a foreign entity.
+            let t = Some(turn_state(1, Some(active), step));
+            // Foreign row kf (when present) is outside viewer area 1, so
+            // suppressed; the hidden active renders `active: None` either way.
             let proj = view
                 .project_delta(&context(ep, step, 1, &facts, &[], t, step % 3 == 0, false))
                 .expect("step projects");
@@ -1710,16 +2029,22 @@ fn i16_hidden_inputs_do_not_move_bytes() {
                 ops: proj.ops.clone(),
             };
             out.push((
+                proj.ops.clone(),
                 encode_delta(&frame).expect("encodes"),
                 proj.cursor,
                 view.len(),
+                view.net_id(ka),
+                view.net_id(kb),
             ));
         }
         out
     };
 
-    let first = run(77);
-    let second = run(191);
+    // One run carries the extra hidden row `kh` and the foreign row `kf` with
+    // hidden active `hidden`; the other carries neither and uses a different
+    // hidden active `foreign_e`. Ids, len, cursor and ops are identical.
+    let first = run(true, hidden);
+    let second = run(false, foreign_e);
     assert_eq!(first, second);
 
     // Control: the same difference on a visible, granted row changes bytes.
@@ -1769,8 +2094,10 @@ fn i17_seeded_convergence_two_viewers() {
     let mut mb = Mirror::new();
     let mut oa = Oracle::new();
     let mut ob = Oracle::new();
-    // Ground-truth grant/health store keyed by EntityKey.
-    let mut store: BTreeMap<EntityKey, (bool, Option<HealthFact>)> = BTreeMap::new();
+    // Ground-truth grant/health store keyed by EntityKey: (present,
+    // health grant, value). The value persists while the grant is cleared so
+    // the schedule exercises clear then re-grant with the same value.
+    let mut store: BTreeMap<EntityKey, (bool, bool, Option<HealthFact>)> = BTreeMap::new();
     for e in &pool {
         for a in areas {
             store.insert(
@@ -1778,7 +2105,7 @@ fn i17_seeded_convergence_two_viewers() {
                     area: area(a),
                     entity: *e,
                 },
-                (false, None),
+                (false, false, None),
             );
         }
     }
@@ -1799,24 +2126,55 @@ fn i17_seeded_convergence_two_viewers() {
         let pick = stream.next_u32() % 8;
         match pick {
             0 | 1 => {
-                // Enter/grant flip on a random key. Present rows always carry
-                // a value so the replica and the remembered image agree.
+                // Enter/grant flip on a random key, including clear and
+                // re-grant of the health grant with the value kept.
                 let e = pool[(stream.next_u32() as usize) % pool.len()];
                 let a = areas[(stream.next_u32() as usize) % 2];
                 let k = EntityKey {
                     area: area(a),
                     entity: e,
                 };
-                let present = stream.next_u32().is_multiple_of(2);
-                if present {
-                    let hv = Some(health(
-                        stream.next_u32() % 11,
-                        10,
-                        stream.next_u32().is_multiple_of(7),
-                    ));
-                    store.insert(k, (true, hv));
-                } else {
-                    store.insert(k, (false, None));
+                let sub = stream.next_u32() % 4;
+                match sub {
+                    0 => {
+                        let hv = Some(health(
+                            stream.next_u32() % 11,
+                            10,
+                            stream.next_u32().is_multiple_of(7),
+                        ));
+                        store.insert(k, (true, true, hv));
+                    }
+                    1 => {
+                        // Present but health grant off; the secret value is
+                        // kept so a later re-grant emits the same value.
+                        let hv = Some(health(
+                            stream.next_u32() % 11,
+                            10,
+                            stream.next_u32().is_multiple_of(7),
+                        ));
+                        store.insert(k, (true, false, hv));
+                    }
+                    2 => {
+                        // Clear the health grant, keeping the value.
+                        if let Some((present, _, hv)) = store.get(&k).cloned() {
+                            if present {
+                                store.insert(k, (true, false, hv));
+                            } else {
+                                store.insert(k, (false, false, hv));
+                            }
+                        }
+                    }
+                    _ => {
+                        // Re-grant with the same value (or a fresh one if none).
+                        if let Some((_, _, hv)) = store.get(&k).cloned() {
+                            let hv2 = hv.or(Some(health(
+                                stream.next_u32() % 11,
+                                10,
+                                stream.next_u32().is_multiple_of(7),
+                            )));
+                            store.insert(k, (true, true, hv2));
+                        }
+                    }
                 }
             }
             2 => {
@@ -1832,30 +2190,98 @@ fn i17_seeded_convergence_two_viewers() {
                     area: area(to),
                     entity: e,
                 };
-                let val = store.get(&kf).cloned().unwrap_or((false, None));
-                store.insert(kf, (false, None));
+                let val = store.get(&kf).cloned().unwrap_or((false, false, None));
+                store.insert(kf, (false, false, val.2.clone()));
                 store.insert(kt, val);
             }
             3 => {
-                // Turn update for a random viewer; the turn always renders
-                // (grant true, area matches) so the replica tracks it.
+                // Turn update for a random viewer, including grant clears and
+                // moves to the other area so the turn stops rendering and the
+                // last disclosed value must persist.
                 let pick_viewer = stream.next_u32() % 2;
                 let e = pool[(stream.next_u32() as usize) % pool.len()];
                 let round = (stream.next_u32() % 20) as u64;
+                let mode = stream.next_u32() % 4;
                 if pick_viewer == 0 {
-                    turn_a = Some(TurnState {
-                        area: area(1),
-                        active: Some(e),
-                        round,
-                    });
-                    grant_a = true;
+                    match mode {
+                        0 => {
+                            turn_a = Some(TurnState {
+                                area: area(1),
+                                active: Some(e),
+                                round,
+                            });
+                            grant_a = true;
+                        }
+                        1 => {
+                            // Clear the turn grant; the rendered turn is None.
+                            grant_a = false;
+                        }
+                        2 => {
+                            // Move the turn to the other area; viewer A no
+                            // longer renders it.
+                            turn_a = Some(TurnState {
+                                area: area(2),
+                                active: Some(e),
+                                round,
+                            });
+                            grant_a = true;
+                        }
+                        _ => {
+                            // Re-grant the same turn in the matching area.
+                            if let Some(t) = turn_a {
+                                turn_a = Some(TurnState {
+                                    area: area(1),
+                                    active: t.active,
+                                    round: t.round,
+                                });
+                            } else {
+                                turn_a = Some(TurnState {
+                                    area: area(1),
+                                    active: Some(e),
+                                    round,
+                                });
+                            }
+                            grant_a = true;
+                        }
+                    }
                 } else {
-                    turn_b = Some(TurnState {
-                        area: area(2),
-                        active: Some(e),
-                        round,
-                    });
-                    grant_b = true;
+                    match mode {
+                        0 => {
+                            turn_b = Some(TurnState {
+                                area: area(2),
+                                active: Some(e),
+                                round,
+                            });
+                            grant_b = true;
+                        }
+                        1 => {
+                            grant_b = false;
+                        }
+                        2 => {
+                            turn_b = Some(TurnState {
+                                area: area(1),
+                                active: Some(e),
+                                round,
+                            });
+                            grant_b = true;
+                        }
+                        _ => {
+                            if let Some(t) = turn_b {
+                                turn_b = Some(TurnState {
+                                    area: area(2),
+                                    active: t.active,
+                                    round: t.round,
+                                });
+                            } else {
+                                turn_b = Some(TurnState {
+                                    area: area(2),
+                                    active: Some(e),
+                                    round,
+                                });
+                            }
+                            grant_b = true;
+                        }
+                    }
                 }
             }
             4 => {
@@ -1869,11 +2295,11 @@ fn i17_seeded_convergence_two_viewers() {
                     }
                     let facts: Vec<EntityFact> = store
                         .iter()
-                        .map(|(k, (present, hv))| EntityFact {
+                        .map(|(k, (present, hgrant, hv))| EntityFact {
                             key: *k,
                             fields: FieldMask {
                                 presence: *present,
-                                health: hv.is_some(),
+                                health: *hgrant,
                             },
                             health: hv.clone(),
                             resend_health: false,
@@ -1900,12 +2326,13 @@ fn i17_seeded_convergence_two_viewers() {
                     area: area(a),
                     entity: e,
                 };
-                if let Some((present, _)) = store.get(&k).cloned() {
+                if let Some((present, hgrant, _)) = store.get(&k).cloned() {
                     if present {
                         store.insert(
                             k,
                             (
                                 true,
+                                hgrant,
                                 Some(health(
                                     stream.next_u32() % 11,
                                     10,
@@ -1924,11 +2351,11 @@ fn i17_seeded_convergence_two_viewers() {
         ] {
             let facts: Vec<EntityFact> = store
                 .iter()
-                .map(|(k, (present, hv))| EntityFact {
+                .map(|(k, (present, hgrant, hv))| EntityFact {
                     key: *k,
                     fields: FieldMask {
                         presence: *present,
-                        health: hv.is_some(),
+                        health: *hgrant,
                     },
                     health: hv.clone(),
                     resend_health: false,
@@ -1990,6 +2417,7 @@ fn i18_corruptions_fail_loudly() {
         assert!(mirror.apply(&reordered).is_err());
     }
     // Alter a health value: converges structurally but mismatches the oracle.
+    // Control: the untouched page agrees with the oracle.
     {
         let mut mirror = Mirror::new();
         mirror.apply(&page).expect("base applies");
@@ -1997,11 +2425,15 @@ fn i18_corruptions_fail_loudly() {
         oracle
             .step_delta(&facts, area(1), None, false)
             .expect("oracle steps");
-        // Corrupt one value in the mirror.
+        assert_mirror_matches_oracle(&mirror, &oracle);
+        // Corrupt one value in the mirror; the comparator must fail loudly.
         if let Some(slot) = mirror.live.get_mut(&1) {
             *slot = Some(health(99, 10, false));
         }
-        assert_ne!(mirror.live.get(&1), oracle.health.get(&1));
+        let mismatch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_mirror_matches_oracle(&mirror, &oracle);
+        }));
+        assert!(mismatch.is_err(), "altered health must fail the oracle");
     }
     // Drop a page: the next page names unknown ids.
     {
