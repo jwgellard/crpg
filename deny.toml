@@ -7,6 +7,11 @@
 # Config format is for cargo-deny 0.20.x (the version bundled by the pinned
 # `EmbarkStudios/cargo-deny-action@v2.1.1` and used locally).
 
+# ADR-0033 C5: `engine` is off by default, so cargo-deny resolves the
+# godot packages only when asked to. Resolution only; nothing is built.
+[graph]
+features = ["crpg-godot/engine"]
+
 [licenses]
 # Dev-only dependencies are still checked. proptest's dev-only tree
 # (authorised by ADR-0006) is never linked into a shipped binary, so a future
@@ -39,6 +44,21 @@ allow = [
 # permissive family, not policy drift, so the unused-allowance warning is off
 # rather than the list being trimmed to exactly today's graph.
 unused-allowed-license = "allow"
+
+# ADR-0033 U1, answered (a) by the user in D41c (2026-11-02): MPL-2.0 is
+# allowed for exactly these eight godot-rust (gdext) packages, by name, and
+# for nothing else; the `allow` list above is unchanged. The version pin is
+# `godot = "=0.5.5"` in crates/crpg-godot/Cargo.toml.
+exceptions = [
+    { crate = "godot", allow = ["MPL-2.0"] },
+    { crate = "godot-bindings", allow = ["MPL-2.0"] },
+    { crate = "godot-cell", allow = ["MPL-2.0"] },
+    { crate = "godot-codegen", allow = ["MPL-2.0"] },
+    { crate = "godot-core", allow = ["MPL-2.0"] },
+    { crate = "godot-ffi", allow = ["MPL-2.0"] },
+    { crate = "godot-macros", allow = ["MPL-2.0"] },
+    { crate = "gdextension-api", allow = ["MPL-2.0"] },
+]
 
 [bans]
 multiple-versions = "deny"

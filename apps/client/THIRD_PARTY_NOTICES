@@ -1,0 +1,24 @@
+CRPG client - third-party notices
+=================================
+
+This build contains the following packages, used unmodified. They are
+licensed under the Mozilla Public License, version 2.0 (MPL-2.0); the
+licence text is at https://mozilla.org/MPL/2.0/ .
+
+  gdextension-api v0.5.1
+  godot v0.5.5
+  godot-bindings v0.5.5
+  godot-cell v0.5.5
+  godot-codegen v0.5.5
+  godot-core v0.5.5
+  godot-ffi v0.5.5
+  godot-macros v0.5.5
+
+Source Code Form (MPL-2.0 section 3.2): each package's source is published
+on crates.io at https://crates.io/crates/<name>/<version>, for example
+https://crates.io/crates/godot/0.5.5. The packages come from the godot-rust
+project, https://github.com/godot-rust/gdext .
+
+The CRPG engine's own code is licensed under MIT OR Apache-2.0 (see
+LICENSE-MIT and LICENSE-APACHE). This file lists only the MPL-2.0 packages;
+it is not a notice for every dependency.

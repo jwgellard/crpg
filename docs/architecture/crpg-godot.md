@@ -235,9 +235,24 @@ diagnostic prose.
   would drag testkit and `same-file` into the DLL. Keep the two walkers'
   refusal shapes aligned by the K34 cases.
 
+## Windows client build in CI
+
+The `client` job (`.github/workflows/ci.yml`, Windows only, no Linux job
+compiles the engine) runs in this order: scope, cache, clippy, build with
+`--features engine`, the notice check, the Godot fetch (SHA-256 and SHA-512
+checked before unpacking), G1 `--import`, G2 `load.gd`, G3 its control, G4
+`smoke.gd`, G5 its control, then the artifact. G3 and G5 must exit 3, which
+also proves the `_console.exe` passes exit codes through. The artifact
+`crpg-client-slice-windows-x86_64` holds `target/debug/crpg_godot.dll`, the
+tracked files of `apps/client` (with `THIRD_PARTY_NOTICES`), the 14 fixture
+campaign files and both licence files, laid out as in the repository. BR-21
+(no godot package in the default graph, plus an engine-feature control) is a
+step of `check`. The pins and exact steps are in `tasks/T047c.md`.
+
 Agent log:
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-1 · Opened the crate document for the first real code: the Godot-free errors, link and client modules, their flow and view contract, with the authority and shell parts marked as later T047 packages.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-2 · Completed the core document with the authority half, `BridgeCore`, the campaign walk, the NPC driver, the exact open/poll flow, the fence and panic policy, and the traps found while implementing them; the shell remains T047b.
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047b · Documented the gdext shell, pins, build, the load proof and the one `unsafe` impl, plus the environment traps found while building it.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047d · Added the Client section: the four GDScript files' contracts, the client-only proxy layout, the HUD text rules and E2's exit codes, so T048/T050 extend a stated baseline rather than re-deriving one.
+- 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047c · Added the CI section: the `client` job's order, the artifact layout and where BR-21 sits, pointing at the contract for the pins.
