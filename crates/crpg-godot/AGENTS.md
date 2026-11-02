@@ -4,8 +4,8 @@ Design: [`docs/architecture/crpg-godot.md`](../../docs/architecture/crpg-godot.m
 — what the crate is and how its pieces fit. This file is the working contract.
 Read ADR-0033 and [T047](../../tasks/T047.md) §"Exact contract" before editing.
 T047-1 landed `core/errors.rs`, `core/link.rs` and `core/client.rs`; T047-2
-owns `authority.rs`, `BridgeCore`, the campaign walk and integration tests;
-T047b owns the shell.
+landed `core/authority.rs`, `BridgeCore`, the campaign walk and the
+integration tests; T047b owns the shell.
 
 ## Invariants
 
@@ -23,7 +23,8 @@ T047b owns the shell.
    only `close` clears the fence.
 5. **Acknowledge only what the link accepted.** Frames are whole and bounded;
    a full direction refuses without changing the queue. The client never
-   acknowledges.
+   acknowledges. `hand_off` returns the last ordinal actually queued and stops
+   at the first `LinkFull`.
 6. **The revision bumps at most once per poll.** Reuse the current
    `Rc<SessionView>` when rows, active, round, ended and options are unchanged
    and the step collected no event or receipt. The new view carries only that
@@ -37,6 +38,17 @@ T047b owns the shell.
    is never control flow.
 10. **Options are the host's.** `legal_intents` is the only source; the client
     formats labels and sends the chosen body. It decides no rule.
+11. **Every poll watermarks captures.** `acknowledge_captures(last_capture())`
+    runs before the options are read, or admission eventually stops.
+12. **The NPC is a peer.** It reads `legal_intents`, encodes the same
+    `IntentFrame` a player would, and fires at most once per poll after 600 ms.
+    A retained `QueueFull` is a hold, not a rejection (`npc_results`); every
+    other NPC rejection is fatal 51.
+13. **One guard per entry point.** `open`/`poll`/`submit_option`/`close` wrap
+    their `Live` work in `catch_unwind(AssertUnwindSafe(..))`. A panic fences
+    as 55 with `PANICKED: …`; a teardown panic during a fatal fence is ignored
+    and the fault's code and text stand. `Drop` runs `close`, so no panic
+    escapes.
 
 ## Definition of done for any change
 
@@ -54,9 +66,10 @@ never run under `cargo test`.)
 
 ## Known traps
 
-- **`#[allow(dead_code)]` on the three private modules is temporary.** T047-1
-  lands the client half before `BridgeCore`; unit tests are its only consumer.
-  T047-2 must remove the allowance when the authority calls it.
+- **The test seams are compiled out of the library.** `Probe` and the
+  `#[cfg(test)]` `Authority` accessors (`host`, `player`, `npc`, `bound`,
+  `npc_submitted`) exist only for `src/core/tests.rs` and its children; do not
+  add a crate-level accessor or widen them to `pub`.
 - **`client.rs` and `link.rs` never name `crpg_server`, `crpg_sim`,
   `EntityId` or `authority` in code.** Keep the dependency direction and the
   K31 source rule intact.
@@ -68,7 +81,15 @@ never run under `cargo test`.)
   here.
 - **`entries()` is the only engine-facing key list.** Adding a field means
   updating the shell getters in T047b and the K9/K10 expectations together.
+- **The campaign walk is a copy of the CLI's.** `crpg-cli` is bin-only;
+  reusing it would pull testkit and `same-file` into the DLL. Keep the
+  refusal shapes and sorted-first failure aligned with K34.
+- **The fixture's opening actor is the goblin.** Initiative keys are ascending
+  and the goblin's 9 sorts before the hero's 10. The default player side is
+  still the first combatant's (Hero), so the default view has no player
+  options on the first poll; tests that need options open with `"Goblin"`.
 
 Agent log:
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-1 · Wrote the working contract for the first core modules: Godot-free/one-authority invariants, gate list, and the temporary dead-code allowance plus B14-prefix trap, so T047-2 extends rather than reopens them.
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-2 · Completed the working contract: removed the temporary dead-code allowance, added the capture watermark, NPC-peer and panic-guard invariants, the campaign-walk copy and fixture-opening traps, so the finished core is not extended as if the authority half were still missing.

@@ -178,8 +178,10 @@ name = "crpg-godot"
 version = "0.1.0"
 dependencies = [
  "crpg-core",
+ "crpg-data",
  "crpg-net",
  "crpg-server",
+ "crpg-sim",
 ]
 
 [[package]]
