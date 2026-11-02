@@ -6,5 +6,7 @@ license.workspace = true
 
 [dependencies]
 crpg-core   = { path = "../crpg-core" }
+crpg-data   = { path = "../crpg-data" }
 crpg-net    = { path = "../crpg-net" }
 crpg-server = { path = "../crpg-server" }
+crpg-sim    = { path = "../crpg-sim" }
