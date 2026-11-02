@@ -119,9 +119,19 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
   builds at once and always pass `-j 2`.
 - **Do not widen K31's clock ban back over `shell.rs`.** It covers
   `src/core/**` only; the shell owns the one wall-clock read.
+- **A `godot` or `gdextension-api` version bump touches two more places.**
+  Update `apps/client/THIRD_PARTY_NOTICES` (the `client` job's notice check
+  fails otherwise) and the BR-21 control's `v0\.5\.5` in the `check` job.
+- **Windows script exit codes need Godot's `_console.exe`.** The plain exe is
+  a GUI program: PowerShell does not wait for it and sees no exit code. CI
+  uses the official `Godot_v4.7.2-stable_win64_console.exe`, which finds its
+  engine by file name, so keep both exes under their shipped names.
+- **CI must not set `CARGO_TARGET_DIR`.** The `.gdextension` path and the
+  artifact both expect the DLL at `target/debug`.
 
 Agent log:
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-1 · Wrote the working contract for the first core modules: Godot-free/one-authority invariants, gate list, and the temporary dead-code allowance plus B14-prefix trap, so T047-2 extends rather than reopens them.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-2 · Completed the working contract: removed the temporary dead-code allowance, added the capture watermark, NPC-peer and panic-guard invariants, the campaign-walk copy and fixture-opening traps, so the finished core is not extended as if the authority half were still missing.
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047b · Added the shell invariants (the one `unsafe`, one core call per `#[func]`), the engine gates and the Windows/Godot traps found while building the load test.
+- 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047c · Added three CI traps: the notice and BR-21 pin on a godot bump, the console exe for exit codes on Windows, and no `CARGO_TARGET_DIR` in CI.
