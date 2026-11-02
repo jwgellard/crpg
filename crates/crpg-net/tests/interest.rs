@@ -1948,11 +1948,12 @@ fn i14_error_precedence_atomicity_display() {
             .expect("valid after errors on live view");
         assert!(ok.ops.is_empty());
     }
-    // `IdExhausted` precedence after `DuplicateFact` is not reachable from the
-    // public API: exhaustion needs `next_id` near `u64::MAX`, which no bounded
-    // call (at most 1,024 entering keys) can approach from `next_id == 1`.
-    // Exhaustion is covered by the `#[cfg(test)] force_next_id` unit test
-    // (I15 in `src/interest.rs`).
+    // `IdExhausted` ranks last in the precedence and is covered by the unit
+    // test `id_exhausted_is_last_in_precedence` in `src/interest.rs`, which
+    // uses the `#[cfg(test)] force_next_id` to reach `u64::MAX` and provokes
+    // every earlier variant. The public API cannot reach exhaustion: at most
+    // 1,024 entering keys can never advance `next_id` from 1 to near
+    // `u64::MAX`.
 
     // Display strings are exact.
     assert_eq!(
