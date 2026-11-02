@@ -272,6 +272,15 @@ jobs:
           if ($version -ne '4.7.2.stable.official.ed1daf0bf') { throw "unexpected Godot version '$version'" }
           "GODOT=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Output "Godot $version at $exe"
+      - name: Seed the extension list (Godot 4.7.2 first-scan crash)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path apps/client/.godot | Out-Null
+          $file = Join-Path (Get-Location) 'apps/client/.godot/extension_list.cfg'
+          [System.IO.File]::WriteAllText($file, "res://crpg.gdextension`n", [System.Text.Encoding]::ASCII)
+          exit 0
       - name: Import the client project
         if: steps.scope.outputs.rust == 'true'
         timeout-minutes: 5
