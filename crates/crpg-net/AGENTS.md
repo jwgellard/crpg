@@ -16,8 +16,8 @@ Design, module flow, public surface, invariants, and allowed dependencies
 live in `docs/architecture/crpg-net.md` (§Scope, §Module flow, §Public
 surface, §Invariants, §Allowed dependencies, §Conformance, §v2 event wire,
 §Snapshot transfer, §Resume and reconnect (T025a)). The resume modules
-(`protocol_resume`, `codec_resume`, and `resume` in T025a2) follow that
-pointer. This file keeps only how-to-work rules.
+(`protocol_resume`, `codec_resume`, and `resume` in T025a2) and the T027b
+`interest` module follow that pointer. This file keeps only how-to-work rules.
 
 ## Definition of done for any change
 
@@ -103,6 +103,13 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   logging path (case 9's probe fails if it does); a resume decoder never
   falls back to another codec. DoD count: 175 passed (165 + 10), then 186
   (T025a2).
+- *2026-11-02 (UTC), T027b:* **Interest projection is one view per session
+  epoch.** Never add a view restore constructor, never build a second
+  `InterestView` for one epoch, never store a retired-id/grave table
+  (retirement is derived from `next_id`), and never add a `Spawned`/`Died`
+  path to `InterestView` — notices stay in `project_events`, and a removal is
+  exactly one `EntityLeave`/`Despawned`. DoD count: 191 passed (186 + 5
+  `interest` unit tests, I15 among them).
 
 ## Agent log
 
@@ -131,3 +138,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Added the resume subprotocol modules (`protocol_resume`, `codec_resume`) to the architecture pointer, the SessionFence-orders-and-authorises-nothing note on the No-host-invention trap, and the T025a1 traps with the DoD count 175.
 
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T025a2 · Landed the resume mechanisms (`resume`: `SessionFence`, `ResumeDecision`, `check_result`; additive `reassembly::rebind_receiver`) behind the same architecture pointer, with cases 11–21 in `reconnect_wire` and the DoD count 186. The existing T025a1 traps already state the fence/epoch/rebind/proof rules; this entry records that they are now enforced by code and tests.
+
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T027b · Added the `interest` pointer and the per-epoch-view/derived-retirement/notice-ownership traps, with the DoD count 191 (five `interest` unit tests, I15 included).

@@ -23,7 +23,8 @@
 //! [`codec_transfer`] / [`reassembly`] triple carries the separate versioned
 //! snapshot-transfer subprotocol (first byte `0x81`, lane 2), and the T025a1
 //! [`protocol_resume`] / [`codec_resume`] pair carries the separate versioned
-//! resume subprotocol (first byte `0x91`, lane 3). Real QUIC,
+//! resume subprotocol (first byte `0x91`, lane 3). The T027b [`interest`]
+//! module projects host-supplied facts to existing v1 ops or a T024 body. Real QUIC,
 //! movement wire, reconnect policy, prediction, and host auth/perception are
 //! named follow-ons, not here.
 
@@ -31,6 +32,7 @@ pub mod codec;
 pub mod codec_resume;
 pub mod codec_transfer;
 pub mod codec_v2;
+pub mod interest;
 pub mod projection_v2;
 pub mod protocol;
 pub mod protocol_resume;
