@@ -456,6 +456,31 @@ fn l5c_unmapped_target_drops_options() {
 }
 
 #[test]
+fn l5d_abilities_grant_does_not_filter_options() {
+    let grants = DisclosureGrants {
+        entities: vec![full(a()), full(b()), full(c())],
+        abilities: vec![],
+        encounters: vec![encounter()],
+        turn_round: true,
+        encounter_end: true,
+        turn_state: true,
+    };
+    let mut h = Host::from_history(fixture(), config(), 0).expect("wrap");
+    let p = h.bind_peer(all_actors(), grants.clone(), 0).expect("bind");
+    assert_eq!(h.legal_intents(p).expect("list"), expected_full());
+    let missing = li(n(1), whiff(), n(2));
+    assert!(h.legal_intents(p).expect("list").contains(&missing));
+    let mut g = Host::from_history(fixture(), config(), 0).expect("wrap");
+    let gp = g.bind_peer(all_actors(), grants, 0).expect("bind");
+    let bytes = intent_bytes(&g, gp, 1, &missing);
+    staged(&mut g, gp, &bytes, 0);
+    assert_eq!(
+        g.pump(0).expect("pump").results[0].status,
+        ReceiptStatus::Applied
+    );
+}
+
+#[test]
 fn l6a_reads_change_no_observable_state() {
     let (mut h, p) = bind_full(0);
     let first_bytes = end_turn(2, h.epoch(p).expect("e"), 1, h.server_tick(), 1);
