@@ -55,7 +55,7 @@ govern it (as links), and what consumers inherit from it.
 | `crpg-testkit` | [crpg-testkit.md](crpg-testkit.md) | spec §15.3, §16 |
 | `crpg-server` | [crpg-server.md](crpg-server.md) | spec §10, ADR-0022, T039, ADR-0026/T023b |
 | `crpg-cli` | [crpg-cli.md](crpg-cli.md) | spec §24 |
-| `crpg-godot` | due with its first task | spec §9, ADR-0001, ADR-0003 |
+| `crpg-godot` | [crpg-godot.md](crpg-godot.md) | spec §9, ADR-0001, ADR-0003, ADR-0033/T047 |
 
 Writing the doc is part of the **first task that puts real code in a crate**,
 listed in that task's definition of done alongside the crate's `AGENTS.md`.
@@ -86,3 +86,4 @@ superseded by appending, never rewritten.
 - 2026-10-04 (UTC) · claude-code + T023 · Linked the new crpg-net-quic doc; the lane-0 QUIC transport is the crate's first real code, so the §15.6 gate is satisfied and the "due with T023" place-holder is retired.
 - 2026-10-05 (UTC) · claude-code + T039 · Added T039 to the `crpg-server` row's governing column, since its contract now governs the crate's save adapter and gate-10 claim.
 - 2026-10-06 (UTC) · claude-code + T023b · Added ADR-0026 and T023b to the `crpg-server` row's governing column, since they now govern the crate's QUIC adapter.
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-1 · Linked the new crpg-godot doc and added ADR-0033/T047 to its governing column; the Godot-free errors, link and client modules are the crate's first real code, so the §15.6 gate is satisfied and the "due with its first task" place-holder is retired.
