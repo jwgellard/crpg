@@ -118,7 +118,7 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13; movement spec scheduled after T024 (D24); first datagram lane applies the T030 patch (D23) |
 | T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012 |
 | T027a | done | 2026-09-30 | `crpg-sim` persisted single-area World identity (`new_in_area`/`area`/`area_of`), `AreaMismatch`, atomic noncombat `transfer_entity`/`transfer_history_entity` (ADR-0020); 11-test suite, legacy bytes/goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T027a](T027a.md) |
-| T027b | blocked | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
+| T027b | exact contract proposed in session 29 batch (`tasks/T027b.md`); awaits D41a | — | `crpg-net` production interest projection; T027a/T021/T024 + D14 |
 | T027c | blocked | — | `crpg-server` authoritative viewer context; exact D03/D14 API + T027b |
 | T028 | done | 2026-09-30 | `crpg-sim` shared `validate_action`/`legal_actions` (ADR-0018): single validation path, ULID×EntityId order, EndTurn last, whole-failure 4096 bound; 8-test suite, legacy goldens unchanged (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T028](T028.md) |
 | T029a | done | 2026-09-30 | `crpg-data` immutable `ActionSignatureStore` with content-derived `ActionBundleIdentity`, strict bundle reader/writer and bounded `validate_call`/`read_call`/`write_call`; 11-test suite (PR #20, merge `c1bc6ab`; CI green on Windows/MSVC and Linux/GNU); see [T029a](T029a.md) |
@@ -225,13 +225,22 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T138e | merged (PR #70) | 2026-10-24 | `crpg-net` tests companion for T138 (OpenCode) |
 | T137-gaps | merged (PR #72, `953d66e`, 2026-10-25) | 2026-10-25 | `crpg-sim` tests: `crates/crpg-sim/tests/surface_draws_followup.rs`, 3 tests (self-targeted Opposed both-lists fold, its different-target control, reload after each of actions 1–3); opencode/deepseek-v4.1-flash-free attempt 1, commit `297cfc1`; the self-target fold is not publicly observable (both rolls fold the same lists); the crate-private plan test pins it |
 
-## Session 28 batch (PR open)
+## Session 28 batch (PR #75 merged 2026-11-01)
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| T145 | in session 28 batch | — | `crpgc demo`: terminal combat viewer. Note: `tasks/T144.md` is an older measurement, unrelated |
-| T146 | in session 28 batch | — | `crpgc play`: playable terminal combat. Follow-up: tidy the `Turn: -` line and repeated Round/Turn lines |
-| T147 | measurement running (slot 1, branch `task/T147-m1`) | — | `host_quic` measurement: `quic_admitted_schedule_matches_in_memory` deadline 7/30 on master, 4/30 on the batch; access violation 3 times under load, 0/60 quiet |
+| T145 | merged (PR #75) | 2026-11-01 | `crpgc demo`: terminal combat viewer. Note: `tasks/T144.md` is an older measurement, unrelated |
+| T146 | merged (PR #75) | 2026-11-01 | `crpgc play`: playable terminal combat. Follow-up: tidy the `Turn: -` line and repeated Round/Turn lines |
+| T147 | parked: two runs timed out with no verdict (DeepSeek V4 Pro 40 min, DeepSeek V4.1 Flash 25 min); temporary logging on branch `task/T147-m1` (slot 1), must not merge; not on the demo path | — | `host_quic` measurement: `quic_admitted_schedule_matches_in_memory` deadline 7/30 on master, 4/30 on the batch; access violation 3 times under load, 0/60 quiet |
+
+## Session 29 batch (PR open)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T146b | in session 29 batch | — | `crpgc play` no longer prints `Turn: -` or repeated Round/Turn lines; DeepSeek V4.1 Flash attempt 1 |
+| T045 | ADR-0033 Proposed | — | `docs/adr/0033-godot-bridge.md`; awaits D41d and D41c |
+| T047a | new, not started | — | `crpg-server` `Host::legal_intents` and `Host::replica_id`; before T047 |
+| T047c | new, not started, S-set | — | the client CI job; must land in T047's batch |
 
 ## ADR-0029 follow-on contracts
 
@@ -242,7 +251,7 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T136 | `crpg-data` | T136a implemented, reviewed; merged (PR #64); T136b exact contract approved (`tasks/T136b.md`, D32, every recommendation), ready; companion T136c (`crpg-sim`) named; T136b and T136c merged (PR #70) | Yes | Surface schemas: typed and derived stats, resolution shapes, damage dice, initiative, effects with tags, RT tick fields, migrations (RT fields may split off first) | Accepted; T134 and T135 if exposed |
 | T137 | `crpg-sim` | T137a, T137b, T137c merged into session-20 batch (PR #71 merged 2026-10-25, b7fa63e); `surface_v1` baselines approved (D36); T137b-tests pending | Yes | Adapter generalization consuming T136, existing goldens unchanged | T136 |
 | T138 | `crpg-sim` | T138a–e merged (PR #70, 2026-10-24); history_v2 baselines approved (D34) | Yes | Encounter mode and RT policy (T1–T16); history v2 (N5) | T136 (RT fields) |
-| T139 | T139d, T139a1 merged (PR #74); T139a2 (Claude implementer) and T139g (DeepSeek V4.1 Flash) in session 28 batch; next T139b, T139c, T139e, T139f, deferred until after the Godot slice; two-keys files for T139d/T139a still to write | contract to write; waits on T137, T138 | Yes | Persistent creature state outside encounters; join and leave (T13, T14) | T137, T138 |
+| T139 | T139d, T139a1 merged (PR #74); T139a2 (Claude implementer) and T139g (DeepSeek V4.1 Flash) merged in PR #75; next T139b, T139c, T139e, T139f, deferred until after the Godot slice; two-keys files for T139d/T139a still to write | contract to write; waits on T137, T138 | Yes | Persistent creature state outside encounters; join and leave (T13, T14) | T137, T138 |
 | T140 | `crpg-net` | contract to write; waits on T024, T027b, T138 (H-filter; ADR-0029 Q8 roll transparency decided here) | — (H-filter) | Next protocol version: N1–N4 facts, events, intents, snapshot allowlist | T024, T027b, T138 |
 | T141 | `crpg-server` | contract to write; waits on T138, T140 | — | P1–P9; mode requests; projection of the new facts; heartbeat | T138, T140 (in-process pause can come first) |
 | T142 | `crpg-data` | contract to write; ready; T104 report as input | Yes | `crpg.ui/1` schema, validation and generated defaults (U1–U8, U10) | Accepted; T104 report as input |
@@ -546,3 +555,4 @@ Record it here, one line per week.
 - 2026-10-25 (UTC) · claude-code/opus-5.5 (manager) + A0-8 approval · Recorded the user's approval of the crpg-net trim and the hold of the other three crates for a tidy pass, with the branches that keep their work.
 - 2026-10-30 (UTC) · claude-code/opus-5.5 (manager) + session 27 bookkeeping · Updated the T024q, T024h, T025a and T139 rows to the session-27 state (T024h1, T139d merged into the batch; T024q WIP; T139a1 in review), replacing stale draft-stage statuses.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Updated the T024q, T024h, T025a and T139 rows to the session 28 batch state (T024h1, T025a1, T139d, T139a1 merged in PR #74), added the T145/T146/T147 rows and the session 28 throughput row.
+- 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S29-bookkeeping · Marked the session 28 batch merged (PR #75), parked T147 after two timed-out runs, and indexed the session 29 batch rows without deciding any contract.

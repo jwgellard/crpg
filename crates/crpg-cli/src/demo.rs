@@ -261,6 +261,10 @@ pub(crate) struct Show {
     health: BTreeMap<Ulid, Health>,
     /// Runtime entity to authored placement, for turn-head naming.
     entities: BTreeMap<EntityId, Ulid>,
+    /// The last `-- Round N --` display number printed.
+    printed_round: Option<u32>,
+    /// The last `Turn: ...` line printed.
+    printed_turn: Option<String>,
 }
 
 impl Show {
@@ -276,6 +280,8 @@ impl Show {
             order: Vec::new(),
             health: BTreeMap::new(),
             entities: BTreeMap::new(),
+            printed_round: None,
+            printed_turn: None,
         }
     }
 
@@ -398,9 +404,10 @@ impl Show {
     }
 
     /// Prints the death, round-change, and turn-change lines after one step.
+    /// Round and turn lines print only while a turn is in play and only when
+    /// their value differs from the last one printed.
     pub(crate) fn after(&mut self, world: &World) {
         let previous_round = self.round;
-        let previous_active = self.active;
         let previous_dead: Vec<Ulid> = self
             .health
             .iter()
@@ -418,12 +425,27 @@ impl Show {
             }
         }
         if self.initialized && self.round != previous_round {
-            text.push_str(&format!("-- Round {} --\n", self.round + 1));
+            text.push_str(&self.round_line(self.round + 1));
         }
-        if self.active != previous_active {
-            text.push_str(&format!("{}\n", self.turn_line()));
+        if let Some(turn) = self.turn_line() {
+            text.push_str(&turn);
+            text.push('\n');
         }
         self.emit(&text);
+    }
+
+    /// Appends the round and turn lines for a prompt, each only when a turn
+    /// is in play and its value differs from the last line printed.
+    pub(crate) fn round_and_turn(&mut self) -> String {
+        if self.active.is_none() {
+            return String::new();
+        }
+        let mut text = self.round_line(self.round + 1);
+        if let Some(turn) = self.turn_line() {
+            text.push_str(&turn);
+            text.push('\n');
+        }
+        text
     }
 
     /// Refreshes the observed health, round, and turn head from the world.
@@ -448,18 +470,27 @@ impl Show {
         self.active = world.combat().and_then(|combat| combat.active);
     }
 
-    /// Renders the current turn head by authored name.
-    fn turn_line(&self) -> String {
-        let Some(active) = self.active else {
-            return "Turn: -".to_string();
-        };
-        match self.entities.get(&active) {
-            Some(placement) => {
-                let (name, _) = self.names.combatant(*placement);
-                format!("Turn: {name}")
-            }
-            None => "Turn: -".to_string(),
+    /// Renders the round line unless `displayed` was the last one printed.
+    fn round_line(&mut self, displayed: u32) -> String {
+        if self.printed_round == Some(displayed) {
+            return String::new();
         }
+        self.printed_round = Some(displayed);
+        format!("-- Round {displayed} --\n")
+    }
+
+    /// Renders the current turn head by authored name, or `None` when there
+    /// is no turn to show or it repeats the last line printed.
+    fn turn_line(&mut self) -> Option<String> {
+        let active = self.active?;
+        let placement = *self.entities.get(&active)?;
+        let (name, _) = self.names.combatant(placement);
+        let line = format!("Turn: {name}");
+        if self.printed_turn.as_deref() == Some(line.as_str()) {
+            return None;
+        }
+        self.printed_turn = Some(line.clone());
+        Some(line)
     }
 
     /// Prints the closing summary from the last observed snapshot.
