@@ -108,8 +108,11 @@ fn the_core_has_no_engine_clock_or_bare_core_path() {
         }
     }
 
+    let core_root = root.join("core");
     for file in &files {
-        if is_test_file(file) {
+        // The ban covers `src/core/**` only: the shell (T047b) owns the one
+        // wall-clock read (D5), so `Instant` is legitimate there.
+        if is_test_file(file) || !file.starts_with(&core_root) {
             continue;
         }
         let text = read(file);
@@ -151,4 +154,68 @@ fn the_core_has_no_engine_clock_or_bare_core_path() {
     let authority = tokens(&authority_text);
     assert!(authority.contains(&"crpg_server"));
     assert!(authority.contains(&"EntityId"));
+}
+
+/// The count of `unsafe` tokens in comment-free text.
+fn unsafe_count(text: &str) -> usize {
+    tokens(&strip_line_comments(text))
+        .iter()
+        .filter(|token| **token == "unsafe")
+        .count()
+}
+
+/// The contiguous `//` comment block above `needle`, skipping `#[..]`
+/// attribute lines between the block and the item.
+fn comment_block_above(text: &str, needle: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines.iter().position(|line| line.contains(needle))?;
+    let mut index = at;
+    while index > 0 && lines[index - 1].trim_start().starts_with("#[") {
+        index -= 1;
+    }
+    let mut block = Vec::new();
+    while index > 0 && lines[index - 1].trim_start().starts_with("//") {
+        index -= 1;
+        block.push(lines[index]);
+    }
+    Some(block.join(
+        "
+",
+    ))
+}
+
+/// K32 / BR-20, B19: the shell and root hold exactly one `unsafe`, on the
+/// `ExtensionLibrary` impl, under a `SAFETY:` comment block.
+#[test]
+fn the_crate_has_exactly_one_unsafe_on_the_extension_impl() {
+    let root = src_root();
+    let lib = fs::read_to_string(root.join("lib.rs")).expect("read lib.rs");
+    let shell = fs::read_to_string(root.join("shell.rs")).expect("read shell.rs");
+
+    // Control: the counter sees two bare tokens and ignores a comment.
+    assert_eq!(unsafe_count("unsafe { } unsafe fn x() {}"), 2);
+    assert_eq!(unsafe_count("// unsafe"), 0);
+    assert_eq!(unsafe_count("#![allow(unsafe_code)]"), 0);
+
+    assert_eq!(unsafe_count(&lib), 0, "lib.rs has an unsafe token");
+    assert_eq!(
+        unsafe_count(&shell),
+        1,
+        "shell.rs must have exactly one unsafe"
+    );
+
+    let needle = "unsafe impl ExtensionLibrary for CrpgExtension";
+    let code = strip_line_comments(&shell);
+    assert_eq!(code.matches(needle).count(), 1);
+    let block = comment_block_above(&shell, needle).expect("the unsafe impl exists");
+    assert!(block.contains("SAFETY:"), "no SAFETY: block above the impl");
+
+    // Control: a block without the marker is detected as such.
+    let bare = comment_block_above(
+        "// note
+unsafe impl X {}",
+        "unsafe impl X",
+    )
+    .expect("found");
+    assert!(!bare.contains("SAFETY:"));
 }

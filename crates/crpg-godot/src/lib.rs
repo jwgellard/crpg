@@ -5,6 +5,11 @@
 //!
 //! This landing opens the Godot-free core: the bridge error table, the local
 //! in-memory link, the client half and the complete authority half with
-//! `BridgeCore`. The gdext shell arrives with T047b.
+//! `BridgeCore`. The thin gdext shell over it (`shell.rs`, T047b) is compiled
+//! only with the `engine` feature, which is off by default; it holds the
+//! crate's one hand-written `unsafe` line.
 
 pub mod core;
+
+#[cfg(feature = "engine")]
+mod shell;
