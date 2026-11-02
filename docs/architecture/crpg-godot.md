@@ -5,14 +5,16 @@ to depend on `godot` or to carry `unsafe`. The design splits in two: a
 Godot-free core that builds and tests headless on Windows and Linux, and a thin
 gdext shell that converts values and calls the core.
 
-**State after T047-2 (2026-11-02):** the Godot-free core is complete.
+**State after T047b (2026-11-02):** the Godot-free core is complete and the
+thin gdext shell (`src/shell.rs`, behind the off-by-default `engine` feature)
+and the `apps/client` load test exist. T047-2 completed the core:
 `core/errors.rs` (the closed code table and host-fault mapping), `core/link.rs`
 (the bounded in-process two-ended link), `core/client.rs` (replica
 application, immutable view revisions, rows, turn, options, receipts and
 intent submission), `core/authority.rs` (the campaign walk, the embedded
 `Host`, the NPC driver, the delivery hand-off and the presentation tables) and
 `core/mod.rs` (`BridgeCore`, `open`/`poll`/`submit_option`/`close`, the panic
-guard and the fatal fence) exist. The gdext shell is T047b.
+guard and the fatal fence) exist.
 
 ## Position
 
@@ -54,6 +56,18 @@ or engine type may move into it. The authority runs in-process behind
   `hand_off`, `npc_results`, `choose_npc` and `NpcPacer`; and the open helpers
   `SpecParts`, `grants`, `ruleset_abilities`, `first_encounter` and
   `presentation_tables`.
+
+- `shell.rs` — private, compiled only with `--features engine`. One
+  `unsafe impl ExtensionLibrary for CrpgExtension` (the crate's only
+  hand-written `unsafe`), `CrpgSession` (a `RefCounted` holding a `BridgeCore`
+  and the `Instant` taken when `open` returns 0) and `CrpgView` (a `RefCounted`
+  wrapping one `Rc<SessionView>`; `no_init`). Each `CrpgSession` function
+  converts its arguments and makes exactly one core call; `poll` passes
+  `u64::try_from(elapsed().as_millis()).unwrap_or(u64::MAX)` as the single time
+  source and `Host::tick` is never called. `view()` returns a new `CrpgView`
+  per call. `CrpgView` getters return `i64`, `bool`, `PackedInt64Array`,
+  `PackedByteArray`, `PackedStringArray` or `Array<VarDictionary>` (built from
+  `entries()`, so a new field is added in one place).
 
 ## Flow in this half
 
@@ -107,11 +121,52 @@ fencing. A panic caught in `open`/`poll`/`submit_option` fences as `55` with
 escapes. `#[cfg(test)] Probe` injects a panic at each boundary and at
 `Live::drop`; it is compiled out of the library.
 
+## FFI, pins and build (T047b)
+
+- **Pins.** `godot = "=0.5.5"` with `features = ["api-4-7"]`, optional, behind
+  `engine = ["dep:godot"]` (off by default, so `cargo test` and the headless
+  server build never compile or link Godot). `api-4-7` reads the vendored
+  `gdextension-api` 0.5.1 JSON (4.7.0 stable, single precision) and needs no
+  Godot binary at build time. The engine used to load it is
+  `4.7.2.stable.official.ed1daf0bf` (ADR-0001 pin). The lock gains exactly 13
+  packages: `godot`, `godot-core`, `godot-ffi`, `godot-bindings`,
+  `godot-codegen`, `godot-macros`, `godot-cell`, `gdextension-api`, `glam`,
+  `heck`, `nanoserde`, `nanoserde-derive`, `venial`.
+- **`[lib]`** is `crate-type = ["cdylib", "rlib"]`: the `cdylib` is the DLL the
+  engine loads, the `rlib` is what tests and other crates link.
+- **Build.** `cargo build -p crpg-godot --features engine --locked -j 2`
+  writes `target/<profile>/crpg_godot.dll`. `apps/client/crpg.gdextension`
+  points at it with `res://../../target/{debug,release}/crpg_godot.dll`,
+  entry symbol `gdext_rust_init`, `compatibility_minimum = 4.7`,
+  `reloadable = false`.
+- **Load proof.** `apps/client/tests/load.gd` (E1) is a `SceneTree` script:
+  `Godot4 --headless --path apps/client --import`, then
+  `Godot4 --headless --path apps/client -s res://tests/load.gd` must exit 0.
+  It exits 2 when `ClassDB.class_exists("CrpgSession")` is false (the `--import`
+  exit code proves nothing about the DLL) and 3 on the first failed check;
+  `CRPG_CAMPAIGN` pointing at a missing directory is its control (exit 3).
+  The measured ladder step, build time and memory, the working `.gdextension`
+  keys and the thread observation are in `tasks/T047b-completion.md`.
+
+## The one `unsafe` (H-unsafe)
+
+`#[gdextension]` requires `unsafe impl ExtensionLibrary` to confirm the opt-in
+to godot-rust's safety model. The comment block above it in `shell.rs` states
+why the opt-in is upheld: Godot loads the library once; only `CrpgSession` and
+`CrpgView` are registered and they use gdext's checked conversions with no raw
+pointer; `experimental-threads` is off, so gdext asserts main-thread access;
+and this is the only hand-written `unsafe`. Macro expansion adds
+`#[unsafe(no_mangle)] unsafe extern "C" fn gdext_rust_init` and similar, which
+is why the crate root keeps `#![allow(unsafe_code)]`; `core/mod.rs` begins with
+`#![forbid(unsafe_code)]`. `tests/source_rules.rs` K32 counts `unsafe` tokens in
+`lib.rs` and `shell.rs` (comments stripped): exactly one, on that impl, under a
+`SAFETY:` comment block. Any other `unsafe` needs an ADR-0033 amendment.
+
 ## Decisions and traps
 
 Governed by ADR-0033 and ADR-0012. The core holds no float,
-`HashMap`/`HashSet`, clock or thread. Only `shell.rs` will carry `unsafe`
-(T047b); this crate root allows it for macro expansion, `core` forbids it.
+`HashMap`/`HashSet`, clock or thread. Only `shell.rs` carries `unsafe`; this
+crate root allows it for macro expansion, `core` forbids it.
 Errors never carry control flow: tests assert codes and stable integers, not
 diagnostic prose.
 
@@ -123,6 +178,19 @@ diagnostic prose.
   hold, not a rejection.
 - **Every poll watermarks captures.** Without it admission eventually stops
   with `backpressured: 1`.
+- **`CARGO_TARGET_DIR` and `GDRUST_MAIN_EXTENSION` break E1.** The
+  `.gdextension` path assumes `target/` at the workspace root, so a relocated
+  target directory means the DLL is not found and `load.gd` exits 2.
+  `GDRUST_MAIN_EXTENSION`, if set when `godot-macros` compiles, suppresses the
+  `gdext_rust_init` entry point (`gdextension.rs:89-95`) and the class never
+  loads. Unset both.
+- **`Godot4` is a windowed program.** Under PowerShell it neither blocks nor
+  reports an exit code; run `Godot4 ... -s` from Git Bash. `Godotconsole.exe`
+  does not work on this machine.
+- **Run `--import` once before any `-s` run** so `.godot/` exists; it also
+  writes `*.uid` files, which are not committed.
+- **The default opening actor is the goblin**, so with `player_side = ""` the
+  first poll has no options; `load.gd` polls until the Hero's turn arrives.
 - **The walker is a copy, not a reuse.** `crpg-cli` is bin-only; importing it
   would drag testkit and `same-file` into the DLL. Keep the two walkers'
   refusal shapes aligned by the K34 cases.
@@ -131,3 +199,4 @@ Agent log:
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-1 · Opened the crate document for the first real code: the Godot-free errors, link and client modules, their flow and view contract, with the authority and shell parts marked as later T047 packages.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-2 · Completed the core document with the authority half, `BridgeCore`, the campaign walk, the NPC driver, the exact open/poll flow, the fence and panic policy, and the traps found while implementing them; the shell remains T047b.
+- 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047b · Documented the gdext shell, pins, build, the load proof and the one `unsafe` impl, plus the environment traps found while building it.

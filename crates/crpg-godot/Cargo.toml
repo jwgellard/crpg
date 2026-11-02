@@ -4,9 +4,16 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+engine = ["dep:godot"]
+
 [dependencies]
 crpg-core   = { path = "../crpg-core" }
 crpg-data   = { path = "../crpg-data" }
 crpg-net    = { path = "../crpg-net" }
 crpg-server = { path = "../crpg-server" }
 crpg-sim    = { path = "../crpg-sim" }
+godot       = { version = "=0.5.5", optional = true, features = ["api-4-7"] }
