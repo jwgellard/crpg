@@ -45,8 +45,9 @@ use crpg_net::protocol_transfer::{
 use crpg_net::protocol_v2;
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_sim::{
-    history_hash, validate_action, CombatAction, CombatError, HistoryEnvelope, HistoryError,
-    HistoryEvent, HistoryWorld, World, MAX_HISTORY_EVENTS, MAX_HISTORY_PAGE,
+    history_hash, legal_actions, validate_action, CombatAction, CombatError, HistoryEnvelope,
+    HistoryError, HistoryEvent, HistoryWorld, LegalActionsError, World, MAX_HISTORY_EVENTS,
+    MAX_HISTORY_PAGE,
 };
 
 use crate::capture::{
@@ -199,6 +200,15 @@ pub struct DeliveryEntry {
     pub kind: DeliveryKind,
     /// The encoded frame.
     pub bytes: Vec<u8>,
+}
+
+/// One action `peer` may request now, in that peer's replica ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegalIntent {
+    /// The acting entity, in `peer`'s replica ids.
+    pub actor: NetId,
+    /// The wire verb and its ids, ready for `IntentFrame.body`.
+    pub body: IntentBody,
 }
 
 /// The delivery effect of [`Host::set_grants`].
@@ -650,6 +660,68 @@ impl Host {
     /// Whether [`shutdown`](Self::shutdown) has run.
     pub fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// Every action `peer` may currently request, in sim enumeration order
+    /// and in `peer`'s replica ids (T047a, ADR-0033 §7).
+    ///
+    /// Empty without an active encounter, and when the active head is not
+    /// this session's to control or disclose. Options are advisory and confer
+    /// no authorization: execution revalidates epoch, sequence and state.
+    pub fn legal_intents(&self, peer: PeerHandle) -> Result<Vec<LegalIntent>, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        let Some(active) = self
+            .history
+            .world()
+            .combat()
+            .and_then(|combat| combat.active)
+        else {
+            return Ok(Vec::new());
+        };
+        if session.control.binary_search(&active).is_err() {
+            return Ok(Vec::new());
+        }
+        let Some(actor_net) = session.map.get(&active).copied() else {
+            return Ok(Vec::new());
+        };
+        let eligible = lookup(&session.grants, active)
+            .is_some_and(|grant| grant.present && grant.action_actor);
+        if !eligible {
+            return Ok(Vec::new());
+        }
+        match legal_actions(self.history.world(), active) {
+            Ok(list) => Ok(list
+                .iter()
+                .filter_map(|action| {
+                    legal_body(session, action).map(|body| LegalIntent {
+                        actor: actor_net,
+                        body,
+                    })
+                })
+                .collect()),
+            Err(LegalActionsError::Actor(_)) => Ok(Vec::new()),
+            Err(LegalActionsError::TooManyOptions { .. }) => {
+                Err(HostError::Invariant("legal options exceed their bound"))
+            }
+        }
+    }
+
+    /// The replica id this session's last map installation minted for
+    /// `entity`, or `None` when it was not granted, present and live then
+    /// (T047a, ADR-0033 §7). The map is a snapshot, not a liveness query.
+    pub fn replica_id(
+        &self,
+        peer: PeerHandle,
+        entity: EntityId,
+    ) -> Result<Option<NetId>, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        Ok(session.map.get(&entity).copied())
     }
 
     /// Immutable view of the owned authority, for trusted oracles and
@@ -2253,6 +2325,28 @@ fn resolve_action(session: &Session, frame: &IntentFrame) -> Option<CombatAction
     }
 }
 
+/// `resolve_action`'s mapping/ownership/disclosure test for one sim action;
+/// `None` drops it. The actor is the L3-eligible `active`.
+fn legal_body(session: &Session, action: &CombatAction) -> Option<IntentBody> {
+    match *action {
+        CombatAction::UseAbility {
+            ability, target, ..
+        } => {
+            let target_net = *session.map.get(&target)?;
+            let target_grant = lookup(&session.grants, target)?;
+            if !(target_grant.present && target_grant.action_target) {
+                return None;
+            }
+            Some(IntentBody::DeclareAction {
+                ability,
+                target: target_net,
+            })
+        }
+        CombatAction::EndTurn { .. } => Some(IntentBody::EndTurn),
+        CombatAction::Stop { .. } => None,
+    }
+}
+
 /// The entities whose state an accepted command may change: actor, target,
 /// and the incoming active head.
 fn involved_entities(world: &World, action: &CombatAction) -> BTreeSet<EntityId> {
@@ -2797,5 +2891,62 @@ mod tests {
             assert_eq!(entries[0].ordinal, u64::MAX - 3);
             assert_eq!(entries[1].ordinal, u64::MAX - 2);
         }
+    }
+
+    // -- T047a read API smoke cases (the full suite is tests/host_legal.rs) --
+
+    fn net(value: u64) -> NetId {
+        NetId::new(value).expect("nonzero")
+    }
+
+    #[test]
+    fn host_read_api_smoke() {
+        let mut host = fixture_host();
+        let peer = host
+            .bind_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                0,
+            )
+            .expect("binds");
+        assert_eq!(host.replica_id(peer, eid(0)), Ok(Some(net(1))));
+        assert_eq!(host.replica_id(peer, eid(1)), Ok(Some(net(2))));
+        assert_eq!(host.replica_id(peer, eid(2)), Ok(Some(net(3))));
+        assert_eq!(host.replica_id(peer, eid(99)), Ok(None));
+
+        let intents = host.legal_intents(peer).expect("reads");
+        assert_eq!(intents.len(), 7);
+        assert!(intents.iter().all(|intent| intent.actor == net(1)));
+        assert_eq!(
+            intents[0].body,
+            IntentBody::DeclareAction {
+                ability: Ulid::from_u128(603),
+                target: net(2),
+            }
+        );
+        assert_eq!(intents[6].body, IntentBody::EndTurn);
+
+        // No encounter: no active head, nothing to map.
+        let mut empty = Host::new(
+            7,
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 1,
+            },
+            0,
+        )
+        .expect("empty host");
+        let empty_peer = empty
+            .bind_peer(ControlGrant { actors: vec![] }, full_grants(), 0)
+            .expect("binds");
+        assert_eq!(empty.legal_intents(empty_peer), Ok(Vec::new()));
+        assert_eq!(empty.replica_id(empty_peer, eid(0)), Ok(None));
+
+        // Shutdown clears sessions first, so Closed wins over UnknownPeer.
+        host.shutdown();
+        assert_eq!(host.legal_intents(peer), Err(HostError::Closed));
+        assert_eq!(host.replica_id(peer, eid(0)), Err(HostError::Closed));
     }
 }

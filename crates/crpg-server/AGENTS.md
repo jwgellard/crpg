@@ -38,6 +38,10 @@ and `HostCall::IngestTransfer`, and `GrantChange::SnapshotStaged`.
 is an entry count, and `AcknowledgeDelivery`'s `through` is a delivery
 ordinal. On `/1` every traced and reported value is T023b's.
 
+T047a's `host` read API (ADR-0033 §7): `LegalIntent`, `Host::legal_intents`
+and `Host::replica_id`. They read the session map and grants only, and their
+options confer no authorization.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
@@ -237,3 +241,4 @@ git diff --check
 - 2026-10-06 (UTC) · claude-code + T023b · Added the `quic` module to the surface, amended invariant 7 to fence network I/O to `quic.rs` through `crpg-net-quic`, replaced the QUIC-crates sentence with the path edge, added the `host_quic` gate, and listed the adapter traps, including the approved correction that a hold can lose frames to the rate budget.
 - 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session public surface and host traps (opt-in kind, ordinal acks, `DeliveryKind`, atomic staging) and replaced the old "narrowing fences" trap with the per-kind rule, so the crate contract matches ADR-0031.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Added the adapter surface and traps for the `/2` path (ordinal acks live/departed/shutdown, no legacy `try_send`/`try_recv`, `bind`/`bind_dual` only), so the crate contract matches the as-built QUIC adapter and the ADR-0026 addendum.
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Recorded `LegalIntent`, `Host::legal_intents` and `Host::replica_id` in the surface, so the bridge read API is known to be trusted, read-only and non-authorizing rather than a client capability.

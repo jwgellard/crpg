@@ -664,6 +664,65 @@ mod tests {
     }
 
     #[test]
+    fn id_exhausted_is_last_in_precedence() {
+        let mut arena = GenerationalArena::new();
+        let one = EntityKey {
+            area: area(1),
+            entity: arena.insert(()),
+        };
+        let row = |key| EntityFact {
+            key,
+            fields: FieldMask {
+                presence: true,
+                health: false,
+            },
+            health: None,
+            resend_health: false,
+        };
+
+        // Each context below would exhaust the id space, so every earlier
+        // check must win over `IdExhausted`.
+        let enter = [row(one)];
+        let duplicate = [row(one), row(one)];
+        let too_many: Vec<EntityFact> = (0..=MAX_VISIBLE_ENTITIES)
+            .map(|_| {
+                row(EntityKey {
+                    area: area(1),
+                    entity: arena.insert(()),
+                })
+            })
+            .collect();
+
+        let valid = context(epoch(), area(1), &enter, &[], None, false);
+        let wrong_epoch = context(SessionEpoch([8; 16]), area(1), &enter, &[], None, false);
+        let overfull = context(epoch(), area(1), &too_many, &[], None, false);
+        let repeated = context(epoch(), area(1), &duplicate, &[], None, false);
+
+        let mut view = InterestView::new(epoch());
+        view.force_next_id(u64::MAX);
+        let before = view.clone();
+        for (ctx, want) in [
+            (&wrong_epoch, InterestError::WrongEpoch),
+            (&overfull, InterestError::TooManyFacts),
+            (&repeated, InterestError::DuplicateFact),
+        ] {
+            assert_eq!(view.project_delta(ctx), Err(want));
+            assert_eq!(view, before, "{want:?} must not mutate through delta");
+            assert_eq!(view.project_snapshot(ctx), Err(want));
+            assert_eq!(view, before, "{want:?} must not mutate through snapshot");
+        }
+
+        // Control: the same exhausted view with a valid context does exhaust.
+        assert_eq!(view.project_delta(&valid), Err(InterestError::IdExhausted));
+        assert_eq!(view, before);
+        assert_eq!(
+            view.project_snapshot(&valid),
+            Err(InterestError::IdExhausted)
+        );
+        assert_eq!(view, before);
+    }
+
+    #[test]
     fn i15_worst_case_body_fits_the_encoded_bound() {
         let mut arena = GenerationalArena::new();
         let mut facts = Vec::new();
