@@ -91,6 +91,13 @@ requires an ADR.
   `decode_up`/`encode_body`/`decode_body`/`plan_transfer`.
 - `reassembly` (T024): `TransferAssembly`, `TransferLimits`,
   `ReassemblyPool` and cutover gate types.
+- `interest` (T027b): `MAX_PAGE_OPS`, `EntityKey` (`area` then full
+  `EntityId`), `InterestSet`, `FieldMask` (`presence`/`health`, default
+  denies), `EntityFact`, `TurnState`, `ViewerContext`, `ViewCursor`,
+  `StateProjection` (`ops`, `enters`, `cursor`), `SnapshotProjection`,
+  `InterestError` (`WrongEpoch`/`TooManyFacts`/`DuplicateFact`/
+  `IdExhausted`), and `InterestView` (`new`, `epoch`, `cursor`, `len`,
+  `is_empty`, `net_id`, `entity`, `project_delta`, `project_snapshot`).
 
 ## Module flow
 
@@ -417,6 +424,71 @@ Mechanism here, authenticated policy in `crpg-server`.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Added Resume and reconnect section.
 
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T025a2 · Recorded the as-built mechanisms behind the same section: `resume`'s fence window and explicit decision, `rebind_receiver`'s keep-the-floors steps, and cases 11–21 as the mechanism evidence (mechanism here, authenticated policy in `crpg-server`).
+
+## Interest projection (T027b)
+
+`interest` is the per-viewer state filter: one `InterestView` per session
+epoch, one viewer in exactly one area. The host supplies every value in a
+`ViewerContext` (epoch, authoritative tick, viewer area, per-row `FieldMask`
+grants and health values, despawn keys, the turn fact and its grant, and the
+two one-page resend flags). Net compares supplied areas only: a row is visible
+when `key.area == interest.area && fields.presence`; a foreign row is
+suppressed, never an error. No `World`, RNG, event, ownership, LOS or legality
+input is read, and no wire form is added — output is existing v1 `DeltaOp`
+values (wrapped in `Legacy` for v2 sessions) or one T024 `SnapshotBody`.
+
+Identity is `(area, full EntityId)`: two areas may mint equal `EntityId`s, so
+keying on the id alone would alias a viewer's old `NetId` onto a different
+entity after an area change.
+
+**Op ownership (D5).** Each op has exactly one producer:
+
+| Op | Owner |
+|---|---|
+| `EntityEnter`, `Health`, `Turn`, `EntityLeave`, `Despawned` | `InterestView` |
+| `Spawned`, `Died`, `ActionResolved`, `TurnStarted`, `EncounterEnded` | `project_events` |
+| `Receipt` | host |
+
+`Spawned`/`Died` keep their pinned journal position in history. `Despawned`
+belongs to the view so a removal is exactly one op (leave or notice, never
+both); a removed key listed in `context.despawned` emits `Despawned`, every
+other removed key emits `EntityLeave`.
+
+**Page layout (item 5).** `project_delta` returns, in order: one
+`EntityEnter` per entering key (`StateProjection::enters` is that count), then
+`Health` per visible key, then at most one `Turn`, then one removal op per
+removed key. Each section is ascending `NetId`; the whole page is at most
+`MAX_PAGE_OPS = 3 * MAX_VISIBLE_ENTITIES + 1`. History slots between
+`ops[..enters]` and `ops[enters..]`. The view never returns `Spawned`, `Died`
+or `Receipt`.
+
+**Retirement (items 4, 9).** Entering keys take `next_id` upward in ascending
+`EntityKey` order, once each; ids run `1..=u64::MAX - 1`. A removed key's
+mapping is gone when the call returns: `net_id` and `entity` report `None`, a
+re-entering key gets a new id, and no id is ever reissued in an epoch. Nothing
+is stored to represent a grave, so there is no table to bound: retired means
+below `next_id` and not live.
+
+**Snapshot, cutover and cursor (items 12–14).** `project_snapshot` is the only
+replacement primitive: live visible keys keep their ids, removed keys retire
+with no op, and the body carries one entity per visible key plus the rendered
+turn (`active` inside the body, or `None` when the actor is hidden). It records
+exactly what the body says, so the next delta emits only differences. Every
+successful snapshot and every non-empty delta page advances
+`ViewCursor { tick, revision }` by one saturating revision; an empty page
+leaves the cursor unchanged. `ViewCursor` is view state, never wire, and never
+`event_seq`.
+
+**Errors (item 1).** Checked before any mutation, in order: `WrongEpoch`,
+`TooManyFacts` (`facts` or `despawned` over `MAX_VISIBLE_ENTITIES`),
+`DuplicateFact` (any two rows with one key, visible or not), `IdExhausted`
+(fewer ids than entering keys). `Err` changes nothing; `IdExhausted` needs a
+new epoch and a fresh view.
+
+Mechanism here, authenticated grants and host composition in `crpg-server`
+(T027c).
+
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T027b · Added the `interest` public-surface entry and its section: D5 owner table, item 5 page layout, derived retirement, snapshot/cutover and cursor rules, and the error order.
 
 ## Agent log
 
