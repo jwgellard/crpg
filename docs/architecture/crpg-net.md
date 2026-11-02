@@ -98,6 +98,13 @@ requires an ADR.
   `InterestError` (`WrongEpoch`/`TooManyFacts`/`DuplicateFact`/
   `IdExhausted`), and `InterestView` (`new`, `epoch`, `cursor`, `len`,
   `is_empty`, `net_id`, `entity`, `project_delta`, `project_snapshot`).
+- `replica` (T046): `MAX_REPLICA_ENTITIES` (`2 * MAX_VISIBLE_ENTITIES`),
+  `ReplicaEntity` (`net_id`, `health`), closed `ReplicaError`
+  (`WrongLane`/`TooManyOps`/`EventSeq`/`UnknownEntity`/`DuplicateEntity`/
+  `ReusedEntityId`/`TooManyEntities`/`WrongEpoch`/`SnapshotOrder`/
+  `SnapshotCursor`), and `ReplicaWorld` (`new`, `epoch`, `entities`,
+  `entity`, `len`, `is_empty`, `turn`, `next_event_seq`, `server_tick`,
+  `apply_delta`, `apply_snapshot`). Not `Serialize`, no restore path.
 
 ## Module flow
 
@@ -489,6 +496,76 @@ Mechanism here, authenticated grants and host composition in `crpg-server`
 (T027c).
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T027b · Added the `interest` public-surface entry and its section: D5 owner table, item 5 page layout, derived retirement, snapshot/cutover and cursor rules, and the error order.
+
+## Client replica (T046)
+
+`replica` is the engine-neutral client copy of one filtered v2 session. It
+consumes whole decoded values only: `apply_delta(&protocol_v2::DeltaFrame)` and
+`apply_snapshot(&reassembly::Publication)`. Storage is one `Vec<ReplicaEntity>`
+strictly ascending by `NetId`, one optional `TurnFact`, and three `u64`s
+(`next_event_seq` from 1, `server_tick` from 0, `high_water` from 0). `None`
+health is unknown, never zero; `dead` lives only in `HealthFact`. There is no
+events, receipts, history or retired-id table, and no `Serialize`, `Default`
+or restore constructor.
+
+**Sequence law.** A frame is accepted only when `event_seq` equals
+`next_event_seq`; on `Ok`, `next_event_seq = event_seq + 1` and
+`server_tick = frame.server_tick`, including empty and notice-only frames. Gaps,
+duplicates, reorders, rewinds, `0`, a restart at 1 after progress, and values
+above `SEQ_LAST` are `EventSeq`; a backwards tick is not an error. There is no
+in-band reset: a host narrowing reset arrives as `RebindRequired` on a fenced
+connection, and the caller builds a new replica for the new session. After a
+publication at `SEQ_LAST`, `next_event_seq` is `u64::MAX` and nothing more is
+accepted.
+
+**Delta precedence.** Lane (`WrongLane`) → op count over `MAX_DELTA_OPS`
+(`TooManyOps`) → sequence (`EventSeq`) → ops in frame order, each checked
+against the working state left by the ops before it. A failure anywhere leaves
+the replica equal to its pre-call clone (validate and apply on a working copy,
+then commit).
+
+| Op | Checks | Effect |
+|---|---|---|
+| `EntityEnter { e }` | live → `DuplicateEntity`; `e ≤ high_water` → `ReusedEntityId`; `len == MAX_REPLICA_ENTITIES` → `TooManyEntities` | push `{ e, health: None }`; `high_water = e` |
+| `EntityLeave { e }` | not live → `UnknownEntity` | remove the row and its health |
+| `Despawned { e }` | not live → `UnknownEntity` | exactly as `EntityLeave` |
+| `Spawned { e }`, `Died { e }` | not live → `UnknownEntity` | none |
+| `Health { e, .. }` | not live → `UnknownEntity` | replace all three health fields |
+| `Turn { active, round }` | `Some(a)` not live → `UnknownEntity` | replace the whole turn fact |
+| `Receipt { epoch, .. }` | `epoch != replica epoch` → `WrongEpoch` | none |
+| `ActionResolved { actor, target, .. }` | actor not live, then target → `UnknownEntity` | none |
+| `TurnStarted { actor, .. }` | actor not live → `UnknownEntity` | none |
+| `EncounterEnded { .. }` | — | none |
+
+**High-water rule.** `high_water` is the largest `NetId` ever stored. A delta
+enter at or below it, and a snapshot row at or below it that is not live just
+before the snapshot, is `ReusedEntityId`. Delta enters are legal only in
+rising order, so an enter is a push. This enforces N3 without a grave table;
+it depends on T027b's rising, once-only id minting (K1).
+
+**Snapshot precedence and replacement.** Cursor below the last applied
+`event_seq` or above `SEQ_LAST` → `SnapshotCursor`; a body over
+`MAX_VISIBLE_ENTITIES` → `TooManyEntities`; a row not strictly above the
+previous row → `SnapshotOrder`; an id at or below `high_water` that is not
+live before the call → `ReusedEntityId`; a turn `active` outside the body →
+`UnknownEntity`. On `Ok` the rows become exactly the body's rows with health
+verbatim, the turn becomes exactly the body's turn, `next_event_seq` is
+`cursor + 1`, `server_tick` is `base_tick`, and `high_water` keeps the larger
+of itself and the body's last id (an empty body leaves it unchanged). A
+cursor equal to or ahead of the last applied sequence is legal.
+
+**Live bound (D8).** Live rows may reach `MAX_REPLICA_ENTITIES =
+2 * MAX_VISIBLE_ENTITIES` between frames or within one, because a T027b page
+puts all enters before all removals and may split at any op boundary. This is
+a client bound, not wire.
+
+**Errors.** Every `ReplicaError` variant is fatal (ADR-0033 code 53) with a
+small payload for `last_error`, and exact `Display` text
+(`<Variant> at replica: ...`). The replica stays usable after `Err`; fencing
+is the bridge's policy. The conformance `Replica` stays an independent test
+oracle and is not replaced by this type.
+
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T046 · Added the `replica` public-surface entry and section: the apply-only surface, op table, sequence law and no-reset rule, high-water reuse check, snapshot precedence, and the 2,048-row mid-page bound.
 
 ## Agent log
 
