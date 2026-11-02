@@ -12,7 +12,7 @@ use crpg_net::protocol_v2::{DeltaFrame, DeltaOp};
 use crpg_net::transport::Transport;
 
 use super::{
-    Client, Offered, PresentationRow, PresentationTable, SessionView, ViewEvent, ViewReceipt,
+    wide, Client, Offered, PresentationRow, PresentationTable, SessionView, ViewEvent, ViewReceipt,
     ViewValue,
 };
 use crate::core::errors::BridgeCode;
@@ -41,7 +41,7 @@ fn table() -> PresentationTable {
         PresentationRow {
             placement: Ulid::from_u128(14),
             name: "Hero".to_string(),
-            side: "Hero".to_string(),
+            side: "Player".to_string(),
         },
     );
     rows.insert(
@@ -49,7 +49,7 @@ fn table() -> PresentationTable {
         PresentationRow {
             placement: Ulid::from_u128(15),
             name: "Goblin".to_string(),
-            side: "Goblin".to_string(),
+            side: "Monster".to_string(),
         },
     );
     let mut abilities = std::collections::BTreeMap::new();
@@ -130,19 +130,37 @@ fn the_default_view_is_empty_revision_zero() {
     assert_eq!(view.receipts(), &[]);
 }
 
-/// K8 / B11: rows come from the replica; `health_known` is not `health > 0`.
+/// K8 / B11: rows come from the replica; the table columns are exact and a
+/// missing row yields empty strings; `health_known` is not `health > 0`.
 #[test]
 fn rows_follow_the_replica_and_known_health_is_independent_of_zero() {
     let link = LocalLink::new(128);
     let mut end = link.client_end();
     let mut client = client();
 
-    push(&link, encoded(1, vec![enter(1), enter(2)]));
+    // Entity 3 has no table row; it must not panic and must read as "".
+    push(&link, encoded(1, vec![enter(1), enter(2), enter(3)]));
     client.step(&mut end, &[], false).unwrap();
     let view = client.view();
-    assert_eq!(view.net_ids(), &[1, 2]);
-    assert_eq!(view.health_known(), &[0, 0]);
-    assert_eq!(view.health(), &[0, 0]);
+    assert_eq!(view.net_ids(), &[1, 2, 3]);
+    assert_eq!(
+        view.names(),
+        &["Hero".to_string(), "Goblin".to_string(), String::new()]
+    );
+    assert_eq!(
+        view.sides(),
+        &["Player".to_string(), "Monster".to_string(), String::new()]
+    );
+    assert_eq!(
+        view.placements(),
+        &[
+            Ulid::from_u128(14).to_string(),
+            Ulid::from_u128(15).to_string(),
+            String::new(),
+        ]
+    );
+    assert_eq!(view.health_known(), &[0, 0, 0]);
+    assert_eq!(view.health(), &[0, 0, 0]);
     for column in [
         view.names().len(),
         view.sides().len(),
@@ -152,26 +170,26 @@ fn rows_follow_the_replica_and_known_health_is_independent_of_zero() {
         view.health_known().len(),
         view.dead().len(),
     ] {
-        assert_eq!(column, 2);
+        assert_eq!(column, 3);
     }
     drop(view);
 
     push(&link, encoded(2, vec![health(1, 7, 9, false)]));
     client.step(&mut end, &[], false).unwrap();
     let view = client.view();
-    assert_eq!(view.health_known(), &[1, 0]);
-    assert_eq!(view.health(), &[7, 0]);
-    assert_eq!(view.max_health(), &[9, 0]);
-    assert_eq!(view.dead(), &[0, 0]);
+    assert_eq!(view.health_known(), &[1, 0, 0]);
+    assert_eq!(view.health(), &[7, 0, 0]);
+    assert_eq!(view.max_health(), &[9, 0, 0]);
+    assert_eq!(view.dead(), &[0, 0, 0]);
     drop(view);
 
     // Control: a known health of 0 is still known.
     push(&link, encoded(3, vec![health(1, 0, 9, true)]));
     client.step(&mut end, &[], false).unwrap();
     let view = client.view();
-    assert_eq!(view.health_known(), &[1, 0]);
-    assert_eq!(view.health(), &[0, 0]);
-    assert_eq!(view.dead(), &[1, 0]);
+    assert_eq!(view.health_known(), &[1, 0, 0]);
+    assert_eq!(view.health(), &[0, 0, 0]);
+    assert_eq!(view.dead(), &[1, 0, 0]);
     drop(view);
 
     // u32::MAX widens without truncation.
@@ -181,8 +199,9 @@ fn rows_follow_the_replica_and_known_health_is_independent_of_zero() {
     );
     client.step(&mut end, &[], false).unwrap();
     let view = client.view();
-    assert_eq!(view.health(), &[0, 4_294_967_295]);
-    assert_eq!(view.max_health(), &[9, 4_294_967_295]);
+    assert_eq!(view.health(), &[0, 4_294_967_295, 0]);
+    assert_eq!(view.max_health(), &[9, 4_294_967_295, 0]);
+    assert_eq!(view.health_known(), &[1, 1, 0]);
 }
 
 /// K9 / B6: one frame's events and receipts, in op order, with exact keys;
@@ -348,6 +367,27 @@ fn revision_bumps_at_most_once_and_keeps_the_rc_when_idle() {
     let third = client.view();
     client.step(&mut end, &[], false).unwrap();
     assert!(Rc::ptr_eq(&third, &client.view()));
+    let revision = third.revision();
+    drop(third);
+
+    // A frame that changes only the round still bumps by exactly one.
+    push(&link, encoded(3, vec![turn(None, 1)]));
+    client.step(&mut end, &[], false).unwrap();
+    assert_eq!(client.view().revision(), revision + 1);
+    assert_eq!(client.view().round(), 1);
+    assert_eq!(client.view().events(), &[]);
+    push(&link, encoded(4, vec![turn(None, 2)]));
+    client.step(&mut end, &[], false).unwrap();
+    assert_eq!(client.view().revision(), revision + 2);
+    assert_eq!(client.view().round(), 2);
+    assert_eq!(client.view().events(), &[]);
+
+    // A frame that changes only `dead` still bumps by exactly one.
+    push(&link, encoded(5, vec![health(1, 4, 10, true)]));
+    client.step(&mut end, &[], false).unwrap();
+    assert_eq!(client.view().revision(), revision + 3);
+    assert_eq!(client.view().dead(), &[1]);
+    assert_eq!(client.view().events(), &[]);
 }
 
 /// K11 / B12: an active id that left the rows becomes 0; round is kept.
@@ -537,6 +577,65 @@ fn submit_checks_in_order_and_only_the_success_sends() {
     );
     assert_eq!(client.pending, None);
     assert_eq!(full.queued().0, 1);
+}
+
+/// B6 / D8: an ability missing from the table displays its ULID text, and
+/// `wide` saturates above `i64::MAX` instead of wrapping.
+#[test]
+fn missing_ability_uses_ulid_text_and_wide_saturates() {
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = client();
+    let ability_id = other_ability().to_string();
+
+    push(
+        &link,
+        encoded(
+            1,
+            vec![
+                enter(1),
+                enter(2),
+                DeltaOp::ActionResolved {
+                    actor: id(1),
+                    target: id(2),
+                    ability: other_ability(),
+                    outcome: "success".to_string(),
+                    damage: 3,
+                },
+            ],
+        ),
+    );
+    client.step(&mut end, &[], false).unwrap();
+    let view = client.view();
+    assert_eq!(
+        view.events(),
+        &[ViewEvent::ActionResolved {
+            actor: 1,
+            target: 2,
+            ability: ability_id.clone(),
+            ability_id: ability_id.clone(),
+            outcome: "success".to_string(),
+            damage: 3,
+        }]
+    );
+    assert_eq!(
+        view.events()[0].entries(),
+        vec![
+            ("kind", ViewValue::Text("action_resolved")),
+            ("actor", ViewValue::Int(1)),
+            ("target", ViewValue::Int(2)),
+            ("ability", ViewValue::Text(&ability_id)),
+            ("ability_id", ViewValue::Text(&ability_id)),
+            ("outcome", ViewValue::Text("success")),
+            ("damage", ViewValue::Int(3)),
+        ]
+    );
+    drop(view);
+
+    assert_eq!(wide(0), 0);
+    assert_eq!(wide(i64::MAX as u64), i64::MAX);
+    assert_eq!(wide((i64::MAX as u64) + 1), i64::MAX);
+    assert_eq!(wide(u64::MAX), i64::MAX);
 }
 
 /// B6: `Died` is a notice, not a health fact; `encounter_ended` latches.

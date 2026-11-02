@@ -28,6 +28,31 @@ fn a_full_direction_refuses_and_stays_fifo() {
     assert_eq!(control.queued(), (3, 0));
 }
 
+/// K3 / B5: the down direction is bounded too. The authority end refuses a
+/// third send at cap 2, the queue is unchanged, and the client reads FIFO.
+#[test]
+fn the_down_direction_refuses_at_the_cap_and_stays_fifo() {
+    let link = LocalLink::new(2);
+    let mut authority = link.authority_end();
+    assert_eq!(authority.send(b"a"), Ok(()));
+    assert_eq!(authority.send(b"b"), Ok(()));
+    assert_eq!(link.queued(), (0, 2));
+    assert_eq!(authority.send(b"c"), Err(LinkFull));
+    assert_eq!(link.queued(), (0, 2), "a refused send changes nothing");
+
+    let mut client = link.client_end();
+    assert_eq!(client.recv(), Some(b"a".to_vec()));
+    assert_eq!(client.recv(), Some(b"b".to_vec()));
+    assert_eq!(client.recv(), None);
+
+    let control = LocalLink::new(3);
+    let mut control_authority = control.authority_end();
+    assert_eq!(control_authority.send(b"a"), Ok(()));
+    assert_eq!(control_authority.send(b"b"), Ok(()));
+    assert_eq!(control_authority.send(b"c"), Ok(()));
+    assert_eq!(control.queued(), (0, 3));
+}
+
 /// K3 / B5: the two directions are independent FIFOs.
 #[test]
 fn each_direction_has_its_own_queue() {
