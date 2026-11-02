@@ -147,6 +147,31 @@ jobs:
           fi
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.rust == 'true'
+      # T047c (ADR-0033 C4, BR-21): the default-feature graph -- every member,
+      # edge kind and target -- holds no godot-family package. The second
+      # query is the control: with the engine feature it must find godot, or
+      # the first proves nothing. Both only resolve the graph; nothing builds.
+      - name: BR-21 (no godot package in the default-feature graph)
+        if: steps.scope.outputs.rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          family='^(godot(-[a-z]+)?|gdextension-api) v'
+          graph() {
+            cargo tree --workspace --locked -e normal,build,dev --target all \
+              --prefix none --format '{p}' "$@"
+          }
+          default_graph="$(graph)"
+          if grep -E "$family" <<<"$default_graph"; then
+            echo "BR-21 failed: the default-feature graph holds the godot packages above"
+            exit 1
+          fi
+          engine_graph="$(graph --features crpg-godot/engine)"
+          if ! grep -qE '^godot v0\.5\.5([^0-9.]|$)' <<<"$engine_graph"; then
+            echo "BR-21 control failed: --features crpg-godot/engine does not resolve godot v0.5.5"
+            exit 1
+          fi
+          echo "BR-21 passed: no godot package by default; the engine control resolves godot v0.5.5"
       - run: cargo fmt --all -- --check
         if: steps.scope.outputs.rust == 'true'
       # `--locked` on both: Cargo.lock is committed, and without this cargo is
@@ -158,6 +183,178 @@ jobs:
         if: steps.scope.outputs.rust == 'true'
       - run: cargo test --workspace --locked
         if: steps.scope.outputs.rust == 'true'
+
+  # T047c (ADR-0033 §15 C1-C3): the Windows client build. Windows only
+  # (ADR-0012; ADR-0033 platform scope): no Linux job compiles the engine.
+  # The job always runs and reports, so the ruleset can require it (C7). Its
+  # scope step is a byte-identical copy of the one in `check`; keep them equal.
+  # Godot comes from one exact release asset, checked before it is unpacked.
+  client:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Classify the change (documentation-only pull requests skip the client gates)
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "${{ github.event_name }}: every gate runs"
+            exit 0
+          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE_SHA" --depth=1 || true
+          MERGE_BASE="$(git merge-base HEAD "$BASE_SHA")"
+          CHANGED="$(git diff --name-only --no-renames "$MERGE_BASE...HEAD")"
+          CODE="$(printf '%s\n' "$CHANGED" | grep -vE '^(docs|tasks)/|^[^/]+\.md$|^crates/[^/]+/AGENTS\.md$' || true)"
+          if [ -n "$CODE" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "every gate runs; first paths outside the documentation allowlist:"
+            printf '%s\n' "$CODE" | head -20
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            echo "documentation-only change: fmt, clippy and test skipped. Changed paths:"
+            printf '%s\n' "$CHANGED" | head -40
+          fi
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.rust == 'true'
+      - run: cargo clippy -p crpg-godot --features engine --all-targets --locked -- -D warnings
+        if: steps.scope.outputs.rust == 'true'
+      - run: cargo build -p crpg-godot --features engine --locked
+        if: steps.scope.outputs.rust == 'true'
+      - name: Licence notice names exactly the resolved godot packages
+        if: steps.scope.outputs.rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          notice=apps/client/THIRD_PARTY_NOTICES
+          family='^(godot(-[a-z]+)?|gdextension-api) v'
+          resolved="$(cargo tree -p crpg-godot --features engine --locked -e normal,build \
+            --target x86_64-pc-windows-msvc --prefix none --format '{p}' \
+            | tr -d '\r' | sed -E 's/ \([^)]*\)$//' | { grep -E "$family" || true; } | sort -u)"
+          listed="$(tr -d '\r' < "$notice" | sed -n 's/^  //p' | { grep -E "$family" || true; } | sort -u)"
+          if [ "$resolved" != "$listed" ] || [ "$(grep -c . <<<"$resolved")" -ne 8 ]; then
+            echo "notice check failed: resolved packages and $notice differ, or are not eight"
+            diff <(printf '%s\n' "$resolved") <(printf '%s\n' "$listed") || true
+            exit 1
+          fi
+          echo "notice check passed:"
+          printf '%s\n' "$resolved"
+      - name: Fetch Godot 4.7.2 and check its digests
+        if: steps.scope.outputs.rust == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $url = 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip'
+          # SHA-256: ADR-0033 C2 (equals GitHub's asset digest). SHA-512: upstream SHA512-SUMS.txt.
+          $pins = [ordered]@{
+            SHA256 = '731980f9608d61333e5baf54a2ef17210acc7a538446c0cb9969f002aca1e953'
+            SHA512 = '83decd58fdf67b9d657958a1ae6bf1929c20785315a81effe245874cdc57acb709bf868e00778a96984338c1b29dafdb453c6847747694621c6ecf5da2259993'
+          }
+          $zip = Join-Path $env:RUNNER_TEMP 'Godot_v4.7.2-stable_win64.exe.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'godot-4.7.2'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          foreach ($alg in $pins.Keys) {
+            $got = (Get-FileHash -Algorithm $alg -LiteralPath $zip).Hash.ToLowerInvariant()
+            if ($got -ne $pins[$alg]) { throw "Godot zip $alg $got is not the pinned $($pins[$alg])" }
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+          # The console wrapper finds its engine by name: never rename either exe.
+          $exe = Join-Path $dir 'Godot_v4.7.2-stable_win64_console.exe'
+          $out = & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "godot --version exited $LASTEXITCODE" }
+          $version = "$($out | Select-Object -First 1)".Trim()
+          if ($version -ne '4.7.2.stable.official.ed1daf0bf') { throw "unexpected Godot version '$version'" }
+          "GODOT=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Output "Godot $version at $exe"
+      - name: Seed the extension list (Godot 4.7.2 first-scan crash)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path apps/client/.godot | Out-Null
+          $file = Join-Path (Get-Location) 'apps/client/.godot/extension_list.cfg'
+          [System.IO.File]::WriteAllText($file, "res://crpg.gdextension`n", [System.Text.Encoding]::ASCII)
+          exit 0
+      - name: Import the client project
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client --import
+          if ($LASTEXITCODE -ne 0) { throw "Import the client project exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: E1 load proof
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/load.gd
+          if ($LASTEXITCODE -ne 0) { throw "E1 load proof exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: E1 control (missing campaign)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          CRPG_CAMPAIGN: ${{ runner.temp }}\no-such-campaign
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/load.gd
+          if ($LASTEXITCODE -ne 3) { throw "E1 control (missing campaign) exited $LASTEXITCODE, expected 3" }
+          exit 0
+      - name: BR-22 smoke
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/smoke.gd
+          if ($LASTEXITCODE -ne 0) { throw "BR-22 smoke exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: BR-22 control (missing campaign)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          CRPG_CAMPAIGN: ${{ runner.temp }}\no-such-campaign
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/smoke.gd
+          if ($LASTEXITCODE -ne 3) { throw "BR-22 control (missing campaign) exited $LASTEXITCODE, expected 3" }
+          exit 0
+      - name: Stage the client slice
+        if: steps.scope.outputs.rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage=_slice
+          rm -rf "$stage"
+          mkdir -p "$stage/target/debug"
+          cp target/debug/crpg_godot.dll "$stage/target/debug/"
+          git ls-files -z -- apps/client campaigns/fixtures/combat_basic LICENSE-MIT LICENSE-APACHE \
+            | { grep -zv '/\.[^/]*$' || true; } | xargs -0 cp --parents -t "$stage"
+          for f in target/debug/crpg_godot.dll apps/client/project.godot apps/client/crpg.gdextension \
+                   apps/client/THIRD_PARTY_NOTICES apps/client/scenes/Main.tscn apps/client/tests/smoke.gd \
+                   campaigns/fixtures/combat_basic/campaign.json LICENSE-MIT LICENSE-APACHE; do
+            test -f "$stage/$f" || { echo "artifact: $f is missing"; exit 1; }
+          done
+          if find "$stage" -name '.*' | grep .; then echo "artifact: hidden paths above"; exit 1; fi
+          find "$stage" -type f | sort
+      - uses: actions/upload-artifact@v7
+        if: steps.scope.outputs.rust == 'true'
+        with:
+          name: crpg-client-slice-windows-x86_64
+          path: _slice/
+          if-no-files-found: error
+          retention-days: 14
 
   deny:
     runs-on: ubuntu-latest

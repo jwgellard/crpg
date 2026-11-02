@@ -53,6 +53,24 @@ fn queue_fields(stats: ConnectionStats) -> (usize, usize, usize, usize, bool) {
     )
 }
 
+/// Guard: the queue fields of a quiescent outbound queue.
+///
+/// The writer hands queued frames to QUIC on its own thread, so a frame that
+/// an earlier step accepted can leave the queue between a plain snapshot and
+/// the check that follows it. Waiting (bounded, `until`'s 30 s guard) for the
+/// outbound queue to empty first makes the snapshot quiescent, so the check
+/// after a rejected send pins "the call enqueued nothing" rather than
+/// "nothing drained" (T098e).
+fn drained_queue_fields(
+    mut stats: impl FnMut() -> ConnectionStats,
+) -> (usize, usize, usize, usize, bool) {
+    until("outbound queue drain", || {
+        let now = stats();
+        now.outbound_frames == 0 && now.outbound_bytes == 0
+    });
+    queue_fields(stats())
+}
+
 fn connect_framed_async(
     config: crpg_net_quic::ClientConfig,
     server: std::net::SocketAddr,
@@ -1052,8 +1070,8 @@ fn v2_send_precedence_and_caps() {
     );
     let (p2, _, _) = next_hello_any(&mut server);
     let big = vec![0u8; 65_537];
-    let p1_stats = queue_fields(server.stats(p1).expect("stats p1"));
-    let p2_stats = queue_fields(server.stats(p2).expect("stats p2"));
+    let p1_stats = drained_queue_fields(|| server.stats(p1).expect("stats p1"));
+    let p2_stats = drained_queue_fields(|| server.stats(p2).expect("stats p2"));
     for (channel, frame) in [
         (Channel::Transfer, b"x".as_slice()),
         (Channel::Resume, b"".as_slice()),
@@ -1087,8 +1105,8 @@ fn v2_send_precedence_and_caps() {
         .close(c2, CloseCode::Normal, CloseMode::Discard)
         .expect("close c2");
     let closed_reason = CloseReason::Local(CloseCode::Normal);
-    let c1_stats = queue_fields(server.stats(c1).expect("stats c1"));
-    let c2_stats = queue_fields(server.stats(c2).expect("stats c2"));
+    let c1_stats = drained_queue_fields(|| server.stats(c1).expect("stats c1"));
+    let c2_stats = drained_queue_fields(|| server.stats(c2).expect("stats c2"));
     for (channel, frame) in [
         (Channel::Transfer, b"x".as_slice()),
         (Channel::Resume, b"x".as_slice()),
@@ -1112,7 +1130,7 @@ fn v2_send_precedence_and_caps() {
 
     // Channel before size, on an accepted `/1` connection.
     let (mut c3_client, c3) = connect_framed_accepted(&mut server, limits, 1, Framing::V1);
-    let c3_before = queue_fields(server.stats(c3).expect("stats"));
+    let c3_before = drained_queue_fields(|| server.stats(c3).expect("stats"));
     let big = vec![0u8; 65_537];
     for channel in [Channel::Transfer, Channel::Resume] {
         for frame in [b"".as_slice(), big.as_slice()] {
@@ -1131,7 +1149,7 @@ fn v2_send_precedence_and_caps() {
 
     // Size on `/2`.
     let (mut c4_client, c4) = connect_framed_accepted(&mut server, limits, 1, Framing::V2);
-    let empty_before = queue_fields(server.stats(c4).expect("stats"));
+    let empty_before = drained_queue_fields(|| server.stats(c4).expect("stats"));
     for channel in [Channel::Lane0, Channel::Transfer, Channel::Resume] {
         assert_eq!(
             server.try_send_channel(c4, channel, b""),
@@ -1142,7 +1160,7 @@ fn v2_send_precedence_and_caps() {
     let max = vec![0u8; 65_536];
     let too_big = vec![0u8; 65_537];
     for channel in [Channel::Lane0, Channel::Transfer, Channel::Resume] {
-        let before = queue_fields(server.stats(c4).expect("stats"));
+        let before = drained_queue_fields(|| server.stats(c4).expect("stats"));
         assert_eq!(
             server.try_send_channel(c4, channel, &too_big),
             Err(ChannelSendError::Send(SendError::FrameTooLarge))
@@ -1159,7 +1177,7 @@ fn v2_send_precedence_and_caps() {
     // Client, open.
     let (mut client_v2, _) = connect_framed_accepted(&mut server, limits, 1, Framing::V2);
     for channel in [Channel::Lane0, Channel::Transfer] {
-        let before = queue_fields(client_v2.stats());
+        let before = drained_queue_fields(|| client_v2.stats());
         assert_eq!(
             client_v2.try_send_channel(channel, b""),
             Err(ChannelSendError::Send(SendError::EmptyFrame))
@@ -1175,7 +1193,7 @@ fn v2_send_precedence_and_caps() {
             .try_send_channel(channel, &vec![0u8; 4_096])
             .expect("max");
     }
-    let before = queue_fields(client_v2.stats());
+    let before = drained_queue_fields(|| client_v2.stats());
     let resume_too_big = vec![0u8; 4_097];
     for frame in [b"".as_slice(), resume_too_big.as_slice()] {
         assert_eq!(
@@ -1185,7 +1203,7 @@ fn v2_send_precedence_and_caps() {
         assert_eq!(queue_fields(client_v2.stats()), before);
     }
     let (mut client_v1, _) = connect_framed_accepted(&mut server, limits, 1, Framing::V1);
-    let before = queue_fields(client_v1.stats());
+    let before = drained_queue_fields(|| client_v1.stats());
     assert_eq!(
         client_v1.try_send_channel(Channel::Transfer, &vec![0u8; 4_097]),
         Err(ChannelSendError::ChannelUnavailable)
@@ -1212,14 +1230,14 @@ fn v2_send_precedence_and_caps() {
         } else {
             Channel::Resume
         };
-        let before = queue_fields(closed_v2.stats());
+        let before = drained_queue_fields(|| closed_v2.stats());
         assert_eq!(
             closed_v2.try_send_channel(channel, frame),
             Err(ChannelSendError::Send(SendError::Closed(peer_zero)))
         );
         assert_eq!(queue_fields(closed_v2.stats()), before);
     }
-    let before = queue_fields(closed_v1.stats());
+    let before = drained_queue_fields(|| closed_v1.stats());
     assert_eq!(
         closed_v1.try_send_channel(Channel::Transfer, b"x"),
         Err(ChannelSendError::Send(SendError::Closed(peer_zero)))
