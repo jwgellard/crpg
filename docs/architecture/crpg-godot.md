@@ -162,6 +162,46 @@ is why the crate root keeps `#![allow(unsafe_code)]`; `core/mod.rs` begins with
 `lib.rs` and `shell.rs` (comments stripped): exactly one, on that impl, under a
 `SAFETY:` comment block. Any other `unsafe` needs an ADR-0033 amendment.
 
+## Client (T047d)
+
+`apps/client` is the terminal-free slice: `Godot4 --path apps/client` opens
+`scenes/Main.tscn`, whose root `Main.gd` owns one `CrpgSession` and drives the
+whole view. All of it is presentation; the options and ids come from the
+bridge, and the scene decides no rule (ADR-0033 §14).
+
+- **`scripts/Main.gd`** (`Node3D`) exposes `session`, `seen`, `view`, and
+  `choose(i)` → `session.submit_option(seen, i)`. `_ready` instantiates
+  `CrpgSession` and calls `open` (fixture, default side, seed 1); `_process`
+  makes exactly one `poll()` and, when the revision changes, updates `seen` and
+  calls `Proxies.sync(view)` and `Hud.sync(view)`. A 30 (intent refused) is a
+  notice shown in the log and processing continues; any other non-zero code
+  sets `stop_code`, shows `last_error()` and stops polling, since only `close`
+  leaves a fence. `_exit_tree` calls `close()`. `open_code`/`stop_code` are
+  read by the smoke test so a failed open is not mistaken for a slow turn.
+- **`scripts/SceneSync.gd`** spawns once from the first non-empty view (there
+  is no despawn; that is T048). One `Node3D` named `proxy_<id>` per row holds a
+  `MeshInstance3D` and a billboarded `Label3D` name. The first side seen is a
+  capsule and every other side a box; the position is
+  `x = 3 × side index`, `z = 1.5 × index within that side`, `y = 0`, where
+  the side index is the order of first appearance. `proxy_count()` counts the
+  `proxy_` children. The wire has no position, so this layout is client-only.
+- **`scripts/CombatHud.gd`** (`CanvasLayer`) builds its panel in `_ready`:
+  `Round <round + 1>`, `Active: <name>`, one health line per row (`?` when
+  `health_known` is 0, `(dead)` from the `dead` column), one button per option
+  that calls `choose(index)`, an event log built from each view's `events()`
+  (once per revision), a status line for errors/notices, and an end label that
+  appears when `ended()`. `show_error` also receives a failed open.
+- **`tests/smoke.gd`** (E2) is a `SceneTree` script that instantiates
+  `Main.tscn` under the root under the same `--import`/`-s` rule as E1. It
+  chooses option 0 whenever options exist for a revision it has not chosen,
+  retries 4/5, exits 3 on another failure (including a failed open), 2 when the
+  class is missing, 4 after 120 s, and 0 only when `ended()` and
+  `$Proxies.proxy_count() == net_ids().size() == 2`; a mismatch is 5. The
+  goblin's initiative means the first polls have no player options, so the
+  script waits rather than treating that as a failure.
+- **No input.** Camera control and picking are T050 and deliberately absent;
+  T048 owns respawn/despawn and T049 positions.
+
 ## Decisions and traps
 
 Governed by ADR-0033 and ADR-0012. The core holds no float,
@@ -200,3 +240,4 @@ Agent log:
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-1 · Opened the crate document for the first real code: the Godot-free errors, link and client modules, their flow and view contract, with the authority and shell parts marked as later T047 packages.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-2 · Completed the core document with the authority half, `BridgeCore`, the campaign walk, the NPC driver, the exact open/poll flow, the fence and panic policy, and the traps found while implementing them; the shell remains T047b.
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047b · Documented the gdext shell, pins, build, the load proof and the one `unsafe` impl, plus the environment traps found while building it.
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047d · Added the Client section: the four GDScript files' contracts, the client-only proxy layout, the HUD text rules and E2's exit codes, so T048/T050 extend a stated baseline rather than re-deriving one.
