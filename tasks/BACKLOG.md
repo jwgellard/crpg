@@ -242,7 +242,8 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T047a | implemented in session 31 batch (DeepSeek V4.1 Flash impl 1st attempt; Muse two-keys tests, 1 fix round; Claude review, 10/10 mutants killed after fix) | — | `crpg-server` `Host::legal_intents` and `Host::replica_id`; before T047 |
 | T047 | PR #78 open (session 32): T047-1, T047-2, T047b, T047d, T047c; waits on user S-set + H-unsafe review | — | `crpg-godot` bridge skeleton (ADR-0033) |
 | T047c | in PR #78; verify passed; Claude S-set review ready-for-pr (session 33); T047c-fix1 seeds `.godot/extension_list.cfg` (Godot 4.7.2 first-scan crash, user-approved); W14/W15 green (run 41465522306) | — | the client CI job; must land in T047's batch |
-| T098e | ready (follow-up) | — | `crpg-net-quic` `v2_send_precedence_and_caps` failed on Ubuntu `check` twice in PR #78 (`tests/channel.rs:1173`/`1185`: queue fields `(0,0,0,0,false)` vs `(0,0,1,4096,false)`), passed on rerun; the crate is untouched, so likely contention from the larger workspace test run (cf. T098c). Measure, then make the assertion timing-independent |
+| T098e | in PR #78 | — | test-side fix in `crates/crpg-net-quic/tests/channel.rs` (`1e6a40f`, `51b4400`): each `before` snapshot in `v2_send_precedence_and_caps` waits for an empty outbound queue (`drained_queue_fields` via the file's `until` guard); before 11/20 alone and 6/8 at 8× contention, after 20/20 alone and 16/16 at 8× |
+| T048 | contract awaiting H | — | `tasks/T048.md` (`5d0eabc`, on PR #78), adjudicated by the Claude architect (Opus 5.5) from `tasks/T048-facts.md` (Beam) and blind drafts `tasks/T048-draft-a.md` (DeepSeek V4.1 Flash) / `tasks/T048-draft-b.md` (Muse Spark): GDScript reconcile in `apps/client/scripts/SceneSync.gd`, no FFI or S-set change, 15 tests, one non-blocking open question (dead-combatant look; recommended: greyed in place) |
 | T047e | ready (follow-up) | — | drop the `client` job's extension-list seed step once Godot fixes the first-scan GDExtension shutdown crash; re-test a fresh `--import` without it on each Godot upgrade |
 
 ## ADR-0029 follow-on contracts
@@ -563,3 +564,4 @@ Record it here, one line per week.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 32 bookkeeping · Updated the T047 and T047c rows to the session 32 batch state.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 32 final bookkeeping · Moved the T047 and T047c rows to PR #78.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 33 bookkeeping · Updated the T047c row to its reviewed, CI-green state and added T098e (QUIC test under contention) and T047e (remove the Godot seed step) follow-ups.
+- 2026-11-02 (UTC) · opencode-go/muse-spark-1.3-contributor + S34-bookkeeping · Moved T098e to in-PR #78 with its test-side fix and measurements and indexed the T048 contract row awaiting H; no other row changed.
