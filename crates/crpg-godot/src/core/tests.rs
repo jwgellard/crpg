@@ -19,6 +19,7 @@ use super::authority::{collect_campaign, first_encounter, Presentation, RealFs, 
 use super::{BridgeCore, Live, Probe, State};
 use crate::core::errors::BridgeCode;
 use crate::core::link::{LocalLink, LINK_FRAMES};
+use crate::core::{ViewEvent, ViewValue};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -224,6 +225,7 @@ fn open_failure_codes_and_precedence_leave_no_session() {
     assert_eq!(core.open(dir, "", "", 1), BridgeCode::AlreadyOpen);
     // Argument checks precede the state check.
     assert_eq!(core.open(dir, "", "", -1), BridgeCode::BadArgument);
+    assert_eq!(core.open(dir, "xyz", "", 1), BridgeCode::BadArgument);
     // The state check precedes the walk.
     assert_eq!(core.open("missing", "", "", 1), BridgeCode::AlreadyOpen);
     assert!(live(&core).is_some());
@@ -235,6 +237,8 @@ fn open_failure_codes_and_precedence_leave_no_session() {
     assert_eq!(fenced.poll(0), BridgeCode::Ok);
     link.authority_end().send(&[0xff]).expect("room");
     assert_eq!(fenced.poll(1), BridgeCode::FrameUndecodable);
+    // A bad encounter id still loses to the argument check, not the fence.
+    assert_eq!(fenced.open(dir, "xyz", "", 1), BridgeCode::BadArgument);
     assert_eq!(fenced.open("missing", "", "", 1), BridgeCode::AlreadyOpen);
     assert!(live(&fenced).is_none());
 
@@ -266,6 +270,29 @@ fn npc_fires_once_at_the_delay_and_never_twice_in_a_poll() {
     assert_eq!(live(&core).expect("open").authority.host().executions(), 1);
     assert_eq!(core.poll(620), BridgeCode::Ok);
     assert_eq!(live(&core).expect("open").authority.host().executions(), 2);
+    {
+        let host = live(&core).expect("open").authority.host();
+        assert_eq!(host.capture_acknowledged(), host.last_capture());
+        assert!(host.last_capture() > 0, "the NPC's action was captured");
+    }
+    assert!(
+        core.view().events().iter().any(|event| matches!(
+            event,
+            ViewEvent::ActionResolved {
+                actor: 1,
+                target: 2,
+                ..
+            }
+        )),
+        "the NPC's own result arrived before its next delay"
+    );
+    let npc_submitted = live(&core).expect("open").authority.npc_submitted();
+    assert_eq!(core.poll(621), BridgeCode::Ok);
+    assert_eq!(
+        live(&core).expect("open").authority.npc_submitted(),
+        npc_submitted,
+        "no second NPC ingest before the delay is re-armed"
+    );
 
     let mut submitted = live(&core).expect("open").authority.npc_submitted();
     for step in 1..=40u64 {
@@ -631,6 +658,14 @@ fn submit_precedence_and_a_successful_send() {
     assert_eq!(link.queued().0, 1);
     assert_eq!(core.submit_option(revision, 0), BridgeCode::IntentPending);
     assert_eq!(link.queued().0, 1);
+    // With an intent pending, the earlier checks still win and send nothing.
+    assert_eq!(
+        core.submit_option(revision + 1, 0),
+        BridgeCode::StaleOptions
+    );
+    assert_eq!(link.queued().0, 1);
+    assert_eq!(core.submit_option(revision, 99), BridgeCode::NoSuchOption);
+    assert_eq!(link.queued().0, 1);
 }
 
 /// K22b / B14: each neighbouring pair, in both directions.
@@ -795,20 +830,29 @@ fn corrupt_frame_fences_and_close_resets() {
     assert_eq!(core.poll(10), BridgeCode::FrameUndecodable);
     assert!(is_fenced(&core, BridgeCode::FrameUndecodable));
     assert_eq!(core.view().revision(), revision);
+    let fatal = core.last_error().to_string();
+    assert!(fatal.starts_with("FRAME_UNDECODABLE"));
     assert_eq!(core.poll(20), BridgeCode::FrameUndecodable);
     assert_eq!(
         core.submit_option(revision, 0),
         BridgeCode::FrameUndecodable
     );
+    assert_eq!(
+        core.last_error(),
+        fatal,
+        "a repeated fatal keeps the first text"
+    );
 
     core.close();
     assert_eq!(core.view().revision(), 0);
+    assert_eq!(core.last_error(), fatal, "close keeps the last error");
     assert_eq!(core.poll(30), BridgeCode::NotOpen);
     let dir = fixture_root();
     assert_eq!(
         core.open(dir.to_str().expect("path"), "", "", 1),
         BridgeCode::Ok
     );
+    assert_eq!(core.last_error(), "", "a successful open clears it");
 }
 
 /// K27 / B16: a regressing clock is a fatal host fault.
@@ -840,6 +884,20 @@ fn argument_checks_run_before_the_session() {
     assert_eq!(core.submit_option(-1, 0), BridgeCode::BadArgument);
     assert_eq!(core.submit_option(0, -1), BridgeCode::BadArgument);
     assert_eq!(link.queued().0, 0);
+
+    // Meaningful queue check: after a good submit, a bad argument sends
+    // nothing, so the up queue stays at one frame rather than growing.
+    let mut queued = BridgeCore::new();
+    let queued_link = open_and_poll_side(&mut queued, "Goblin");
+    let queued_revision = queued.view().revision();
+    assert_eq!(queued.submit_option(queued_revision, 0), BridgeCode::Ok);
+    assert_eq!(queued_link.queued().0, 1);
+    assert_eq!(queued.submit_option(-1, 0), BridgeCode::BadArgument);
+    assert_eq!(
+        queued.submit_option(queued_revision, -1),
+        BridgeCode::BadArgument
+    );
+    assert_eq!(queued_link.queued().0, 1);
 
     let mut probed = BridgeCore::new();
     probed.probe = Some(Probe::Open);
@@ -978,4 +1036,261 @@ fn an_absent_ruleset_is_campaign_invalid() {
         BridgeCode::CampaignInvalid
     );
     assert!(live(&core).is_none());
+}
+
+/// B6, B13, D7, D8: the fixture's strike resolved through the core, with every
+/// disclosed field exact, and a fight played to `Died` and `EncounterEnded`.
+#[test]
+fn fixture_strike_discloses_every_event_field() {
+    let mut core = BridgeCore::new();
+    let _link = open_and_poll_side(&mut core, "Goblin");
+    assert_eq!(core.view().revision(), 1);
+    assert_eq!(
+        core.view().option_labels(),
+        &["Strike -> Hero".to_string(), "End turn".to_string()]
+    );
+    assert_eq!(core.view().option_targets(), &[1, 0]);
+
+    // The goblin (player) strikes the hero: a failure for no damage, then the
+    // hero's turn. The ability label comes from the locale table, not the key.
+    assert_eq!(core.submit_option(1, 0), BridgeCode::Ok);
+    assert_eq!(core.poll(10), BridgeCode::Ok);
+    let view = core.view();
+    assert_eq!(view.revision(), 2);
+    assert_eq!(
+        view.events()[0].entries(),
+        vec![
+            ("kind", ViewValue::Text("action_resolved")),
+            ("actor", ViewValue::Int(2)),
+            ("target", ViewValue::Int(1)),
+            ("ability", ViewValue::Text("Strike")),
+            ("ability_id", ViewValue::Text("0000000000000000000000000K")),
+            ("outcome", ViewValue::Text("failure")),
+            ("damage", ViewValue::Int(0)),
+        ]
+    );
+    assert_eq!(
+        view.events(),
+        &[
+            ViewEvent::ActionResolved {
+                actor: 2,
+                target: 1,
+                ability: "Strike".to_string(),
+                ability_id: "0000000000000000000000000K".to_string(),
+                outcome: "failure".to_string(),
+                damage: 0,
+            },
+            ViewEvent::TurnStarted { actor: 1, round: 0 },
+        ]
+    );
+    assert_eq!(
+        view.receipts(),
+        &[crate::core::ViewReceipt {
+            seq: 1,
+            applied: true,
+            code: 0,
+        }]
+    );
+    assert_eq!(view.health(), &[10, 6]);
+    assert_eq!(view.dead(), &[0, 0]);
+    drop(view);
+
+    // The NPC hero strikes back after the 600 ms delay.
+    assert_eq!(core.poll(1010), BridgeCode::Ok);
+    assert_eq!(core.view().revision(), 2, "an idle poll does not bump");
+    assert_eq!(core.poll(2010), BridgeCode::Ok);
+    assert_eq!(
+        core.view().events(),
+        &[
+            ViewEvent::ActionResolved {
+                actor: 1,
+                target: 2,
+                ability: "Strike".to_string(),
+                ability_id: "0000000000000000000000000K".to_string(),
+                outcome: "success".to_string(),
+                damage: 2,
+            },
+            ViewEvent::TurnStarted { actor: 2, round: 1 },
+        ]
+    );
+    assert_eq!(core.view().health(), &[10, 4]);
+
+    // Round 1: a miss, then the NPC hits again.
+    assert_eq!(
+        core.submit_option(core.view().revision(), 0),
+        BridgeCode::Ok
+    );
+    assert_eq!(core.poll(3010), BridgeCode::Ok);
+    assert_eq!(
+        core.view().events(),
+        &[
+            ViewEvent::ActionResolved {
+                actor: 2,
+                target: 1,
+                ability: "Strike".to_string(),
+                ability_id: "0000000000000000000000000K".to_string(),
+                outcome: "failure".to_string(),
+                damage: 0,
+            },
+            ViewEvent::TurnStarted { actor: 1, round: 1 },
+        ]
+    );
+    assert_eq!(
+        core.view().receipts(),
+        &[crate::core::ViewReceipt {
+            seq: 2,
+            applied: true,
+            code: 0,
+        }]
+    );
+    assert_eq!(
+        core.poll(4010),
+        BridgeCode::Ok,
+        "the NPC arms its next delay"
+    );
+    assert_eq!(core.poll(5010), BridgeCode::Ok, "the NPC's second hit");
+    assert_eq!(core.view().health(), &[10, 2]);
+
+    // Round 2: the goblin hits, then the hero's third hit ends the fight.
+    assert_eq!(
+        core.submit_option(core.view().revision(), 0),
+        BridgeCode::Ok
+    );
+    assert_eq!(core.poll(6010), BridgeCode::Ok);
+    assert_eq!(
+        core.view().events(),
+        &[
+            ViewEvent::ActionResolved {
+                actor: 2,
+                target: 1,
+                ability: "Strike".to_string(),
+                ability_id: "0000000000000000000000000K".to_string(),
+                outcome: "success".to_string(),
+                damage: 2,
+            },
+            ViewEvent::TurnStarted { actor: 1, round: 2 },
+        ]
+    );
+    assert_eq!(core.view().health(), &[8, 2]);
+    assert_eq!(core.poll(7010), BridgeCode::Ok, "the NPC arms again");
+    assert_eq!(core.poll(8010), BridgeCode::Ok);
+    let view = core.view();
+    assert_eq!(
+        view.events(),
+        &[
+            ViewEvent::ActionResolved {
+                actor: 1,
+                target: 2,
+                ability: "Strike".to_string(),
+                ability_id: "0000000000000000000000000K".to_string(),
+                outcome: "success".to_string(),
+                damage: 2,
+            },
+            ViewEvent::Died { entity: 2 },
+            ViewEvent::EncounterEnded {
+                encounter: "0000000000000000000000000N".to_string(),
+                round: 2,
+            },
+        ]
+    );
+    assert_eq!(
+        view.events()[2].entries(),
+        vec![
+            ("kind", ViewValue::Text("encounter_ended")),
+            ("encounter", ViewValue::Text("0000000000000000000000000N")),
+            ("round", ViewValue::Int(2)),
+        ]
+    );
+    assert_eq!(view.health(), &[8, 0]);
+    assert_eq!(view.dead(), &[0, 1]);
+    assert!(view.ended());
+    assert_eq!(view.active(), 0);
+}
+
+/// B6, K12 through the core: a refused frame clears the pending submit even
+/// when that submit's own reply never arrives.
+#[test]
+fn a_refused_frame_clears_the_pending_submit() {
+    let mut core = BridgeCore::new();
+    let link = open_and_poll_side(&mut core, "Goblin");
+    let revision = core.view().revision();
+    // Spend the player's 80-frame burst on malformed one-byte frames. They are
+    // ingested and then rejected without any receipt downstream.
+    for _ in 0..80 {
+        link.client_end().send(&[0u8]).expect("up room");
+    }
+    assert_eq!(core.submit_option(revision, 0), BridgeCode::Ok);
+    // The submit is the 81st ingest, so it is rate-limited and never applied.
+    assert_eq!(core.poll(10), BridgeCode::IntentRefused);
+    assert!(live(&core).is_some());
+    assert_eq!(core.view().revision(), revision);
+    // Only `report.refused` clears the pending seq here: a survivor makes this
+    // `IntentPending` (5) instead of a fresh send.
+    assert_eq!(core.submit_option(revision, 0), BridgeCode::Ok);
+    assert_eq!(link.queued().0, 1);
+}
+
+/// O4: the public `open` uses the 128-frame policy link, so a frame that waits
+/// for the client does not displace the next one.
+#[test]
+fn public_open_uses_the_128_frame_link() {
+    assert_eq!(LINK_FRAMES, 128);
+    assert_eq!(
+        LINK_FRAMES,
+        crpg_net::protocol::POLICY_EGRESS_FRAMES_PER_PEER
+    );
+
+    let mut core = BridgeCore::new();
+    let dir = fixture_root();
+    assert_eq!(
+        core.open(dir.to_str().expect("path"), "", "Goblin", 1),
+        BridgeCode::Ok
+    );
+    {
+        let live = live_mut(&mut core).expect("open");
+        live.authority.step(0).expect("step");
+    }
+    {
+        let live = live_mut(&mut core).expect("open");
+        let host = live.authority.host();
+        let player = live.authority.player();
+        let actor = host
+            .legal_intents(player)
+            .expect("options")
+            .iter()
+            .find(|option| matches!(option.body, IntentBody::EndTurn))
+            .expect("end turn")
+            .actor;
+        let frame = encode_intent(&IntentFrame {
+            epoch: host.epoch(player).expect("epoch"),
+            lane: LANE_COMBAT,
+            seq: SEQ_FIRST,
+            observed_tick: 0,
+            actor,
+            body: IntentBody::EndTurn,
+        })
+        .expect("intent");
+        live.link.send(&frame).expect("up room");
+    }
+    {
+        let live = live_mut(&mut core).expect("open");
+        live.authority.step(1).expect("step");
+    }
+    {
+        let live = live_mut(&mut core).expect("open");
+        let first = live.link.recv().expect("frame 1");
+        let second = live.link.recv().expect("frame 2 queued behind frame 1");
+        assert_eq!(
+            crpg_net::codec_v2::decode_delta(&first)
+                .expect("frame 1")
+                .event_seq,
+            1
+        );
+        assert_eq!(
+            crpg_net::codec_v2::decode_delta(&second)
+                .expect("frame 2")
+                .event_seq,
+            2
+        );
+    }
 }

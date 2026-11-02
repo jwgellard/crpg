@@ -4,8 +4,7 @@
 //! the `godot` crate or to carry `unsafe`.
 //!
 //! This landing opens the Godot-free core: the bridge error table, the local
-//! in-memory link, and the client half (replica application, view revisions
-//! and presentation tables). The authority half and `BridgeCore` arrive with
-//! T047-2; the gdext shell arrives with T047b.
+//! in-memory link, the client half and the complete authority half with
+//! `BridgeCore`. The gdext shell arrives with T047b.
 
 pub mod core;
