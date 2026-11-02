@@ -1,0 +1,26 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/SceneSync.gd" id="2_sync"]
+[ext_resource type="Script" path="res://scripts/CombatHud.gd" id="3_hud"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_ground"]
+size = Vector2(12, 12)
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.866025, -0.5, 0, 0.5, 0.866025, 0, 6, 9)
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.707107, -0.707107, 0, 0.707107, 0.707107, 0, 5, 0)
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+mesh = SubResource("PlaneMesh_ground")
+
+[node name="Proxies" type="Node3D" parent="."]
+script = ExtResource("2_sync")
+
+[node name="Hud" type="CanvasLayer" parent="."]
+script = ExtResource("3_hud")
