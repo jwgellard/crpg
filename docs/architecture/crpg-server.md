@@ -170,6 +170,45 @@ session stages a snapshot transfer above the current cursor
 (`SnapshotStaged`) and keeps `event_seq` and ordinals continuous. Widening
 continues incrementally in both kinds.
 
+## Host read API (T047a)
+
+`Host::legal_intents(peer)` and `Host::replica_id(peer, entity)` are the two
+read-only trusted methods ADR-0033 §7 fixes so a player-only option list and a
+replica-id table need no second legality source. Both are `&self`, add no host
+state, and cannot move the authority, the clock, a ledger or delivery.
+
+1. **Prelude.** Both return `Closed` first, then `UnknownPeer`. `shutdown`
+   clears sessions before setting `closed`, so after it every handle — bound
+   or not — is `Closed`.
+2. **Active head.** `legal_intents` reads
+   `world().combat().and_then(|c| c.active)`; no encounter, terminal state and
+   real time all give `Ok(vec![])`.
+3. **Eligibility.** The head must be in the session's sorted control list,
+   mapped in its live `EntityId → NetId` map, and granted
+   `present && action_actor`; otherwise `Ok(vec![])`. Its mapped id is
+   `actor_net`.
+4. **One enumeration.** `crpg_sim::legal_actions(world, active)` is called
+   once and its order kept — no sort, dedup or reorder. `Actor(_)` is
+   `Ok(vec![])`; `TooManyOptions` is `Invariant("legal options exceed their
+   bound")`; a partial list is never returned.
+5. **Filter.** Each sim action goes through `legal_body`, the same
+   mapping/ownership/disclosure pair `resolve_action` applies at admission:
+
+| `CombatAction` | Kept when | `IntentBody` |
+|---|---|---|
+| `UseAbility { ability, target, .. }` | `map[target]` exists and `grants[target]` is `present && action_target` | `DeclareAction { ability, target: map[target] }` |
+| `EndTurn` | always (item 3 covered the actor) | `EndTurn` |
+| `Stop` | never (no wire verb exists) | dropped |
+
+6. **`replica_id`.** After the prelude, `Ok(map.get(&entity).copied())`. The
+   map is the snapshot the last installation left: an entity outside those
+   grants, with `present: false`, or not live then is `None`. A dead
+   combatant stays `Some`; an entity despawned since installation keeps its id
+   until the next bind/`set_grants`. No liveness check is added.
+
+Options are advisory: they confer no authorization, are never cached, and
+every submitted intent is revalidated before execution.
+
 ## Snapshot sessions (T024h)
 
 `bind_snapshot_peer` opts a session into the `0x81` transfer subprotocol
@@ -289,3 +328,4 @@ with T040/T041.
 - 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T132 (D29g/h/i) · Recorded that the two unreachable v1 host-wide caps are defence in depth, so nobody counts them as tested.
 - 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session section (session-kind table, ordinal ledger, staging steps, adapter routing), replaced the blanket narrowing reset with the per-kind rule, and removed snapshot transfer from the planned list, so the doc describes the sender T024h1 landed.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Updated the adapter routing to the as-built `/2` path (framing bind, channel reads and writes, ordinal acks, retiring drain, shutdown flush, `bind_dual` precondition), so the doc describes the adapter rather than calling it a future task.
+- 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Added the host read API section (prelude, active head, eligibility, one enumeration, the sim-action mapping table, replica-id snapshot semantics), so the bridge can rely on one described legality path with non-authorizing options.
