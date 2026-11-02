@@ -499,6 +499,10 @@ fn check_binding_requires_the_authored_order() {
         BridgeCode::StartFailed
     );
     assert_eq!(
+        check_binding(&bound, &[ull(14)]).unwrap_err().code,
+        BridgeCode::StartFailed
+    );
+    assert_eq!(
         check_binding(&bound, &[ull(14), ull(15), ull(16)])
             .unwrap_err()
             .code,
