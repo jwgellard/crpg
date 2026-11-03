@@ -86,6 +86,11 @@ proxy is grey exactly where the HUD shows `(dead)`, and both proxies remain.
 
 No golden or replay file changed; no S-set file was touched.
 
+## Review fix round (session 35)
+
+The Claude review (Sonnet 5.5) planted 36 mutants in `SceneSync.gd`: 31 killed, 5 survived (no `despawn.sort()`, no `refresh.sort()`, `dead == 1`, `proxy_count` counting every child, a new material on every dead sync). Attempt 2 tightened `scene_sync_cases.gd` (`da50bac`) and hung in its final gate run; the manager committed the edit, `verify_task.py` passed 11/11, `scene_sync.gd` and `smoke.gd` exit 0, and all five mutants now exit 6. The by-hand windowed run is still the user's.
+
 ## Agent log
 
 - 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Recorded the red-check exit 6, every Definition-of-done exit code, the four implementation readings and the pending by-hand windowed run, so the next task inherits the measured baseline rather than re-deriving it.
+- 2026-11-03 (UTC) · claude-code/opus-5.5 (manager) + T048 review fix · Recorded the review's mutant result and the attempt-2 fix verification, since the worker hung before writing it.
