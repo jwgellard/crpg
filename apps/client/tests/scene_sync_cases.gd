@@ -165,6 +165,16 @@ func _case_s1(host: Node, script: Script) -> String:
 	if detail != "": return detail
 	if _child_names(sync) != ["proxy_1", "proxy_2"]:
 		return "child names = %s" % str(_child_names(sync))
+	# Interface: proxy_count() counts proxy_* children only, not every child.
+	var marker := Node3D.new()
+	marker.name = "marker"
+	sync.add_child(marker)
+	detail = _expect_count(sync, 2)
+	if detail != "": return "with a marker: " + detail
+	if sync.get_child_count() != 3:
+		return "with a marker, child count = %d" % sync.get_child_count()
+	sync.remove_child(marker)
+	marker.queue_free()
 	var p1 = _proxy(sync, 1)
 	var p2 = _proxy(sync, 2)
 	if p1 == null or p2 == null:
@@ -343,7 +353,18 @@ func _case_s6(host: Node, script: Script) -> String:
 	if detail != "": return detail
 	if p1.position != at1 or p2.position != at2:
 		return "a row moved after un-dead"
-	return ""
+	# D8 tests dead[i] != 0, not dead[i] == 1: byte 2 greys just like 1.
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [2, 0]))
+	detail = _expect_dead(p1, true, "proxy_1 (dead 2)")
+	if detail != "": return detail
+	detail = _expect_dead(p2, false, "proxy_2 (dead 2)")
+	if detail != "": return detail
+	detail = _expect_count(sync, 2)
+	if detail != "": return detail
+	if p1.position != at1 or p2.position != at2:
+		return "a row moved after dead byte 2"
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [0, 0]))
+	return _expect_dead(p1, false, "proxy_1 (dead 2 cleared)")
 
 func _case_s7(host: Node, script: Script) -> String:
 	var sync = _new_sync(host, script)
@@ -428,7 +449,15 @@ func _case_s10(host: Node, script: Script) -> String:
 	sync.sync(_view([1, 2, 3], ["Hero", "Goblin", "Ally"], ["Player", "Monster", "Player"], [0, 0, 0]))
 	if _child_names(sync) != ["proxy_1", "proxy_2", "proxy_3"]:
 		return "names after [1,2,3] = %s" % str(_child_names(sync))
-	return ""
+	# D3: despawn and refresh sort ascending even when the input ids are
+	# unsorted and _proxies was filled in non-ascending order (3, then 2, then 1).
+	var packed = _new_sync(host, script)
+	packed.sync(_view([3], ["Ally"], ["Player"], [0]))
+	packed.sync(_view([2, 3], ["Goblin", "Ally"], ["Monster", "Player"], [0, 0]))
+	packed.sync(_view([1, 2, 3], ["Hero", "Goblin", "Ally"], ["Player", "Monster", "Player"], [0, 0, 0]))
+	detail = _expect_plan("unsorted ids", packed.plan(PackedInt64Array([3, 2, 1])), [], [], [1, 2, 3])
+	if detail != "": return detail
+	return _expect_plan("unsorted despawn", packed.plan(PackedInt64Array([2])), [1, 3], [], [2])
 
 func _case_s11(host: Node, script: Script) -> String:
 	var sync = _new_sync(host, script)
@@ -480,8 +509,22 @@ func _case_s12(host: Node, script: Script) -> String:
 	detail = _expect_same(sync, p2, 2, "proxy_2")
 	if detail != "": return detail
 	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [1, 0]))
-	if _mesh(p1).material_override == null:
+	var override = _mesh(p1).material_override
+	if override == null:
 		return "the control dead sync did not tint proxy_1"
+	# B8/B7: a dead row is part of the idempotence check too, and its override
+	# must stay the same object across equal syncs, not be reallocated.
+	var dead_first := [_snapshot(p1), _snapshot(p2)]
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [1, 0]))
+	var dead_second := [_snapshot(p1), _snapshot(p2)]
+	if dead_second != dead_first:
+		return "the second dead sync changed %s != %s" % [str(dead_second), str(dead_first)]
+	if _mesh(p1).material_override != override:
+		return "the dead override is not the same object"
+	if (_mesh(p1).material_override as StandardMaterial3D).albedo_color != TINT:
+		return "the dead albedo = %s" % str((_mesh(p1).material_override as StandardMaterial3D).albedo_color)
+	if _label(p1).modulate != TINT:
+		return "the dead modulate = %s" % str(_label(p1).modulate)
 	kept.append(p1)
 	kept.append(p2)
 	return ""
