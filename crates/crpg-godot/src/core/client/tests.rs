@@ -654,3 +654,89 @@ fn died_does_not_set_the_dead_column() {
     client.step(&mut end, &[], false).unwrap();
     assert_eq!(client.view().dead(), &[0, 0]);
 }
+
+/// R1 / B12: a leave removes exactly its row from every column on one bump, a
+/// dead row stays, and a frame re-entering a retired id is refused with 53
+/// without changing the view `Rc`; a fresh id in the same frame is accepted.
+#[test]
+fn a_leave_shrinks_every_column_and_a_retired_id_cannot_return() {
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = client();
+
+    push(&link, encoded(1, vec![enter(1), enter(2)]));
+    client.step(&mut end, &[], false).unwrap();
+    let view = client.view();
+    assert_eq!(view.revision(), 1);
+    assert_eq!(view.net_ids(), &[1, 2]);
+    assert_eq!(view.names(), &["Hero".to_string(), "Goblin".to_string()]);
+    assert_eq!(view.sides(), &["Player".to_string(), "Monster".to_string()]);
+    assert_eq!(view.dead(), &[0, 0]);
+    drop(view);
+
+    // A health fact with dead = true keeps the row and bumps by one.
+    push(&link, encoded(2, vec![health(2, 0, 7, true)]));
+    client.step(&mut end, &[], false).unwrap();
+    let view = client.view();
+    assert_eq!(view.revision(), 2);
+    assert_eq!(view.net_ids(), &[1, 2]);
+    assert_eq!(view.dead(), &[0, 1]);
+    drop(view);
+
+    // Leaving id 1 proves the survivor's columns realign.
+    push(&link, encoded(3, vec![leave(1)]));
+    client.step(&mut end, &[], false).unwrap();
+    let view = client.view();
+    assert_eq!(view.revision(), 3);
+    assert_eq!(view.net_ids(), &[2]);
+    assert_eq!(view.names(), &["Goblin".to_string()]);
+    assert_eq!(view.sides(), &["Monster".to_string()]);
+    assert_eq!(view.placements(), &[Ulid::from_u128(15).to_string()]);
+    assert_eq!(view.health(), &[0]);
+    assert_eq!(view.max_health(), &[7]);
+    assert_eq!(view.health_known(), &[1]);
+    assert_eq!(view.dead(), &[1]);
+    drop(view);
+
+    push(&link, encoded(4, vec![leave(2)]));
+    client.step(&mut end, &[], false).unwrap();
+    let view = client.view();
+    assert_eq!(view.revision(), 4);
+    assert!(view.net_ids().is_empty());
+    assert!(view.names().is_empty());
+    assert!(view.sides().is_empty());
+    assert!(view.placements().is_empty());
+    assert!(view.health().is_empty());
+    assert!(view.max_health().is_empty());
+    assert!(view.health_known().is_empty());
+    assert!(view.dead().is_empty());
+    drop(view);
+
+    let before = client.view();
+    push(&link, encoded(5, vec![enter(1)]));
+    let error = client.step(&mut end, &[], false).unwrap_err();
+    assert_eq!(error.code, BridgeCode::ReplicaRejected);
+    assert!(Rc::ptr_eq(&before, &client.view()));
+    assert_eq!(client.view().revision(), 4);
+    drop(before);
+
+    // Control: the same frames accept a fresh id, so the refusal is the id.
+    let control_link = LocalLink::new(128);
+    let mut control_end = control_link.client_end();
+    let mut control = self::client();
+    push(&control_link, encoded(1, vec![enter(1), enter(2)]));
+    control.step(&mut control_end, &[], false).unwrap();
+    push(&control_link, encoded(2, vec![health(2, 0, 7, true)]));
+    control.step(&mut control_end, &[], false).unwrap();
+    push(&control_link, encoded(3, vec![leave(1)]));
+    control.step(&mut control_end, &[], false).unwrap();
+    push(&control_link, encoded(4, vec![leave(2)]));
+    control.step(&mut control_end, &[], false).unwrap();
+    push(&control_link, encoded(5, vec![enter(3)]));
+    control.step(&mut control_end, &[], false).unwrap();
+    let view = control.view();
+    assert_eq!(view.revision(), 5);
+    assert_eq!(view.net_ids(), &[3]);
+    assert_eq!(view.names(), &[String::new()]);
+    drop(view);
+}
