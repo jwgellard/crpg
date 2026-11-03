@@ -1,6 +1,6 @@
 # Decision D43 — a QUIC close that never reaches the peer (T098f)
 
-Status: **open.** Drafted by the manager in session 35 (2026-11-03). Nothing else waits on it: T048 (Godot scene sync) is in progress separately. Until it is fixed, QUIC case 13 stays a known flake (rerun, do not charge the worker).
+Status: **Answered by the user, 2026-11-03: D43a (a), reserve a slice for the goodbye so a close still finishes within the budget.** Drafted by the manager in session 35 (2026-11-03). Nothing else waits on it: T048 (Godot scene sync) is in progress separately. Until it is fixed, QUIC case 13 stays a known flake (rerun, do not charge the worker).
 
 ## What happened
 
@@ -25,3 +25,4 @@ The worker reproduced this on purpose: 128 queued frames and a `Flush` close gav
 ## Agent log
 
 - 2026-11-03 (UTC) · claude-code/opus-5.5 (manager) + session 35 · Drafted D43 from the T098f measurement, which found a lost CONNECTION_CLOSE when a `Flush` close spends its whole budget, so the user can choose what the close budget covers before a fix is contracted.
+- 2026-11-03 (UTC) · claude-code/opus-5.5 (manager) + session 35 + D43 answered · Recorded the user's answer: (a), keep the close bound and reserve a slice for CONNECTION_CLOSE.
