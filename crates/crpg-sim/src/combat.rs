@@ -41,7 +41,7 @@ use crpg_rules::{
     StackingPolicy, StatBlock, StatDefinition, StatKind, StatValue, TagSet, MAX_TAGS,
 };
 
-use crate::creature::{CreatureState, SuspendedEffect};
+use crate::creature::{CreatureState, Entrant, SuspendedEffect};
 use crate::event::SimEvent;
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
@@ -1121,6 +1121,16 @@ pub enum CombatError {
     },
     /// Every authored participant is dead and no member enters (T139 D3).
     NoEntrants,
+    /// The entity is live but holds no record (T139).
+    NotCreature {
+        /// The entity.
+        entity: EntityId,
+    },
+    /// The entity already holds a combatant, or is listed twice (T139).
+    AlreadyParticipant {
+        /// The entity.
+        entity: EntityId,
+    },
 }
 
 impl std::fmt::Display for CombatError {
@@ -1167,6 +1177,8 @@ impl std::fmt::Display for CombatError {
             Self::PlacementInUse { .. } => write!(f, "PlacementInUse at creatures/placement"),
             Self::RulesetMismatch { .. } => write!(f, "RulesetMismatch at creatures/ruleset"),
             Self::NoEntrants => write!(f, "NoEntrants at spec/participants"),
+            Self::NotCreature { .. } => write!(f, "NotCreature at creatures"),
+            Self::AlreadyParticipant { .. } => write!(f, "AlreadyParticipant at combatants"),
         }
     }
 }
@@ -1411,6 +1423,41 @@ pub(crate) fn start_encounter_in_mode_tracked(
     world: &mut World,
     spec: &EncounterSpec<'_>,
     mode: EncounterMode,
+) -> Result<StartFacts, CombatError> {
+    start_encounter_with_members_tracked(world, spec, mode, &[])
+}
+
+/// [`start_encounter_in_mode`] plus record-holding members (T139 D4, B21-B22).
+///
+/// Each member is an [`Entrant`]: a live entity holding a record, keyed by its
+/// base initiative (plus, under an initiative rule, a draw after every
+/// participant's). Members compete for the first turn as authored
+/// participants do, are not spawned and enqueue nothing. An empty `members` is
+/// exactly [`start_encounter_in_mode`].
+///
+/// The member checks run after every start check and S1-S3, in this order: M0
+/// `TooManyParticipants` (`participants + members > MAX_COMBATANTS`); then, for
+/// each member in slice order, M1 `AbsentActor` and M2 `AlreadyParticipant`;
+/// then, for each member in slice order, M3 `NotCreature`, M4 `DeadActor`, M5
+/// `RulesetMismatch`, M6 `PlacementInUse`, M7 `InvalidStatValue` and M8
+/// `TooManyTags`; then S4 `NoEntrants`. Any failure leaves `world` unchanged.
+pub fn start_encounter_with_members(
+    world: &mut World,
+    spec: &EncounterSpec<'_>,
+    mode: EncounterMode,
+    members: &[Entrant],
+) -> Result<(), CombatError> {
+    start_encounter_with_members_tracked(world, spec, mode, members).map(|_| ())
+}
+
+/// [`start_encounter_with_members`] reporting the initial turn the
+/// publication scheduled; `start_encounter_in_mode_tracked` delegates here with
+/// `&[]`.
+pub(crate) fn start_encounter_with_members_tracked(
+    world: &mut World,
+    spec: &EncounterSpec<'_>,
+    mode: EncounterMode,
+    members: &[Entrant],
 ) -> Result<StartFacts, CombatError> {
     use CombatError::{
         DuplicateModifier, EncounterActive, InvalidCost, InvalidDice, InvalidEffect,
@@ -2040,8 +2087,60 @@ pub(crate) fn start_encounter_in_mode_tracked(
         member.attributes = record.attributes.clone();
         sources.push(Source::Enter(entity));
     }
+    // T139 B21: the member checks, after every start check and S1-S3.
+    // M0.
+    if pending.len() + members.len() > MAX_COMBATANTS {
+        return Err(TooManyParticipants);
+    }
+    // M1 and M2 run over every member before any record is read, so that a
+    // second listing of a bare entity fails M2, not M3 (E2's pair).
+    for (position, entrant) in members.iter().enumerate() {
+        if !world.contains(entrant.entity) {
+            return Err(CombatError::AbsentActor {
+                actor: entrant.entity,
+            });
+        }
+        if members[..position]
+            .iter()
+            .any(|earlier| earlier.entity == entrant.entity)
+        {
+            return Err(CombatError::AlreadyParticipant {
+                entity: entrant.entity,
+            });
+        }
+    }
+    let mut seats: Vec<MemberSeat> = Vec::with_capacity(members.len());
+    for entrant in members {
+        let entity = entrant.entity;
+        // M3.
+        let Some(record) = world.creatures().get(entity) else {
+            return Err(CombatError::NotCreature { entity });
+        };
+        // M4.
+        if record.dead() {
+            return Err(CombatError::DeadActor { actor: entity });
+        }
+        // M5.
+        check_ruleset(&definition, entity, record)?;
+        // M6.
+        let placement = record.placement;
+        if pending.iter().any(|item| item.placement == placement)
+            || seats.iter().any(|seat| seat.placement == placement)
+        {
+            return Err(CombatError::PlacementInUse { placement });
+        }
+        // M7, M8.
+        check_stats_and_tags(world, &definition, &granted, record)?;
+        seats.push(MemberSeat {
+            entity,
+            placement,
+            initiative: entrant.initiative,
+            health: record.health,
+            attributes: record.attributes.clone(),
+        });
+    }
     // S4.
-    if sources.iter().all(|source| matches!(source, Source::Skip)) {
+    if members.is_empty() && sources.iter().all(|source| matches!(source, Source::Skip)) {
         return Err(CombatError::NoEntrants);
     }
 
@@ -2090,6 +2189,36 @@ pub(crate) fn start_encounter_in_mode_tracked(
                 .total
                 .saturating_add(bonus)
                 .saturating_add(member.initiative);
+        }
+        // T139 B25: member keys draw after every participant's, in slice
+        // order, from the member's record.
+        for seat in seats.iter_mut() {
+            let block = base_block(
+                &definition.health_stat,
+                seat.health,
+                &seat.attributes,
+                &mut scratch,
+            );
+            let context = QueryContext {
+                entity: probe,
+                stats: &block,
+                tags: &no_tags,
+                modifiers: &[],
+            };
+            let mut bonus: i32 = 0;
+            for name in &rule.bonus_stats {
+                let value = query_int(&pipeline, probe, name, &scratch, &context)
+                    .expect("the member checks guarantee the stat evaluates");
+                bonus = bonus.saturating_add(value);
+            }
+            let rolled = rule
+                .dice
+                .evaluate(world.rng_mut(), COMBAT_ROLL_STREAM)
+                .expect("the combat stream name is valid");
+            seat.initiative = rolled
+                .total
+                .saturating_add(bonus)
+                .saturating_add(seat.initiative);
         }
     }
 
@@ -2153,6 +2282,21 @@ pub(crate) fn start_encounter_in_mode_tracked(
             EncounterMode::RealTime => 0,
         };
         world.timeline_mut().insert(InitiativeKey(key), id);
+    }
+    // T139 B22: members enter after the participants, in slice order, at
+    // round zero. They are not spawned and enqueue nothing.
+    for seat in seats {
+        let record = world
+            .creatures_mut()
+            .remove(seat.entity)
+            .expect("the member checks found this record");
+        let entered = enter_combatant(&definition, record, 0, seat.initiative);
+        world.combatants_mut().insert(seat.entity, entered);
+        let key = match mode {
+            EncounterMode::TurnBased => seat.initiative,
+            EncounterMode::RealTime => 0,
+        };
+        world.timeline_mut().insert(InitiativeKey(key), seat.entity);
     }
     world.interners_mut().intern_tag(COMBAT_ROLL_TAG);
     let active = match mode {
@@ -2230,6 +2374,21 @@ fn derived_failure(
         .map(|stat| stat.name.clone())
 }
 
+/// One member's validated seat in the start (T139 B21): its record's values
+/// the key draw and the publication read.
+struct MemberSeat {
+    /// The member's entity.
+    entity: EntityId,
+    /// The record's placement, for M6.
+    placement: Ulid,
+    /// The base key, then the drawn key (B25).
+    initiative: i32,
+    /// The record's health, for the initiative bonus.
+    health: u32,
+    /// The record's attributes, for the initiative bonus.
+    attributes: Vec<(String, i32)>,
+}
+
 /// The entry checks of one alive record against the definition (T139 S1-S3):
 /// `RulesetMismatch`, `InvalidStatValue`, then `TooManyTags`.
 fn check_entry(
@@ -2239,7 +2398,17 @@ fn check_entry(
     entity: EntityId,
     record: &CreatureState,
 ) -> Result<(), CombatError> {
-    // S1.
+    check_ruleset(definition, entity, record)?;
+    check_stats_and_tags(world, definition, granted, record)
+}
+
+/// S1 and M5: the record's ruleset, attribute names and pools agree with the
+/// definition's.
+fn check_ruleset(
+    definition: &CombatDefinition,
+    entity: EntityId,
+    record: &CreatureState,
+) -> Result<(), CombatError> {
     let names_agree = record.attributes.len() == definition.attribute_names.len()
         && record
             .attributes
@@ -2259,11 +2428,20 @@ fn check_entry(
     if record.ruleset != definition.ruleset || !names_agree || !pools_agree {
         return Err(CombatError::RulesetMismatch { entity });
     }
-    // S2.
+    Ok(())
+}
+
+/// S2 then S3 (M7 then M8): the derived-stat preflight on the record's
+/// values, then the tag bound against the definition's grants.
+fn check_stats_and_tags(
+    world: &World,
+    definition: &CombatDefinition,
+    granted: &BTreeSet<&str>,
+    record: &CreatureState,
+) -> Result<(), CombatError> {
     if let Some(stat) = derived_failure(world, definition, record.health, &record.attributes) {
         return Err(CombatError::InvalidStatValue { stat });
     }
-    // S3.
     let mut union = granted.clone();
     union.extend(record.tags.iter().map(String::as_str));
     if union.len() > MAX_TAGS {
