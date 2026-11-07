@@ -1,9 +1,10 @@
 extends RefCounted
-# T051: H1-H19 for the combat HUD, against a FakeView that has exactly the 14
+# T051: H1-H20 for the combat HUD, against a FakeView that has exactly the 14
 # getters the HUD may read. run(root) returns "PASS" when every case returned
 # "ok", otherwise "H<n>: <detail>" for the first that did not. A case that
-# crashes makes its -> String function return "" (never "ok"), so it fails. H20
-# (the real session) runs in tests/smoke.gd.
+# crashes makes its -> String function return "" (never "ok"), so it fails.
+# H20 (press with main == null) is new in the T051-fix round; smoke.gd keeps its
+# own real-session H20 check separately.
 
 const HUD := "res://scripts/CombatHud.gd"
 const MAIN := "res://scripts/Main.gd"
@@ -75,7 +76,7 @@ func run(root: Node):
 		return "H0: CombatHud.gd did not load"
 	var cases: Array = [
 		_h1, _h2, _h3, _h4, _h5, _h6, _h7, _h8, _h9, _h10,
-		_h11, _h12, _h13, _h14, _h15, _h16, _h17, _h18, _h19,
+		_h11, _h12, _h13, _h14, _h15, _h16, _h17, _h18, _h19, _h20,
 	]
 	for i in range(cases.size()):
 		var detail = _run_case(root, cases[i])
@@ -302,11 +303,16 @@ func _h6(host, hud) -> String:
 	res.append(_eq("6 color", status.get_theme_color("font_color"), RED))
 	res.append(_eq("6 last line", _lines(hud).back(), "ERROR: NO_SUCH_OPTION: index is out of range"))
 	host.session = null
+	host.codes = [30]
+	first.pressed.emit()
+	res.append(_eq("30 null last line", _lines(hud).back(), "NOT_OPEN"))
+	res.append(_eq("30 null status text", status.text, "NO_SUCH_OPTION: index is out of range"))
+	res.append(_eq("30 null status visible", status.visible, true))
 	host.codes = [1]
 	first.pressed.emit()
 	res.append(_eq("null text", status.text, "NOT_OPEN"))
 	res.append(_eq("null last line", _lines(hud).back(), "ERROR: NOT_OPEN"))
-	res.append(_eq("chosen", host.chosen, [0, 0, 0, 0, 0]))
+	res.append(_eq("chosen", host.chosen, [0, 0, 0, 0, 0, 0]))
 	return _first(res)
 
 func _h7(_host, hud) -> String:
@@ -451,6 +457,7 @@ func _h15(_host, hud) -> String:
 	var cases := [
 		[[1, 0, 0], [1, 1, 1], "draw"], [[1, 1, 0], [1, 1, 1], "Hero"],
 		[[1, 1, 1], [1, 1, 1], "draw"], [[0, 1, 0], [1, 1, 0], "Hero"],
+		[[1, 1, 0], [1, 1, 0], "Hero"],
 	]
 	var revision := 2
 	for c in cases:
@@ -484,13 +491,21 @@ func _h16(_host, hud) -> String:
 func _h17(_host, hud) -> String:
 	var res: Array = []
 	hud.sync(_a({"events": [_di(9)]}))
+	var waiting = _n(hud, "Waiting")
+	var status = _n(hud, "Status")
+	var end = _n(hud, "End")
 	var before := [_n(hud, "Round").text, _n(hud, "Turn").text, _texts(_n(hud, "Health")),
-		_texts(_n(hud, "Options")), _lines(hud)]
+		_texts(_n(hud, "Options")), _lines(hud),
+		waiting.text, waiting.visible, status.text, status.visible,
+		end.text, end.visible, hud._logged_revision]
 	hud.sync(null)
 	var after := [_n(hud, "Round").text, _n(hud, "Turn").text, _texts(_n(hud, "Health")),
-		_texts(_n(hud, "Options")), _lines(hud)]
+		_texts(_n(hud, "Options")), _lines(hud),
+		waiting.text, waiting.visible, status.text, status.visible,
+		end.text, end.visible, hud._logged_revision]
 	res.append(_eq("before", before, ["Round 1", "Turn: Hero", ["Hero: 10/10", "Goblin: 6/6"],
-		["Strike -> Goblin", "End turn"], ["Goblin dies."]]))
+		["Strike -> Goblin", "End turn"], ["Goblin dies."],
+		"Waiting for Hero...", false, "", false, "", false, 1]))
 	res.append(_eq("null sync", after, before))
 	hud.sync(FakeView.new({"revision": 2}))
 	res.append(_eq("Health", _n(hud, "Health").get_child_count(), 0))
@@ -507,6 +522,9 @@ func _h18(_host, hud) -> String:
 	hud.sync(_a(e))
 	res.append(_eq("before lines", _lines(hud), ["ERROR: X", "Goblin dies."]))
 	res.append(_eq("before End", _n(hud, "End").visible, true))
+	res.append(_eq("Status visible", _n(hud, "Status").visible, true))
+	res.append(_eq("Status text", _n(hud, "Status").text, "X"))
+	res.append(_eq("Status color", _n(hud, "Status").get_theme_color("font_color"), RED))
 	hud.sync(_a(e))
 	res.append(_eq("gate holds", _lines(hud), ["ERROR: X", "Goblin dies."]))
 	hud.clear()
@@ -548,4 +566,17 @@ func _h19(_host, _hud) -> String:
 	var control := _scan(MAIN)
 	for token in ["submit_option", "poll", "ClassDB", "OS", "_process"]:
 		res.append(_eq("control " + token, token in control["tokens"], true))
+	return _first(res)
+
+func _h20(host, hud) -> String:
+	var res: Array = []
+	hud.sync(_a())
+	hud.main = null
+	var options = _n(hud, "Options")
+	options.get_child(0).pressed.emit()
+	res.append(_eq("log", _lines(hud), []))
+	res.append(_eq("status visible", _n(hud, "Status").visible, false))
+	res.append(_eq("status text", _n(hud, "Status").text, ""))
+	res.append(_eq("chosen", host.chosen, []))
+	res.append(_eq("options count", options.get_child_count(), 2))
 	return _first(res)
