@@ -718,3 +718,259 @@ fn e4_member_entrant_seeding() {
     assert!(!member.dead());
     assert!(member.order().is_none());
 }
+/// A world of `count` registered outsiders (the M0 crowd) where authored
+/// participant A also holds a record, dead, so that it is skipped.
+fn crowd_with_dead_a(count: u128) -> (Fixture, World, Vec<Entrant>) {
+    let mut fixture = e2_fixture();
+    let (world, members) = crowd(&mut fixture, count);
+    let mut world = world;
+    let record_a = register(&fixture, &mut world, 111);
+    let world = with_record(&world, record_a, |record| record["health"] = json!(0));
+    (fixture, world, members)
+}
+
+/// E2 (B21, M0): the bound counts every authored participant, a skipped one
+/// included. Authored A is skipped (dead record), so 1023 members make 1025
+/// participants-plus-members but only 1024 combatants.
+///
+/// **Fails if** M0 counts only the participants that spawn or enter.
+#[test]
+fn e2_m0_counts_skipped_participants() {
+    let (fixture, mut world, members) = crowd_with_dead_a(1023);
+    begin_fails(
+        &fixture,
+        &mut world,
+        &members,
+        CombatError::TooManyParticipants,
+    );
+    // Control: one member fewer is within the bound; A is skipped, B spawns.
+    let (fixture, mut world, members) = crowd_with_dead_a(1022);
+    begin(&fixture, &mut world, &members);
+    assert_eq!(world.combatants().len(), 1023);
+}
+
+/// E2 (B21, M0): M0 runs after S1-S3 and before M1-M8. An over-count with an
+/// absent member fails M0; an over-count with a bad authored entrant fails S1.
+///
+/// **Fails if** M0 runs after the member loop, or before S1.
+#[test]
+fn e2_m0_position_between_s1_and_m1() {
+    let mut fixture = e2_fixture();
+    let (mut world, mut members) = crowd(&mut fixture, 1023);
+    let gone = world.spawn(EntityMeta {});
+    assert!(world.despawn(gone));
+    members.push(entrant(gone, 1));
+    begin_fails(
+        &fixture,
+        &mut world,
+        &members,
+        CombatError::TooManyParticipants,
+    );
+
+    // S1 on an authored Enter participant beats M0.
+    let record_a = register(&fixture, &mut world, 111);
+    let mut world = with_record(&world, record_a, |record| {
+        record["ruleset"] = json!(uid(999));
+    });
+    begin_fails(
+        &fixture,
+        &mut world,
+        &members,
+        CombatError::RulesetMismatch { entity: record_a },
+    );
+}
+
+/// E2 (B21): adjacent member checks M5 > M6, M6 > M7 and M7 > M8, one member
+/// carrying both faults of each pair.
+///
+/// **Fails if** any adjacent pair swaps.
+#[test]
+fn e2_adjacent_member_check_order() {
+    // M6 needs a placement in use: under `respawns` A's record collides with
+    // the spawning participant A.
+    let mut fixture = e2_fixture();
+    fixture.encounter.respawns = Some(true);
+    let placement_a = fixture.placement_a;
+    let names = tag_names(MAX_TAGS);
+
+    // M5 > M6.
+    let mut world = bound(&fixture);
+    let record_a = register(&fixture, &mut world, 111);
+    let mut faulty = with_record(&world, record_a, |record| {
+        record["ruleset"] = json!(uid(999));
+    });
+    begin_fails(
+        &fixture,
+        &mut faulty,
+        &[entrant(record_a, 5)],
+        CombatError::RulesetMismatch { entity: record_a },
+    );
+    // Control: only the collision remains.
+    begin_fails(
+        &fixture,
+        &mut world,
+        &[entrant(record_a, 5)],
+        CombatError::PlacementInUse {
+            placement: placement_a,
+        },
+    );
+
+    // M6 > M7: gamma 4 would fail the derived preflight.
+    let mut faulty = with_record(&world, record_a, |record| {
+        record["attributes"][2][1] = json!(4);
+    });
+    begin_fails(
+        &fixture,
+        &mut faulty,
+        &[entrant(record_a, 5)],
+        CombatError::PlacementInUse {
+            placement: placement_a,
+        },
+    );
+
+    // M7 > M8: gamma 4 and a full tag set plus the grant.
+    let mut world = bound(&fixture);
+    let o = register(&fixture, &mut world, O);
+    let mut faulty = with_record(&world, o, |record| {
+        record["attributes"][2][1] = json!(4);
+        record["tags"] = json!(&names);
+    });
+    begin_fails(
+        &fixture,
+        &mut faulty,
+        &[entrant(o, 5)],
+        CombatError::InvalidStatValue {
+            stat: "ratio".to_owned(),
+        },
+    );
+    // Control: the tag fault alone is M8.
+    let mut tagged = with_record(&world, o, |record| record["tags"] = json!(&names));
+    begin_fails(
+        &fixture,
+        &mut tagged,
+        &[entrant(o, 5)],
+        CombatError::TooManyTags,
+    );
+}
+
+/// E2 (B21), the T139b1 reading of "per member in slice order": M1 and M2 run
+/// over every member first, then M3-M8 run per member. Two members with
+/// different faults therefore fail on the later member's M1 or M2 before the
+/// earlier member's M3 or M4. If the user chooses literal per-member order,
+/// this test changes.
+///
+/// **Fails if** M1/M2 move into the per-member loop with M3-M8.
+#[test]
+fn e2_reading_m1_m2_pass_precedes_per_member_checks() {
+    let fixture = e2_fixture();
+    let mut base = bound(&fixture);
+    let o = register(&fixture, &mut base, O);
+    let bare = base.spawn(EntityMeta {});
+    let gone = base.spawn(EntityMeta {});
+    assert!(base.despawn(gone));
+    let dead_o = with_record(&base, o, |record| record["health"] = json!(0));
+
+    // [dead record, absent id]: the second member's M1 beats the first's M4.
+    begin_fails(
+        &fixture,
+        &mut dead_o.clone(),
+        &[entrant(o, 5), entrant(gone, 6)],
+        CombatError::AbsentActor { actor: gone },
+    );
+    // [bare entity, absent id]: the same, against M3.
+    begin_fails(
+        &fixture,
+        &mut base.clone(),
+        &[entrant(bare, 5), entrant(gone, 6)],
+        CombatError::AbsentActor { actor: gone },
+    );
+    // [bare entity, valid O, O again]: the later M2 beats the first M3.
+    begin_fails(
+        &fixture,
+        &mut base.clone(),
+        &[entrant(bare, 5), entrant(o, 6), entrant(o, 7)],
+        CombatError::AlreadyParticipant { entity: o },
+    );
+    // Control: the same dead record alone is M4.
+    begin_fails(
+        &fixture,
+        &mut dead_o.clone(),
+        &[entrant(o, 5)],
+        CombatError::DeadActor { actor: o },
+    );
+}
+
+/// E2 (B21, M5 as S1): a changed pool refresh trigger and a changed attribute
+/// count each refuse the record, the names that remain agreeing in order.
+///
+/// **Fails if** the refresh comparison or the attribute-length comparison of
+/// the shared S1/M5 check is removed.
+#[test]
+fn e2_m5_refresh_and_attribute_count() {
+    let fixture = e2_fixture();
+    let mut base = bound(&fixture);
+    let o = register(&fixture, &mut base, O);
+    let mismatch = CombatError::RulesetMismatch { entity: o };
+
+    let rerefreshed = with_record(&base, o, |record| {
+        record["pools"][0]["refresh"] = json!({"type": "on_round_start"});
+    });
+    begin_fails(
+        &fixture,
+        &mut rerefreshed.clone(),
+        &[entrant(o, 5)],
+        mismatch.clone(),
+    );
+    // A shorter and a longer attribute list, every shared name in order.
+    let shorter = with_record(&base, o, |record| {
+        record["attributes"].as_array_mut().expect("list").pop();
+    });
+    begin_fails(
+        &fixture,
+        &mut shorter.clone(),
+        &[entrant(o, 5)],
+        mismatch.clone(),
+    );
+    let longer = with_record(&base, o, |record| {
+        record["attributes"]
+            .as_array_mut()
+            .expect("list")
+            .push(json!(["delta", 1]));
+    });
+    begin_fails(&fixture, &mut longer.clone(), &[entrant(o, 5)], mismatch);
+    // Control: the unedited record starts.
+    begin(&fixture, &mut base.clone(), &[entrant(o, 5)]);
+}
+
+/// B13 (authored entry): S1 comes before S2. An authored Enter participant
+/// with another ruleset id and gamma 4 fails `RulesetMismatch`.
+///
+/// **Fails if** the authored entry check runs S2 before S1.
+#[test]
+fn e2_authored_entry_s1_before_s2() {
+    let fixture = e2_fixture();
+    let mut world = bound(&fixture);
+    let record_a = register(&fixture, &mut world, 111);
+    let mut faulty = with_record(&world, record_a, |record| {
+        record["ruleset"] = json!(uid(999));
+        record["attributes"][2][1] = json!(4);
+    });
+    begin_fails(
+        &fixture,
+        &mut faulty,
+        &[],
+        CombatError::RulesetMismatch { entity: record_a },
+    );
+    // Control: gamma 4 alone is S2.
+    let mut broken = with_record(&world, record_a, |record| {
+        record["attributes"][2][1] = json!(4);
+    });
+    begin_fails(
+        &fixture,
+        &mut broken,
+        &[],
+        CombatError::InvalidStatValue {
+            stat: "ratio".to_owned(),
+        },
+    );
+}
