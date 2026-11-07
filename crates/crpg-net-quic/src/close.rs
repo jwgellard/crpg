@@ -74,8 +74,10 @@ impl CloseCode {
 /// How a local close treats outbound frames still queued in this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseMode {
-    /// Write every queued outbound frame, FIN, wait for the peer's ack up to
-    /// `close_flush_timeout_ms`, then CONNECTION_CLOSE.
+    /// Write every queued outbound frame, FIN, wait for the peer's ack, then
+    /// CONNECTION_CLOSE, within `close_flush_timeout_ms`. The wait for the ack
+    /// stops `min(200 ms, budget / 4)` early so the CONNECTION_CLOSE still goes
+    /// out inside the budget.
     Flush,
     /// Discard queued outbound frames not yet handed to QUIC; close at once.
     Discard,

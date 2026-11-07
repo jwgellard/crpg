@@ -149,7 +149,7 @@ pub(crate) struct ConnWake {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FlushRequest {
     pub(crate) code: CloseCode,
-    pub(crate) deadline: Instant,
+    pub(crate) flush_end: Instant,
     pub(crate) started: bool,
 }
 
@@ -957,7 +957,7 @@ pub(crate) async fn lane_control(
 }
 
 /// E§3 `CloseMode::Flush`: let the writer drain and FIN, wait for the ack
-/// up to the deadline, discard what is left, then CONNECTION_CLOSE.
+/// up to the flush cutoff, discard what is left, then CONNECTION_CLOSE.
 async fn run_flush(
     shared: &Shared,
     id: u64,
@@ -966,7 +966,7 @@ async fn run_flush(
     flush: FlushRequest,
 ) {
     wake.writer.notify_one();
-    let deadline = tokio::time::Instant::from_std(flush.deadline);
+    let flush_end = tokio::time::Instant::from_std(flush.flush_end);
     loop {
         let finished = match shared.lock_any() {
             Some(state) => state
@@ -978,7 +978,7 @@ async fn run_flush(
         if finished {
             break;
         }
-        match race(wake.control.notified(), tokio::time::sleep_until(deadline)).await {
+        match race(wake.control.notified(), tokio::time::sleep_until(flush_end)).await {
             Either::Left(()) => continue,
             Either::Right(()) => break,
         }

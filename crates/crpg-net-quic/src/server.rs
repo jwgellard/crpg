@@ -29,6 +29,7 @@ use crate::queue::{
     Either, FailGuard, FlushRequest, LaneDirection, Opening, Phase, ReadFail, ReadSpec, Shared,
     State, Stop, SYNC_GRACE,
 };
+use crate::teardown::{close_deadlines, finish_endpoint_close};
 use crate::tls;
 
 /// Never reused within one `QuicServer`; starts at 1.
@@ -591,8 +592,9 @@ impl QuicServer {
     /// Closes a pending or accepted connection. Inbound frames stay
     /// drainable after a server-side close, so the report's
     /// `inbound_frames_discarded` is always 0 here. `Flush` blocks up to
-    /// `close_flush_timeout_ms`. Precedence: `UnknownConnection` →
-    /// `Closed` (already closing or closed).
+    /// `close_flush_timeout_ms`. The last `min(200 ms, budget / 4)` of the
+    /// budget is kept for the CONNECTION_CLOSE. Precedence: `UnknownConnection`
+    /// → `Closed` (already closing or closed).
     pub fn close(
         &mut self,
         conn: ConnectionId,
@@ -618,15 +620,18 @@ impl QuicServer {
             self.shared.notify_sync();
             return Ok(report);
         }
-        let deadline = deadline_after(self.limits.close_flush_timeout_ms);
+        let deadlines = close_deadlines(self.limits.close_flush_timeout_ms);
         record.closing = Some(code);
         record.flush = Some(FlushRequest {
             code,
-            deadline,
+            flush_end: deadlines.flush_end,
             started: false,
         });
         record.wake.control.notify_one();
-        let guard_deadline = deadline.checked_add(SYNC_GRACE).unwrap_or(deadline);
+        let guard_deadline = deadlines
+            .overall
+            .checked_add(SYNC_GRACE)
+            .unwrap_or(deadlines.overall);
         let state = self.shared.wait_until(state, guard_deadline, |state| {
             state
                 .conns
@@ -697,13 +702,15 @@ impl QuicServer {
     /// Graceful: stop accepting, close pending with `Shutdown`, flush accepted
     /// connections (`Flush`, one shared deadline), close all with `Shutdown`,
     /// wait for the endpoint to go idle (bounded by the same deadline), join.
+    /// The last `min(200 ms, budget / 4)` of the budget is kept for the
+    /// CONNECTION_CLOSE.
     pub fn shutdown(mut self) -> ShutdownReport {
         let mut report = ShutdownReport {
             connections_closed: 0,
             outbound_frames_discarded: 0,
             inbound_frames_discarded: 0,
         };
-        let deadline = deadline_after(self.limits.close_flush_timeout_ms);
+        let deadlines = close_deadlines(self.limits.close_flush_timeout_ms);
         if let Some(mut state) = self.shared.lock() {
             state.stopping = true;
             let ids: Vec<u64> = state.conns.keys().copied().collect();
@@ -723,14 +730,17 @@ impl QuicServer {
                     record.closing = Some(CloseCode::Shutdown);
                     record.flush = Some(FlushRequest {
                         code: CloseCode::Shutdown,
-                        deadline,
+                        flush_end: deadlines.flush_end,
                         started: false,
                     });
                     record.wake.control.notify_one();
                     flushing.push((id, record.discarded));
                 }
             }
-            let guard_deadline = deadline.checked_add(SYNC_GRACE).unwrap_or(deadline);
+            let guard_deadline = deadlines
+                .overall
+                .checked_add(SYNC_GRACE)
+                .unwrap_or(deadlines.overall);
             let waited = self.shared.wait_until(state, guard_deadline, |state| {
                 flushing.iter().all(|(id, _)| {
                     state
@@ -747,7 +757,7 @@ impl QuicServer {
                     state.conns.values().map(Conn::held_inbound_frames).sum();
                 state.stop = Some(Stop {
                     code: CloseCode::Shutdown,
-                    deadline,
+                    deadline: deadlines.overall,
                 });
             }
         }
@@ -859,16 +869,7 @@ async fn server_main(
             Either::Right(stop) => break stop,
         }
     };
-    close_quinn_endpoint(&endpoint, stop.code);
-    let deadline = tokio::time::Instant::from_std(stop.deadline);
-    let _ = tokio::time::timeout_at(deadline, endpoint.wait_idle()).await;
-}
-
-fn close_quinn_endpoint(endpoint: &quinn::Endpoint, code: CloseCode) {
-    endpoint.close(
-        quinn::VarInt::from_u32(code.as_u32()),
-        code.name().as_bytes(),
-    );
+    finish_endpoint_close(&endpoint, stop.code, stop.deadline).await;
 }
 
 /// E§5 step 1: refuse at `max_connections` before any crypto.

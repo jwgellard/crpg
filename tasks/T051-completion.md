@@ -48,3 +48,35 @@ The by-hand windowed play (`Godot4 --path apps/client`) is **pending**: it is th
 ## Agent log
 
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Recorded the gate results, the red checks and the readings for the HUD, cases and smoke hooks; the by-hand play is left to the user.
+
+## Fix round (T051-fix)
+
+Two first-pass reviews of `dc54dff` listed seven contract items with no case that
+would catch a break. Each lead was checked against the contract and the cases.
+Five gaps are real and are now covered by tightened/new cases, each proven by a
+planted bug that turns `hud.gd` red (exit 6) and was then undone. Two are not
+real gaps.
+
+| # | Lead | Verdict | Case | Red check (planted bug) |
+|---|---|---|---|---|
+| 1 | B2 — `sync(null)` leaves Waiting/Status/End and `_logged_revision` | real | H17 tightened | exit 6 `H17: null sync` (planted `_logged_revision = 5`) |
+| 2 | B5 — press an option with `main == null` | real | H20 new | exit 6 `H20: log: got ["NULL"]` (planted notice on null) |
+| 3 | B8 — `sync` never touches Status | real | H18 tightened | exit 6 `H18: Status visible: got false` (planted `sync` hides Status) |
+| 4 | D7 — code 30 with `main.session == null` uses `NOT_OPEN` | real | H6 tightened | exit 6 `H6: 30 null last line` (planted dropped null guard) |
+| 5 | D13 — an undisclosed row is the only thing keeping a side alive | real | H15 tightened | exit 6 `H15: dead [1, 1, 0]` (planted `_winner` excludes undisclosed) |
+| 6 | B12 — unequal parallel columns | not real | — | B12 is a negative "not defended" precondition with no observable behaviour to assert; the equal-length invariant it relies on is already pinned by H3/H14/H15. |
+| 7 | D17 — runner treats a `""`/`null` crash as failure | not real | — | Sentinel is structural: `run` returns "PASS" only when every case returned "ok", maps `""`/`null` to "runtime error", and `hud.gd` exits 6; re-verified with a crash plant (exit 6 `H2: runtime error`). |
+
+Readings:
+
+- Lead 2's "dereferences null" form is a `-> void` signal handler dereferencing
+  `null`, so it returns silently (the failed `choose` reads as `0` and hits the
+  early return) and is unobservable from GDScript; the catchable form is "does
+  not no-op" (an observable side effect), which H20 covers. Confirmed with a
+  deref plant that still exited 0.
+- H20 (press with `main == null`) reuses the contract's next-free case number;
+  smoke.gd's real-session H20 is a separate check in a separate file.
+
+### Agent log
+
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T051-fix · Closed five review gaps (B2/H17, B5/H20, B8/H18, D7/H6, D13/H15) with tightened or new cases, each proven by a planted bug that made `hud.gd` exit 6 and was undone; judged B12 and D17 not real gaps and recorded why.
