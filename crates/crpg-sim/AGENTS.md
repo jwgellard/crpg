@@ -45,7 +45,9 @@ encounter-mode surface (ADR-0029): `EncounterMode`, `EncounterClock`,
 `CombatAction::Stop`, and `CombatError::{ModeUnsupported, WrongMode}`, plus
 the T138b history v2 surface: `HistoryWorld::{version, start_encounter_in_mode,
 request_mode}`, the `HistoryEvent` variants `RoundStarted`, `ModeChanged` and
-`OrderEnded`, and `HISTORY_VERSION` now 2 (1 is still read).
+`OrderEnded`, and `HISTORY_VERSION` now 2 (1 is still read). T139c adds the variants `Joined` and `Left` (the last two of five
+version 2 variants) and `HistoryWorld::{start_encounter_with_members,
+join_encounter, leave_encounter}`.
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -386,7 +388,10 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   encounter. `end_encounter` releases without despawning anyone: entities
   stay live, the summary retains the outcome, and no event is emitted. Since
   T139a2 a release also writes each survivor back as a record (below); it
-  still despawns nobody.
+  still despawns nobody. T139b2's `leave_encounter` is a fourth way out: the
+  combatant and its entries go through the same settlement as `despawn`, but the
+  entity stays live and becomes a record, and neither `Died` nor `Despawned` is
+  enqueued.
   `Died` is the only combat event: core-closed (`entity` only),
   produced exactly once on the positive-to-zero transition, consumed by
   terminal assertions and future AI/effect systems. No hook dispatcher,
@@ -550,7 +555,7 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
   each damage total. The authoring example
   (`examples/generate_surface_golden.rs`) shares the schedule source.
 
-## Persistent creature records (T139a1, T139a2)
+## Persistent creature records (T139a1, T139a2, T139b1, T139b2)
 
 - `World.creatures` is the only copy of a creature outside an encounter. An entity holds a `CreatureState` or a `Combatant`, never both; the loader enforces it (K1-K12).
 - Public additions: `CreatureState`, `SuspendedEffect`, `CreatureSpec`, `register_creature`, `HistoryWorld::register_creature`, `World::creatures`, `AreaError::PlacementInUse`, and the `CombatError` variants `PlacementInUse`, `RulesetMismatch`, `NoEntrants`. T139a2 adds `Lifecycle`, `EffectsOnExit`, `CombatState.lifecycle`, `Combatant::fixed` and `Combatant::entered`.
@@ -558,11 +563,18 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - Trap: a record and a combatant may share a placement only in a respawning encounter (B13): its authored participants spawn fresh and are never written back, while a combatant that *entered* from a record is always written back. Registration (R5) and transfer (T1) refuse to create the other collisions.
 - **Lifecycle at start and release (T139a2).** `CombatState.lifecycle` is copied at start from the encounter's `respawns` and the ruleset's `creature_persistence` and `effects_on_exit`, and is skipped at its default. After the definition is built and before the initiative draws, each authored participant resolves to Spawn (respawning, or no record), Skip (a dead record) or Enter (S1 `RulesetMismatch`, S2 `InvalidStatValue`, S3 `TooManyTags`, in that order); no participant left is `NoEntrants`. An entrant takes its health, attributes, pools (unrefreshed), tags and `fixed` from the record, resumes suspended effects as `round + remaining` and has its record removed. `end_encounter` writes back every combatant that entered, and every combatant when the encounter does not respawn, dead included (`health == 0`: the dead stay dead). The write-back is `combat::exit_record`, which T139b's leave shares. `despawn` removes a record with the entity, so a despawned placement spawns fresh at the next start.
 - **Members at start (T139b1).** `start_encounter_with_members(world, spec, mode, &[Entrant])` adds record-holding members; `start_encounter_in_mode_tracked` is `start_encounter_with_members_tracked(.., &[])`, and an empty slice must stay byte-identical to `start_encounter_in_mode`. Public additions: `Entrant`, `start_encounter_with_members`, and the `CombatError` variants `NotCreature` and `AlreadyParticipant`. Check order after S1-S3: M0, then M1 and M2 over every member, then M3-M8 per member (`check_ruleset` is S1/M5 and `check_stats_and_tags` is S2-S3/M7-M8, shared with the authored Enter path), then S4. Member keys draw after the participants' draws; members publish after the participants and enqueue nothing.
+- **Joining and leaving (T139b2).** Public additions: `join_encounter`, `leave_encounter`, `CombatState.pending_joins`, `Lifecycle.join_after_active` and the `CombatError` variant `EncounterTerminal`. `join_encounter` checks J1-J11 in the contract's order (J9 counts a dead combatant's placement too) and mutates only after the last check, the one `combat.roll` draw being the first mutation. `leave_encounter` checks V1-V4 (a dead combatant cannot leave; it awaits release or despawn) and then goes through `World::remove_combatant_tracked`, which `despawn_tracked` also uses: change the settlement there, once, never in one caller.
+- **Journaled join and leave (T139c).** `Joined` and `Left` are version 2 events, so `HistoryEvent::is_v2` must list every v2 variant: forgetting one lets a version-1 wrapper keep it. `HistoryWorld::join_encounter` journals exactly one `Joined`; `leave_encounter` journals `Left` and then `push_transition` of the leave's facts; `start_encounter_with_members` journals what `start_encounter_in_mode` does (members and Enter participants journal nothing). Each stages a clone, runs the free function, drains the legacy queue once and commits.
+- Trap: records never upgrade the history version (T139 D12). Do not add a record test to `commit`'s upgrade condition: every TB-only release writes records, and `tests/history_v2.rs` R18 pins that such histories stay at version 1. A version-1 wrapper may hold records.
+- Trap: `Lifecycle.join_after_active` is published at every start, including `members == &[]`; it is a ruleset copy, not a member feature.
+- Trap: `advance_tracked` begins with the B27 flush of `pending_joins`. Anything that picks a head without `advance_tracked` (a new rollover path) must flush too, or a pending joiner is skipped.
+- Trap: a waiting joiner (round 1 or later, or round 0 under the default `late_join`) has no timeline entry and no pending entry, yet it is alive: every alive count includes it, and `tb_round_start` and `switch_to_real_time` are the only things that schedule it. Do not add a third list.
+- Trap: the loader's Q1-Q5 compare `(InitiativeKey, EntityId)` with the head, so a pending joiner registered after the head with an equal key is refused. A dead pending joiner is a legal save in a live encounter: the flush drops it. A terminal transition empties `pending_joins` through `combat::set_terminal` (D45a), so a terminal save never holds one; route any new way to end a TB encounter through it.
 - Trap: M1 and M2 are a pass of their own so that a bare entity listed twice fails `AlreadyParticipant`, not `NotCreature` (E2's pair). M6's "earlier member" arm cannot be reached from a loadable world, because K10 forbids two records with one placement; it is kept for the contract's wording.
 - Trap: add a new start check before S1-S4, never between them; an existing check must keep winning over S1-S4.
 - Trap: nothing happens to a creature outside an encounter (D9): no pool refreshes, no effect counts down, and `tick` leaves the store alone.
 - Trap: `Combatant.tags` is no longer gated on a granting effect. The hash of any world that starts an encounter over tagged prefabs moved once (the four `crpg-sim` goldens here; four `crpg-testkit` goldens in T139g).
-- Tests: `tests/creature_state.rs`, `tests/creature_lifecycle.rs`, `tests/creature_entry.rs` (members, T139b1); the helpers are `support::creature`.
+- Tests: `tests/creature_state.rs`, `tests/creature_lifecycle.rs`, `tests/creature_entry.rs` (members and joiner seeding), `tests/creature_join.rs`, `tests/creature_exit.rs`, and `combat::join_leave_facts_tests` (the crate-visible transition facts); the helpers are `support::creature`.
 
 ## Agent log
 
@@ -593,3 +605,6 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139a1 · Added the creature-record contract, its public additions and the shared stat-reading trap; the start/release lifecycle is deferred to T139a2.
 - 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139a2 · Recorded the start/release lifecycle (Spawn/Skip/Enter, write-back, `respawns`), amended the Tags and release traps for the removed carriage gate, and added the no-time-outside-an-encounter trap, so a reader does not look for the old gate or an unwritten release.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 (implementer) + T139b1 · Added the members-at-start contract, its check order and the M1/M2 pass trap to the creature-records section, so the next change to start's checks keeps the order the tests pin.
+- 2026-11-07 (UTC) · claude-code/sonnet-5.5 (implementer) + T139b2 · Added the join/leave surface, the pending-flush and waiting-joiner traps and the shared settlement rule, and amended the death/despawn/release trap, so a later change to turn settlement keeps leave and despawn in step.
+- 2026-11-07 (UTC) · claude-code/sonnet-5.5 (implementer) + T139b2 · Amended the dead-pending-joiner trap for D45a and named the single terminal helper, so a new terminal path does not leave pending joins that fail Q1 on reload.
+- 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T139c · Added the journaled join/leave surface and the records-never-upgrade trap to the creature-records section, so a later change to `commit` does not make records a v2 trigger.

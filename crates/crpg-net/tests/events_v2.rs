@@ -1732,6 +1732,12 @@ fn candidate_for(
         HistoryEvent::OrderEnded { .. } => {
             panic!("the TB fixture journals no v2 event")
         }
+        HistoryEvent::Joined { .. } => {
+            panic!("the TB fixture journals no v2 event")
+        }
+        HistoryEvent::Left { .. } => {
+            panic!("the TB fixture journals no v2 event")
+        }
     }
 }
 

@@ -26,10 +26,10 @@ use crate::limits::{ConfigError, ServerConfig, ServerLimits};
 use crate::queue::{
     close_quinn, deadline_after, frame_error_code, framed, framed_channel, lane_control,
     lane_reader, lane_writer, race, read_fail, reason_from, wait_stop, Answer, Conn, ConnWake,
-    Either, FailGuard, FlushRequest, LaneDirection, Opening, Phase, ReadFail, ReadSpec, Shared,
+    Either, FailGuard, FlushClose, LaneDirection, Opening, Phase, ReadFail, ReadSpec, Shared,
     State, Stop, SYNC_GRACE,
 };
-use crate::teardown::{close_deadlines, finish_endpoint_close};
+use crate::teardown::finish_endpoint_close;
 use crate::tls;
 
 /// Never reused within one `QuicServer`; starts at 1.
@@ -620,18 +620,14 @@ impl QuicServer {
             self.shared.notify_sync();
             return Ok(report);
         }
-        let deadlines = close_deadlines(self.limits.close_flush_timeout_ms);
+        let close = FlushClose::flush_close(self.limits.close_flush_timeout_ms, code);
         record.closing = Some(code);
-        record.flush = Some(FlushRequest {
-            code,
-            flush_end: deadlines.flush_end,
-            started: false,
-        });
+        record.flush = Some(close.request);
         record.wake.control.notify_one();
-        let guard_deadline = deadlines
+        let guard_deadline = close
             .overall
             .checked_add(SYNC_GRACE)
-            .unwrap_or(deadlines.overall);
+            .unwrap_or(close.overall);
         let state = self.shared.wait_until(state, guard_deadline, |state| {
             state
                 .conns
@@ -710,7 +706,8 @@ impl QuicServer {
             outbound_frames_discarded: 0,
             inbound_frames_discarded: 0,
         };
-        let deadlines = close_deadlines(self.limits.close_flush_timeout_ms);
+        let close =
+            FlushClose::flush_close(self.limits.close_flush_timeout_ms, CloseCode::Shutdown);
         if let Some(mut state) = self.shared.lock() {
             state.stopping = true;
             let ids: Vec<u64> = state.conns.keys().copied().collect();
@@ -728,19 +725,15 @@ impl QuicServer {
                     state.record_close(id, CloseReason::Local(CloseCode::Shutdown));
                 } else {
                     record.closing = Some(CloseCode::Shutdown);
-                    record.flush = Some(FlushRequest {
-                        code: CloseCode::Shutdown,
-                        flush_end: deadlines.flush_end,
-                        started: false,
-                    });
+                    record.flush = Some(close.request);
                     record.wake.control.notify_one();
                     flushing.push((id, record.discarded));
                 }
             }
-            let guard_deadline = deadlines
+            let guard_deadline = close
                 .overall
                 .checked_add(SYNC_GRACE)
-                .unwrap_or(deadlines.overall);
+                .unwrap_or(close.overall);
             let waited = self.shared.wait_until(state, guard_deadline, |state| {
                 flushing.iter().all(|(id, _)| {
                     state
@@ -757,7 +750,7 @@ impl QuicServer {
                     state.conns.values().map(Conn::held_inbound_frames).sum();
                 state.stop = Some(Stop {
                     code: CloseCode::Shutdown,
-                    deadline: deadlines.overall,
+                    deadline: close.overall,
                 });
             }
         }

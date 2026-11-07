@@ -2427,7 +2427,7 @@ impl PeerView<'_> {
     }
 
     /// Maps one history fact to a per-field projection candidate. Any
-    /// missing field or grant is `None`/`false`. The three version 2 events
+    /// missing field or grant is `None`/`false`. The five version 2 events
     /// are withheld (`None`) until T140/T141 give them a wire form.
     fn candidate(&self, event: &HistoryEvent) -> Option<EventCandidate> {
         match event {
@@ -2483,7 +2483,9 @@ impl PeerView<'_> {
             }
             HistoryEvent::RoundStarted { .. }
             | HistoryEvent::ModeChanged { .. }
-            | HistoryEvent::OrderEnded { .. } => None,
+            | HistoryEvent::OrderEnded { .. }
+            | HistoryEvent::Joined { .. }
+            | HistoryEvent::Left { .. } => None,
         }
     }
 

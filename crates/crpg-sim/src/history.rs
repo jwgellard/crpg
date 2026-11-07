@@ -45,10 +45,12 @@ use crpg_core::{EntityId, Tick, Ulid};
 use crpg_rules::Outcome;
 
 use crate::combat::{
-    perform_action_tracked, start_encounter_in_mode_tracked, ActionOutcome, CombatAction,
-    CombatError, EncounterMode, EncounterSpec, EncounterSummary, TickEvent, TransitionFacts,
+    join_encounter as join_encounter_free, leave_encounter_tracked, perform_action_tracked,
+    start_encounter_in_mode_tracked, start_encounter_with_members_tracked, ActionOutcome,
+    CombatAction, CombatError, EncounterMode, EncounterSpec, EncounterSummary, TickEvent,
+    TransitionFacts,
 };
-use crate::creature::{CreatureSpec, CreatureState};
+use crate::creature::{CreatureSpec, CreatureState, Entrant};
 use crate::event::SimEvent;
 use crate::transform::Transform;
 use crate::world::{EntityMeta, World};
@@ -72,8 +74,8 @@ const HISTORY_VERSION_V1: u32 = 1;
 /// and death facts mirror the drained legacy queue one-for-one while the
 /// richer variants carry only symbolic outcome strings, reported damage,
 /// widened rounds, modes and entity references — never rolls, margins, DCs,
-/// or interned handles. The last three variants are version 2 (T138b,
-/// ADR-0029 N5). Serializes with adjacent `type`/`value` tags in snake
+/// or interned handles. The last five variants are version 2 (T138b and
+/// T139c, ADR-0029 N5); records never make a wrapper version 2 (T139 D12). Serializes with adjacent `type`/`value` tags in snake
 /// case; deserialization requires `type` before `value` and rejects the
 /// reverse order before decoding the value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -142,14 +144,28 @@ pub enum HistoryEvent {
         /// The combatant whose order ended.
         actor: EntityId,
     },
+    /// A record-holding creature joined a live encounter (T139).
+    Joined {
+        /// The entrant.
+        entity: EntityId,
+    },
+    /// A combatant left a live encounter without despawning (T139).
+    Left {
+        /// The leaver.
+        entity: EntityId,
+    },
 }
 
 impl HistoryEvent {
-    /// Whether this is one of the three version 2 variants (T138b).
+    /// Whether this is one of the five version 2 variants (T138b, T139c).
     fn is_v2(&self) -> bool {
         matches!(
             self,
-            Self::RoundStarted { .. } | Self::ModeChanged { .. } | Self::OrderEnded { .. }
+            Self::RoundStarted { .. }
+                | Self::ModeChanged { .. }
+                | Self::OrderEnded { .. }
+                | Self::Joined { .. }
+                | Self::Left { .. }
         )
     }
 }
@@ -660,6 +676,90 @@ impl HistoryWorld {
                 round: u64::from(round),
             });
         }
+        self.commit(world, events, tick)?;
+        Ok(())
+    }
+
+    /// [`start_encounter_in_mode`](Self::start_encounter_in_mode) plus
+    /// record-holding `members` (T139 D4, B21-B22, B36).
+    ///
+    /// Journals one `Spawned` per spawned participant in drain order, then
+    /// the initial `TurnStarted` if the start scheduled a head. Members and
+    /// entering participants are not spawned and journal nothing (D12).
+    /// Gameplay errors win before history errors and commit nothing.
+    pub fn start_encounter_with_members(
+        &mut self,
+        spec: &EncounterSpec<'_>,
+        mode: EncounterMode,
+        members: &[Entrant],
+    ) -> Result<(), HistoryError> {
+        let mut world = self.world.clone();
+        let facts = match start_encounter_with_members_tracked(&mut world, spec, mode, members) {
+            Ok(facts) => facts,
+            Err(error) => return Err(HistoryError::Combat(error)),
+        };
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
+        let mut events = Vec::with_capacity(drained.len() + 1);
+        for envelope in &drained {
+            events.push(translate_legacy(&envelope.payload));
+        }
+        if let Some((actor, round)) = facts.initial_turn {
+            events.push(HistoryEvent::TurnStarted {
+                actor,
+                round: u64::from(round),
+            });
+        }
+        self.commit(world, events, tick)?;
+        Ok(())
+    }
+
+    /// Joins one record-holding creature to the live encounter, journaling
+    /// exactly one `Joined { entity }` (T139 B23-B28, B36).
+    ///
+    /// Gameplay errors win before history errors. A rejected join commits
+    /// nothing, including the draw of a rolled entry key.
+    pub fn join_encounter(&mut self, joiner: &Entrant) -> Result<(), HistoryError> {
+        let mut world = self.world.clone();
+        if let Err(error) = join_encounter_free(&mut world, joiner) {
+            return Err(HistoryError::Combat(error));
+        }
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
+        debug_assert!(drained.is_empty(), "a join enqueues no legacy events");
+        let mut events = Vec::with_capacity(drained.len() + 1);
+        for envelope in &drained {
+            events.push(translate_legacy(&envelope.payload));
+        }
+        events.push(HistoryEvent::Joined {
+            entity: joiner.entity,
+        });
+        self.commit(world, events, tick)?;
+        Ok(())
+    }
+
+    /// Removes one live combatant from the live encounter without
+    /// despawning it (T139 B29-B31, B36): journals `Left { entity }`, then
+    /// the trailing transition the leave actually took (`ModeChanged`,
+    /// `RoundStarted`, then `TurnStarted`, else the first `EncounterEnded`).
+    ///
+    /// Leaving enqueues neither `Died` nor `Despawned`. Gameplay errors win
+    /// before history errors and commit nothing.
+    pub fn leave_encounter(&mut self, entity: EntityId) -> Result<(), HistoryError> {
+        let mut world = self.world.clone();
+        let facts = match leave_encounter_tracked(&mut world, entity) {
+            Ok(facts) => facts,
+            Err(error) => return Err(HistoryError::Combat(error)),
+        };
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
+        debug_assert!(drained.is_empty(), "a leave enqueues no legacy events");
+        let mut events = Vec::with_capacity(drained.len() + 3);
+        for envelope in &drained {
+            events.push(translate_legacy(&envelope.payload));
+        }
+        events.push(HistoryEvent::Left { entity });
+        push_transition(&mut events, &facts);
         self.commit(world, events, tick)?;
         Ok(())
     }
@@ -1701,6 +1801,18 @@ impl<'de> Visitor<'de> for PayloadVisitor {
                 let fields: OrderEndedFields = map.next_value()?;
                 HistoryEvent::OrderEnded {
                     actor: fields.actor,
+                }
+            }
+            "joined" => {
+                let fields: EntityRef = map.next_value()?;
+                HistoryEvent::Joined {
+                    entity: fields.entity,
+                }
+            }
+            "left" => {
+                let fields: EntityRef = map.next_value()?;
+                HistoryEvent::Left {
+                    entity: fields.entity,
                 }
             }
             _ => return Err(A::Error::custom("unknown history event type")),

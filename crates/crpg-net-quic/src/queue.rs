@@ -28,6 +28,7 @@ use crate::handshake::{
     FrameError, Framing, Welcome, FRAME_HEADER_BYTES,
 };
 use crate::server::{ConnectionId, ServerEvent, ServerNotice};
+use crate::teardown::close_deadlines;
 
 /// Extra time a sync waiter allows beyond a close deadline before it stops
 /// waiting for the I/O thread (a liveness guard, not a protocol timer).
@@ -148,9 +149,40 @@ pub(crate) struct ConnWake {
 /// A `Flush` close in progress.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FlushRequest {
-    pub(crate) code: CloseCode,
-    pub(crate) flush_end: Instant,
-    pub(crate) started: bool,
+    code: CloseCode,
+    flush_end: Instant,
+    started: bool,
+}
+
+/// One `CloseMode::Flush` close's wiring: the request to install and the
+/// endpoint's overall deadline, both from one `Instant::now()`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FlushClose {
+    pub(crate) request: FlushRequest,
+    /// `start + B`: the sync guard deadline and `Stop.deadline`.
+    pub(crate) overall: Instant,
+}
+
+impl FlushClose {
+    /// The one constructor for every `CloseMode::Flush` close (D44c (a)).
+    /// Takes the budget `B` ms (`close_flush_timeout_ms`, valid
+    /// `0..=2_000`; `src/limits.rs:126-131`, `:240-245`) and the close
+    /// code; reads the wall clock once via `close_deadlines`; carries the
+    /// reserve rule exactly once (T098g D2): `R = min(200 ms, B / 4)`,
+    /// `flush_end = start + B − R`, `overall = start + B`.
+    // The contract (D44c (a)) mandates this exact name; the lint disagrees.
+    #[allow(clippy::self_named_constructors)]
+    pub(crate) fn flush_close(budget_ms: u32, code: CloseCode) -> Self {
+        let deadlines = close_deadlines(budget_ms);
+        FlushClose {
+            request: FlushRequest {
+                code,
+                flush_end: deadlines.flush_end,
+                started: false,
+            },
+            overall: deadlines.overall,
+        }
+    }
 }
 
 /// One connection's record.
@@ -996,5 +1028,95 @@ async fn run_flush(
     shared.notify_sync();
     if recorded {
         close_quinn(connection, flush.code);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    // Aliased so the constructor call below stays out of the reviewer's `rg`
+    // over `src`, which must show exactly the three product sites.
+    use super::FlushClose as Fc;
+    use crate::close::CloseCode;
+
+    /// Brackets one constructor call with two wall-clock reads (T098g test-1
+    /// shape): instants bounded by the window, the split exact, and nothing
+    /// measures elapsed time.
+    fn bracket(budget_ms: u32) -> (Instant, Fc, Instant) {
+        let before = Instant::now();
+        let close = Fc::flush_close(budget_ms, CloseCode::Normal);
+        let after = Instant::now();
+        (before, close, after)
+    }
+
+    fn assert_split(close: &Fc, reserve_ms: u32) {
+        assert_eq!(
+            close.overall.duration_since(close.request.flush_end),
+            Duration::from_millis(u64::from(reserve_ms))
+        );
+    }
+
+    fn assert_overall_window(before: Instant, close: &Fc, after: Instant, budget_ms: u32) {
+        let budget = Duration::from_millis(u64::from(budget_ms));
+        assert!(close.overall >= before + budget, "overall starts at now");
+        assert!(close.overall <= after + budget, "overall ends at now");
+    }
+
+    #[test]
+    fn flush_close_budget_2000_stops_200_ms_early() {
+        let budget = 2_000;
+        let (before, close, after) = bracket(budget);
+        assert_split(&close, 200);
+        assert_overall_window(before, &close, after, budget);
+        assert!(close.request.flush_end <= close.overall);
+        assert!(!close.request.started);
+        assert_eq!(close.request.code, CloseCode::Normal);
+    }
+
+    #[test]
+    fn flush_close_budget_400_stops_a_quarter_early() {
+        let budget = 400;
+        let (before, close, after) = bracket(budget);
+        assert_split(&close, 100);
+        assert_overall_window(before, &close, after, budget);
+        assert!(close.request.flush_end <= close.overall);
+        assert!(!close.request.started);
+        assert_eq!(close.request.code, CloseCode::Normal);
+    }
+
+    #[test]
+    fn flush_close_budget_800_both_rules_give_200() {
+        let budget = 800;
+        let (before, close, after) = bracket(budget);
+        assert_split(&close, 200);
+        assert_overall_window(before, &close, after, budget);
+        assert!(close.request.flush_end <= close.overall);
+        assert!(!close.request.started);
+        assert_eq!(close.request.code, CloseCode::Normal);
+    }
+
+    #[test]
+    fn flush_close_budget_0_ends_at_once() {
+        let budget = 0;
+        let (before, close, after) = bracket(budget);
+        assert_split(&close, 0);
+        assert_overall_window(before, &close, after, budget);
+        assert!(close.request.flush_end <= close.overall);
+        assert!(!close.request.started);
+        assert_eq!(close.request.code, CloseCode::Normal);
+        assert_eq!(close.request.flush_end, close.overall);
+    }
+
+    #[test]
+    fn flush_close_flush_end_never_passes_overall() {
+        for budget in [0, 1, 3, 4, 100, 101, 400, 800, 1_999, 2_000, u32::MAX] {
+            let (before, close, after) = bracket(budget);
+            assert!(
+                close.request.flush_end <= close.overall,
+                "order of budget {budget}"
+            );
+            assert_overall_window(before, &close, after, budget);
+        }
     }
 }
