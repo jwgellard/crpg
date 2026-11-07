@@ -80,6 +80,7 @@ cargo build -p crpg-godot --features engine --locked -j 2
 Godot4 --headless --path apps/client --import
 Godot4 --headless --path apps/client -s res://tests/load.gd      # exit 0
 Godot4 --headless --path apps/client -s res://tests/scene_sync.gd   # exit 0
+Godot4 --headless --path apps/client -s res://tests/hud.gd          # exit 0
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/load.gd   # control: exit 3
 ```
 
@@ -143,6 +144,18 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
   read as a pass. Test functions therefore report success with an explicit
   `"PASS"` token and the runners fail on anything that is not the `String`
   `"PASS"`.
+- **`_ready` does not run during `SceneTree._initialize`.** The root is not yet
+  in the tree, so a node added there gets `_ready` only on the first frame. A
+  node tree that the cases drive must be built in `_init` (`CombatHud.gd` is).
+- **`find_child` on nodes built in code needs `owned = false`.** With the
+  default `owned = true` it finds nothing, because code-built nodes have no
+  owner: `find_child(name, true, false)`.
+- **`RichTextLabel.append_text` parses BBCode and leaves `.text` empty**, even
+  with `bbcode_enabled` false, so the log cannot be read back and `[b]` is
+  mangled. Set `.text` from a line buffer instead.
+- **A `-> String` function that hits a runtime error returns `""`.** Runners and
+  cases therefore compare against an explicit sentinel (`"PASS"`, `"ok"`) and
+  fail on anything else, including `""` and `null`; `hud.gd` exits 6 on that.
 
 Agent log:
 
@@ -152,3 +165,4 @@ Agent log:
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047c · Added three CI traps: the notice and BR-21 pin on a godot bump, the console exe for exit codes on Windows, and no `CARGO_TARGET_DIR` in CI.
 - 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Added the `scene_sync.gd` engine gate and the four GDScript traps the reconcile hit: the `remove_child`+`queue_free` free, `MeshInstance3D` having no `modulate`, raw-string regexes, and a runtime error returning `null` from the runner's `run`.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Corrected the runtime-error trap: a Godot 4.7.2 probe showed a `-> String` function that crashes returns `""`, not `null`, so the scene-sync cases now report success with an explicit `"PASS"` token and the runners fail on anything else.
+- 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Added the `hud.gd` engine gate and four GDScript traps (`_ready` vs `_initialize`, `find_child` ownership, `append_text`, the `""` sentinel) found while building the HUD cases.
