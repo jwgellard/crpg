@@ -31,6 +31,16 @@ pub struct SuspendedEffect {
     pub remaining_rounds: u32,
 }
 
+/// One record-holding creature entering an encounter: a start member or a
+/// joiner (T139 D4). Its stats, pools, effects and tags come from its record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entrant {
+    /// A live entity holding a record.
+    pub entity: EntityId,
+    /// The base initiative key, standing in for an authored participant's.
+    pub initiative: i32,
+}
+
 /// One creature's persistent state while it is outside every encounter
 /// (T139 D1). Keyed by entity in [`World::creatures`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
