@@ -4,6 +4,12 @@ extends Node3D
 # kept -> rewrite in place. Layout and dead tint are client-only (ADR-0033 §14).
 
 const DEAD_TINT := Color(0.35, 0.35, 0.35)
+const SIDE_COLORS := [
+	Color(0.20, 0.60, 1.00, 1.00),
+	Color(1.00, 0.35, 0.20, 1.00),
+	Color(0.25, 0.85, 0.45, 1.00),
+	Color(0.75, 0.45, 0.95, 1.00),
+]
 
 var _proxies: Dictionary = {}        # int NetId -> Node3D; live proxies only
 var _side_order: Array[String] = []  # first-seen order since the last clear()
@@ -95,15 +101,26 @@ func _free_proxy(net_id: int) -> void:
 	_proxies.erase(net_id)
 
 func _set_mesh(mesh_instance: MeshInstance3D, side_index: int) -> void:
+	var mesh_height: float
 	if side_index == 0:
 		var capsule := CapsuleMesh.new()
 		capsule.radius = 0.4
 		capsule.height = 1.2
 		mesh_instance.mesh = capsule
+		mesh_height = capsule.height
 	else:
 		var box := BoxMesh.new()
 		box.size = Vector3(0.8, 1.0, 0.8)
 		mesh_instance.mesh = box
+		mesh_height = box.size.y
+	# B13: lift only the Mesh child by half its height, so the mesh's lower
+	# extent rests on the ground (proxy-local y == 0). The proxy keeps y == 0.
+	mesh_instance.position.y = mesh_height / 2.0
+	# B14: per-side surface colour (not material_override, which the dead tint
+	# owns). Reapplied on every sync so a kept row changing sides recolours.
+	var surface := StandardMaterial3D.new()
+	surface.albedo_color = SIDE_COLORS[side_index % SIDE_COLORS.size()]
+	mesh_instance.set_surface_override_material(0, surface)
 
 func _set_dead(proxy: Node3D, dead: bool) -> void:
 	var mesh_instance := proxy.get_node("Mesh") as MeshInstance3D

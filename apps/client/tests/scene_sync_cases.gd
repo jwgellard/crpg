@@ -8,6 +8,14 @@ extends RefCounted
 const SCENE_SYNC := "res://scripts/SceneSync.gd"
 const TINT := Color(0.35, 0.35, 0.35)
 const WHITE := Color(1.0, 1.0, 1.0)
+# T048b B14: the exact per-side palette, indexed by the stable side index with
+# a mod-4 wrap. Must match SceneSync.SIDE_COLORS bit-for-bit.
+const COLORS := [
+	Color(0.20, 0.60, 1.00, 1.00),
+	Color(1.00, 0.35, 0.20, 1.00),
+	Color(0.25, 0.85, 0.45, 1.00),
+	Color(0.75, 0.45, 0.95, 1.00),
+]
 const BANNED := [
 	"session", "submit_option", "events", "receipts", "health", "max_health",
 	"health_known", "revision", "active", "option_labels", "option_targets",
@@ -50,6 +58,8 @@ func run(host: Node) -> String:
 		["S5", _case_s5], ["S6", _case_s6], ["S7", _case_s7], ["S8", _case_s8],
 		["S9", _case_s9], ["S10", _case_s10], ["S11", _case_s11],
 		["S12", _case_s12], ["S13", _case_s13],
+		["S15", _case_s15], ["S16", _case_s16], ["S17", _case_s17],
+		["S18", _case_s18],
 	]
 	for entry in cases:
 		var detail = entry[1].call(host, script)
@@ -134,6 +144,26 @@ func _expect_dead(proxy, dead: bool, tag: String) -> String:
 		return "%s material_override is not null" % tag
 	elif _label(proxy).modulate != WHITE:
 		return "%s modulate = %s" % [tag, str(_label(proxy).modulate)]
+	return "PASS"
+
+func _surface_material(proxy) -> Material:
+	return _mesh(proxy).get_surface_override_material(0)
+
+func _expect_surface(proxy, color: Color, tag: String) -> String:
+	var mat = _surface_material(proxy)
+	if not (mat is StandardMaterial3D):
+		return "%s surface material is not a StandardMaterial3D" % tag
+	if (mat as StandardMaterial3D).albedo_color != color:
+		return "%s albedo = %s" % [tag, str((mat as StandardMaterial3D).albedo_color)]
+	return "PASS"
+
+func _expect_label(proxy, text: String) -> String:
+	if _label(proxy).position != Vector3(0, 1.2, 0):
+		return "%s label position = %s" % [String(proxy.name), str(_label(proxy).position)]
+	if _label(proxy).billboard != BaseMaterial3D.BILLBOARD_ENABLED:
+		return "%s label billboard = %d" % [String(proxy.name), _label(proxy).billboard]
+	if _label(proxy).text != text:
+		return "%s label = %s" % [String(proxy.name), _label(proxy).text]
 	return "PASS"
 
 # A -> String helper that crashes returns "" (its type default), never null.
@@ -557,6 +587,151 @@ func _case_s13(_host: Node, _script: Script) -> String:
 		return "the control scanner missed session"
 	if _matches(control, r"\.revision\(").is_empty():
 		return "the control scanner missed the revision call"
+	return "PASS"
+
+func _case_s15(host: Node, script: Script) -> String:
+	var sync = _new_sync(host, script)
+	sync.sync(_a())
+	var p1 = _proxy(sync, 1)
+	var p2 = _proxy(sync, 2)
+	if p1 == null or p2 == null:
+		return "a proxy is missing"
+	# B13: proxy positions keep T048's rule; the lift is on the Mesh child only.
+	var detail := _expect_pos(p1, Vector3(0, 0, 0), "proxy_1")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_pos(p2, Vector3(3, 0, 0), "proxy_2")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_mesh(p1, true, "proxy_1")
+	if detail != "PASS": return _detail("", detail)
+	var capsule: CapsuleMesh = _mesh(p1).mesh
+	if not is_equal_approx(capsule.height, 1.2):
+		return "capsule height = %s" % str(capsule.height)
+	if _mesh(p1).position != Vector3(0, 0.6, 0):
+		return "proxy_1 mesh.position = %s" % str(_mesh(p1).position)
+	if not is_equal_approx(_mesh(p1).position.y, capsule.height / 2.0):
+		return "proxy_1 mesh y = %s, half height = %s" % [str(_mesh(p1).position.y), str(capsule.height / 2.0)]
+	detail = _expect_mesh(p2, false, "proxy_2")
+	if detail != "PASS": return _detail("", detail)
+	var box: BoxMesh = _mesh(p2).mesh
+	if not is_equal_approx(box.size.y, 1.0):
+		return "box size.y = %s" % str(box.size.y)
+	if _mesh(p2).position != Vector3(0, 0.5, 0):
+		return "proxy_2 mesh.position = %s" % str(_mesh(p2).position)
+	if not is_equal_approx(_mesh(p2).position.y, box.size.y / 2.0):
+		return "proxy_2 mesh y = %s, half height = %s" % [str(_mesh(p2).position.y), str(box.size.y / 2.0)]
+	# A box-side row at rank 1 keeps the same lift at proxy (3, 0, 1.5).
+	sync.sync(_view([1, 2, 3], ["Hero", "Goblin", "Ally"], ["Player", "Monster", "Monster"], [0, 0, 0]))
+	var p3 = _proxy(sync, 3)
+	if p3 == null:
+		return "proxy_3 is missing"
+	detail = _expect_pos(p3, Vector3(3, 0, 1.5), "proxy_3")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_mesh(p3, false, "proxy_3")
+	if detail != "PASS": return _detail("", detail)
+	if _mesh(p3).position != Vector3(0, 0.5, 0):
+		return "proxy_3 mesh.position = %s" % str(_mesh(p3).position)
+	return "PASS"
+
+func _case_s16(host: Node, script: Script) -> String:
+	var sync = _new_sync(host, script)
+	# Five first-seen sides in one sync: stable side indexes 0-4.
+	var view = _view([1, 2, 3, 4, 5], ["A", "B", "C", "D", "E"], ["S0", "S1", "S2", "S3", "S4"], [0, 0, 0, 0, 0])
+	sync.sync(view)
+	for i in range(5):
+		var net_id := i + 1
+		var proxy = _proxy(sync, net_id)
+		if proxy == null:
+			return "proxy_%d is missing" % net_id
+		# Index 4 wraps to index 0 by the modulo rule (COLORS[4 % 4]).
+		var detail := _expect_surface(proxy, COLORS[i % COLORS.size()], "proxy_%d" % net_id)
+		if detail != "PASS": return _detail("", detail)
+		if _mesh(proxy).material_override != null:
+			return "proxy_%d material_override is not null" % net_id
+	# The palette colour survives a repeated sync.
+	sync.sync(view)
+	for i in range(5):
+		var net_id := i + 1
+		var proxy = _proxy(sync, net_id)
+		var detail := _expect_surface(proxy, COLORS[i % COLORS.size()], "proxy_%d (repeat)" % net_id)
+		if detail != "PASS": return _detail("", detail)
+	return "PASS"
+
+func _case_s17(host: Node, script: Script) -> String:
+	var sync = _new_sync(host, script)
+	sync.sync(_a())
+	var p1 = _proxy(sync, 1)
+	var p2 = _proxy(sync, 2)
+	if p1 == null or p2 == null:
+		return "a proxy is missing"
+	# Record each side's surface colour before dying.
+	var detail := _expect_surface(p1, COLORS[0], "proxy_1")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_surface(p2, COLORS[1], "proxy_2")
+	if detail != "PASS": return _detail("", detail)
+	var pos1 = p1.position
+	var pos2 = p2.position
+	# Die both rows, with a nonzero byte greater than 1.
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [2, 3]))
+	if _proxy(sync, 1) != p1 or _proxy(sync, 2) != p2:
+		return "a dead row changed object"
+	detail = _expect_count(sync, 2)
+	if detail != "PASS": return _detail("", detail)
+	if p1.position != pos1 or p2.position != pos2:
+		return "a dead row moved"
+	detail = _expect_dead(p1, true, "proxy_1 (dead 2)")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_dead(p2, true, "proxy_2 (dead 3)")
+	if detail != "PASS": return _detail("", detail)
+	# The surface colour stays assigned under the dead override.
+	detail = _expect_surface(p1, COLORS[0], "proxy_1 surface after dead")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_surface(p2, COLORS[1], "proxy_2 surface after dead")
+	if detail != "PASS": return _detail("", detail)
+	# Revive: override null, white label, the original colour visible again.
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [0, 0]))
+	detail = _expect_dead(p1, false, "proxy_1 (alive)")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_dead(p2, false, "proxy_2 (alive)")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_surface(p1, COLORS[0], "proxy_1 surface after revive")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_surface(p2, COLORS[1], "proxy_2 surface after revive")
+	if detail != "PASS": return _detail("", detail)
+	return "PASS"
+
+func _case_s18(host: Node, script: Script) -> String:
+	var sync = _new_sync(host, script)
+	sync.sync(_a())
+	var p1 = _proxy(sync, 1)
+	var p2 = _proxy(sync, 2)
+	if p1 == null or p2 == null:
+		return "a proxy is missing"
+	# Label local contract is unchanged by the lift: capsule and box rows.
+	var detail := _expect_label(p1, "Hero")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_label(p2, "Goblin")
+	if detail != "PASS": return _detail("", detail)
+	# A kept row changing sides keeps the label contract.
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Monster", "Monster"], [0, 0]))
+	detail = _expect_label(p1, "Hero")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_label(p2, "Goblin")
+	if detail != "PASS": return _detail("", detail)
+	# Repeated sync keeps it too.
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Monster", "Monster"], [0, 0]))
+	detail = _expect_label(p1, "Hero")
+	if detail != "PASS": return _detail("", detail)
+	# Alive: white modulation. Dead (byte 2): grey, text/position/billboard same.
+	if _label(p1).modulate != WHITE:
+		return "proxy_1 label modulate = %s (want white)" % str(_label(p1).modulate)
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Monster", "Monster"], [0, 2]))
+	if _label(p2).modulate != TINT:
+		return "proxy_2 label modulate = %s (want grey)" % str(_label(p2).modulate)
+	detail = _expect_label(p2, "Goblin")
+	if detail != "PASS": return _detail("", detail)
+	# Names remain exactly proxy_<id>.
+	if String(p1.name) != "proxy_1" or String(p2.name) != "proxy_2":
+		return "names = %s, %s" % [String(p1.name), String(p2.name)]
 	return "PASS"
 
 func _read_stripped(path: String):

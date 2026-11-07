@@ -1,5 +1,6 @@
 extends SceneTree
-# T048: runs the SceneSync cases (S1-S13) and checks S14 two frames later: no
+# T048/T048b: runs the SceneSync cases (S1-S13 and S15-S18) and checks S14 two
+# frames later: no
 # freed proxy is still valid and every kept proxy is. Exit 0 only when run
 # returns the String "PASS"; 6 when it returns anything else (a case failed, or
 # a crash made a -> String function return "" instead of "PASS"); 7 a

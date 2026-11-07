@@ -190,10 +190,19 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   a capsule and every other side a box, with `x = 3 × side index`,
   `z = 1.5 × rank within that side`, `y = 0`; the side order is
   first-appearance order and changes only through `clear()`, which frees
-  everything for a session boundary. A dead row stays in place, greyed: its
+  everything for a session boundary. T048b lifts only each proxy's `Mesh`
+  child by half its height (`mesh.position.y = height / 2`: capsule `0.6`, box
+  `0.5`) while the proxy node keeps `y = 0`, so the mesh's lower extent rests
+  on the ground and the label's local `y = 1.2` is unchanged. Each side's mesh
+  also carries a `StandardMaterial3D` surface-0 override from a four-entry
+  `SIDE_COLORS` palette — `Color(0.20, 0.60, 1.00)`, `(1.00, 0.35, 0.20)`,
+  `(0.25, 0.85, 0.45)`, `(0.75, 0.45, 0.95)` (alpha 1) — indexed by the side
+  index with a mod-4 wrap. A dead row stays in place, greyed: its
   `material_override` is a `StandardMaterial3D` with `albedo_color` 35 % and
-  the label `modulate` is the same. `proxy_count()` counts the `proxy_`
-  children. The wire has no position, so this layout is client-only.
+  the label `modulate` is the same, and that override wins over the surface
+  colour while dead and is cleared to reveal it again. `proxy_count()` counts
+  the `proxy_` children. The wire has no position, so this layout is
+  client-only.
 - **`scripts/CombatHud.gd`** (`CanvasLayer`) renders the view and decides no
   rule. It builds a fixed, named tree in `_init`, not `_ready`, because `_ready`
   does not run inside `SceneTree._initialize` and the cases drive the HUD there:
@@ -233,9 +242,12 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   Strike -> Hero: ` line; a problem exits 7. The
   goblin's initiative means the first polls have no player options, so the
   script waits rather than treating that as a failure.
-- **`tests/scene_sync_cases.gd`** holds S1–S13 for the reconcile against an
-  inner `FakeView`; `run(host)` returns `"PASS"` or `"S<n>: detail"` and records
-  the freed and kept nodes S14 checks. **`tests/scene_sync.gd`** runs those
+- **`tests/scene_sync_cases.gd`** holds S1–S13 and S15–S18 for the reconcile
+  against an inner `FakeView`; `run(host)` returns `"PASS"` or `"S<n>: detail"`
+  and records the freed and kept nodes S14 checks. S15–S18 prove T048b's lift
+  and palette: S15 the mesh-only lift, S16 the palette and mod-4 wrap, S17 the
+  dead override winning then restoring the side colour, S18 the unchanged label
+  contract. **`tests/scene_sync.gd`** runs those
   cases and exits 6 on a failure, 7 when a freed proxy is still valid after
   two frames or a kept one is not, and 3 when a script fails to load.
 - **`tests/hud_cases.gd`** holds H1-H19 against an inner `FakeView` with
@@ -304,3 +316,4 @@ Agent log:
 - 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Replaced the spawn-once SceneSync bullet with the revision-free reconcile (`plan`/`sync`/`clear`), documented the deferred-free idiom, the stable side order, the greyed-in-place dead visual and the two new test files, and gave `smoke.gd` its exit 6.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Documented that the scene-sync cases report success with an explicit `"PASS"` token, since a runtime error in a `-> String` GDScript function returns `""` rather than `null` and must not read as a pass.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Replaced the CombatHud bullet with the `_init`-built named tree, the HUD texts, the 200-line log buffer and gate and the end block, and added `hud_cases.gd`, `hud.gd` and smoke's exit 7 and H20.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Amended the SceneSync bullet for the mesh-only lift (D44b) and per-side surface palette, and extended the scene-sync cases bullet to S15–S18, so the client-side layout matches the approved T048b contract.

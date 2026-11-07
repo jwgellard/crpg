@@ -136,6 +136,13 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
 - **`MeshInstance3D` has no `modulate`.** The dead tint is
   `material_override` on the mesh plus `modulate` on the `Label3D`; keep the
   override object when re-syncing so idempotence sees the same tint.
+- **Side colour vs dead tint live in different overrides (T048b).** The
+  per-side `StandardMaterial3D` is a surface-0 override
+  (`set_surface_override_material(0, …)`), never `material_override`, which the
+  dead grey owns and must keep so it wins while dead and restores the side
+  colour when cleared. The lift is on the `Mesh` child only
+  (`mesh.position.y = height / 2`), never the proxy node, so the label's local
+  `y = 1.2` and every S1–S14 proxy-position assertion stay valid.
 - **GDScript `"\."` is a parse error.** The source-rule case must use a raw
   string (`r"view\.…"`) for its regex.
 - **A GDScript runtime error in a typed function returns that type's default,
@@ -166,3 +173,4 @@ Agent log:
 - 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Added the `scene_sync.gd` engine gate and the four GDScript traps the reconcile hit: the `remove_child`+`queue_free` free, `MeshInstance3D` having no `modulate`, raw-string regexes, and a runtime error returning `null` from the runner's `run`.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Corrected the runtime-error trap: a Godot 4.7.2 probe showed a `-> String` function that crashes returns `""`, not `null`, so the scene-sync cases now report success with an explicit `"PASS"` token and the runners fail on anything else.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Added the `hud.gd` engine gate and four GDScript traps (`_ready` vs `_initialize`, `find_child` ownership, `append_text`, the `""` sentinel) found while building the HUD cases.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Added the side-colour/dead-tint override trap and the mesh-only lift rule, so future work keeps the surface override out of `material_override` and the proxy node at `y = 0`.
