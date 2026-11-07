@@ -3721,11 +3721,7 @@ pub(crate) fn perform_action_tracked(
                     let popped = end_turn(world);
                     debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
                 }
-                world
-                    .combat_mut()
-                    .as_mut()
-                    .expect("the encounter is checked above")
-                    .active = None;
+                set_terminal(world);
                 facts.encounter_ended = Some((encounter, round));
             } else if actor_dead {
                 facts = advance_tracked(world);
@@ -4110,11 +4106,7 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
                 let state = world.combat().expect("the encounter is checked above");
                 (state.definition.encounter, state.round)
             };
-            world
-                .combat_mut()
-                .as_mut()
-                .expect("the encounter is checked above")
-                .active = None;
+            set_terminal(world);
             facts.encounter_ended = Some(ended);
         }
     } else {
@@ -4155,15 +4147,25 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
                 let state = world.combat().expect("the encounter is checked above");
                 (state.definition.encounter, state.round)
             };
-            world
-                .combat_mut()
-                .as_mut()
-                .expect("the encounter is checked above")
-                .active = None;
+            set_terminal(world);
             facts.encounter_ended = Some(ended);
         }
     }
     facts
+}
+
+/// Makes the turn-based encounter terminal: no active turn, and no pending
+/// joiner (T139 D45a, so a terminal save still satisfies the loader's Q1). The
+/// two `advance_tracked` sites reach here after its B27 flush has already taken
+/// the list, so the clear is a no-op there; the `UseAbility` kill that leaves
+/// fewer than two alive does not pass through `advance_tracked`, and relies on it.
+fn set_terminal(world: &mut World) {
+    let state = world
+        .combat_mut()
+        .as_mut()
+        .expect("the encounter is checked above");
+    state.active = None;
+    state.pending_joins.clear();
 }
 
 /// The number of combatants with `dead == false`; the RT terminal rule is

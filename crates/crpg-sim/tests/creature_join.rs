@@ -1095,3 +1095,31 @@ fn e8_dead_pending_join_q5() {
         );
     }
 }
+
+/// D45a (B33): a terminal transition empties `pending_joins`, so the terminal
+/// save keeps B33's round trip. B kills pending J, then kills A, the last
+/// other combatant: the kill ends the encounter without `advance_tracked`.
+///
+/// **Fails if** the `UseAbility` terminal branch leaves `pending_joins` alone.
+#[test]
+fn e8_terminal_transition_empties_pending_joins() {
+    let mut fixture = join_fixture(Some(LateJoinWire::AfterActive));
+    fixture.ruleset.pools[0].max = 5;
+    always_success(&mut fixture);
+    make_lethal(&mut fixture, 10);
+    edit_ability(&mut fixture, |ability| ability.ends_turn = false);
+    let (mut world, a, b, j) = pending_world(&fixture);
+    perform_action(&mut world, &use_action(b, fixture.ability, j)).expect("B attacks J");
+    assert_eq!(pending_of(&world), [j], "a dead joiner is still pending");
+    perform_action(&mut world, &use_action(b, fixture.ability, a)).expect("B attacks A");
+    assert_eq!(world.combat().expect("combat").active, None, "terminal");
+    assert!(pending_of(&world).is_empty(), "the list is emptied");
+    assert!(value_of(&world)["combat"].get("pending_joins").is_none());
+    let reloaded = try_with_json(&world, |_| {}).expect("the terminal save reloads");
+    assert_eq!(reloaded, world);
+    assert_eq!(state_hash(&reloaded), state_hash(&world));
+    // The waiting creature is still a combatant and is released like the rest.
+    assert!(world.combatants().get(j).is_some());
+    crpg_sim::end_encounter(&mut world).expect("release");
+    assert!(world.creatures().get(j).is_some());
+}
