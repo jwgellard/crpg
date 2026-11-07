@@ -22,7 +22,7 @@ func _initialize() -> void:
 	var cases_script: Script = load("res://tests/scene_sync_cases.gd")
 	var cases = cases_script.new() if cases_script != null and cases_script.can_instantiate() else null
 	var detail = cases.run(root) if cases != null and cases.has_method("run") else null
-	if not (detail is String) or detail != "":
+	if not (detail is String) or detail != "PASS":
 		printerr("smoke.gd FAIL: scene sync %s" % str(detail))
 		quit(6)
 		return

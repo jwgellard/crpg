@@ -210,7 +210,7 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   goblin's initiative means the first polls have no player options, so the
   script waits rather than treating that as a failure.
 - **`tests/scene_sync_cases.gd`** holds S1–S13 for the reconcile against an
-  inner `FakeView`; `run(host)` returns `""` or `"S<n>: detail"` and records
+  inner `FakeView`; `run(host)` returns `"PASS"` or `"S<n>: detail"` and records
   the freed and kept nodes S14 checks. **`tests/scene_sync.gd`** runs those
   cases and exits 6 on a failure, 7 when a freed proxy is still valid after
   two frames or a kept one is not, and 3 when a script fails to load.
@@ -272,3 +272,4 @@ Agent log:
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047d · Added the Client section: the four GDScript files' contracts, the client-only proxy layout, the HUD text rules and E2's exit codes, so T048/T050 extend a stated baseline rather than re-deriving one.
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047c · Added the CI section: the `client` job's order, the artifact layout and where BR-21 sits, pointing at the contract for the pins.
 - 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Replaced the spawn-once SceneSync bullet with the revision-free reconcile (`plan`/`sync`/`clear`), documented the deferred-free idiom, the stable side order, the greyed-in-place dead visual and the two new test files, and gave `smoke.gd` its exit 6.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Documented that the scene-sync cases report success with an explicit `"PASS"` token, since a runtime error in a `-> String` GDScript function returns `""` rather than `null` and must not read as a pass.

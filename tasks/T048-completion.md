@@ -90,7 +90,63 @@ No golden or replay file changed; no S-set file was touched.
 
 The Claude review (Sonnet 5.5) planted 36 mutants in `SceneSync.gd`: 31 killed, 5 survived (no `despawn.sort()`, no `refresh.sort()`, `dead == 1`, `proxy_count` counting every child, a new material on every dead sync). Attempt 2 tightened `scene_sync_cases.gd` (`da50bac`) and hung in its final gate run; the manager committed the edit, `verify_task.py` passed 11/11, `scene_sync.gd` and `smoke.gd` exit 0, and all five mutants now exit 6. The by-hand windowed run is still the user's.
 
+## Fix round 2 — PASS sentinel
+
+A Godot 4.7.2 probe showed a GDScript runtime error inside a `-> String`
+function returns `""`, not `null`, so the empty-string success sentinel made a
+crashing case or helper read as a pass. The case file now reports success with
+the explicit `"PASS"` token; the runner and smoke hook fail (exit 6) on
+anything that is not the `String` `"PASS"`.
+
+### Red checks (each planted, run, expect 6, then restored)
+
+| Plant | Command | Exit | Output |
+|---|---|---|---|
+| R-a: `var n = null; n.foo()` as the first line of `_case_s2` | `scene_sync.gd` | 6 | `scene_sync.gd FAIL: S2: runtime error` |
+| R-b: `var n = null; n.foo()` as the first line of `_expect_pos` | `scene_sync.gd` | 6 | `scene_sync.gd FAIL: S1: runtime error` |
+| R-c: `run` returns `""` at the end | `scene_sync.gd` | 6 | `scene_sync.gd FAIL: ` (empty result) |
+| R-d: R-a planted | `smoke.gd` | 6 | `smoke.gd FAIL: scene sync S2: runtime error` |
+| — unplanted | `scene_sync.gd` | 0 | `scene_sync.gd OK` |
+
+### Definition of done
+
+Run from Git Bash at the worktree root, `CARGO_TARGET_DIR` and
+`GDRUST_MAIN_EXTENSION` unset. Every command and its exit code:
+
+| Command | Exit |
+|---|---|
+| `cargo fmt --all` | 0 |
+| `cargo clippy -p crpg-godot --all-targets --locked -j 2 -- -D warnings` | 0 |
+| `cargo test -p crpg-godot --locked -j 2` | 0 (45 unit, 2 bridge, 2 source-rules) |
+| `python tools/lint/deps.py` | 0 |
+| `python tools/lint/determinism.py` | 0 |
+| `python -m unittest discover -s tools/lint -p "test_*.py"` | 0 (81 tests) |
+| `cargo clippy -p crpg-godot --features engine --all-targets --locked -j 2 -- -D warnings` | 0 |
+| `cargo build -p crpg-godot --features engine --locked -j 2` | 0 |
+| `bash tools/preflight.sh --crate crpg-godot` | 0 (see reading below) |
+| `Godot4 --headless --path apps/client --import` | 0 |
+| `Godot4 --headless --path apps/client -s res://tests/scene_sync.gd` | 0 (`scene_sync.gd OK`) |
+| `Godot4 --headless --path apps/client -s res://tests/load.gd` | 0 (`load.gd OK`) |
+| `CRPG_CAMPAIGN=/no/such/dir ... -s res://tests/load.gd` | 3 (`open = 20`) |
+| `Godot4 --headless --path apps/client -s res://tests/smoke.gd` | 0 (`smoke.gd OK`) |
+| `CRPG_CAMPAIGN=/no/such/dir ... -s res://tests/smoke.gd` | 3 (`open = 20`) |
+| `grep -n 'return ""' apps/client/tests/scene_sync_cases.gd` | 1 (no match) |
+| `git diff --check` (after removing the `*.uid` files) | 0 |
+
+### Reading
+
+`bash tools/preflight.sh` calls `python3`, which on this slot resolves to the
+Windows Store alias (`python` is the real Python 3.12). I ran preflight with a
+`python3` shim (`exec python "$@"`) on PATH; it passed all gates, including
+`cargo deny check`. The crate's own AGENTS.md gates use `python` and passed
+directly. This is an environment fix, not a gate change.
+
+The by-hand windowed run stays pending (the user's): `Godot4 --path
+apps/client`, play to the end; a proxy is grey exactly where the HUD shows
+`(dead)`, and both proxies remain.
+
 ## Agent log
 
 - 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Recorded the red-check exit 6, every Definition-of-done exit code, the four implementation readings and the pending by-hand windowed run, so the next task inherits the measured baseline rather than re-deriving it.
 - 2026-11-03 (UTC) · claude-code/opus-5.5 (manager) + T048 review fix · Recorded the review's mutant result and the attempt-2 fix verification, since the worker hung before writing it.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Recorded fix round 2: the explicit `"PASS"` success sentinel with its three red checks, every Definition-of-done exit code, and the preflight `python3`-shim reading, so the sentinel change is audited end to end.

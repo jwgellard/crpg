@@ -1,8 +1,9 @@
 extends SceneTree
 # T048: runs the SceneSync cases (S1-S13) and checks S14 two frames later: no
-# freed proxy is still valid and every kept proxy is. Exit 0 pass; 6 a case
-# failed or the cases raised a runtime error; 7 a deferred-free check failed;
-# 3 a script failed to load.
+# freed proxy is still valid and every kept proxy is. Exit 0 only when run
+# returns the String "PASS"; 6 when it returns anything else (a case failed, or
+# a crash made a -> String function return "" instead of "PASS"); 7 a
+# deferred-free check failed; 3 a script failed to load.
 # Run: Godot4 --headless --path apps/client -s res://tests/scene_sync.gd
 
 const CASES := "res://tests/scene_sync_cases.gd"
@@ -23,7 +24,7 @@ func _initialize() -> void:
 		quit(3)
 		return
 	var result = _cases.run(root)
-	if not (result is String) or result != "":
+	if not (result is String) or result != "PASS":
 		printerr("scene_sync.gd FAIL: %s" % str(result))
 		quit(6)
 		return
