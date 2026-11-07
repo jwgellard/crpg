@@ -29,10 +29,10 @@ use crate::handshake::{
 use crate::limits::{ClientConfig, ClientLimits, ConfigError};
 use crate::queue::{
     close_quinn, framed, framed_channel, lane_control, lane_reader, lane_writer, race, reason_from,
-    wait_stop, Conn, ConnWake, Either, FailGuard, FlushRequest, LaneDirection, Phase, ReadSpec,
+    wait_stop, Conn, ConnWake, Either, FailGuard, FlushClose, LaneDirection, Phase, ReadSpec,
     Shared, State, Stop, SYNC_GRACE,
 };
-use crate::teardown::{close_deadlines, finish_endpoint_close};
+use crate::teardown::finish_endpoint_close;
 use crate::tls;
 
 /// The client's single connection record id.
@@ -461,7 +461,7 @@ impl QuicClient {
             outbound_frames_discarded: 0,
             inbound_frames_discarded: 0,
         };
-        let deadlines = close_deadlines(self.limits.close_flush_timeout_ms);
+        let close = FlushClose::flush_close(self.limits.close_flush_timeout_ms, code);
         if let Some(mut state) = self.shared.lock_any() {
             let open = state
                 .conns
@@ -471,17 +471,13 @@ impl QuicClient {
             if open && mode == CloseMode::Flush {
                 if let Some(record) = state.conns.get_mut(&LANE) {
                     record.closing = Some(code);
-                    record.flush = Some(FlushRequest {
-                        code,
-                        flush_end: deadlines.flush_end,
-                        started: false,
-                    });
+                    record.flush = Some(close.request);
                     record.wake.control.notify_one();
                 }
-                let guard_deadline = deadlines
+                let guard_deadline = close
                     .overall
                     .checked_add(SYNC_GRACE)
-                    .unwrap_or(deadlines.overall);
+                    .unwrap_or(close.overall);
                 state = match self.shared.wait_until(state, guard_deadline, |state| {
                     state
                         .conns
@@ -500,7 +496,7 @@ impl QuicClient {
             }
             state.stop = Some(Stop {
                 code,
-                deadline: deadlines.overall,
+                deadline: close.overall,
             });
         }
         self.shared.endpoint_wake.notify_one();

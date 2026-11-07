@@ -120,7 +120,10 @@ order.
 - **Close budget.** The close flush row's `B = close_flush_timeout_ms`
   splits at `R = min(200 ms, B / 4)`. Every `Flush` close, including
   `QuicServer::close`, stops its flush at `flush_end = now + (B − R)`; the
-  endpoint stops waiting at `overall = now + B`. The I/O thread's exit closes the endpoint, yields to the scheduler once, then
+  endpoint stops waiting at `overall = now + B`. `FlushClose::flush_close`
+  (in `queue.rs`) is the single constructor of a `Flush` close's request and
+  its `overall` deadline; the request's fields are private, so no call site
+  can build its own request or pick the wrong deadline (T098h). The I/O thread's exit closes the endpoint, yields to the scheduler once, then
   waits for `wait_idle` bounded by `overall`: the yield makes every driver
   woken by the close run at least once even when `overall` has already
   passed, and a budget of 0 stays best effort with that one pass (T098g).
@@ -211,3 +214,4 @@ stop draining).
 - 2026-10-05 (UTC) · claude-code + T023v-b · Recorded the vendored quinn-proto close fix and case 28 (28 cases) and told T023b that close codes now reach the peer under a full congestion window, so T023b's fencing cases can rely on the code instead of tolerating a `Reset`.
 - 2026-10-06 (UTC) · claude-code + T023d · Told T023b that a refused or `Discard`-closed connection delivers its code even when `Closed` is polled in the same pump, with the API's record-lifetime rule unchanged, and raised the suite count to 30, so T023b's adapter can poll `Closed` at once without a workaround.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added `teardown.rs` to the module flow, footnoted the Close flush row and added the close-budget bound (flush at `B − R`, endpoint at `B`, one exit yield), so the doc states the reserve every `Flush` close now keeps for CONNECTION_CLOSE.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T098h · Named `FlushClose::flush_close` as the single constructor of a `Flush` close's reserve'd request and its `overall` deadline, so the doc records that no call site builds its own request (D44c (a)).

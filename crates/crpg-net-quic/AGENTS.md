@@ -91,7 +91,7 @@ record and approval. `deny.toml` changes follow ADR-0023 and its addendum.
 ```text
 cargo fmt --all -- --check
 cargo clippy -p crpg-net-quic --all-targets --locked -- -D warnings
-cargo test -p crpg-net-quic --lib --locked        # teardown: reserve split, goodbye
+cargo test -p crpg-net-quic --lib --locked        # teardown 1–2 + H1–H5 (FlushClose::flush_close)
 cargo test -p crpg-net-quic --test close_budget --locked
 cargo test -p crpg-net-quic --test quic --locked   # 32 cases (T023: 1–23, T023c: 24–27, T023v: 28, T023d: 29–30)
 cargo test -p crpg-net-quic --test quic_gaps --locked
@@ -168,6 +168,10 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
   polling the drivers, and a dropped runtime never sends the queued
   CONNECTION_CLOSE (T098f). The flush stops at `B − R`; only the endpoint
   waits for `B`.
+- The `Flush` request is built only by `FlushClose::flush_close` (its fields
+  are private by design, so any other constructor is a compile error), and
+  the sync guard and `Stop.deadline` read `close.overall`, never `flush_end`
+  (T098h).
 
 ## Agent log
 
@@ -178,3 +182,4 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - 2026-10-16 (UTC) · claude-code + S002 · Moved the `rustls` pin line to =0.23.46 with the advisories that forced it, so the crate's rules match its manifest.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + T024q · Added the `/2` framing, channel and resume-opening surface, extended invariants 4 and 6 and added the channel traps, so later channel work keeps one queue, one opaque payload and the `bind`/`bind_dual` refusal rules.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added the two teardown test commands, the no-flush-deadline-endpoint-wait/yield trap and corrected the tokio pin to =1.53.3, so a later close change keeps the reserve and the exit yield that make CONNECTION_CLOSE go out.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T098h · Noted the lib suite now also runs H1–H5 and added the trap that only `FlushClose::flush_close` builds a `Flush` request and the guard / `Stop.deadline` stay on `overall`, so a future close site cannot pick the wrong deadline (D44c (a)).
