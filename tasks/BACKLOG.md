@@ -243,11 +243,11 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T047 | PR #78 open (session 32): T047-1, T047-2, T047b, T047d, T047c; waits on user S-set + H-unsafe review | — | `crpg-godot` bridge skeleton (ADR-0033) |
 | T047c | in PR #78; verify passed; Claude S-set review ready-for-pr (session 33); T047c-fix1 seeds `.godot/extension_list.cfg` (Godot 4.7.2 first-scan crash, user-approved); W14/W15 green (run 41465522306) | — | the client CI job; must land in T047's batch |
 | T098e | in PR #78 | — | test-side fix in `crates/crpg-net-quic/tests/channel.rs` (`1e6a40f`, `51b4400`): each `before` snapshot in `v2_send_precedence_and_caps` waits for an empty outbound queue (`drained_queue_fields` via the file's `until` guard); before 11/20 alone and 6/8 at 8× contention, after 20/20 alone and 16/16 at 8× |
-| T048 | in PR #79, HOLD | — | `SceneSync.gd` reconcile + S1–S14 + R1 (DeepSeek V4.1 Flash, 1st-attempt verify pass; Claude review 36 mutants 31 killed, fix round killed 5/5). Blocking defect found by the T051 architect: a runtime error in a `-> String` case returns `""`, which the runner reads as pass; fix = `"PASS"` sentinel (contract correction, user wants to discuss first) |
+| T048 | merged (PR #79, a866bde, 2026-11-07) | 2026-11-07 | `SceneSync.gd` reconcile + S1–S14 + R1 (DeepSeek V4.1 Flash, 1st-attempt verify pass; Claude review 36 mutants 31 killed, fix round killed 5/5). Sentinel fix (T048-fix, `3c02250`): explicit `"PASS"` token in `scene_sync_cases.gd`, `scene_sync.gd` and `smoke.gd`, since a runtime error in a `-> String` GDScript function returns `""` (Godot 4.7.2); attempt 1 hung (DeepSeek V4.1 Flash), attempt 2 stopped on a brief error (`smoke.gd` out of scope; not charged), passed on DeepSeek V4 Pro with four planted-crash red checks. By-hand windowed play pending (user). |
 | T047e | ready (follow-up) | — | drop the `client` job's extension-list seed step once Godot fixes the first-scan GDExtension shutdown crash; re-test a fresh `--import` without it on each Godot upgrade |
 | T098f | in PR #79 | — | measurement only (`tasks/T098.md`): case 13 failure is product-side — a `Flush` close that spends `close_flush_timeout_ms` drops the I/O runtime before CONNECTION_CLOSE leaves; server sees `IdleTimeout` at 60 s |
-| T098g | needs contract | — | `crpg-net-quic`: fix the lost close per D43a (reserve a slice of the close budget for CONNECTION_CLOSE; client close and `server.shutdown`), with a backlog-then-`Flush` regression test |
-| T051 | contract approved (cut-down) | — | `tasks/T051.md` (`3321666`, PR #79): HUD/log/buttons/end screen in `CombatHud.gd`, H1–H20; needs T048 landed (shares `smoke.gd` and docs); OpenCode I package |
+| T098g | contract approved (2026-11-07) | — | `tasks/T098g.md` (`76e7db2`): R = min(200 ms, B/4) reserved from every `Flush` close budget (client close, `server.shutdown`, and single-connection `QuicServer::close(Flush)` per the user), plus one `yield_now` before `wait_idle` so connection drivers transmit CONNECTION_CLOSE; tests 1–5 in `teardown.rs` and new `tests/close_budget.rs`. Fact sheet Beam; blind drafts GPT-6 Luna (a; DeepSeek V4.1 Flash attempt hung) and Muse (b); adjudicated by the Claude architect. Brief ready: `crpg-slots/manager/briefs/BRIEF-T098g.md` (OpenCode, slot 2, then Claude review re-running test 2's mutation control). |
+| T051 | implemented, in PR (session 36), needs review | — | `dc54dff`: `CombatHud.gd` rewrite, `hud_cases.gd` H1–H19, `hud.gd`, `smoke.gd` H20 + exit 7. Attempt 1 DeepSeek V4 Pro hung (no edits); attempt 2 Claude implementer (Sonnet 5.5) passed verify first time, with its own ~30 mutants (one equivalent survivor) and planted-crash red checks. Needs a first-pass review before merge. By-hand windowed play pending (user). |
 
 ## ADR-0029 follow-on contracts
 
@@ -440,6 +440,8 @@ Record it here, one line per week.
 | 2026-10-25 | — | PR #72 (`mgr/session-21-batch`, sessions 21–22, merge `953d66e`): T024, T024-fix, T024-docs, T024-tests, T137-gaps, T025a-facts, D37. Session 22 Claude: manager; reviewer Sonnet 5.5 (T024 core review, about 216k tokens); implementer Sonnet 5.5 (T024-tests, about 208k tokens). OpenCode: Beam only (free), $0.00. |
 | 2026-10-25 | — | Session 23 batch (`mgr/session-23-batch`, PR pending): T025a blind draft 1, T024q/T024h fact sheets and blind drafts 1, A0-8 crate AGENTS.md trims; Claude: manager only; OpenCode: Beam only, $0.00. |
 | 2026-11-01 | — | Session 28 batch (`mgr/session-28-batch`, PR open): T024q, T024h2, T025a2, T139a2, T139g, T145, T146. Claude: manager, one implementer, two reviewers. OpenCode: DeepSeek V4.1 Flash. |
+| 2026-11-07 | — | T048-fix (OpenCode DeepSeek V4 Pro) in session 36 batch; four planted-crash red checks passed. |
+| 2026-11-07 | — | T051 (Claude Sonnet 5.5 implementer) in session 36 batch; verify passed first time with about 30 mutants (one equivalent survivor) and planted-crash red checks. |
 
 ---
 
@@ -569,3 +571,4 @@ Record it here, one line per week.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 33 bookkeeping · Updated the T047c row to its reviewed, CI-green state and added T098e (QUIC test under contention) and T047e (remove the Godot seed step) follow-ups.
 - 2026-11-02 (UTC) · opencode-go/muse-spark-1.3-contributor + S34-bookkeeping · Moved T098e to in-PR #78 with its test-side fix and measurements and indexed the T048 contract row awaiting H; no other row changed.
 - 2026-11-03 (UTC) · claude-code/opus-5.5 (manager) + session 35 bookkeeping · Added T098f, T098g and T051 rows and put T048 on hold for its runner-sentinel defect.
+- 2026-11-07 (UTC) · opencode-go/gpt-6-luna + S36 bookkeeping · Updated the T048/T098g/T051 rows and session 36 throughput from the supplied facts.

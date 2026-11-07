@@ -194,19 +194,43 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   `material_override` is a `StandardMaterial3D` with `albedo_color` 35 % and
   the label `modulate` is the same. `proxy_count()` counts the `proxy_`
   children. The wire has no position, so this layout is client-only.
-- **`scripts/CombatHud.gd`** (`CanvasLayer`) builds its panel in `_ready`:
-  `Round <round + 1>`, `Active: <name>`, one health line per row (`?` when
-  `health_known` is 0, `(dead)` from the `dead` column), one button per option
-  that calls `choose(index)`, an event log built from each view's `events()`
-  (once per revision), a status line for errors/notices, and an end label that
-  appears when `ended()`. `show_error` also receives a failed open.
+- **`scripts/CombatHud.gd`** (`CanvasLayer`) renders the view and decides no
+  rule. It builds a fixed, named tree in `_init`, not `_ready`, because `_ready`
+  does not run inside `SceneTree._initialize` and the cases drive the HUD there:
+  `Panel > Margin > Column`, whose children are `Round`, `Turn`, `Health`,
+  `Options`, `Waiting`, `Log` (`RichTextLabel`), `Status` and `End`. `_ready`
+  only sets `main = get_parent()`. `sync(view)` writes `Round <round + 1>`;
+  `Turn: <name>` (name looked up in `net_ids()`, `-` when the id is no row);
+  one health `Label` per row (`<name>: ?` when `health_known` is 0, otherwise
+  `<h>/<max>`, plus ` (dead)`); one never-disabled `Button` per option label,
+  whose press calls `main.choose(i)` (0, 4 and 5 are silent, 30 is a log
+  notice, anything else `show_error`; `NOT_OPEN` when `main.session` is null);
+  and `Waiting for <name>...` (`Waiting...` for `-`), visible exactly when the
+  encounter has not ended and there are no options. The log is a private
+  200-line buffer written to `Log.text` (never `append_text`, which parses
+  BBCode). Each new revision appends its `events()` then its rejected
+  `receipts()`, once: `<actor> | <ability> -> <target>: <verdict>, <n> damage`
+  (verdicts as the CLI), `Turn: <name> (round <r + 1>)`, `<name> dies.`,
+  `Encounter ended (round <r + 1>)`, other kinds unchanged, and
+  `Rejected: <not allowed|no longer legal|refused by the server> (code <n>)`
+  for codes 17, 18 and the rest. When `ended()`, `End` shows the three lines
+  `Encounter ended`, `Rounds played: <round + 1>` and `Winner: <side|draw>`;
+  the winner is the one side with a row whose `dead` is 0. `show_error` sets `Status` red and logs
+  `ERROR: ...`, `show_notice` logs the text, `clear()` returns the HUD to its
+  built state for a session boundary (nothing calls it yet). It reads only the
+  14 view members listed in the T051 contract, never `placements()` or
+  `option_targets()` (T050).
 - **`tests/smoke.gd`** (E2) is a `SceneTree` script that instantiates
   `Main.tscn` under the root under the same `--import`/`-s` rule as E1. It runs
-  the scene-sync cases first and exits 6 if one fails. Then it
+  the scene-sync cases first and exits 6 if one fails, then the HUD cases and
+  exits 7 if one fails. Then it
   chooses option 0 whenever options exist for a revision it has not chosen,
   retries 4/5, exits 3 on another failure (including a failed open), 2 when the
   class is missing, 4 after 120 s, and 0 only when `ended()` and
-  `$Proxies.proxy_count() == net_ids().size() == 2`; a mismatch is 5. The
+  `$Proxies.proxy_count() == net_ids().size() == 2`; a mismatch is 5. At that
+  ended view H20 (`_hud_end_problem`) also checks the real HUD: `End` visible
+  with the survivor's side, the loser's `<name> dies.` line and a `Goblin |
+  Strike -> Hero: ` line; a problem exits 7. The
   goblin's initiative means the first polls have no player options, so the
   script waits rather than treating that as a failure.
 - **`tests/scene_sync_cases.gd`** holds S1–S13 for the reconcile against an
@@ -214,6 +238,12 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   the freed and kept nodes S14 checks. **`tests/scene_sync.gd`** runs those
   cases and exits 6 on a failure, 7 when a freed proxy is still valid after
   two frames or a kept one is not, and 3 when a script fails to load.
+- **`tests/hud_cases.gd`** holds H1-H19 against an inner `FakeView` with
+  exactly the 14 getters the HUD may read, a `FakeSession` and a `FakeMain`;
+  every case returns the token `"ok"` (or a detail) and `run(root)` returns
+  `"PASS"` or `"H<n>: detail"`, so a crash (`""` from a `-> String` function)
+  fails. **`tests/hud.gd`** runs them and exits 6 on a failure, 3 when the case
+  file fails to load.
 - **No input.** Camera control and picking are T050 and deliberately absent;
   T049 owns positions.
 
@@ -273,3 +303,4 @@ Agent log:
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047c · Added the CI section: the `client` job's order, the artifact layout and where BR-21 sits, pointing at the contract for the pins.
 - 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Replaced the spawn-once SceneSync bullet with the revision-free reconcile (`plan`/`sync`/`clear`), documented the deferred-free idiom, the stable side order, the greyed-in-place dead visual and the two new test files, and gave `smoke.gd` its exit 6.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Documented that the scene-sync cases report success with an explicit `"PASS"` token, since a runtime error in a `-> String` GDScript function returns `""` rather than `null` and must not read as a pass.
+- 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Replaced the CombatHud bullet with the `_init`-built named tree, the HUD texts, the 200-line log buffer and gate and the end block, and added `hud_cases.gd`, `hud.gd` and smoke's exit 7 and H20.
