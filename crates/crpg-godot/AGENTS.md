@@ -79,6 +79,7 @@ cargo clippy -p crpg-godot --features engine --all-targets --locked -j 2 -- -D w
 cargo build -p crpg-godot --features engine --locked -j 2
 Godot4 --headless --path apps/client --import
 Godot4 --headless --path apps/client -s res://tests/load.gd      # exit 0
+Godot4 --headless --path apps/client -s res://tests/scene_sync.gd   # exit 0
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/load.gd   # control: exit 3
 ```
 
@@ -128,6 +129,20 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
   engine by file name, so keep both exes under their shipped names.
 - **CI must not set `CARGO_TARGET_DIR`.** The `.gdextension` path and the
   artifact both expect the DLL at `target/debug`.
+- **A proxy frees with `remove_child` then `queue_free`.** `queue_free` alone
+  leaves the dying child in place until frame end: `proxy_count()` overcounts
+  and Godot renames a same-frame re-spawn `@Node3D@…`.
+- **`MeshInstance3D` has no `modulate`.** The dead tint is
+  `material_override` on the mesh plus `modulate` on the `Label3D`; keep the
+  override object when re-syncing so idempotence sees the same tint.
+- **GDScript `"\."` is a parse error.** The source-rule case must use a raw
+  string (`r"view\.…"`) for its regex.
+- **A GDScript runtime error in a typed function returns that type's default,
+  not `null`.** A runtime error inside a function declared `-> String` makes
+  the call return `""`, so a crashed helper that reports success by `""` would
+  read as a pass. Test functions therefore report success with an explicit
+  `"PASS"` token and the runners fail on anything that is not the `String`
+  `"PASS"`.
 
 Agent log:
 
@@ -135,3 +150,5 @@ Agent log:
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047-2 · Completed the working contract: removed the temporary dead-code allowance, added the capture watermark, NPC-peer and panic-guard invariants, the campaign-walk copy and fixture-opening traps, so the finished core is not extended as if the authority half were still missing.
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047b · Added the shell invariants (the one `unsafe`, one core call per `#[func]`), the engine gates and the Windows/Godot traps found while building the load test.
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047c · Added three CI traps: the notice and BR-21 pin on a godot bump, the console exe for exit codes on Windows, and no `CARGO_TARGET_DIR` in CI.
+- 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Added the `scene_sync.gd` engine gate and the four GDScript traps the reconcile hit: the `remove_child`+`queue_free` free, `MeshInstance3D` having no `modulate`, raw-string regexes, and a runtime error returning `null` from the runner's `run`.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Corrected the runtime-error trap: a Godot 4.7.2 probe showed a `-> String` function that crashes returns `""`, not `null`, so the scene-sync cases now report success with an explicit `"PASS"` token and the runners fail on anything else.

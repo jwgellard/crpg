@@ -243,8 +243,11 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T047 | PR #78 open (session 32): T047-1, T047-2, T047b, T047d, T047c; waits on user S-set + H-unsafe review | — | `crpg-godot` bridge skeleton (ADR-0033) |
 | T047c | in PR #78; verify passed; Claude S-set review ready-for-pr (session 33); T047c-fix1 seeds `.godot/extension_list.cfg` (Godot 4.7.2 first-scan crash, user-approved); W14/W15 green (run 41465522306) | — | the client CI job; must land in T047's batch |
 | T098e | in PR #78 | — | test-side fix in `crates/crpg-net-quic/tests/channel.rs` (`1e6a40f`, `51b4400`): each `before` snapshot in `v2_send_precedence_and_caps` waits for an empty outbound queue (`drained_queue_fields` via the file's `until` guard); before 11/20 alone and 6/8 at 8× contention, after 20/20 alone and 16/16 at 8× |
-| T048 | contract awaiting H | — | `tasks/T048.md` (`5d0eabc`, on PR #78), adjudicated by the Claude architect (Opus 5.5) from `tasks/T048-facts.md` (Beam) and blind drafts `tasks/T048-draft-a.md` (DeepSeek V4.1 Flash) / `tasks/T048-draft-b.md` (Muse Spark): GDScript reconcile in `apps/client/scripts/SceneSync.gd`, no FFI or S-set change, 15 tests, one non-blocking open question (dead-combatant look; recommended: greyed in place) |
+| T048 | in PR #79, HOLD | — | `SceneSync.gd` reconcile + S1–S14 + R1 (DeepSeek V4.1 Flash, 1st-attempt verify pass; Claude review 36 mutants 31 killed, fix round killed 5/5). Blocking defect found by the T051 architect: a runtime error in a `-> String` case returns `""`, which the runner reads as pass; fix = `"PASS"` sentinel (contract correction, user wants to discuss first) |
 | T047e | ready (follow-up) | — | drop the `client` job's extension-list seed step once Godot fixes the first-scan GDExtension shutdown crash; re-test a fresh `--import` without it on each Godot upgrade |
+| T098f | in PR #79 | — | measurement only (`tasks/T098.md`): case 13 failure is product-side — a `Flush` close that spends `close_flush_timeout_ms` drops the I/O runtime before CONNECTION_CLOSE leaves; server sees `IdleTimeout` at 60 s |
+| T098g | needs contract | — | `crpg-net-quic`: fix the lost close per D43a (reserve a slice of the close budget for CONNECTION_CLOSE; client close and `server.shutdown`), with a backlog-then-`Flush` regression test |
+| T051 | contract approved (cut-down) | — | `tasks/T051.md` (`3321666`, PR #79): HUD/log/buttons/end screen in `CombatHud.gd`, H1–H20; needs T048 landed (shares `smoke.gd` and docs); OpenCode I package |
 
 ## ADR-0029 follow-on contracts
 
@@ -565,3 +568,4 @@ Record it here, one line per week.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 32 final bookkeeping · Moved the T047 and T047c rows to PR #78.
 - 2026-11-02 (UTC) · claude-code/opus-5.5 (manager) + session 33 bookkeeping · Updated the T047c row to its reviewed, CI-green state and added T098e (QUIC test under contention) and T047e (remove the Godot seed step) follow-ups.
 - 2026-11-02 (UTC) · opencode-go/muse-spark-1.3-contributor + S34-bookkeeping · Moved T098e to in-PR #78 with its test-side fix and measurements and indexed the T048 contract row awaiting H; no other row changed.
+- 2026-11-03 (UTC) · claude-code/opus-5.5 (manager) + session 35 bookkeeping · Added T098f, T098g and T051 rows and put T048 on hold for its runner-sentinel defect.

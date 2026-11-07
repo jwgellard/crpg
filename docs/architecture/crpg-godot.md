@@ -178,13 +178,22 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   sets `stop_code`, shows `last_error()` and stops polling, since only `close`
   leaves a fence. `_exit_tree` calls `close()`. `open_code`/`stop_code` are
   read by the smoke test so a failed open is not mistaken for a slow turn.
-- **`scripts/SceneSync.gd`** spawns once from the first non-empty view (there
-  is no despawn; that is T048). One `Node3D` named `proxy_<id>` per row holds a
-  `MeshInstance3D` and a billboarded `Label3D` name. The first side seen is a
-  capsule and every other side a box; the position is
-  `x = 3 × side index`, `z = 1.5 × index within that side`, `y = 0`, where
-  the side index is the order of first appearance. `proxy_count()` counts the
-  `proxy_` children. The wire has no position, so this layout is client-only.
+- **`scripts/SceneSync.gd`** keeps no revision state: `sync(view)` reconciles
+  the view's rows against the live `proxy_<id>` map whatever the revision, so
+  `Main.gd` stays the only gate. `plan(ids)` is a pure diff into three disjoint
+  ascending lists: despawn (live ids absent), spawn (ids with no proxy) and
+  refresh (ids that keep theirs). `sync` frees every despawn with
+  `remove_child` then `queue_free` (a same-frame re-spawn keeps its name),
+  spawns the rest, then rewrites each row's position, mesh, name and dead tint
+  and moves it to child `i`. A proxy holds exactly a `Mesh` `MeshInstance3D`
+  and a billboarded `Label` `Label3D` at `y = 1.2`. The first side ever seen is
+  a capsule and every other side a box, with `x = 3 × side index`,
+  `z = 1.5 × rank within that side`, `y = 0`; the side order is
+  first-appearance order and changes only through `clear()`, which frees
+  everything for a session boundary. A dead row stays in place, greyed: its
+  `material_override` is a `StandardMaterial3D` with `albedo_color` 35 % and
+  the label `modulate` is the same. `proxy_count()` counts the `proxy_`
+  children. The wire has no position, so this layout is client-only.
 - **`scripts/CombatHud.gd`** (`CanvasLayer`) builds its panel in `_ready`:
   `Round <round + 1>`, `Active: <name>`, one health line per row (`?` when
   `health_known` is 0, `(dead)` from the `dead` column), one button per option
@@ -192,15 +201,21 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   (once per revision), a status line for errors/notices, and an end label that
   appears when `ended()`. `show_error` also receives a failed open.
 - **`tests/smoke.gd`** (E2) is a `SceneTree` script that instantiates
-  `Main.tscn` under the root under the same `--import`/`-s` rule as E1. It
+  `Main.tscn` under the root under the same `--import`/`-s` rule as E1. It runs
+  the scene-sync cases first and exits 6 if one fails. Then it
   chooses option 0 whenever options exist for a revision it has not chosen,
   retries 4/5, exits 3 on another failure (including a failed open), 2 when the
   class is missing, 4 after 120 s, and 0 only when `ended()` and
   `$Proxies.proxy_count() == net_ids().size() == 2`; a mismatch is 5. The
   goblin's initiative means the first polls have no player options, so the
   script waits rather than treating that as a failure.
+- **`tests/scene_sync_cases.gd`** holds S1–S13 for the reconcile against an
+  inner `FakeView`; `run(host)` returns `"PASS"` or `"S<n>: detail"` and records
+  the freed and kept nodes S14 checks. **`tests/scene_sync.gd`** runs those
+  cases and exits 6 on a failure, 7 when a freed proxy is still valid after
+  two frames or a kept one is not, and 3 when a script fails to load.
 - **No input.** Camera control and picking are T050 and deliberately absent;
-  T048 owns respawn/despawn and T049 positions.
+  T049 owns positions.
 
 ## Decisions and traps
 
@@ -256,3 +271,5 @@ Agent log:
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047b · Documented the gdext shell, pins, build, the load proof and the one `unsafe` impl, plus the environment traps found while building it.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047d · Added the Client section: the four GDScript files' contracts, the client-only proxy layout, the HUD text rules and E2's exit codes, so T048/T050 extend a stated baseline rather than re-deriving one.
 - 2026-11-02 (UTC) · claude-code/sonnet-5.5 + T047c · Added the CI section: the `client` job's order, the artifact layout and where BR-21 sits, pointing at the contract for the pins.
+- 2026-11-03 (UTC) · opencode-go/deepseek-v4.1-flash + T048 · Replaced the spawn-once SceneSync bullet with the revision-free reconcile (`plan`/`sync`/`clear`), documented the deferred-free idiom, the stable side order, the greyed-in-place dead visual and the two new test files, and gave `smoke.gd` its exit 6.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Documented that the scene-sync cases report success with an explicit `"PASS"` token, since a runtime error in a `-> String` GDScript function returns `""` rather than `null` and must not read as a pass.

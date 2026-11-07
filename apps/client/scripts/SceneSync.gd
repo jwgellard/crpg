@@ -1,29 +1,68 @@
 extends Node3D
-# T047d: spawns one primitive proxy per view row, once, from the first
-# non-empty view. The layout is client-only (ADR-0033 §14); it decides nothing
-# and never despawns (that is T048).
+# T048: the proxy scene is a function of every view it is given. sync()
+# reconciles live proxies against the rows: appears -> spawn, leaves -> free,
+# kept -> rewrite in place. Layout and dead tint are client-only (ADR-0033 §14).
 
-var _spawned: bool = false
+const DEAD_TINT := Color(0.35, 0.35, 0.35)
+
+var _proxies: Dictionary = {}        # int NetId -> Node3D; live proxies only
+var _side_order: Array[String] = []  # first-seen order since the last clear()
+
+func plan(ids: PackedInt64Array) -> Dictionary:
+	var wanted: Dictionary = {}
+	for net_id in ids:
+		wanted[int(net_id)] = true
+	var despawn: Array = []
+	for net_id in _proxies.keys():
+		if not wanted.has(int(net_id)):
+			despawn.append(int(net_id))
+	var spawn: Array = []
+	var refresh: Array = []
+	for net_id in ids:
+		var value := int(net_id)
+		if _proxies.has(value):
+			if not refresh.has(value):
+				refresh.append(value)
+		elif not spawn.has(value):
+			spawn.append(value)
+	despawn.sort()
+	spawn.sort()
+	refresh.sort()
+	return {"despawn": despawn, "spawn": spawn, "refresh": refresh}
 
 func sync(view) -> void:
-	if _spawned or view == null:
+	if view == null:
 		return
-	var ids = view.net_ids()
-	if ids.size() == 0:
-		return
-	_spawned = true
-	var names = view.names()
-	var sides = view.sides()
-	var side_order: Array[String] = []
-	var side_counts := {}
+	var ids: PackedInt64Array = view.net_ids()
+	var names: PackedStringArray = view.names()
+	var sides: PackedStringArray = view.sides()
+	var dead: PackedByteArray = view.dead()
+	var moves := plan(ids)
+	for net_id in moves["despawn"]:
+		_free_proxy(int(net_id))
+	for net_id in moves["spawn"]:
+		_proxies[int(net_id)] = _make_proxy(int(net_id))
+	var ranks: Dictionary = {}
 	for i in range(ids.size()):
+		var net_id := int(ids[i])
 		var side: String = sides[i]
-		if not side_order.has(side):
-			side_order.append(side)
-		var side_index: int = side_order.find(side)
-		var within: int = int(side_counts.get(side, 0))
-		side_counts[side] = within + 1
-		_spawn_proxy(ids[i], names[i], side_index, within)
+		if not _side_order.has(side):
+			_side_order.append(side)
+		var side_index: int = _side_order.find(side)
+		var rank: int = int(ranks.get(side, 0))
+		ranks[side] = rank + 1
+		var proxy: Node3D = _proxies[net_id]
+		proxy.position = Vector3(3.0 * float(side_index), 0.0, 1.5 * float(rank))
+		_set_mesh(proxy.get_node("Mesh") as MeshInstance3D, side_index)
+		var label := proxy.get_node("Label") as Label3D
+		label.text = names[i]
+		_set_dead(proxy, int(dead[i]) != 0)
+		move_child(proxy, i)
+
+func clear() -> void:
+	for net_id in _proxies.keys():
+		_free_proxy(int(net_id))
+	_side_order.clear()
 
 func proxy_count() -> int:
 	var count: int = 0
@@ -32,12 +71,30 @@ func proxy_count() -> int:
 			count += 1
 	return count
 
-func _spawn_proxy(net_id: int, display_name: String, side_index: int, within: int) -> void:
+func _make_proxy(net_id: int) -> Node3D:
 	var proxy := Node3D.new()
 	proxy.name = "proxy_%d" % net_id
-	proxy.position = Vector3(3.0 * float(side_index), 0.0, 1.5 * float(within))
-
 	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.name = "Mesh"
+	proxy.add_child(mesh_instance)
+	var label := Label3D.new()
+	label.name = "Label"
+	label.text = ""
+	label.position = Vector3(0.0, 1.2, 0.0)
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	proxy.add_child(label)
+	add_child(proxy)
+	return proxy
+
+func _free_proxy(net_id: int) -> void:
+	var proxy: Node3D = _proxies.get(net_id)
+	if proxy == null:
+		return
+	remove_child(proxy)
+	proxy.queue_free()
+	_proxies.erase(net_id)
+
+func _set_mesh(mesh_instance: MeshInstance3D, side_index: int) -> void:
 	if side_index == 0:
 		var capsule := CapsuleMesh.new()
 		capsule.radius = 0.4
@@ -47,12 +104,17 @@ func _spawn_proxy(net_id: int, display_name: String, side_index: int, within: in
 		var box := BoxMesh.new()
 		box.size = Vector3(0.8, 1.0, 0.8)
 		mesh_instance.mesh = box
-	proxy.add_child(mesh_instance)
 
-	var label := Label3D.new()
-	label.text = display_name
-	label.position = Vector3(0.0, 1.2, 0.0)
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	proxy.add_child(label)
-
-	add_child(proxy)
+func _set_dead(proxy: Node3D, dead: bool) -> void:
+	var mesh_instance := proxy.get_node("Mesh") as MeshInstance3D
+	var label := proxy.get_node("Label") as Label3D
+	if dead:
+		var override = mesh_instance.material_override
+		if not (override is StandardMaterial3D):
+			override = StandardMaterial3D.new()
+			mesh_instance.material_override = override
+		(override as StandardMaterial3D).albedo_color = DEAD_TINT
+		label.modulate = DEAD_TINT
+	else:
+		mesh_instance.material_override = null
+		label.modulate = Color(1.0, 1.0, 1.0)
