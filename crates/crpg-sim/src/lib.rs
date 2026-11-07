@@ -32,14 +32,15 @@ pub mod world;
 
 pub use area::{transfer_entity, transfer_history_entity, AreaError};
 pub use combat::{
-    end_encounter, legal_actions, perform_action, request_mode, start_encounter,
-    start_encounter_in_mode, start_encounter_with_members, validate_action, AbilityDefense,
-    AbilityDefinition, ActionOutcome, AttachedEffect, CombatAction, CombatDefinition, CombatError,
-    CombatState, Combatant, DerivedStat, EffectAim, EffectDefinition, EffectModifier, EffectOp,
-    EffectTarget, EffectsOnExit, EncounterClock, EncounterMode, EncounterSpec, EncounterSummary,
-    InitiativeRule, IntFormula, LegalActionsError, Lifecycle, ParticipantResult, PlacementAndArea,
-    PoolTemplate, StandingOrder, COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_STREAM, COMBAT_ROLL_TAG,
-    MAX_COMBATANTS, MAX_COMBAT_STATS, MAX_LEGAL_ACTIONS, RT_CLOCK_MAX,
+    end_encounter, join_encounter, leave_encounter, legal_actions, perform_action, request_mode,
+    start_encounter, start_encounter_in_mode, start_encounter_with_members, validate_action,
+    AbilityDefense, AbilityDefinition, ActionOutcome, AttachedEffect, CombatAction,
+    CombatDefinition, CombatError, CombatState, Combatant, DerivedStat, EffectAim,
+    EffectDefinition, EffectModifier, EffectOp, EffectTarget, EffectsOnExit, EncounterClock,
+    EncounterMode, EncounterSpec, EncounterSummary, InitiativeRule, IntFormula, LegalActionsError,
+    Lifecycle, ParticipantResult, PlacementAndArea, PoolTemplate, StandingOrder,
+    COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_STREAM, COMBAT_ROLL_TAG, MAX_COMBATANTS, MAX_COMBAT_STATS,
+    MAX_LEGAL_ACTIONS, RT_CLOCK_MAX,
 };
 pub use creature::{register_creature, CreatureSpec, CreatureState, Entrant, SuspendedEffect};
 pub use event::SimEvent;

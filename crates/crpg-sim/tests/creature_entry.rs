@@ -9,14 +9,16 @@ use crpg_core::{EntityId, Ulid};
 use crpg_data::Effect;
 use crpg_rules::MAX_TAGS;
 use crpg_sim::{
-    start_encounter_in_mode, start_encounter_with_members, state_hash, AttachedEffect, CombatError,
-    EncounterMode, EntityMeta, Entrant, SimEvent, World,
+    join_encounter, start_encounter_in_mode, start_encounter_with_members, state_hash,
+    AttachedEffect, CombatError, EncounterMode, EntityMeta, Entrant, SimEvent, World,
 };
 use serde_json::json;
 use support::creature::{add_outsider, with_record};
 use support::draws::{draw, grant, oracle, set_initiative_rule, set_tags};
 use support::rt::{capable, timeline_of};
-use support::surface::{add_derived, attach_to_ability, binary, effect_doc, lit, modifier, stat};
+use support::surface::{
+    add_derived, attach_to_ability, binary, effect_doc, end, lit, modifier, stat,
+};
 use support::{uid, Fixture};
 
 const O: u128 = 131;
@@ -973,4 +975,91 @@ fn e2_authored_entry_s1_before_s2() {
             stat: "ratio".to_owned(),
         },
     );
+}
+
+/// E4 (B14, D5; joiner cases, T139b2): a joiner's suspended effect resumes at
+/// the joiner's `round + remaining_rounds`, so at round 1 an effect with two
+/// rounds left expires at round 3 at once (the joiner waits); one the
+/// definition lacks is dropped. A joiner's tags come from its record, not its
+/// prefab, and carry no grant, with or without a granting effect.
+///
+/// **Fails if** entry stores bare `remaining_rounds` as `expires_round` (J
+/// gets 2), omits `round` (the same), gives a joiner no tags, takes a
+/// joiner's tags from its prefab (J gets `["a","b"]`), adds a grant, or keeps
+/// B19's gate (no tags without the grant).
+#[test]
+fn e4_joiner_entrant_seeding() {
+    let held = json!([
+        {"effect": uid(501), "remaining_rounds": 2},
+        {"effect": uid(502), "remaining_rounds": 1}
+    ]);
+    let play_to_round_one = |fixture: &Fixture, world: &mut World| -> (EntityId, EntityId) {
+        begin(fixture, world, &[]);
+        let ids = combatant_ids(world);
+        end(world, ids[1]);
+        end(world, ids[0]);
+        assert_eq!(world.combat().expect("combat").round, 1);
+        (ids[0], ids[1])
+    };
+
+    // Round 1: the definition knows effect 501 and not 502.
+    let mut fixture = two_outsiders();
+    attach_to_ability(&mut fixture, effect_501(3));
+    let mut world = bound(&fixture);
+    let p = register(&fixture, &mut world, P);
+    let world = with_record(&world, p, |record| record["suspended"] = held.clone());
+    let mut later = world.clone();
+    play_to_round_one(&fixture, &mut later);
+    join_encounter(&mut later, &entrant(p, 12)).expect("J joins");
+    assert!(!later.timeline().contains(p), "J waits at round 1");
+    assert_eq!(
+        later.combatants().get(p).expect("J").attached(),
+        [AttachedEffect {
+            effect: id(501),
+            expires_round: 3
+        }],
+        "501 resumes at round 1 + 2; 502 is dropped"
+    );
+    // Round 0 (J inserted at once): the same record resumes at 0 + 2.
+    let mut first = world.clone();
+    begin(&fixture, &mut first, &[]);
+    join_encounter(&mut first, &entrant(p, 12)).expect("J joins");
+    assert_eq!(
+        first.combatants().get(p).expect("J").attached(),
+        [AttachedEffect {
+            effect: id(501),
+            expires_round: 2
+        }]
+    );
+    // Control: with no effect in the definition, nothing resumes.
+    let bare_fixture = two_outsiders();
+    let mut bare = world.clone();
+    play_to_round_one(&bare_fixture, &mut bare);
+    join_encounter(&mut bare, &entrant(p, 12)).expect("J joins");
+    assert!(bare.combatants().get(p).expect("J").attached().is_empty());
+
+    // Tags: O's and J's prefab (a clone of creature A) has tags
+    // `["b","a","a"]`, so both records hold `["a","b"]`; J's record then
+    // holds `["c"]`.
+    for granting in [true, false] {
+        let mut fixture = two_outsiders();
+        set_tags(&mut fixture, id(141), &["b", "a", "a"]);
+        set_tags(&mut fixture, id(142), &["b", "a", "a"]);
+        if granting {
+            attach_to_ability(&mut fixture, grant(effect_501(3), &["g"]));
+        }
+        let mut world = bound(&fixture);
+        let o = register(&fixture, &mut world, O);
+        let p = register(&fixture, &mut world, P);
+        assert_eq!(world.creatures().get(p).expect("J").tags(), ["a", "b"]);
+        let mut world = with_record(&world, p, |record| record["tags"] = json!(["c"]));
+        begin(&fixture, &mut world, &[entrant(o, 5)]);
+        join_encounter(&mut world, &entrant(p, 12)).expect("J joins");
+        for (who, expected) in [(o, vec!["a", "b"]), (p, vec!["c"])] {
+            let tags = world.combatants().get(who).expect("combatant").tags();
+            assert_eq!(tags, expected, "granting: {granting}");
+            assert!(!tags.iter().any(|tag| tag == "g"), "no grant is carried");
+        }
+        assert!(world.combatants().get(p).expect("J").entered());
+    }
 }
