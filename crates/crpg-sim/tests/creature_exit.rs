@@ -861,3 +861,40 @@ fn e15_unchanged_and_deterministic() {
         }
     }
 }
+
+/// B30: a leave that causes a rollover records the attachment against the
+/// round the leave happened in, not the round it caused. The leaver is the
+/// last timeline entry, so its leave rolls the round over.
+///
+/// **Fails if** `round` is captured after the removal (the record gets 2).
+#[test]
+fn e13_leave_rollover_uses_the_leave_round() {
+    let mut fixture = Fixture::trio();
+    attach_to_ability(&mut fixture, effect_501(3));
+    let mut world = bound(&fixture);
+    begin(&fixture, &mut world, &[]);
+    let ids = combatant_ids(&world);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    end(&mut world, c);
+    end(&mut world, b);
+    assert_eq!(world.combat().expect("combat").active, Some(a));
+    assert_eq!(timeline_of(&world), [(10, a)]);
+    let mut world = with_json(&world, |save| {
+        edit_combatant(save, a, |combatant| {
+            combatant["attached"] = json!([{"effect": uid(501), "expires_round": 3}]);
+        });
+    });
+    leave_encounter(&mut world, a).expect("A leaves");
+    assert_eq!(
+        world.combat().expect("combat").round,
+        1,
+        "the leave rolled over"
+    );
+    assert_eq!(
+        world.creatures().get(a).expect("record").suspended(),
+        [SuspendedEffect {
+            effect: id(501),
+            remaining_rounds: 3
+        }]
+    );
+}

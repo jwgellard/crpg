@@ -550,6 +550,22 @@ fn e8_pending_load_checks() {
         .map(|_| ()),
         Err("combat pending join names a non-combatant".to_owned())
     );
+    // Q1 beats Q2: a duplicate in a round-1 save is a Q1 fault.
+    assert_eq!(
+        load(&|save| {
+            save["combat"]["round"] = json!(1);
+            save["combat"]["pending_joins"] = json!([j_json.clone(), j_json.clone()]);
+        }),
+        Err("combat pending joins outside a first turn-based round".to_owned())
+    );
+    // Q2 beats Q3: a repeated non-combatant is a Q2 fault, not a Q3 one.
+    assert_eq!(
+        try_with_json(&with_record_holder, |save| save["combat"]
+            ["pending_joins"] =
+            json!([k_json.clone(), k_json.clone()]))
+        .map(|_| ()),
+        Err("combat pending joins repeat an entity".to_owned())
+    );
     // Q4: a pending entry that holds a timeline entry. Its key sorts after
     // the head, so Q5 would also fail: Q4 must win.
     assert_eq!(
@@ -833,6 +849,19 @@ fn e10_join_checks() {
         // Control: the unedited record joins the same encounter.
         join_encounter(&mut world, &entrant(j, 12)).expect("J joins");
     }
+    // Control: after the placement_a combatant leaves, its own record can
+    // join back (J9 clears).
+    {
+        let mut leaver = world.clone();
+        crpg_sim::leave_encounter(&mut leaver, a).expect("A leaves");
+        assert_eq!(
+            leaver.creatures().get(a).expect("record").placement(),
+            id(111)
+        );
+        join_encounter(&mut leaver, &entrant(a, 12)).expect("A joins back");
+        assert!(leaver.combatants().get(a).expect("A").entered());
+        assert!(leaver.creatures().get(a).is_none());
+    }
     // J10: a derived stat fails at gamma 4; J10 beats J11.
     let mut derived = with_record(&world, j, |record| {
         record["attributes"][2][1] = json!(4);
@@ -1037,4 +1066,32 @@ fn e7_join_after_active_published_at_every_start() {
     assert!(text.contains(
         "\"lifecycle\":{\"respawns\":true,\"effects_on_exit\":\"strip\",\"join_after_active\":true}"
     ));
+}
+
+/// E8 (B33, Q5): a dead pending joiner is still checked against the head.
+///
+/// **Fails if** Q5 skips a dead pending joiner.
+#[test]
+fn e8_dead_pending_join_q5() {
+    let mut lethal = join_fixture(Some(LateJoinWire::AfterActive));
+    always_success(&mut lethal);
+    make_lethal(&mut lethal, 10);
+    edit_ability(&mut lethal, |ability| ability.ends_turn = false);
+    let (mut world, _, b, j) = pending_world(&lethal);
+    perform_action(&mut world, &use_action(b, lethal.ability, j)).expect("B attacks J");
+    assert!(world.combatants().get(j).expect("J").dead());
+    assert_eq!(pending_of(&world), [j]);
+    // Control: the dead pending joiner at its own key loads.
+    try_with_json(&world, |_| {}).expect("the dead pending joiner loads");
+    for key in [12, 9] {
+        let result = try_with_json(&world, |save| {
+            edit_combatant(save, j, |combatant| combatant["initiative"] = json!(key));
+        })
+        .map(|_| ());
+        assert_eq!(
+            result,
+            Err("combat pending join sorts after the active head".to_owned()),
+            "key {key}"
+        );
+    }
 }
