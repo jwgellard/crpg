@@ -30,7 +30,7 @@ use crpg_core::{DeterministicRng, EntityId, Fx16_16, GenerationalArena, Interner
 use crpg_data::{
     Ability as AuthoredAbility, Creature as AuthoredCreature, CreaturePersistenceWire,
     Effect as AuthoredEffect, EffectsOnExitWire, Encounter as AuthoredEncounter, ExprWire,
-    OutcomeTable as AuthoredOutcomeTable, Placement as AuthoredPlacement,
+    LateJoinWire, OutcomeTable as AuthoredOutcomeTable, Placement as AuthoredPlacement,
     RefreshWire as AuthoredRefresh, Ruleset as AuthoredRuleset, StatKindWire, StatValueWire,
 };
 use crpg_rules::{
@@ -41,7 +41,7 @@ use crpg_rules::{
     StackingPolicy, StatBlock, StatDefinition, StatKind, StatValue, TagSet, MAX_TAGS,
 };
 
-use crate::creature::{CreatureState, SuspendedEffect};
+use crate::creature::{CreatureState, Entrant, SuspendedEffect};
 use crate::event::SimEvent;
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
@@ -809,6 +809,10 @@ pub struct Lifecycle {
     /// What attached effects become at exit.
     #[serde(default, skip_serializing_if = "is_suspend")]
     pub effects_on_exit: EffectsOnExit,
+    /// A TB round-0 joiner whose slot has passed acts right after the
+    /// current turn (ruleset `late_join: after_active`, D7).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub join_after_active: bool,
 }
 
 /// Encounter-level state; `None` when no encounter is active.
@@ -832,6 +836,10 @@ pub struct CombatState {
     /// The encounter's creature-lifecycle rules (T139); omitted at defaults.
     #[serde(default, skip_serializing_if = "lifecycle_is_default")]
     pub lifecycle: Lifecycle,
+    /// TB round-0 joiners that act right after the current turn, in join
+    /// order (D7); always empty otherwise. Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_joins: Vec<EntityId>,
 }
 
 /// One authored participant's resolved references for the adapter.
@@ -1121,6 +1129,18 @@ pub enum CombatError {
     },
     /// Every authored participant is dead and no member enters (T139 D3).
     NoEntrants,
+    /// The entity is live but holds no record (T139).
+    NotCreature {
+        /// The entity.
+        entity: EntityId,
+    },
+    /// The entity already holds a combatant, or is listed twice (T139).
+    AlreadyParticipant {
+        /// The entity.
+        entity: EntityId,
+    },
+    /// A join targets a terminal encounter (T139 D8).
+    EncounterTerminal,
 }
 
 impl std::fmt::Display for CombatError {
@@ -1167,6 +1187,9 @@ impl std::fmt::Display for CombatError {
             Self::PlacementInUse { .. } => write!(f, "PlacementInUse at creatures/placement"),
             Self::RulesetMismatch { .. } => write!(f, "RulesetMismatch at creatures/ruleset"),
             Self::NoEntrants => write!(f, "NoEntrants at spec/participants"),
+            Self::NotCreature { .. } => write!(f, "NotCreature at creatures"),
+            Self::AlreadyParticipant { .. } => write!(f, "AlreadyParticipant at combatants"),
+            Self::EncounterTerminal => write!(f, "EncounterTerminal at combat/active"),
         }
     }
 }
@@ -1411,6 +1434,41 @@ pub(crate) fn start_encounter_in_mode_tracked(
     world: &mut World,
     spec: &EncounterSpec<'_>,
     mode: EncounterMode,
+) -> Result<StartFacts, CombatError> {
+    start_encounter_with_members_tracked(world, spec, mode, &[])
+}
+
+/// [`start_encounter_in_mode`] plus record-holding members (T139 D4, B21-B22).
+///
+/// Each member is an [`Entrant`]: a live entity holding a record, keyed by its
+/// base initiative (plus, under an initiative rule, a draw after every
+/// participant's). Members compete for the first turn as authored
+/// participants do, are not spawned and enqueue nothing. An empty `members` is
+/// exactly [`start_encounter_in_mode`].
+///
+/// The member checks run after every start check and S1-S3, in this order: M0
+/// `TooManyParticipants` (`participants + members > MAX_COMBATANTS`); then, for
+/// each member in slice order, M1 `AbsentActor` and M2 `AlreadyParticipant`;
+/// then, for each member in slice order, M3 `NotCreature`, M4 `DeadActor`, M5
+/// `RulesetMismatch`, M6 `PlacementInUse`, M7 `InvalidStatValue` and M8
+/// `TooManyTags`; then S4 `NoEntrants`. Any failure leaves `world` unchanged.
+pub fn start_encounter_with_members(
+    world: &mut World,
+    spec: &EncounterSpec<'_>,
+    mode: EncounterMode,
+    members: &[Entrant],
+) -> Result<(), CombatError> {
+    start_encounter_with_members_tracked(world, spec, mode, members).map(|_| ())
+}
+
+/// [`start_encounter_with_members`] reporting the initial turn the
+/// publication scheduled; `start_encounter_in_mode_tracked` delegates here with
+/// `&[]`.
+pub(crate) fn start_encounter_with_members_tracked(
+    world: &mut World,
+    spec: &EncounterSpec<'_>,
+    mode: EncounterMode,
+    members: &[Entrant],
 ) -> Result<StartFacts, CombatError> {
     use CombatError::{
         DuplicateModifier, EncounterActive, InvalidCost, InvalidDice, InvalidEffect,
@@ -2013,6 +2071,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
             Some(EffectsOnExitWire::Strip) => EffectsOnExit::Strip,
             Some(EffectsOnExitWire::StripAtRelease) => EffectsOnExit::StripAtRelease,
         },
+        join_after_active: ruleset.late_join == Some(LateJoinWire::AfterActive),
     };
 
     // T139 B13: each participant spawns, enters from its record, or is
@@ -2040,8 +2099,60 @@ pub(crate) fn start_encounter_in_mode_tracked(
         member.attributes = record.attributes.clone();
         sources.push(Source::Enter(entity));
     }
+    // T139 B21: the member checks, after every start check and S1-S3.
+    // M0.
+    if pending.len() + members.len() > MAX_COMBATANTS {
+        return Err(TooManyParticipants);
+    }
+    // M1 and M2 run over every member before any record is read, so that a
+    // second listing of a bare entity fails M2, not M3 (E2's pair).
+    for (position, entrant) in members.iter().enumerate() {
+        if !world.contains(entrant.entity) {
+            return Err(CombatError::AbsentActor {
+                actor: entrant.entity,
+            });
+        }
+        if members[..position]
+            .iter()
+            .any(|earlier| earlier.entity == entrant.entity)
+        {
+            return Err(CombatError::AlreadyParticipant {
+                entity: entrant.entity,
+            });
+        }
+    }
+    let mut seats: Vec<MemberSeat> = Vec::with_capacity(members.len());
+    for entrant in members {
+        let entity = entrant.entity;
+        // M3.
+        let Some(record) = world.creatures().get(entity) else {
+            return Err(CombatError::NotCreature { entity });
+        };
+        // M4.
+        if record.dead() {
+            return Err(CombatError::DeadActor { actor: entity });
+        }
+        // M5.
+        check_ruleset(&definition, entity, record)?;
+        // M6.
+        let placement = record.placement;
+        if pending.iter().any(|item| item.placement == placement)
+            || seats.iter().any(|seat| seat.placement == placement)
+        {
+            return Err(CombatError::PlacementInUse { placement });
+        }
+        // M7, M8.
+        check_stats_and_tags(world, &definition, &granted, record)?;
+        seats.push(MemberSeat {
+            entity,
+            placement,
+            initiative: entrant.initiative,
+            health: record.health,
+            attributes: record.attributes.clone(),
+        });
+    }
     // S4.
-    if sources.iter().all(|source| matches!(source, Source::Skip)) {
+    if members.is_empty() && sources.iter().all(|source| matches!(source, Source::Skip)) {
         return Err(CombatError::NoEntrants);
     }
 
@@ -2090,6 +2201,36 @@ pub(crate) fn start_encounter_in_mode_tracked(
                 .total
                 .saturating_add(bonus)
                 .saturating_add(member.initiative);
+        }
+        // T139 B25: member keys draw after every participant's, in slice
+        // order, from the member's record.
+        for seat in seats.iter_mut() {
+            let block = base_block(
+                &definition.health_stat,
+                seat.health,
+                &seat.attributes,
+                &mut scratch,
+            );
+            let context = QueryContext {
+                entity: probe,
+                stats: &block,
+                tags: &no_tags,
+                modifiers: &[],
+            };
+            let mut bonus: i32 = 0;
+            for name in &rule.bonus_stats {
+                let value = query_int(&pipeline, probe, name, &scratch, &context)
+                    .expect("the member checks guarantee the stat evaluates");
+                bonus = bonus.saturating_add(value);
+            }
+            let rolled = rule
+                .dice
+                .evaluate(world.rng_mut(), COMBAT_ROLL_STREAM)
+                .expect("the combat stream name is valid");
+            seat.initiative = rolled
+                .total
+                .saturating_add(bonus)
+                .saturating_add(seat.initiative);
         }
     }
 
@@ -2154,6 +2295,21 @@ pub(crate) fn start_encounter_in_mode_tracked(
         };
         world.timeline_mut().insert(InitiativeKey(key), id);
     }
+    // T139 B22: members enter after the participants, in slice order, at
+    // round zero. They are not spawned and enqueue nothing.
+    for seat in seats {
+        let record = world
+            .creatures_mut()
+            .remove(seat.entity)
+            .expect("the member checks found this record");
+        let entered = enter_combatant(&definition, record, 0, seat.initiative);
+        world.combatants_mut().insert(seat.entity, entered);
+        let key = match mode {
+            EncounterMode::TurnBased => seat.initiative,
+            EncounterMode::RealTime => 0,
+        };
+        world.timeline_mut().insert(InitiativeKey(key), seat.entity);
+    }
     world.interners_mut().intern_tag(COMBAT_ROLL_TAG);
     let active = match mode {
         EncounterMode::TurnBased => world.timeline().iter().next().map(|(_, id)| id),
@@ -2177,6 +2333,7 @@ pub(crate) fn start_encounter_in_mode_tracked(
         clock,
         pending_mode: None,
         lifecycle,
+        pending_joins: Vec::new(),
     });
     Ok(StartFacts {
         initial_turn: active.map(|actor| (actor, 0)),
@@ -2230,6 +2387,21 @@ fn derived_failure(
         .map(|stat| stat.name.clone())
 }
 
+/// One member's validated seat in the start (T139 B21): its record's values
+/// the key draw and the publication read.
+struct MemberSeat {
+    /// The member's entity.
+    entity: EntityId,
+    /// The record's placement, for M6.
+    placement: Ulid,
+    /// The base key, then the drawn key (B25).
+    initiative: i32,
+    /// The record's health, for the initiative bonus.
+    health: u32,
+    /// The record's attributes, for the initiative bonus.
+    attributes: Vec<(String, i32)>,
+}
+
 /// The entry checks of one alive record against the definition (T139 S1-S3):
 /// `RulesetMismatch`, `InvalidStatValue`, then `TooManyTags`.
 fn check_entry(
@@ -2239,7 +2411,17 @@ fn check_entry(
     entity: EntityId,
     record: &CreatureState,
 ) -> Result<(), CombatError> {
-    // S1.
+    check_ruleset(definition, entity, record)?;
+    check_stats_and_tags(world, definition, granted, record)
+}
+
+/// S1 and M5: the record's ruleset, attribute names and pools agree with the
+/// definition's.
+fn check_ruleset(
+    definition: &CombatDefinition,
+    entity: EntityId,
+    record: &CreatureState,
+) -> Result<(), CombatError> {
     let names_agree = record.attributes.len() == definition.attribute_names.len()
         && record
             .attributes
@@ -2259,11 +2441,20 @@ fn check_entry(
     if record.ruleset != definition.ruleset || !names_agree || !pools_agree {
         return Err(CombatError::RulesetMismatch { entity });
     }
-    // S2.
+    Ok(())
+}
+
+/// S2 then S3 (M7 then M8): the derived-stat preflight on the record's
+/// values, then the tag bound against the definition's grants.
+fn check_stats_and_tags(
+    world: &World,
+    definition: &CombatDefinition,
+    granted: &BTreeSet<&str>,
+    record: &CreatureState,
+) -> Result<(), CombatError> {
     if let Some(stat) = derived_failure(world, definition, record.health, &record.attributes) {
         return Err(CombatError::InvalidStatValue { stat });
     }
-    // S3.
     let mut union = granted.clone();
     union.extend(record.tags.iter().map(String::as_str));
     if union.len() > MAX_TAGS {
@@ -2369,6 +2560,198 @@ fn exit_record(
     })
 }
 
+/// Joins one record-holding creature to the live encounter (ADR-0029 T13,
+/// T14; T139 B23-B28).
+///
+/// Checks, in order: J1 `NoEncounter`; J2 `EncounterTerminal` (TB with no
+/// active turn, or RT with fewer than two alive); J3 `TooManyParticipants`; J4
+/// `AbsentActor`; J5 `AlreadyParticipant`; J6 `NotCreature`; J7 `DeadActor`; J8
+/// `RulesetMismatch`; J9 `PlacementInUse` (a current combatant, dead or alive,
+/// holds the record's placement); J10 `InvalidStatValue`; J11 `TooManyTags`.
+/// Any failure leaves `world` unchanged.
+///
+/// Then the entry key is computed (B25: one `combat.roll` draw under an
+/// initiative rule), the record becomes a [`Combatant`] at the current round
+/// (no refresh, no event, `active` unchanged, nothing interned), and it is
+/// scheduled. TB, round 0, key after the head: inserted at once. TB, round 0,
+/// otherwise: appended to `pending_joins` under the ruleset's `late_join:
+/// after_active`, else it waits for the next rollover (no timeline entry). TB,
+/// round 1 or later: it waits. RT: keyed at `elapsed` with no order.
+pub fn join_encounter(world: &mut World, joiner: &Entrant) -> Result<(), CombatError> {
+    let entity = joiner.entity;
+    // J1.
+    let state = world.combat().ok_or(CombatError::NoEncounter)?;
+    // J2.
+    let terminal = match state.mode {
+        EncounterMode::TurnBased => state.active.is_none(),
+        EncounterMode::RealTime => rt_alive(world) < 2,
+    };
+    if terminal {
+        return Err(CombatError::EncounterTerminal);
+    }
+    // J3.
+    if world.combatants().len() + 1 > MAX_COMBATANTS {
+        return Err(CombatError::TooManyParticipants);
+    }
+    // J4.
+    if !world.contains(entity) {
+        return Err(CombatError::AbsentActor { actor: entity });
+    }
+    // J5.
+    if world.combatants().contains(entity) {
+        return Err(CombatError::AlreadyParticipant { entity });
+    }
+    // J6.
+    let Some(record) = world.creatures().get(entity) else {
+        return Err(CombatError::NotCreature { entity });
+    };
+    // J7.
+    if record.dead() {
+        return Err(CombatError::DeadActor { actor: entity });
+    }
+    let definition = &state.definition;
+    // J8.
+    check_ruleset(definition, entity, record)?;
+    // J9.
+    let placement = record.placement;
+    if world
+        .combatants()
+        .iter()
+        .any(|(_, combatant)| combatant.placement == placement)
+    {
+        return Err(CombatError::PlacementInUse { placement });
+    }
+    // J10, J11.
+    let granted: BTreeSet<&str> = definition
+        .effects
+        .iter()
+        .flat_map(|effect| effect.grants.iter().map(String::as_str))
+        .collect();
+    check_stats_and_tags(world, definition, &granted, record)?;
+
+    // B25: the entry key. The draw is the first mutation; nothing after it
+    // can fail.
+    let definition = definition.clone();
+    let (health, attributes) = (record.health, record.attributes.clone());
+    let mut key = joiner.initiative;
+    if let Some(rule) = &definition.initiative {
+        let mut scratch = world.interners().clone();
+        let definitions = int_definitions(
+            &definition.health_stat,
+            &definition.attribute_names,
+            &definition.derived,
+            &mut scratch,
+        );
+        let pipeline = ModifierPipeline::new(definitions, BTreeMap::new())
+            .unwrap_or_else(|_| panic!("{DERIVED_PRECONDITION}"));
+        let mut probe_arena: GenerationalArena<()> = GenerationalArena::new();
+        let probe = probe_arena.insert(());
+        let no_tags = TagSet::new();
+        let block = base_block(&definition.health_stat, health, &attributes, &mut scratch);
+        let context = QueryContext {
+            entity: probe,
+            stats: &block,
+            tags: &no_tags,
+            modifiers: &[],
+        };
+        let mut bonus: i32 = 0;
+        for name in &rule.bonus_stats {
+            let value = query_int(&pipeline, probe, name, &scratch, &context)
+                .expect("the join checks guarantee the stat evaluates");
+            bonus = bonus.saturating_add(value);
+        }
+        let rolled = rule
+            .dice
+            .evaluate(world.rng_mut(), COMBAT_ROLL_STREAM)
+            .expect("the combat stream name is valid");
+        key = rolled.total.saturating_add(bonus).saturating_add(key);
+    }
+
+    // B24: the record becomes a combatant at the current round.
+    let (round, mode, lifecycle, clock) = {
+        let state = world.combat().expect("the encounter is checked above");
+        (state.round, state.mode, state.lifecycle, state.clock)
+    };
+    let record = world
+        .creatures_mut()
+        .remove(entity)
+        .expect("the join checks found this record");
+    let entered = enter_combatant(&definition, record, round, key);
+    world.combatants_mut().insert(entity, entered);
+
+    // B26, B28: scheduling.
+    match mode {
+        EncounterMode::TurnBased => {
+            let head = world.timeline().iter().next();
+            if round == 0 && head.is_some_and(|head| (InitiativeKey(key), entity) > head) {
+                world.timeline_mut().insert(InitiativeKey(key), entity);
+            } else if round == 0 && lifecycle.join_after_active {
+                world
+                    .combat_mut()
+                    .as_mut()
+                    .expect("the encounter is checked above")
+                    .pending_joins
+                    .push(entity);
+            }
+        }
+        EncounterMode::RealTime => {
+            let elapsed = clock.expect("a real-time encounter has a clock").elapsed;
+            let slot = i32::try_from(elapsed).expect("the clock is bounded by the largest key");
+            world.timeline_mut().insert(InitiativeKey(slot), entity);
+        }
+    }
+    Ok(())
+}
+
+/// Removes one live combatant from the live encounter without despawning it
+/// (T139 B29-B31).
+///
+/// Checks, in the actor order of [`validate_action`]: V1 `NoEncounter`; V2
+/// `NotParticipant` (live, not a combatant); V3 `AbsentActor`; V4 `DeadActor`
+/// (the dead await release or despawn). Any failure leaves `world` unchanged.
+///
+/// The combatant, its timeline entry and its pending-join entry are removed,
+/// and the encounter settles as a despawn would settle it, enqueuing neither
+/// `Died` nor `Despawned`. The entity stays live with its `Transform`, and
+/// becomes a record when its encounter keeps survivors or it entered from one.
+pub fn leave_encounter(world: &mut World, entity: EntityId) -> Result<(), CombatError> {
+    leave_encounter_tracked(world, entity).map(|_| ())
+}
+
+/// [`leave_encounter`] reporting the transition the leave actually took.
+///
+/// Crate-visible only: the history wrapper journals the facts after `Left`.
+pub(crate) fn leave_encounter_tracked(
+    world: &mut World,
+    entity: EntityId,
+) -> Result<TransitionFacts, CombatError> {
+    // V1.
+    let state = world.combat().ok_or(CombatError::NoEncounter)?;
+    // V2.
+    if world.contains(entity) && !world.combatants().contains(entity) {
+        return Err(CombatError::NotParticipant { entity });
+    }
+    // V3.
+    if !world.contains(entity) {
+        return Err(CombatError::AbsentActor { actor: entity });
+    }
+    // V4.
+    let combatant = world
+        .combatants()
+        .get(entity)
+        .expect("the entity is a live combatant");
+    if combatant.dead {
+        return Err(CombatError::DeadActor { actor: entity });
+    }
+    // B30: the encounter's values are captured before the removal.
+    let (round, ruleset, lifecycle) = (state.round, state.definition.ruleset, state.lifecycle);
+    let (removed, facts) = world.remove_combatant_tracked(entity);
+    let combatant = removed.expect("the entity was a combatant above");
+    if let Some(record) = exit_record(&combatant, ruleset, round, lifecycle, false) {
+        world.creatures_mut().insert(entity, record);
+    }
+    Ok(facts)
+}
 /// Looks up one ability entry by identity, scanning in ascending order.
 fn ability_entry(definition: &CombatDefinition, ability: Ulid) -> Option<&AbilityDefinition> {
     definition
@@ -3338,11 +3721,7 @@ pub(crate) fn perform_action_tracked(
                     let popped = end_turn(world);
                     debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
                 }
-                world
-                    .combat_mut()
-                    .as_mut()
-                    .expect("the encounter is checked above")
-                    .active = None;
+                set_terminal(world);
                 facts.encounter_ended = Some((encounter, round));
             } else if actor_dead {
                 facts = advance_tracked(world);
@@ -3661,7 +4040,29 @@ fn tb_round_start(world: &mut World) -> (EntityId, u32) {
 /// removed the departed entity from the timeline. Legacy behavior —
 /// emissions, bytes and signatures — is unchanged; only the branch facts are
 /// additionally reported.
+///
+/// It begins with the T139 B27 flush: every alive pending joiner is inserted at
+/// its own key and `pending_joins` is cleared before the head is picked. An
+/// empty list changes nothing.
 pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
+    // T139 B27: every alive pending joiner enters the timeline at its own key
+    // before the head is picked; a dead one is dropped. An empty list changes
+    // nothing.
+    let pending = world
+        .combat_mut()
+        .as_mut()
+        .map(|state| std::mem::take(&mut state.pending_joins))
+        .unwrap_or_default();
+    for id in pending {
+        let key = world
+            .combatants()
+            .get(id)
+            .filter(|state| !state.dead)
+            .map(|state| InitiativeKey(state.initiative));
+        if let Some(key) = key {
+            world.timeline_mut().insert(key, id);
+        }
+    }
     let mut facts = TransitionFacts::default();
     if world.timeline().is_empty() {
         let alive = world
@@ -3705,11 +4106,7 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
                 let state = world.combat().expect("the encounter is checked above");
                 (state.definition.encounter, state.round)
             };
-            world
-                .combat_mut()
-                .as_mut()
-                .expect("the encounter is checked above")
-                .active = None;
+            set_terminal(world);
             facts.encounter_ended = Some(ended);
         }
     } else {
@@ -3750,15 +4147,25 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
                 let state = world.combat().expect("the encounter is checked above");
                 (state.definition.encounter, state.round)
             };
-            world
-                .combat_mut()
-                .as_mut()
-                .expect("the encounter is checked above")
-                .active = None;
+            set_terminal(world);
             facts.encounter_ended = Some(ended);
         }
     }
     facts
+}
+
+/// Makes the turn-based encounter terminal: no active turn, and no pending
+/// joiner (T139 D45a, so a terminal save still satisfies the loader's Q1). The
+/// two `advance_tracked` sites reach here after its B27 flush has already taken
+/// the list, so the clear is a no-op there; the `UseAbility` kill that leaves
+/// fewer than two alive does not pass through `advance_tracked`, and relies on it.
+fn set_terminal(world: &mut World) {
+    let state = world
+        .combat_mut()
+        .as_mut()
+        .expect("the encounter is checked above");
+    state.active = None;
+    state.pending_joins.clear();
 }
 
 /// The number of combatants with `dead == false`; the RT terminal rule is
@@ -4685,5 +5092,197 @@ mod draw_tests {
         let target_ids: Vec<u128> = plan.target_mods.iter().map(|m| m.id.to_u128()).collect();
         assert!(target_ids.contains(&1), "the effect modifier is present");
         assert!(target_ids.contains(&2), "the opposing synthetic skips id 1");
+    }
+}
+/// T139b: the transition facts that join and leave settle with (B27, B30).
+/// The facts are crate-visible, so these tests live beside the code; the
+/// observable behaviour is in `tests/creature_join.rs` and
+/// `tests/creature_exit.rs`.
+#[cfg(test)]
+mod join_leave_facts_tests {
+    use crpg_core::{EntityId, Ulid};
+    use crpg_data::LateJoinWire;
+
+    use super::support::creature::{add_outsider, set_hooks};
+    use super::support::rt::{capable, capable_trio};
+    use super::support::Fixture;
+    use super::*;
+
+    fn bound(fixture: &Fixture) -> World {
+        World::new_in_area(5, fixture.area)
+    }
+
+    fn begin(fixture: &Fixture, world: &mut World, mode: EncounterMode) {
+        fixture
+            .with_spec(|spec| start_encounter_with_members(world, spec, mode, &[]))
+            .expect("the encounter starts");
+    }
+
+    fn ids(world: &World) -> Vec<EntityId> {
+        world.combatants().iter().map(|(id, _)| id).collect()
+    }
+
+    fn end(world: &mut World, actor: EntityId) -> TransitionFacts {
+        perform_action_tracked(world, &CombatAction::EndTurn { actor })
+            .expect("the turn ends")
+            .1
+    }
+
+    /// E7: B's `EndTurn` flushes the pending joiner, which becomes the head
+    /// with one `TurnStart`, reported as `turn_started == (J, 0)`. Control:
+    /// under `next_round` the same `EndTurn` reports A.
+    #[test]
+    fn e7_pending_flush_reports_the_joiner_as_head() {
+        for (late, expect_joiner) in [
+            (Some(LateJoinWire::AfterActive), true),
+            (Some(LateJoinWire::NextRound), false),
+        ] {
+            let mut fixture = Fixture::standard();
+            add_outsider(&mut fixture, 133, 143);
+            set_hooks(&mut fixture, None, late, None);
+            let mut world = bound(&fixture);
+            let j = fixture
+                .register(&mut world, Ulid::from_u128(133))
+                .expect("registers");
+            begin(&fixture, &mut world, EncounterMode::TurnBased);
+            let (a, b) = (ids(&world)[0], ids(&world)[1]);
+            join_encounter(
+                &mut world,
+                &Entrant {
+                    entity: j,
+                    initiative: 5,
+                },
+            )
+            .expect("J joins");
+            let facts = end(&mut world, b);
+            let head = if expect_joiner { j } else { a };
+            assert_eq!(
+                facts,
+                TransitionFacts {
+                    turn_started: Some((head, 0)),
+                    ..TransitionFacts::default()
+                },
+                "{late:?}"
+            );
+        }
+    }
+
+    /// E14: the facts of each leave. A non-head leave reports nothing; the
+    /// head's reports the next head; the last combatant's reports the end of
+    /// an unfinished encounter; a leave from a terminal encounter reports
+    /// nothing; an RT leave below two alive reports the end; a leave at a
+    /// boundary applies the pending switch.
+    #[test]
+    fn e14_leave_reports_what_it_settled() {
+        let trio = Fixture::trio();
+        let mut world = bound(&trio);
+        begin(&trio, &mut world, EncounterMode::TurnBased);
+        let (a, b, c) = (ids(&world)[0], ids(&world)[1], ids(&world)[2]);
+        let encounter = world.combat().expect("combat").definition.encounter;
+
+        // A non-head leave: nothing settles.
+        let mut run = world.clone();
+        assert_eq!(
+            leave_encounter_tracked(&mut run, b),
+            Ok(TransitionFacts::default())
+        );
+        // The head leaves: the next head starts its turn in the same round.
+        let mut run = world.clone();
+        assert_eq!(
+            leave_encounter_tracked(&mut run, c),
+            Ok(TransitionFacts {
+                turn_started: Some((b, 0)),
+                ..TransitionFacts::default()
+            })
+        );
+        // Control: the despawn reports the same facts.
+        let mut despawned = world.clone();
+        assert_eq!(
+            despawned.despawn_tracked(c),
+            (
+                true,
+                TransitionFacts {
+                    turn_started: Some((b, 0)),
+                    ..TransitionFacts::default()
+                }
+            )
+        );
+        // The head leaves with one other alive: the encounter ends.
+        let mut run = world.clone();
+        leave_encounter_tracked(&mut run, a).expect("A leaves");
+        assert_eq!(
+            leave_encounter_tracked(&mut run, c),
+            Ok(TransitionFacts {
+                encounter_ended: Some((encounter, 0)),
+                ..TransitionFacts::default()
+            })
+        );
+        // The last combatant leaves: the unfinished encounter is released
+        // and reported as ended once.
+        let mut run = world.clone();
+        leave_encounter_tracked(&mut run, a).expect("A leaves");
+        leave_encounter_tracked(&mut run, b).expect("B leaves");
+        assert!(run.combat().is_some());
+        assert_eq!(
+            leave_encounter_tracked(&mut run, c),
+            Ok(TransitionFacts {
+                encounter_ended: Some((encounter, 0)),
+                ..TransitionFacts::default()
+            })
+        );
+        assert!(run.combat().is_none());
+        // A terminal encounter reports no second end.
+        let mut run = world.clone();
+        leave_encounter_tracked(&mut run, c).expect("C leaves");
+        leave_encounter_tracked(&mut run, b).expect("B leaves, the head");
+        assert_eq!(run.combat().expect("combat").active, None);
+        assert_eq!(
+            leave_encounter_tracked(&mut run, a),
+            Ok(TransitionFacts::default())
+        );
+    }
+
+    /// E14: RT drops below two alive on a leave and reports the end; a
+    /// boundary leave applies a pending switch.
+    #[test]
+    fn e14_rt_and_boundary_leaves() {
+        let rt = capable(8);
+        let mut world = bound(&rt);
+        begin(&rt, &mut world, EncounterMode::RealTime);
+        let encounter = world.combat().expect("combat").definition.encounter;
+        let leaver = ids(&world)[0];
+        assert_eq!(
+            leave_encounter_tracked(&mut world, leaver),
+            Ok(TransitionFacts {
+                encounter_ended: Some((encounter, 0)),
+                ..TransitionFacts::default()
+            })
+        );
+
+        // The active combatant is last on the timeline and leaves with a
+        // switch pending: the rollover applies it.
+        let trio = capable_trio(8);
+        let mut world = bound(&trio);
+        begin(&trio, &mut world, EncounterMode::TurnBased);
+        let (a, b, c) = (ids(&world)[0], ids(&world)[1], ids(&world)[2]);
+        end(&mut world, c);
+        end(&mut world, b);
+        assert_eq!(world.combat().expect("combat").active, Some(a));
+        request_mode(&mut world, EncounterMode::RealTime).expect("requested");
+        let facts = leave_encounter_tracked(&mut world, a).expect("A leaves");
+        assert_eq!(
+            facts.mode_changed.map(|(mode, _)| mode),
+            Some(EncounterMode::RealTime)
+        );
+        assert_eq!(
+            facts.round_started,
+            facts.mode_changed.map(|(_, round)| round)
+        );
+        assert_eq!(facts.turn_started, None);
+        assert_eq!(facts.encounter_ended, None);
+        assert_eq!(
+            world.combat().expect("combat").mode,
+            EncounterMode::RealTime
+        );
     }
 }

@@ -40,7 +40,7 @@ use crate::combat::{
 use crate::creature::CreatureState;
 use crate::event::SimEvent;
 use crate::store::ComponentStore;
-use crate::timeline::Timeline;
+use crate::timeline::{InitiativeKey, Timeline};
 use crate::transform::Transform;
 
 /// Per-entity metadata: reserved for now.
@@ -719,6 +719,46 @@ impl<'de> Deserialize<'de> for World {
                         ));
                     }
                 }
+                // Pending joins (T139 B33): Q1-Q5. A pending joiner is an
+                // alive-at-join combatant of a first turn-based round that
+                // holds no timeline entry and sorts before the active head.
+                if !state.pending_joins.is_empty() {
+                    if state.mode != EncounterMode::TurnBased
+                        || state.round != 0
+                        || state.active.is_none()
+                    {
+                        return Err(serde::de::Error::custom(
+                            "combat pending joins outside a first turn-based round",
+                        ));
+                    }
+                    let mut seen = BTreeSet::new();
+                    if !state.pending_joins.iter().all(|id| seen.insert(*id)) {
+                        return Err(serde::de::Error::custom(
+                            "combat pending joins repeat an entity",
+                        ));
+                    }
+                    let head = repr.timeline.iter().next();
+                    for id in &state.pending_joins {
+                        let Some(combatant) = repr.combatants.get(*id) else {
+                            return Err(serde::de::Error::custom(
+                                "combat pending join names a non-combatant",
+                            ));
+                        };
+                        if repr.timeline.contains(*id) {
+                            return Err(serde::de::Error::custom(
+                                "combat pending join is scheduled",
+                            ));
+                        }
+                        let sorts_before = head.is_some_and(|head| {
+                            (InitiativeKey(combatant.initiative()), *id) < head
+                        });
+                        if !sorts_before {
+                            return Err(serde::de::Error::custom(
+                                "combat pending join sorts after the active head",
+                            ));
+                        }
+                    }
+                }
                 // Real-time coherence (T138, ADR-0029 T16): L1-L5. The
                 // sim's stages `expect` these, so an incoherent save fails
                 // here instead of at action time. An order's target is not
@@ -948,12 +988,38 @@ impl World {
     /// captured before the removal; releasing an already terminal encounter
     /// reports no second end.
     pub(crate) fn despawn_tracked(&mut self, id: EntityId) -> (bool, TransitionFacts) {
+        if self.entities.remove(id).is_none() {
+            return (false, TransitionFacts::default());
+        }
+        self.transforms.remove(id);
+        self.creatures.remove(id);
+        let (_, facts) = self.remove_combatant_tracked(id);
+        self.events
+            .push(self.tick, SimEvent::Despawned { entity: id });
+        (true, facts)
+    }
+
+    /// Removes `id`'s combatant, timeline entry and pending-join entry, and
+    /// settles the encounter exactly as [`despawn`](Self::despawn) does
+    /// (T139 D11): the active combatant leaving advances the turn, the last
+    /// combatant leaving releases the encounter, and an RT encounter whose
+    /// alive count drops from two or more to below two ends. The entity stays
+    /// live; nothing is enqueued.
+    ///
+    /// Crate-visible only. [`despawn_tracked`](Self::despawn_tracked) and
+    /// `leave_encounter_tracked` share it, so a leave and a despawn settle the
+    /// encounter identically. Returns the removed combatant, if any, and the
+    /// transition the removal caused.
+    pub(crate) fn remove_combatant_tracked(
+        &mut self,
+        id: EntityId,
+    ) -> (Option<Combatant>, TransitionFacts) {
         let prior = self
             .combat
             .as_ref()
             .map(|state| (state.definition.encounter, state.round, state.active));
         // The mode and the non-dead count are captured before the removal:
-        // an RT despawn ends the encounter when it drops the count from two
+        // an RT removal ends the encounter when it drops the count from two
         // or more to below two (T138b, H2).
         let prior_rt_alive = self.combat.as_ref().and_then(|state| {
             (state.mode == EncounterMode::RealTime).then(|| {
@@ -963,13 +1029,11 @@ impl World {
                     .count()
             })
         });
-        if self.entities.remove(id).is_none() {
-            return (false, TransitionFacts::default());
-        }
-        self.transforms.remove(id);
-        self.creatures.remove(id);
-        self.combatants.remove(id);
+        let removed = self.combatants.remove(id);
         self.timeline.remove(id);
+        if let Some(state) = self.combat.as_mut() {
+            state.pending_joins.retain(|entry| *entry != id);
+        }
         let mut facts = TransitionFacts::default();
         if self.combatants.is_empty() {
             self.combat = None;
@@ -998,9 +1062,7 @@ impl World {
                 facts.encounter_ended = Some((encounter, round));
             }
         }
-        self.events
-            .push(self.tick, SimEvent::Despawned { entity: id });
-        (true, facts)
+        (removed, facts)
     }
 
     /// Whether `id` names a live entity.
