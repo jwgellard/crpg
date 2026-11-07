@@ -34,6 +34,7 @@ mod identity;
 mod limits;
 mod queue;
 mod server;
+mod teardown;
 mod tls;
 
 pub use client::{CloseReport, ConnectError, QuicClient};

@@ -28,10 +28,11 @@ use crate::handshake::{
 };
 use crate::limits::{ClientConfig, ClientLimits, ConfigError};
 use crate::queue::{
-    close_quinn, deadline_after, framed, framed_channel, lane_control, lane_reader, lane_writer,
-    race, reason_from, wait_stop, Conn, ConnWake, Either, FailGuard, FlushRequest, LaneDirection,
-    Phase, ReadSpec, Shared, State, Stop, SYNC_GRACE,
+    close_quinn, framed, framed_channel, lane_control, lane_reader, lane_writer, race, reason_from,
+    wait_stop, Conn, ConnWake, Either, FailGuard, FlushRequest, LaneDirection, Phase, ReadSpec,
+    Shared, State, Stop, SYNC_GRACE,
 };
+use crate::teardown::{close_deadlines, finish_endpoint_close};
 use crate::tls;
 
 /// The client's single connection record id.
@@ -445,7 +446,8 @@ impl QuicClient {
     }
 
     /// Closes the connection with `code` and ends the I/O thread. `Flush`
-    /// blocks up to `close_flush_timeout_ms` for the peer's ack.
+    /// blocks up to `close_flush_timeout_ms` for the peer's ack. The last
+    /// `min(200 ms, budget / 4)` of the budget is kept for the CONNECTION_CLOSE.
     pub fn close(mut self, code: CloseCode, mode: CloseMode) -> CloseReport {
         let report = self.stop(code, mode);
         if let Some(thread) = self.thread.take() {
@@ -459,7 +461,7 @@ impl QuicClient {
             outbound_frames_discarded: 0,
             inbound_frames_discarded: 0,
         };
-        let deadline = deadline_after(self.limits.close_flush_timeout_ms);
+        let deadlines = close_deadlines(self.limits.close_flush_timeout_ms);
         if let Some(mut state) = self.shared.lock_any() {
             let open = state
                 .conns
@@ -471,12 +473,15 @@ impl QuicClient {
                     record.closing = Some(code);
                     record.flush = Some(FlushRequest {
                         code,
-                        deadline,
+                        flush_end: deadlines.flush_end,
                         started: false,
                     });
                     record.wake.control.notify_one();
                 }
-                let guard_deadline = deadline.checked_add(SYNC_GRACE).unwrap_or(deadline);
+                let guard_deadline = deadlines
+                    .overall
+                    .checked_add(SYNC_GRACE)
+                    .unwrap_or(deadlines.overall);
                 state = match self.shared.wait_until(state, guard_deadline, |state| {
                     state
                         .conns
@@ -493,7 +498,10 @@ impl QuicClient {
                 report.outbound_frames_discarded = record.discarded.saturating_sub(before);
                 report.inbound_frames_discarded = record.held_inbound_frames();
             }
-            state.stop = Some(Stop { code, deadline });
+            state.stop = Some(Stop {
+                code,
+                deadline: deadlines.overall,
+            });
         }
         self.shared.endpoint_wake.notify_one();
         report
@@ -677,12 +685,7 @@ async fn client_main(
         Either::Left(()) => wait_stop(&shared).await,
         Either::Right(stop) => stop,
     };
-    endpoint.close(
-        quinn::VarInt::from_u32(stop.code.as_u32()),
-        stop.code.name().as_bytes(),
-    );
-    let deadline = tokio::time::Instant::from_std(stop.deadline);
-    let _ = tokio::time::timeout_at(deadline, endpoint.wait_idle()).await;
+    finish_endpoint_close(&endpoint, stop.code, stop.deadline).await;
 }
 
 /// Closes whatever the endpoint still holds and lets the close go out.

@@ -80,7 +80,7 @@ needs an ADR. A wire change also needs a new ALPN.
     `third_party/quinn-proto/VENDOR.md`);
   - `rustls` =0.23.46 (`ring`, `std`), from 0.23.45 for RUSTSEC-2026-0346 to
     -0349 (S002);
-  - `tokio` =1.53.1 (`rt`, `net`, `time`, `sync`).
+  - `tokio` =1.53.3 (`rt`, `net`, `time`, `sync`).
 
 There are **no dev-dependencies**. The tests use std, the normal edges above
 and `crpg_net`'s public codecs. Any new edge or feature needs a T018a-style
@@ -91,6 +91,8 @@ record and approval. `deny.toml` changes follow ADR-0023 and its addendum.
 ```text
 cargo fmt --all -- --check
 cargo clippy -p crpg-net-quic --all-targets --locked -- -D warnings
+cargo test -p crpg-net-quic --lib --locked        # teardown: reserve split, goodbye
+cargo test -p crpg-net-quic --test close_budget --locked
 cargo test -p crpg-net-quic --test quic --locked   # 32 cases (T023: 1–23, T023c: 24–27, T023v: 28, T023d: 29–30)
 cargo test -p crpg-net-quic --test quic_gaps --locked
 cargo test -p crpg-net-quic --test channel --locked # 21 cases (T024q S§10)
@@ -161,6 +163,11 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
   a close reason: it carries a proof.
 - Never add a variant to `ServerEvent`, `SendError` or `ServerError` without
   the `crpg-server` task that matches them exhaustively.
+- Never bound the endpoint wait by the flush deadline, and never remove the
+  yield in `finish_endpoint_close`. An expired `timeout_at` returns without
+  polling the drivers, and a dropped runtime never sends the queued
+  CONNECTION_CLOSE (T098f). The flush stops at `B − R`; only the endpoint
+  waits for `B`.
 
 ## Agent log
 
@@ -170,3 +177,4 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - 2026-10-06 (UTC) · claude-code + T023d · Added the release-not-remove trap and raised the suite count to 30, so later work never deletes a record its control task still needs to send a close.
 - 2026-10-16 (UTC) · claude-code + S002 · Moved the `rustls` pin line to =0.23.46 with the advisories that forced it, so the crate's rules match its manifest.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + T024q · Added the `/2` framing, channel and resume-opening surface, extended invariants 4 and 6 and added the channel traps, so later channel work keeps one queue, one opaque payload and the `bind`/`bind_dual` refusal rules.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added the two teardown test commands, the no-flush-deadline-endpoint-wait/yield trap and corrected the tokio pin to =1.53.3, so a later close change keeps the reserve and the exit yield that make CONNECTION_CLOSE go out.

@@ -59,6 +59,8 @@ queue.rs      (private) shared State behind one Mutex, Condvar + Notify
 server.rs     QuicServer: bind, accept loop, handshake/hello/decision per
               connection, sync API, shutdown/Drop, ServerLane
 client.rs     QuicClient: connect sequence, sync API, close/Drop
+teardown.rs   (private) close budget split (R = min(200 ms, B / 4)), the
+              flush_end/overall instants, and the I/O-thread exit sequence
 ```
 
 One connection, server side:
@@ -110,11 +112,18 @@ order.
 | Connections | 64, pending included | 1 |
 | Idle / keep-alive | 60 s / 15 s | 60 s / 15 s |
 | Hello / decision / connect | 5 s / 5 s / — | — / — / 10 s |
-| Close flush | 2 s | 2 s |
+| Close flush[^flush] | 2 s | 2 s |
 | QUIC stream receive window (`stream_window_bytes`) | 65,536 (floor 4,100) | 1,048,576 (floor 65,540) |
 | QUIC connection receive window (`connection_window_bytes`) | 131,072 (≥ stream window) | 2,097,152 (≥ stream window) |
 | QUIC send window (`send_window_bytes`) | 1,048,576 (floor 65,540) | 262,144 (floor 4,100) |
 
+- **Close budget.** The close flush row's `B = close_flush_timeout_ms`
+  splits at `R = min(200 ms, B / 4)`. Every `Flush` close, including
+  `QuicServer::close`, stops its flush at `flush_end = now + (B − R)`; the
+  endpoint stops waiting at `overall = now + B`. The I/O thread's exit closes the endpoint, yields to the scheduler once, then
+  waits for `wait_idle` bounded by `overall`: the yield makes every driver
+  woken by the close run at least once even when `overall` has already
+  passed, and a budget of 0 stays best effort with that one pass (T098g).
 - **Outbound full** → `SendError::QueueFull`. It is retryable and nothing is
   queued. A frame leaves the accounting when it is handed to QUIC, and
   quinn's own buffer is bounded by `send_window_bytes`.
@@ -145,6 +154,10 @@ order.
   windows, so against a slow production client it relies on its outbound
   queue caps, its send window (memory) and T023b's slow-consumer fence
   (T023c C§1.2–C§1.3).
+
+[^flush]: A `Flush` close stops its flush at `B − R` and keeps the last
+    `R = min(200 ms, B / 4)` for the CONNECTION_CLOSE, so the goodbye still
+    goes out inside `B`.
 
 ## Handshake
 
@@ -197,3 +210,4 @@ stop draining).
 - 2026-10-05 (UTC) · claude-code + T023c · Added the three window limits per side to the bounds, narrowed the fixed-parameters sentence to what is still fixed, explained what bounds a stalled peer and passed the window limits and the T023b amendments on to T023b, so the doc matches the code after the windows stopped being constants.
 - 2026-10-05 (UTC) · claude-code + T023v-b · Recorded the vendored quinn-proto close fix and case 28 (28 cases) and told T023b that close codes now reach the peer under a full congestion window, so T023b's fencing cases can rely on the code instead of tolerating a `Reset`.
 - 2026-10-06 (UTC) · claude-code + T023d · Told T023b that a refused or `Discard`-closed connection delivers its code even when `Closed` is polled in the same pump, with the API's record-lifetime rule unchanged, and raised the suite count to 30, so T023b's adapter can poll `Closed` at once without a workaround.
+- 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added `teardown.rs` to the module flow, footnoted the Close flush row and added the close-budget bound (flush at `B − R`, endpoint at `B`, one exit yield), so the doc states the reserve every `Flush` close now keeps for CONNECTION_CLOSE.
