@@ -461,6 +461,9 @@ pub enum Document {
     /// Source-asset hash and import-settings authority.
     #[serde(rename = "crpg.assets-lock/1")]
     AssetsLock(crate::AssetsLock),
+    /// Ruleset-described player UI (presentation only).
+    #[serde(rename = "crpg.ui/1")]
+    Ui(crate::UiDocument),
 }
 
 /// Decodes one current-tagged value with strict typed rules and lock checks.
@@ -504,6 +507,7 @@ pub(crate) fn validate_local(document: &Document) -> Result<(), DataError> {
         | Document::OutcomeTable(_)
         | Document::Encounter(_)
         | Document::Effect(_) => crate::combat::validate_combat_local(document),
+        Document::Ui(ui) => crate::ui::validate_ui_local(ui),
         _ => Ok(()),
     }
 }

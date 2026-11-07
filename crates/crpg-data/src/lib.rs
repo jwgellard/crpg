@@ -18,6 +18,7 @@ pub mod package;
 pub mod pointer_edit;
 pub mod schema;
 pub mod types;
+pub mod ui;
 pub mod validation;
 
 mod inventory;
@@ -35,4 +36,5 @@ pub use package::*;
 pub use pointer_edit::*;
 pub use schema::*;
 pub use types::*;
+pub use ui::*;
 pub use validation::*;

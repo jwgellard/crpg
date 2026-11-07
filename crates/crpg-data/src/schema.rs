@@ -87,7 +87,7 @@ fn root<T: JsonSchema>(title: &str) -> Result<Vec<u8>, DataError> {
     canonical_json(&schema)
 }
 
-/// Generates exactly 22 filename-to-canonical-byte schemas without filesystem I/O.
+/// Generates exactly 23 filename-to-canonical-byte schemas without filesystem I/O.
 ///
 /// Document roots use single-variant derive wrappers to enforce one schema tag.
 /// Each file has local definitions and no external schema identifier.
@@ -140,6 +140,7 @@ pub fn generated_schemas() -> Result<BTreeMap<String, Vec<u8>>, DataError> {
         "campaign-lock.schema.json"
     );
     document_schema!(AssetsLock, "crpg.assets-lock/1", "assets-lock.schema.json");
+    document_schema!(UiDocument, "crpg.ui/1", "ui.schema.json");
     output.insert(
         "placement.schema.json".into(),
         root::<Placement>("Placement")?,

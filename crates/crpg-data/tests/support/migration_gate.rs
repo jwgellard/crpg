@@ -488,6 +488,16 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             duration_rounds: 2,
             grants: None,
         }),
+        Document::Ui(UiDocument {
+            ruleset: id(70),
+            stats: None,
+            pools: None,
+            abilities: None,
+            effects: None,
+            outcomes: None,
+            screens: None,
+            note: None,
+        }),
     ]);
     docs.iter()
         .map(|doc| {

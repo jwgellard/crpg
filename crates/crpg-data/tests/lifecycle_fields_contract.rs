@@ -628,7 +628,7 @@ fn bd4_versions_and_migration_produce_absent_fields() {
 #[test]
 fn bd5_schemas_gain_exactly_the_four_properties() {
     let schemas = crpg_data::generated_schemas().unwrap();
-    assert_eq!(schemas.len(), 22);
+    assert_eq!(schemas.len(), 23);
 
     let ruleset: Value = serde_json::from_slice(&schemas["ruleset.schema.json"]).unwrap();
     let shape = &ruleset["oneOf"][0];

@@ -15,11 +15,11 @@ fn edit(files: &mut gate::Snapshot, name: &str, change: impl FnOnce(&mut Value))
 #[test]
 fn registry_schema_and_serde_agree_on_twenty_current_tags() {
     let versions = schema_versions();
-    assert_eq!(versions.len(), 20);
+    assert_eq!(versions.len(), 21);
     let schemas = generated_schemas().unwrap();
-    assert_eq!(schemas.len(), 22);
+    assert_eq!(schemas.len(), 23);
     let serialized = gate::representatives(&gate::snapshot().unwrap()).unwrap();
-    assert_eq!(serialized.len(), 20);
+    assert_eq!(serialized.len(), 21);
     gate::check_tags(versions, &schemas, &serialized).unwrap();
     // Retain the concrete version assertions independently of the checker.
     for version in versions {

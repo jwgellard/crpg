@@ -563,6 +563,106 @@ fn inventory_graph(
     }
 }
 
+/// Inventories the references of one UI document (B10), all with a `None` source.
+///
+/// Sections inside reserved or unknown screens are enumerated too. The
+/// `Unknown` payload is never scanned for ULIDs.
+fn inventory_ui(out: &mut Vec<RefOccurrence>, path: &SourcePath, ui: &crate::UiDocument) {
+    use crate::{UiAbilitySelect, UiFormat, UiMeter, UiPoolSelect, UiSection};
+    push_generic(
+        out,
+        path,
+        "/ruleset".into(),
+        None,
+        ui.ruleset,
+        ALLOWED_RULESET,
+        None,
+        "ui ruleset",
+    );
+    for (i, stat) in ui.stats.iter().flatten().enumerate() {
+        if let Some(UiFormat::Fraction(UiMeter::Pool(pool))) = &stat.format {
+            push_pool(
+                out,
+                path,
+                format!("/stats/{i}/format/value/value"),
+                None,
+                *pool,
+                "ui pool",
+            );
+        }
+    }
+    for (i, pool) in ui.pools.iter().flatten().enumerate() {
+        push_pool(
+            out,
+            path,
+            format!("/pools/{i}/pool"),
+            None,
+            pool.pool,
+            "ui pool",
+        );
+    }
+    for (i, ability) in ui.abilities.iter().flatten().enumerate() {
+        push_generic(
+            out,
+            path,
+            format!("/abilities/{i}/ability"),
+            None,
+            ability.ability,
+            ALLOWED_ABILITY,
+            None,
+            "ui ability",
+        );
+    }
+    for (i, effect) in ui.effects.iter().flatten().enumerate() {
+        push_generic(
+            out,
+            path,
+            format!("/effects/{i}/effect"),
+            None,
+            effect.effect,
+            ALLOWED_EFFECT,
+            None,
+            "ui effect",
+        );
+    }
+    for (i, screen) in ui.screens.iter().flatten().enumerate() {
+        for (j, section) in screen.sections.iter().enumerate() {
+            let base = format!("/screens/{i}/sections/{j}");
+            match section {
+                UiSection::PoolGroup(UiPoolSelect::Ids(ids)) => {
+                    for (k, id) in ids.iter().enumerate() {
+                        push_pool(
+                            out,
+                            path,
+                            format!("{base}/value/value/{k}"),
+                            None,
+                            *id,
+                            "ui pool",
+                        );
+                    }
+                }
+                UiSection::AbilityList(list) => {
+                    if let UiAbilitySelect::Ids(ids) = &list.select {
+                        for (k, id) in ids.iter().enumerate() {
+                            push_generic(
+                                out,
+                                path,
+                                format!("{base}/value/select/value/{k}"),
+                                None,
+                                *id,
+                                ALLOWED_ABILITY,
+                                None,
+                                "ui ability",
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Collects every typed authored ULID reference occurrence.
 ///
 /// Coverage is every typed object-reference field in the current documents,
@@ -969,6 +1069,7 @@ pub(crate) fn reference_occurrences(
                 }
             }
             Document::Effect(_) => {}
+            Document::Ui(v) => inventory_ui(&mut out, path, v),
             Document::CampaignLock(_) | Document::AssetsLock(_) => {}
         }
     }

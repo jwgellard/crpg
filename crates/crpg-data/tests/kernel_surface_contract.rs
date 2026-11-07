@@ -1627,7 +1627,7 @@ fn item11_rt_warning() {
 #[test]
 fn item13_schemas_optional_properties() {
     let schemas = crpg_data::generated_schemas().unwrap();
-    assert_eq!(schemas.len(), 22);
+    assert_eq!(schemas.len(), 23);
     for (file, added) in [
         ("ruleset.schema.json", vec!["initiative"]),
         ("ability.schema.json", vec!["bonus_stats"]),

@@ -100,6 +100,22 @@ pub enum DiagnosticCode {
     UnknownPool,
     /// An ability declares real-time fields under a ruleset with no round_ticks.
     RealTimeFieldsWithoutRoundTicks,
+    /// A UI document uses a kind this schema version does not define.
+    UnknownKind,
+    /// A UI document uses a kind that is reserved until its data family exists.
+    ReservedKind,
+    /// A UI document binds the same ruleset, stat, pool, ability, effect or kind twice.
+    DuplicateBinding,
+    /// A UI outcome label is not produced by the ruleset.
+    UnknownOutcome,
+    /// A UI tag resolves to no ability entry or item.
+    UnknownTag,
+    /// A UI stat group is the group of no stats entry.
+    UnknownGroup,
+    /// A UI enum label names a variant the stat does not declare.
+    UnknownVariant,
+    /// A UI stat format does not suit the stat's declared kind.
+    FormatMismatch,
 }
 
 impl DiagnosticCode {
@@ -138,6 +154,14 @@ impl DiagnosticCode {
             Self::InvalidCost => "invalid_cost",
             Self::UnknownPool => "unknown_pool",
             Self::RealTimeFieldsWithoutRoundTicks => "real_time_fields_without_round_ticks",
+            Self::UnknownKind => "unknown_kind",
+            Self::ReservedKind => "reserved_kind",
+            Self::DuplicateBinding => "duplicate_binding",
+            Self::UnknownOutcome => "unknown_outcome",
+            Self::UnknownTag => "unknown_tag",
+            Self::UnknownGroup => "unknown_group",
+            Self::UnknownVariant => "unknown_variant",
+            Self::FormatMismatch => "format_mismatch",
         }
     }
 }
@@ -276,6 +300,7 @@ pub fn campaign_document_path(value: &str) -> Result<Option<SourcePath>, DataErr
         || family(value, "outcome_tables/")
         || family(value, "encounters/")
         || family(value, "effects/")
+        || family(value, "ui/")
         || area_file(value, "area.json")
         || area_file(value, "placements.json")
         || area_file(value, "triggers.json")
@@ -1212,6 +1237,8 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                 }
             }
             Document::CampaignLock(_) | Document::AssetsLock(_) => {}
+            // Locale, asset and walk_ui checks for UI documents are T142b.
+            Document::Ui(_) => {}
         }
     }
 

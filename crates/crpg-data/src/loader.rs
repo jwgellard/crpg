@@ -132,6 +132,7 @@ fn check_layout(documents: &BTreeMap<SourcePath, Document>) -> Result<(), DataEr
             Document::OutcomeTable(_) => family(p, "outcome_tables/"),
             Document::Encounter(_) => family(p, "encounters/"),
             Document::Effect(_) => family(p, "effects/"),
+            Document::Ui(_) => family(p, "ui/"),
             Document::Locale(locale) => {
                 locale_shape(p)
                     && p.strip_prefix("locale/")

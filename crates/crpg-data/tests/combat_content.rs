@@ -740,7 +740,7 @@ fn combat_objects_explain_with_typed_edges() {
 #[test]
 fn new_families_register_version_one_without_edges() {
     let versions = crpg_data::schema_versions();
-    assert_eq!(versions.len(), 20);
+    assert_eq!(versions.len(), 21);
     for (family, current) in [
         ("crpg.ruleset", 2),
         ("crpg.ability", 2),
