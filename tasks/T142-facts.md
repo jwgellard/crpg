@@ -127,4 +127,4 @@ Campaign copy:
 
 ## Agent log
 
-- 2026-11-08 (UTC) · opencode-go/beam-free + T142 facts · Gathered cited facts for the crpg.ui/1 contract without designing it.
+- 2026-11-07 (UTC) · opencode-go/beam-free + T142 facts · Gathered cited facts for the crpg.ui/1 contract without designing it.
