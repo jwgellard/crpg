@@ -1,6 +1,6 @@
 # Decision D45 — session 39: a T139b2 gap, and two revised contracts to approve
 
-Status: **open.** Drafted by the manager in session 39 (2026-11-07). D45a holds back one T139b2 code fix; D45b and D45c each hold back an implementation package. Nothing else in the wave waits on them.
+Status: **Answered by the user, 2026-11-07: D45a (a), D45b (a), D45c (a).** Drafted by the manager in session 39 (2026-11-07). D45a holds back one T139b2 code fix; D45b and D45c each hold back an implementation package. Nothing else in the wave waits on them.
 
 ## D45a — T139b2: a creature waiting to join when the fight ends
 
@@ -29,3 +29,4 @@ This is D44b (a) written out: only the mesh inside each proxy is lifted, and the
 ## Agent log
 
 - 2026-11-07 (UTC) · claude-code/opus-5.5 (manager) + session 39 · Drafted D45 from the T139b2 core review's terminal-with-pending-joiner finding and the two contract revisions made to D44, so the user can rule on all three at once.
+- 2026-11-07 (UTC) · claude-code/opus-5.5 (manager) + session 39 + D45 answered · Recorded the user's answers: (a) empty the waiting list whenever the fight ends, (a) approve the T098h contract, (a) approve the T048b contract with its palette, wrap, frame check and records.
