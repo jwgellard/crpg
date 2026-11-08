@@ -394,9 +394,35 @@ migration path reads its fields, and `crpg-sim` never sees it.
 - **Reference inventory.** `reference_occurrences` enumerates the ruleset,
   pool, ability and effect sites of a UI document (pools as `PoolTemplate`,
   resolved by `walk_ui` against the owning ruleset, never the object index).
-- **State.** T142a ships the model, read-time checks, layout, schema, registry,
-  inventory, `UiSource` and the defaults, and appends the eight
-  `DiagnosticCode` variants without emitting them. `walk_ui`, the locale and
-  asset checks and the emission of those codes are T142b.
+- **Validation (T142b).** `walk_ui` runs right after `walk_combat`, one UI
+  document at a time in path order. "R" is the document's `ruleset` resolving to
+  a `Ruleset` in the shared identity table; with no R only the generic `/ruleset`
+  finding appears, and every (R) check (undeclared stat, non-template pool,
+  unlisted ability, unapplied effect, unproduced outcome, enum variant, meter
+  and format-kind checks) is skipped, while duplicate, unknown-kind, reserved-kind
+  and tag/group checks always run. Each pointer carries at most one finding, in
+  the order generic reference, `duplicate_binding`, then the (R) resolution. The
+  eight codes are emitted as:
+  `unknown_kind` (an `Unknown` arm of the six tolerant sets), `reserved_kind`
+  (`level_up`, `character_creation` screens, whose sections are then not walked,
+  and `choice_steps` sections), `duplicate_binding` (ruleset per UI file, stat,
+  pool, ability, effect, outcome, enum variant, category tag, known screen kind,
+  and per screen the explicit stat, pool and ability ids; `all`, `group` and `tag`
+  selectors are never compared), `unknown_outcome`, `unknown_tag` (an ability tag
+  no `abilities` entry declares: error; an item tag no campaign item carries:
+  warning), `unknown_group`, `unknown_variant` and `format_mismatch` (a format that
+  does not suit the stat's kind, or a `fraction` stat meter that is not `int` or
+  `fixed`). Existing codes are reused with UI messages: `unknown_stat`,
+  `unknown_pool`, `foreign_reference`. Labels (stat label, short label,
+  description and group, enum variant labels, pool, ability, effect and outcome
+  labels) go through the shared locale coverage pass; icons of pools, abilities
+  and effects are checked against `assets.lock` as `missing_asset`.
+- **State.** T142a shipped the model, read-time checks, layout, schema, registry,
+  inventory, `UiSource` and the defaults, and appended the eight variants; T142b
+  emits them. Known gap (contract B31 against B30, B27 and B5): `effective_ui`
+  never drops an authored entry, so an authored list at its bound, 64 screens
+  plus defaults, or a ruleset name over 128 bytes can make the effective document
+  fail its own read-time checks.
 
 - 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142a · Documented the `ui` module, the tolerant-read rule for the six closed sets, the binding identities, the defaults and the inventory sites; `walk_ui` and the eight codes' emission remain T142b.
+- 2026-11-08 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142b · Documented `walk_ui`, the R rule, the one-finding-per-pointer order and where each of the eight codes is emitted, and recorded the B31 bound gap.

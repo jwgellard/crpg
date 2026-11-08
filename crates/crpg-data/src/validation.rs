@@ -900,6 +900,637 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
     }
 }
 
+/// Locale-key sites of one UI document (B22): `(pointer, key)` in field order.
+fn ui_locale_keys(ui: &crate::UiDocument) -> Vec<(String, &str)> {
+    let mut keys: Vec<(String, &str)> = Vec::new();
+    for (i, stat) in ui.stats.iter().flatten().enumerate() {
+        keys.push((format!("/stats/{i}/label"), &stat.label));
+        let optional = [
+            ("short_label", &stat.short_label),
+            ("description", &stat.description),
+            ("group", &stat.group),
+        ];
+        for (field, key) in optional {
+            if let Some(key) = key {
+                keys.push((format!("/stats/{i}/{field}"), key));
+            }
+        }
+        if let Some(crate::UiFormat::Enum(labels)) = &stat.format {
+            for (k, label) in labels.iter().enumerate() {
+                keys.push((format!("/stats/{i}/format/value/{k}/label"), &label.label));
+            }
+        }
+    }
+    for (i, pool) in ui.pools.iter().flatten().enumerate() {
+        keys.push((format!("/pools/{i}/label"), &pool.label));
+    }
+    for (i, ability) in ui.abilities.iter().flatten().enumerate() {
+        keys.push((format!("/abilities/{i}/label"), &ability.label));
+        if let Some(key) = &ability.description {
+            keys.push((format!("/abilities/{i}/description"), key));
+        }
+    }
+    for (i, effect) in ui.effects.iter().flatten().enumerate() {
+        keys.push((format!("/effects/{i}/label"), &effect.label));
+    }
+    for (i, outcome) in ui.outcomes.iter().flatten().enumerate() {
+        keys.push((format!("/outcomes/{i}/label"), &outcome.label));
+    }
+    keys
+}
+
+/// Icon sites of one UI document (B23): `(pointer, asset key)`.
+fn ui_icons(ui: &crate::UiDocument) -> Vec<(String, &str)> {
+    let mut icons: Vec<(String, &str)> = Vec::new();
+    for (i, pool) in ui.pools.iter().flatten().enumerate() {
+        if let Some(icon) = &pool.icon {
+            icons.push((format!("/pools/{i}/icon"), icon));
+        }
+    }
+    for (i, ability) in ui.abilities.iter().flatten().enumerate() {
+        if let Some(icon) = &ability.icon {
+            icons.push((format!("/abilities/{i}/icon"), icon));
+        }
+    }
+    for (i, effect) in ui.effects.iter().flatten().enumerate() {
+        if let Some(icon) = &effect.icon {
+            icons.push((format!("/effects/{i}/icon"), icon));
+        }
+    }
+    icons
+}
+
+/// Whether `key` is an asset path of the campaign's `assets.lock`.
+fn asset_known(docs: &BTreeMap<SourcePath, Document>, key: &str) -> bool {
+    docs.values()
+        .find_map(|d| match d {
+            Document::AssetsLock(lock) => Some(lock),
+            _ => None,
+        })
+        .is_some_and(|lock| lock.assets.keys().any(|p| p.as_str() == key))
+}
+
+/// Word for a declared stat kind in UI messages.
+fn stat_kind_word(kind: &crate::StatKindWire) -> &'static str {
+    use crate::StatKindWire as K;
+    match kind {
+        K::Int => "int",
+        K::Fixed => "fixed",
+        K::Bool => "bool",
+        K::Enum { .. } => "enum",
+        K::Tags => "tags",
+        K::Dice => "dice",
+    }
+}
+
+/// One UI document's semantic walk (B11-B20, B24).
+///
+/// `source` is `Some` exactly when the document's `ruleset` resolves (the "R"
+/// of the contract); every (R) check consults it and nothing else, never the
+/// object index. Findings go out at most once per pointer: the generic
+/// reference finding was already pushed by the shared pass, then a duplicate,
+/// then the resolution finding.
+struct UiWalk<'a> {
+    /// Identity table of the shared pass (for the generic-flagged test only).
+    tables: &'a Tables,
+    /// File being walked.
+    file: &'a SourcePath,
+    /// Resolved sources, when the ruleset resolves.
+    source: Option<&'a crate::UiSource<'a>>,
+    /// Item tags carried anywhere in the campaign.
+    item_tags: &'a BTreeSet<&'a str>,
+    /// Destination for findings.
+    out: &'a mut Vec<Diagnostic>,
+}
+
+impl UiWalk<'_> {
+    fn error(&mut self, pointer: String, code: DiagnosticCode, message: String, fix: &str) {
+        push(self.out, self.file, pointer, code, message, Some(fix));
+    }
+
+    fn unknown_kind(&mut self, pointer: String, what: &str, text: &str) {
+        self.error(
+            pointer,
+            DiagnosticCode::UnknownKind,
+            format!("unknown {what} {text:?}"),
+            "use a kind this schema version defines",
+        );
+    }
+
+    fn reserved_kind(&mut self, pointer: String, what: &str, text: &str) {
+        self.error(
+            pointer,
+            DiagnosticCode::ReservedKind,
+            format!("{what} {text:?} is reserved until its data family exists"),
+            "remove it; the generated default omits reserved kinds",
+        );
+    }
+
+    /// `what_value` is the contract's `{what} {value}` text; `first` locates
+    /// the first occurrence as a pointer into this file.
+    fn duplicate(&mut self, pointer: String, what_value: String, first: &str) {
+        let message = format!(
+            "duplicate {what_value} (first at {}{first})",
+            self.file.as_str()
+        );
+        self.error(
+            pointer,
+            DiagnosticCode::DuplicateBinding,
+            message,
+            "keep one entry",
+        );
+    }
+
+    fn unknown_stat(&mut self, pointer: String, name: &str) {
+        let ruleset = self.source.map(|s| s.ruleset.id);
+        let Some(ruleset) = ruleset else { return };
+        self.error(
+            pointer,
+            DiagnosticCode::UnknownStat,
+            format!("unknown stat {name:?} for ui: not declared by ruleset {ruleset}"),
+            "use a stat the ruleset declares",
+        );
+    }
+
+    fn unknown_pool(&mut self, pointer: String, id: Ulid) {
+        let ruleset = self.source.map(|s| s.ruleset.id);
+        let Some(ruleset) = ruleset else { return };
+        self.error(
+            pointer,
+            DiagnosticCode::UnknownPool,
+            format!("unknown pool {id} for ui: not a template of ruleset {ruleset}"),
+            "use a pool template id of the ruleset",
+        );
+    }
+
+    fn declared_stat(&self, name: &str) -> Option<&crate::StatDecl> {
+        let source = self.source?;
+        source.ruleset.stats.iter().find(|s| s.name == name)
+    }
+
+    fn is_template(&self, id: Ulid) -> bool {
+        self.source
+            .is_some_and(|s| s.ruleset.pools.iter().any(|p| p.id == id))
+    }
+
+    /// Whether the shared pass found `id` as an object of `kind` (so it did
+    /// not already report it).
+    fn resolves_as(&self, id: Ulid, kind: ObjectKind) -> bool {
+        self.tables.first.get(&id).is_some_and(|e| e.kind == kind)
+    }
+
+    /// B14: one stat's `format`, at `{at}/format`.
+    fn format(&mut self, at: &str, stat: &str, format: &crate::UiFormat) {
+        use crate::{StatKindWire as K, UiFormat as F, UiMeter};
+        let at = format!("{at}/format");
+        if let F::Unknown { kind, .. } = format {
+            self.unknown_kind(format!("{at}/type"), "format", kind);
+            return;
+        }
+        let decl = self.declared_stat(stat).cloned();
+        if let Some(decl) = &decl {
+            let suits = matches!(
+                (format, &decl.kind),
+                (
+                    F::Integer | F::Signed | F::Fraction(_) | F::Percent,
+                    K::Int | K::Fixed
+                ) | (F::Boolean, K::Bool)
+                    | (F::Enum(_), K::Enum { .. })
+                    | (F::Tags, K::Tags)
+                    | (F::Dice, K::Dice)
+            );
+            if !suits {
+                self.error(
+                    at.clone(),
+                    DiagnosticCode::FormatMismatch,
+                    format!(
+                        "format {} does not suit {} stat {stat:?}",
+                        format.as_str(),
+                        stat_kind_word(&decl.kind)
+                    ),
+                    "choose a format that suits the stat's kind",
+                );
+            }
+        }
+        match format {
+            F::Fraction(UiMeter::Stat(name)) if self.source.is_some() => {
+                let pointer = format!("{at}/value/value");
+                match self.declared_stat(name).map(|d| d.kind.clone()) {
+                    None => self.unknown_stat(pointer, name),
+                    Some(K::Int | K::Fixed) => {}
+                    Some(kind) => self.error(
+                        pointer,
+                        DiagnosticCode::FormatMismatch,
+                        format!(
+                            "fraction meter stat {name:?} is {}, not int or fixed",
+                            stat_kind_word(&kind)
+                        ),
+                        "choose a format that suits the stat's kind",
+                    ),
+                }
+            }
+            F::Fraction(UiMeter::Pool(id)) if self.source.is_some() => {
+                if !self.is_template(*id) {
+                    self.unknown_pool(format!("{at}/value/value"), *id);
+                }
+            }
+            F::Enum(labels) => {
+                let mut first: BTreeMap<&str, usize> = BTreeMap::new();
+                for (k, label) in labels.iter().enumerate() {
+                    let pointer = format!("{at}/value/{k}/variant");
+                    if let Some(j) = first.get(label.variant.as_str()) {
+                        self.duplicate(
+                            pointer,
+                            format!("variant {:?}", label.variant),
+                            &format!("{at}/value/{j}/variant"),
+                        );
+                        continue;
+                    }
+                    first.insert(&label.variant, k);
+                    if let Some(K::Enum { variants, .. }) = decl.as_ref().map(|d| &d.kind) {
+                        if !variants.contains(&label.variant) {
+                            self.error(
+                                pointer,
+                                DiagnosticCode::UnknownVariant,
+                                format!(
+                                    "variant {:?} is not declared by enum stat {stat:?}",
+                                    label.variant
+                                ),
+                                "use a variant of the stat's enum",
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// B20: the sections of one screen that B19 does not skip.
+    fn sections(&mut self, ui: &crate::UiDocument, screen: usize, sections: &[crate::UiSection]) {
+        use crate::{UiAbilitySelect, UiItemSelect, UiPoolSelect, UiSection, UiStatSelect};
+        // First pointer of each explicit stat name, pool id and ability id in
+        // this screen, per class (`all`, `group` and `tag` are never compared).
+        let mut stats: BTreeMap<&str, String> = BTreeMap::new();
+        let mut pools: BTreeMap<Ulid, String> = BTreeMap::new();
+        let mut abilities: BTreeMap<Ulid, String> = BTreeMap::new();
+        for (j, section) in sections.iter().enumerate() {
+            let at = format!("/screens/{screen}/sections/{j}");
+            match section {
+                UiSection::Unknown { kind, .. } => {
+                    self.unknown_kind(format!("{at}/type"), "section type", kind);
+                }
+                UiSection::ChoiceSteps => {
+                    self.reserved_kind(format!("{at}/type"), "section type", section.as_str());
+                }
+                UiSection::EffectList | UiSection::Timeline | UiSection::Log => {}
+                UiSection::StatGroup(UiStatSelect::All) => {}
+                UiSection::StatGroup(UiStatSelect::Group(group)) => {
+                    let declared = ui
+                        .stats
+                        .iter()
+                        .flatten()
+                        .any(|s| s.group.as_deref() == Some(group));
+                    if !declared {
+                        self.error(
+                            format!("{at}/value/value"),
+                            DiagnosticCode::UnknownGroup,
+                            format!("stat group {group:?} is the group of no stats entry"),
+                            "set the group on a stats entry or fix the selector",
+                        );
+                    }
+                }
+                UiSection::StatGroup(UiStatSelect::Names(names)) => {
+                    for (k, name) in names.iter().enumerate() {
+                        let pointer = format!("{at}/value/value/{k}");
+                        if let Some(first) = stats.get(name.as_str()).cloned() {
+                            self.duplicate(pointer, format!("stat {name:?}"), &first);
+                            continue;
+                        }
+                        stats.insert(name, pointer.clone());
+                        if self.source.is_some() && self.declared_stat(name).is_none() {
+                            self.unknown_stat(pointer, name);
+                        }
+                    }
+                }
+                UiSection::PoolGroup(UiPoolSelect::All) => {}
+                UiSection::PoolGroup(UiPoolSelect::Ids(ids)) => {
+                    for (k, id) in ids.iter().enumerate() {
+                        let pointer = format!("{at}/value/value/{k}");
+                        if let Some(first) = pools.get(id).cloned() {
+                            self.duplicate(pointer, format!("pool {id}"), &first);
+                            continue;
+                        }
+                        pools.insert(*id, pointer.clone());
+                        if self.source.is_some() && !self.is_template(*id) {
+                            self.unknown_pool(pointer, *id);
+                        }
+                    }
+                }
+                UiSection::AbilityList(list) => {
+                    match &list.select {
+                        UiAbilitySelect::All => {}
+                        UiAbilitySelect::Ids(ids) => {
+                            for (k, id) in ids.iter().enumerate() {
+                                let pointer = format!("{at}/value/select/value/{k}");
+                                if !self.resolves_as(*id, ObjectKind::Ability) {
+                                    continue;
+                                }
+                                if let Some(first) = abilities.get(id).cloned() {
+                                    self.duplicate(pointer, format!("ability {id}"), &first);
+                                    continue;
+                                }
+                                abilities.insert(*id, pointer.clone());
+                                self.unlisted_ability(pointer, *id);
+                            }
+                        }
+                        UiAbilitySelect::Tag(tag) => {
+                            let declared = ui
+                                .abilities
+                                .iter()
+                                .flatten()
+                                .flat_map(|a| a.category_tags.iter().flatten())
+                                .any(|t| t == tag);
+                            if !declared {
+                                self.error(
+                                    format!("{at}/value/select/value"),
+                                    DiagnosticCode::UnknownTag,
+                                    format!(
+                                        "ability tag {tag:?} is declared by no abilities entry"
+                                    ),
+                                    "add the tag to an abilities entry or fix the filter",
+                                );
+                            }
+                        }
+                    }
+                    if let Some(crate::UiSort::Unknown(text)) = &list.sort {
+                        self.unknown_kind(format!("{at}/value/sort"), "sort", text);
+                    }
+                }
+                UiSection::ItemList(UiItemSelect::All) => {}
+                UiSection::ItemList(UiItemSelect::Tag(tag)) => {
+                    if !self.item_tags.contains(tag.as_str()) {
+                        push_warning(
+                            self.out,
+                            self.file,
+                            format!("{at}/value/value"),
+                            DiagnosticCode::UnknownTag,
+                            format!("item tag {tag:?} is carried by no item in this campaign"),
+                            Some("add the tag to an item or fix the filter"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// (R) `foreign_reference` for an ability the ruleset does not list.
+    fn unlisted_ability(&mut self, pointer: String, id: Ulid) {
+        let Some(source) = self.source else { return };
+        if source.ruleset.abilities.contains(&id) {
+            return;
+        }
+        let ruleset = source.ruleset.id;
+        self.error(
+            pointer,
+            DiagnosticCode::ForeignReference,
+            format!("ui ability {id} is not listed by ruleset {ruleset}"),
+            "list the ability in the ruleset or remove the entry",
+        );
+    }
+
+    /// B13-B19 for one document; `first_for_ruleset` carries B12 across files.
+    fn document(&mut self, ui: &crate::UiDocument, first_for_ruleset: &mut BTreeMap<Ulid, String>) {
+        use crate::UiScreenKind as Kind;
+        if let Some(source) = self.source {
+            let id = source.ruleset.id;
+            let here = format!("{}/ruleset", self.file.as_str());
+            match first_for_ruleset.get(&id).cloned() {
+                Some(first) => {
+                    let message = format!("duplicate ui for ruleset {id} (first at {first})");
+                    self.error(
+                        "/ruleset".into(),
+                        DiagnosticCode::DuplicateBinding,
+                        message,
+                        "keep one entry",
+                    );
+                }
+                None => {
+                    first_for_ruleset.insert(id, here);
+                }
+            }
+        }
+
+        // B13/B14
+        let mut first: BTreeMap<&str, usize> = BTreeMap::new();
+        for (i, entry) in ui.stats.iter().flatten().enumerate() {
+            let at = format!("/stats/{i}");
+            match first.get(entry.stat.as_str()) {
+                Some(j) => self.duplicate(
+                    format!("{at}/stat"),
+                    format!("stat {:?}", entry.stat),
+                    &format!("/stats/{j}/stat"),
+                ),
+                None => {
+                    first.insert(&entry.stat, i);
+                    if self.source.is_some() && self.declared_stat(&entry.stat).is_none() {
+                        self.unknown_stat(format!("{at}/stat"), &entry.stat);
+                    }
+                }
+            }
+            if let Some(format) = &entry.format {
+                self.format(&at, &entry.stat, format);
+            }
+        }
+
+        // B15
+        let mut first: BTreeMap<Ulid, usize> = BTreeMap::new();
+        for (i, entry) in ui.pools.iter().flatten().enumerate() {
+            let at = format!("/pools/{i}");
+            match first.get(&entry.pool) {
+                Some(j) => self.duplicate(
+                    format!("{at}/pool"),
+                    format!("pool {}", entry.pool),
+                    &format!("/pools/{j}/pool"),
+                ),
+                None => {
+                    first.insert(entry.pool, i);
+                    if self.source.is_some() && !self.is_template(entry.pool) {
+                        self.unknown_pool(format!("{at}/pool"), entry.pool);
+                    }
+                }
+            }
+            if let Some(crate::UiPoolStyle::Unknown(text)) = &entry.style {
+                self.unknown_kind(format!("{at}/style"), "pool style", text);
+            }
+        }
+
+        // B16
+        let mut first: BTreeMap<Ulid, usize> = BTreeMap::new();
+        for (i, entry) in ui.abilities.iter().flatten().enumerate() {
+            let at = format!("/abilities/{i}");
+            if self.resolves_as(entry.ability, ObjectKind::Ability) {
+                match first.get(&entry.ability) {
+                    Some(j) => self.duplicate(
+                        format!("{at}/ability"),
+                        format!("ability {}", entry.ability),
+                        &format!("/abilities/{j}/ability"),
+                    ),
+                    None => {
+                        first.insert(entry.ability, i);
+                        self.unlisted_ability(format!("{at}/ability"), entry.ability);
+                    }
+                }
+            }
+            let mut tags: BTreeMap<&str, usize> = BTreeMap::new();
+            for (k, tag) in entry.category_tags.iter().flatten().enumerate() {
+                match tags.get(tag.as_str()) {
+                    Some(j) => self.duplicate(
+                        format!("{at}/category_tags/{k}"),
+                        format!("tag {tag:?}"),
+                        &format!("{at}/category_tags/{j}"),
+                    ),
+                    None => {
+                        tags.insert(tag, k);
+                    }
+                }
+            }
+            if let Some(crate::UiTargetHint::Unknown(text)) = &entry.target_hint {
+                self.unknown_kind(format!("{at}/target_hint"), "target hint", text);
+            }
+        }
+
+        // B17
+        let mut first: BTreeMap<Ulid, usize> = BTreeMap::new();
+        for (i, entry) in ui.effects.iter().flatten().enumerate() {
+            let pointer = format!("/effects/{i}/effect");
+            if !self.resolves_as(entry.effect, ObjectKind::Effect) {
+                continue;
+            }
+            if let Some(j) = first.get(&entry.effect) {
+                self.duplicate(
+                    pointer,
+                    format!("effect {}", entry.effect),
+                    &format!("/effects/{j}/effect"),
+                );
+                continue;
+            }
+            first.insert(entry.effect, i);
+            let Some(source) = self.source else { continue };
+            if !source
+                .abilities
+                .iter()
+                .any(|a| a.effect == Some(entry.effect))
+            {
+                let ruleset = source.ruleset.id;
+                self.error(
+                    pointer,
+                    DiagnosticCode::ForeignReference,
+                    format!(
+                        "ui effect {} is applied by no ability of ruleset {ruleset}",
+                        entry.effect
+                    ),
+                    "use an effect a listed ability applies or remove the entry",
+                );
+            }
+        }
+
+        // B18
+        let labels = self.source.map(|s| s.outcome_labels());
+        let mut first: BTreeMap<&str, usize> = BTreeMap::new();
+        for (i, entry) in ui.outcomes.iter().flatten().enumerate() {
+            let pointer = format!("/outcomes/{i}/outcome");
+            if let Some(j) = first.get(entry.outcome.as_str()) {
+                self.duplicate(
+                    pointer,
+                    format!("outcome {:?}", entry.outcome),
+                    &format!("/outcomes/{j}/outcome"),
+                );
+                continue;
+            }
+            first.insert(&entry.outcome, i);
+            if let (Some(source), Some(labels)) = (self.source, &labels) {
+                if !labels.contains(&entry.outcome) {
+                    let ruleset = source.ruleset.id;
+                    self.error(
+                        pointer,
+                        DiagnosticCode::UnknownOutcome,
+                        format!(
+                            "outcome {:?} is not produced by ruleset {ruleset}",
+                            entry.outcome
+                        ),
+                        "use an outcome the ruleset's tables or damage entries produce",
+                    );
+                }
+            }
+        }
+
+        // B19/B20
+        let mut first: BTreeMap<&str, usize> = BTreeMap::new();
+        for (i, screen) in ui.screens.iter().flatten().enumerate() {
+            let at = format!("/screens/{i}/kind");
+            match &screen.kind {
+                Kind::Unknown(text) => {
+                    self.unknown_kind(at, "screen kind", text);
+                    continue;
+                }
+                Kind::LevelUp | Kind::CharacterCreation => {
+                    self.reserved_kind(at, "screen kind", screen.kind.as_str());
+                    continue;
+                }
+                known => {
+                    let word = known.as_str();
+                    match first.get(word) {
+                        Some(j) => self.duplicate(
+                            at,
+                            format!("screen kind {word:?}"),
+                            &format!("/screens/{j}/kind"),
+                        ),
+                        None => {
+                            first.insert(word, i);
+                        }
+                    }
+                }
+            }
+            self.sections(ui, i, &screen.sections);
+        }
+    }
+}
+
+/// Walks every UI document in path order (B11-B21, B24).
+fn walk_ui(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut Vec<Diagnostic>) {
+    let item_tags: BTreeSet<&str> = docs
+        .values()
+        .filter_map(|d| match d {
+            Document::Item(item) => Some(item),
+            _ => None,
+        })
+        .flat_map(|item| item.tags.iter().map(String::as_str))
+        .collect();
+    let mut first_for_ruleset: BTreeMap<Ulid, String> = BTreeMap::new();
+    for (path, document) in docs {
+        let Document::Ui(ui) = document else { continue };
+        // R: the ruleset resolves to a Ruleset in the shared identity table.
+        let resolved = tables
+            .first
+            .get(&ui.ruleset)
+            .is_some_and(|entry| entry.kind == ObjectKind::Ruleset);
+        let source = if resolved {
+            crate::UiSource::from_documents(docs, ui.ruleset)
+        } else {
+            None
+        };
+        let mut walk = UiWalk {
+            tables,
+            file: path,
+            source: source.as_ref(),
+            item_tags: &item_tags,
+            out,
+        };
+        walk.document(ui, &mut first_for_ruleset);
+    }
+}
+
 /// Validates a loaded campaign and returns every finding in stable order.
 ///
 /// Pure, deterministic, and non-mutating: occurrence and ownership tables are
@@ -1053,14 +1684,7 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                 ));
                 locale_refs.push((path.clone(), "/name".into(), v.name.clone()));
                 if let Some(key) = &v.ambience {
-                    let known = docs
-                        .values()
-                        .find_map(|d| match d {
-                            Document::AssetsLock(lock) => Some(lock),
-                            _ => None,
-                        })
-                        .is_some_and(|lock| lock.assets.keys().any(|p| p.as_str() == key));
-                    if !known {
+                    if !asset_known(docs, key) {
                         push(
                             &mut out,
                             path,
@@ -1237,8 +1861,23 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
                 }
             }
             Document::CampaignLock(_) | Document::AssetsLock(_) => {}
-            // Locale, asset and walk_ui checks for UI documents are T142b.
-            Document::Ui(_) => {}
+            Document::Ui(v) => {
+                for (pointer, key) in ui_locale_keys(v) {
+                    locale_refs.push((path.clone(), pointer, key.to_string()));
+                }
+                for (pointer, key) in ui_icons(v) {
+                    if !asset_known(docs, key) {
+                        push(
+                            &mut out,
+                            path,
+                            pointer,
+                            DiagnosticCode::MissingAsset,
+                            format!("asset key {key:?} is not in assets.lock"),
+                            Some("add the asset to assets.lock or fix the key"),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1295,6 +1934,7 @@ pub fn validate(campaign: &LoadedCampaign) -> Vec<Diagnostic> {
     }
 
     walk_combat(&tables, docs, &mut out);
+    walk_ui(&tables, docs, &mut out);
 
     // Slugs are unique within kind: earliest (path, pointer) wins.
     slugs.sort_by(|a, b| (&a.2, &a.3).cmp(&(&b.2, &b.3)));

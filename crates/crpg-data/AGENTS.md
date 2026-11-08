@@ -434,9 +434,13 @@ Public module `ui` (re-exported at the root) holds `UiDocument` (`crpg.ui/1`,
   are bounded at 4096, screens and sections at 64.
 - Eight new `DiagnosticCode` variants: `unknown_kind`, `reserved_kind`,
   `duplicate_binding`, `unknown_outcome`, `unknown_tag`, `unknown_group`,
-  `unknown_variant`, `format_mismatch`. T142a only declares them; `walk_ui`
-  (T142b) emits them.
+  `unknown_variant`, `format_mismatch`. T142a declared them; `walk_ui`
+  (T142b, in `validation.rs`) emits them. Every (R) check needs the document's
+  `ruleset` to resolve to a `Ruleset`; pool templates resolve against that
+  ruleset, never the object index; one finding per pointer (generic reference,
+  then `duplicate_binding`, then resolution).
 - `Document` matches outside this crate already have wildcard arms; a new
   family still breaks the count-pinned tests, which T142 edited literally.
 
 - 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142a · Recorded the `ui/` layout family, the D5 never-strict trap, the optional-missing rule for `crpg.ui/1` and the eight declared codes.
+- 2026-11-08 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142b · Recorded that `walk_ui` now emits the eight codes and the R / one-finding-per-pointer rules it follows.
