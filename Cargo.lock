@@ -188,6 +188,9 @@ dependencies = [
 [[package]]
 name = "crpg-nav"
 version = "0.1.0"
+dependencies = [
+ "crpg-core",
+]
 
 [[package]]
 name = "crpg-net"
