@@ -3,7 +3,8 @@
 
 use crpg_nav::{
     ceil_sqrt, seg_len, Fx16_16, NavDecodeError, NavMesh, NavMeshError, PolyId, COORD_LIMIT_RAW,
-    MAX_NAV_POLYGONS, MAX_NAV_VERTICES, MAX_POLYGON_VERTICES, NAV_FORMAT_VERSION, NAV_MAGIC,
+    MAX_NAV_POLYGONS, MAX_NAV_VERTICES, MAX_PATH_LENGTH_RAW, MAX_PATH_POINTS, MAX_POLYGON_VERTICES,
+    NAV_FORMAT_VERSION, NAV_MAGIC,
 };
 
 const LIM: i32 = 1 << 29;
@@ -217,6 +218,8 @@ fn constants_have_the_contract_values() {
     assert_eq!(MAX_POLYGON_VERTICES, 8);
     assert_eq!(NAV_MAGIC, *b"CNAV");
     assert_eq!(NAV_FORMAT_VERSION, 1);
+    assert_eq!(MAX_PATH_POINTS, 64);
+    assert_eq!(MAX_PATH_LENGTH_RAW, 1 << 28);
 }
 
 // ----------------------------------------------------------------- B-G1
@@ -813,6 +816,86 @@ fn a_common_nonzero_or_negative_y_is_horizontal() {
         vec![vec![0, 1, 2]],
     );
     assert_eq!(low.polygon_y(PolyId(0)), Some(Fx16_16::from_raw(-77)));
+}
+
+/// Every vertex of the polygon `points` at height 0 except `raised`, which is
+/// one raw unit higher; the polygon lists them in order.
+fn raised_at(points: &[(i32, i32)], raised: usize) -> (Vec<[Fx16_16; 3]>, Vec<u32>) {
+    let vertices = points
+        .iter()
+        .enumerate()
+        .map(|(i, &(x, z))| rw(x * 65_536, i32::from(i == raised), z * 65_536))
+        .collect();
+    (vertices, (0..points.len() as u32).collect())
+}
+
+#[test]
+fn a_quad_with_one_raised_vertex_is_not_horizontal_at_any_index() {
+    let quad = [(0, 0), (4, 0), (4, 4), (0, 4)];
+    for raised in 0..4 {
+        let (vertices, polygon) = raised_at(&quad, raised);
+        assert_eq!(
+            err(vertices, vec![polygon]),
+            NavMeshError::NotHorizontal { poly: 0 },
+            "raised vertex {raised}"
+        );
+    }
+}
+
+#[test]
+fn an_octagon_with_one_raised_vertex_is_not_horizontal_at_any_index() {
+    let octagon = [
+        (2, 0),
+        (4, 0),
+        (6, 2),
+        (6, 4),
+        (4, 6),
+        (2, 6),
+        (0, 4),
+        (0, 2),
+    ];
+    for raised in 0..8 {
+        let (vertices, polygon) = raised_at(&octagon, raised);
+        assert_eq!(
+            err(vertices, vec![polygon]),
+            NavMeshError::NotHorizontal { poly: 0 },
+            "raised vertex {raised}"
+        );
+    }
+}
+
+#[test]
+fn a_level_quad_and_octagon_are_horizontal() {
+    let (vertices, polygon) = raised_at(&[(0, 0), (4, 0), (4, 4), (0, 4)], 99);
+    ok(vertices, vec![polygon]);
+    let octagon = [
+        (2, 0),
+        (4, 0),
+        (6, 2),
+        (6, 4),
+        (4, 6),
+        (2, 6),
+        (0, 4),
+        (0, 2),
+    ];
+    let (vertices, polygon) = raised_at(&octagon, 99);
+    ok(vertices, vec![polygon]);
+}
+
+#[test]
+fn a_raised_late_vertex_names_its_polygon_id() {
+    // Polygon 1 is a quad whose last vertex is raised.
+    let mut vertices = vec![p(0, 0), p(1, 0), p(0, 1)];
+    vertices.extend([
+        p(10, 0),
+        p(14, 0),
+        p(14, 4),
+        [m(10), Fx16_16::from_raw(1), m(4)],
+    ]);
+    assert_eq!(
+        err(vertices, vec![vec![0, 1, 2], vec![3, 4, 5, 6]]),
+        NavMeshError::NotHorizontal { poly: 1 }
+    );
 }
 
 #[test]
