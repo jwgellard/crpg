@@ -1340,6 +1340,59 @@ fn b25_join_initiative() {
     assert_eq!(p.w.rng_mut().clone(), before.clone().rng_mut().clone());
 }
 
+/// B25, B26 (E5, E11): the round-0 insert-versus-pending decision reads the
+/// created entry key, never the entrant's base. A base that sorts after the
+/// head with a drawn key before it must leave the joiner pending; a base
+/// that sorts before the head with a drawn key after it must insert it.
+#[test]
+fn b25_join_key_decides_insert_versus_pending() {
+    let mut f = after_active();
+    set_initiative_rule(&mut f, "1d20", &["alpha"]);
+    let mut p = Play::new(f);
+    let (a, b) = (p.a, p.b);
+    // A declared rule also rolls the participants' keys at start.
+    let order = p.tl();
+    let head = order[0].0;
+    assert_eq!(order.len(), 2);
+    assert_eq!(order[0].1, b);
+    assert_eq!(order[1].1, a);
+    assert_eq!(active(&p.w), Some(b));
+
+    // Base 100 sorts after the head; the record's negative alpha pulls the
+    // drawn key below it, so only the drawn key can send J to pending.
+    let j = p.outsider();
+    p.edit(j, |r| {
+        r["attributes"] = json!([["alpha", -200], ["beta", 6], ["gamma", 7]]);
+    });
+    let mut rng = p.w.clone().rng_mut().clone();
+    let rolled = draw(&mut rng, "1d20").total;
+    let key = rolled - 200 + 100;
+    assert!(key < head, "the drawn key {key} sorts before the head");
+    let ordered = p.tl();
+    p.join(j, 100).expect("joins");
+    assert_eq!(combatant(&p.w, j).initiative(), key);
+    assert_eq!(p.tl(), ordered, "no timeline entry yet");
+    assert_eq!(p.pending(), [j], "the base 100 alone would have inserted");
+    assert_eq!(active(&p.w), Some(b));
+
+    // Control differing in one input: base 0 sorts before the head while the
+    // positive alpha raises the drawn key above it, so K is inserted at once.
+    let k = p.outsider();
+    p.edit(k, |r| {
+        r["attributes"] = json!([["alpha", 200], ["beta", 6], ["gamma", 7]]);
+    });
+    let mut rng = p.w.clone().rng_mut().clone();
+    let rolled = draw(&mut rng, "1d20").total;
+    let key = rolled + 200;
+    assert!(key > head, "the drawn key {key} sorts after the head");
+    p.join(k, 0).expect("joins");
+    assert_eq!(combatant(&p.w, k).initiative(), key);
+    let mut expect = ordered.clone();
+    expect.push((key, k));
+    assert_eq!(p.tl(), expect);
+    assert_eq!(p.pending(), [j], "the control adds no pending entry");
+}
+
 // ------------------------------------------------------ B28: RT joins
 
 /// B28 (E9): keyed at `elapsed` with no order; no pool refresh; it acts on
@@ -2295,6 +2348,31 @@ fn b33_q1_other_arms() {
     })
     .expect_err("a terminal save with pending joins must not load");
     assert!(err.contains(q1), "{err}");
+}
+
+/// B33 Q1: the `mode == TurnBased` arm holds on its own. An RT save whose
+/// `active` is the scheduled head passes the active-head check, so only the
+/// mode arm can reject the pending entry; without it the load would fail
+/// later on the RT active turn.
+#[test]
+fn b33_q1_mode_arm_with_active_head() {
+    let q1 = "combat pending joins outside a first turn-based round";
+    let rt = Play::in_mode(capable(10), RT);
+    let head = timeline_of(&rt.w)[0].1;
+    let id = |e: EntityId| serde_json::to_value(e).unwrap();
+    // Control: the unedited RT save loads, and its head is the active one
+    // this test installs.
+    assert!(try_with_json(&rt.w, |_| {}).is_ok());
+    let err = try_with_json(&rt.w, |s| {
+        s["combat"]["active"] = id(head);
+        s["combat"]["pending_joins"] = json!([id(rt.a)]);
+    })
+    .expect_err("an RT save with an active head and pending joins must not load");
+    assert!(err.contains(q1), "{err}");
+    assert!(
+        !err.contains("real-time combat holds an active turn"),
+        "the mode arm must win before the RT active-turn check: {err}"
+    );
 }
 
 /// B30: an RT leave ends the encounter exactly when the alive count falls
