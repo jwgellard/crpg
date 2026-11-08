@@ -71,7 +71,7 @@ macro_rules! define_registry {
     };
 }
 
-// Twenty families sorted by schema type, including both locks. Item,
+// Twenty-one families sorted by schema type, including both locks. Item,
 // ruleset and ability families have advanced past version 1; the effect
 // family and all others start at version 1 with no edges.
 define_registry! {
@@ -93,13 +93,14 @@ define_registry! {
     "crpg.quest" => 1, edges: &[];
     "crpg.ruleset" => 2, edges: &[Edge { from: 1, to: 2, step: ruleset::v1_to_v2 }];
     "crpg.triggers" => 1, edges: &[];
+    "crpg.ui" => 1, edges: &[];
     "crpg.variables" => 1, edges: &[];
     "crpg.world" => 1, edges: &[]
 }
 
 /// Exposes the immutable production registry's document families.
 ///
-/// Returns twenty entries sorted by schema type, including both locks, with
+/// Returns twenty-one entries sorted by schema type, including both locks, with
 /// names such as `crpg.item` carrying no slash or version suffix.
 pub fn schema_versions() -> &'static [SchemaVersion] {
     VERSIONS
@@ -346,8 +347,8 @@ mod tests {
 
     #[test]
     fn production_registry_is_sorted_twenty_with_item_ruleset_ability_two() {
-        assert_eq!(VERSIONS.len(), 20);
-        assert_eq!(REGISTRY.len(), 20);
+        assert_eq!(VERSIONS.len(), 21);
+        assert_eq!(REGISTRY.len(), 21);
         let names: Vec<&str> = VERSIONS.iter().map(|entry| entry.schema_type).collect();
         let mut sorted = names.clone();
         sorted.sort();

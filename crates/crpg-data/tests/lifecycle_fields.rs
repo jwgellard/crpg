@@ -428,5 +428,5 @@ fn version_tags_and_registry_are_unchanged() {
     };
     assert_eq!(current("crpg.ruleset"), Some(2));
     assert_eq!(current("crpg.encounter"), Some(1));
-    assert_eq!(versions.len(), 20);
+    assert_eq!(versions.len(), 21);
 }

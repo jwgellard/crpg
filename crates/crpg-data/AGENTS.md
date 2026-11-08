@@ -406,3 +406,41 @@ the named tests, is [T058a](../../tasks/T058a.md).
 - 2026-10-04 (UTC) · claude-code + T058a implementation · Added the pointer-edit and in-memory index surface, its single-implementation, no-migration, no-engine and array-token traps, and the two focused commands, so later edits keep one decoder and one structural check.
 
 - 2026-10-30 (UTC) · claude-code/sonnet-5.5 (implementer) + T139d · Added the four optional creature-lifecycle fields (ruleset `creature_persistence`, `late_join`, `effects_on_exit`; encounter `respawns`) to the optional-missing list; they join at the current tags with hand-written enum decoders and no read-time rule (D32c).
+
+## Ruleset UI document (T142)
+
+Public module `ui` (re-exported at the root) holds `UiDocument` (`crpg.ui/1`,
+`Document::Ui`), its entry and section types, the constants `UI_SCHEMA`,
+`MAX_UI_*` and the six `UI_*` spelling lists, `UiSource`, `ui_outcome`,
+`ui_outcome_text`, `generated_ui` and `effective_ui`. Architecture:
+[crpg-data](../../docs/architecture/crpg-data.md); contract: [T142](../../tasks/T142.md).
+
+- Layout families gain `ui/` (shared `family` predicate, so
+  `campaign_document_path` follows). Twenty-one families, twenty-three schemas.
+- Every optional `crpg.ui/1` field is optional-missing (see the optional-missing
+  rule above): a missing top-level list means "use the generated default" and
+  `[]` is kept as `[]`. The smallest valid document is the tag plus `ruleset`.
+- **Trap (D5): never make a tolerant set strict, and never let the schema list
+  `Unknown`.** Screen kind, section type, stat format, pool style, target hint
+  and sort decode an unknown spelling to `Unknown` and write it back byte for
+  byte, so a misspelt kind fails `validate` but not `load_campaign`. Selectors
+  and meters are not tolerant. `Unknown` holding a known spelling is
+  `Malformed` on write. A new kind needs a new tag (`crpg.ui/2`) and a
+  registered `1 -> 2` edge.
+- The adjacent-enum unit-variant trap applies here too: `UiFormat`, `UiSection`
+  and the four selectors keep hand-written `Deserialize` impls with exact key
+  sets per variant; `{"type":"timeline","value":0}` must stay `Malformed`.
+- Strings are 1..=128 UTF-8 **bytes** (`len()`, never `chars().count()`); lists
+  are bounded at 4096, screens and sections at 64.
+- Eight new `DiagnosticCode` variants: `unknown_kind`, `reserved_kind`,
+  `duplicate_binding`, `unknown_outcome`, `unknown_tag`, `unknown_group`,
+  `unknown_variant`, `format_mismatch`. T142a declared them; `walk_ui`
+  (T142b, in `validation.rs`) emits them. Every (R) check needs the document's
+  `ruleset` to resolve to a `Ruleset`; pool templates resolve against that
+  ruleset, never the object index; one finding per pointer (generic reference,
+  then `duplicate_binding`, then resolution).
+- `Document` matches outside this crate already have wildcard arms; a new
+  family still breaks the count-pinned tests, which T142 edited literally.
+
+- 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142a · Recorded the `ui/` layout family, the D5 never-strict trap, the optional-missing rule for `crpg.ui/1` and the eight declared codes.
+- 2026-11-08 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142b · Recorded that `walk_ui` now emits the eight codes and the R / one-finding-per-pointer rules it follows.

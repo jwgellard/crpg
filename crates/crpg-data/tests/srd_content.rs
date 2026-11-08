@@ -1026,7 +1026,7 @@ fn srd_objects_explain_with_typed_edges() {
 #[test]
 fn registry_versions_and_spellings_cover_new_shapes() {
     let versions = crpg_data::schema_versions();
-    assert_eq!(versions.len(), 20);
+    assert_eq!(versions.len(), 21);
     for (family, current) in [
         ("crpg.ruleset", 2),
         ("crpg.ability", 2),
@@ -1041,7 +1041,7 @@ fn registry_versions_and_spellings_cover_new_shapes() {
         assert_eq!(entry.current, current, "{family}");
     }
     let schemas = crpg_data::generated_schemas().unwrap();
-    assert_eq!(schemas.len(), 22);
+    assert_eq!(schemas.len(), 23);
 }
 
 #[test]

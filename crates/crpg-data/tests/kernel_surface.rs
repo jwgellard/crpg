@@ -1368,7 +1368,7 @@ fn t12_schemas_gain_optional_properties_only() {
     }
     let effect = String::from_utf8(schemas["effect.schema.json"].clone()).unwrap();
     assert!(effect.contains("\"stat\""));
-    assert_eq!(schemas.len(), 22);
+    assert_eq!(schemas.len(), 23);
 }
 
 // ---- T13 (behaviour 15) ---------------------------------------------------

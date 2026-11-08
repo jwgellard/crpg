@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-const NAMES: [&str; 22] = [
+const NAMES: [&str; 23] = [
     "ability",
     "action-signature",
     "area",
@@ -28,6 +28,7 @@ const NAMES: [&str; 22] = [
     "quest",
     "ruleset",
     "triggers",
+    "ui",
     "variables",
     "world",
 ];
@@ -212,6 +213,15 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
                 "effects_on_exit",
             ],
             "effect" => &["_note", "grants"],
+            "ui" => &[
+                "_note",
+                "stats",
+                "pools",
+                "abilities",
+                "effects",
+                "outcomes",
+                "screens",
+            ],
             "encounter" => &["_note", "respawns"],
             _ => &["_note"],
         };
@@ -252,6 +262,7 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
             "outcome-table" => "OutcomeTable",
             "encounter" => "Encounter",
             "effect" => "Effect",
+            "ui" => "UiDocument",
             _ => unreachable!(),
         };
         assert_eq!(root["title"], title);

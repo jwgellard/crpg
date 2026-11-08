@@ -1,0 +1,904 @@
+{
+  "$defs": {
+    "UiAbility": {
+      "additionalProperties": false,
+      "description": "Display entry for one ability listed by the ruleset.",
+      "properties": {
+        "ability": {
+          "$ref": "#/$defs/UlidText",
+          "description": "An ability listed by the ruleset."
+        },
+        "category_tags": {
+          "description": "Category tags; absent means none, nonempty when present.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Locale key of the description; absent means none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon": {
+          "description": "`assets.lock` key of the icon; absent means none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Locale key of the label.",
+          "type": "string"
+        },
+        "show_odds": {
+          "description": "Whether odds are shown (T143 and T051 read it); absent means false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "target_hint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiTargetHint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who the ability may target; absent means no hint."
+        }
+      },
+      "required": [
+        "ability",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiAbilityList": {
+      "additionalProperties": false,
+      "description": "Payload of an `ability_list` section.",
+      "properties": {
+        "select": {
+          "$ref": "#/$defs/UiAbilitySelect",
+          "description": "Which abilities to list."
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiSort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Ordering; absent means declared."
+        }
+      },
+      "required": [
+        "select"
+      ],
+      "type": "object"
+    },
+    "UiAbilitySelect": {
+      "description": "Which abilities an `ability_list` section shows.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Every ability.",
+          "properties": {
+            "type": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "These abilities.",
+          "properties": {
+            "type": {
+              "const": "ids",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/UlidText"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Abilities whose `abilities` entry carries this category tag.",
+          "properties": {
+            "type": {
+              "const": "tag",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UiEffect": {
+      "additionalProperties": false,
+      "description": "Display entry for one effect applied by a listed ability.",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/UlidText",
+          "description": "An effect applied by a listed ability."
+        },
+        "icon": {
+          "description": "`assets.lock` key of the icon; absent means none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Locale key of the label.",
+          "type": "string"
+        },
+        "show_duration": {
+          "description": "Whether the remaining duration shows; absent means true.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "effect",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiEnumLabel": {
+      "additionalProperties": false,
+      "description": "One enum-stat variant label.",
+      "properties": {
+        "label": {
+          "description": "Locale key of the label.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "A variant of the stat's enum.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "variant",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiFormat": {
+      "description": "How a stat value is formatted (U3). Unknown spellings are tolerated (U6).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A whole number.",
+          "properties": {
+            "type": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A whole number with an explicit sign.",
+          "properties": {
+            "type": {
+              "const": "signed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The value over a meter, for example `3 / 5`.",
+          "properties": {
+            "type": {
+              "const": "fraction",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UiMeter"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A percentage.",
+          "properties": {
+            "type": {
+              "const": "percent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A yes or no flag.",
+          "properties": {
+            "type": {
+              "const": "boolean",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An enum with a label per variant.",
+          "properties": {
+            "type": {
+              "const": "enum",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/UiEnumLabel"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A tag list.",
+          "properties": {
+            "type": {
+              "const": "tags",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A dice expression.",
+          "properties": {
+            "type": {
+              "const": "dice",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UiItemSelect": {
+      "description": "Which items an `item_list` section shows.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Every item.",
+          "properties": {
+            "type": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Items carrying this tag.",
+          "properties": {
+            "type": {
+              "const": "tag",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UiMeter": {
+      "description": "The value a `fraction` format divides by.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A declared stat, by name.",
+          "properties": {
+            "type": {
+              "const": "stat",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A pool template of the ruleset.",
+          "properties": {
+            "type": {
+              "const": "pool",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UlidText"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UiOutcome": {
+      "additionalProperties": false,
+      "description": "Label for one outcome the ruleset can produce.",
+      "properties": {
+        "label": {
+          "description": "Locale key of the label.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "Outcome spelling, for example `success` or `custom:3`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiPool": {
+      "additionalProperties": false,
+      "description": "Display entry for one action-pool template.",
+      "properties": {
+        "icon": {
+          "description": "`assets.lock` key of the icon; absent means none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Locale key of the label.",
+          "type": "string"
+        },
+        "pool": {
+          "$ref": "#/$defs/UlidText",
+          "description": "A pool-template id of the ruleset."
+        },
+        "show_on_hud": {
+          "description": "Whether the pool shows on the HUD; absent means true.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "style": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiPoolStyle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How to draw the pool; absent means a bar."
+        }
+      },
+      "required": [
+        "pool",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiPoolSelect": {
+      "description": "Which pools a `pool_group` section shows.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Every pool.",
+          "properties": {
+            "type": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "These pool templates.",
+          "properties": {
+            "type": {
+              "const": "ids",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/UlidText"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UiPoolStyle": {
+      "enum": [
+        "pips",
+        "bar",
+        "number"
+      ],
+      "type": "string"
+    },
+    "UiScreen": {
+      "additionalProperties": false,
+      "description": "One screen: a kind and its sections.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/UiScreenKind",
+          "description": "Which screen this is."
+        },
+        "sections": {
+          "description": "Sections in display order; may be empty, at most 64.",
+          "items": {
+            "$ref": "#/$defs/UiSection"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "sections"
+      ],
+      "type": "object"
+    },
+    "UiScreenKind": {
+      "enum": [
+        "character_sheet",
+        "action_bar",
+        "spellbook",
+        "inventory",
+        "level_up",
+        "combat_hud",
+        "character_creation"
+      ],
+      "type": "string"
+    },
+    "UiSection": {
+      "description": "One section of a screen (U4). Unknown spellings are tolerated (U6).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Stats chosen by a selector.",
+          "properties": {
+            "type": {
+              "const": "stat_group",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UiStatSelect"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Pools chosen by a selector.",
+          "properties": {
+            "type": {
+              "const": "pool_group",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UiPoolSelect"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Abilities chosen by a selector, with an ordering.",
+          "properties": {
+            "type": {
+              "const": "ability_list",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UiAbilityList"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The effects currently on the combatant (a runtime fact).",
+          "properties": {
+            "type": {
+              "const": "effect_list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Items chosen by a selector.",
+          "properties": {
+            "type": {
+              "const": "item_list",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/UiItemSelect"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The turn-order timeline.",
+          "properties": {
+            "type": {
+              "const": "timeline",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The combat log.",
+          "properties": {
+            "type": {
+              "const": "log",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reserved until the level-up and creation data families exist.",
+          "properties": {
+            "type": {
+              "const": "choice_steps",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UiSort": {
+      "enum": [
+        "declared",
+        "label"
+      ],
+      "type": "string"
+    },
+    "UiStat": {
+      "additionalProperties": false,
+      "description": "Display entry for one declared stat.",
+      "properties": {
+        "description": {
+          "description": "Locale key of the description; absent means none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How to format the value; absent means render the replicated value by its own type."
+        },
+        "group": {
+          "description": "Locale key naming the group; absent means ungrouped.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Locale key of the label.",
+          "type": "string"
+        },
+        "short_label": {
+          "description": "Locale key of the short label; absent means use `label`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stat": {
+          "description": "Declared stat name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stat",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiStatSelect": {
+      "description": "Which stats a `stat_group` section shows.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Every stat.",
+          "properties": {
+            "type": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stats whose `stats` entry has this group key.",
+          "properties": {
+            "type": {
+              "const": "group",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "These stats, by name.",
+          "properties": {
+            "type": {
+              "const": "names",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UiTargetHint": {
+      "enum": [
+        "none",
+        "enemy",
+        "ally",
+        "any"
+      ],
+      "type": "string"
+    },
+    "UlidText": {
+      "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
+      "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "One `crpg.ui/1` document: presentation data for one ruleset.",
+      "properties": {
+        "_note": {
+          "description": "Preserved author annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "abilities": {
+          "description": "Ability display entries; absent means generated for every listed ability.",
+          "items": {
+            "$ref": "#/$defs/UiAbility"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "effects": {
+          "description": "Effect display entries; absent means generated for every applied effect.",
+          "items": {
+            "$ref": "#/$defs/UiEffect"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "outcomes": {
+          "description": "Outcome labels; absent means generated for every produced outcome.",
+          "items": {
+            "$ref": "#/$defs/UiOutcome"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "pools": {
+          "description": "Pool display entries; absent means generated for every pool.",
+          "items": {
+            "$ref": "#/$defs/UiPool"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "ruleset": {
+          "$ref": "#/$defs/UlidText",
+          "description": "The ruleset this document describes."
+        },
+        "schema": {
+          "const": "crpg.ui/1",
+          "type": "string"
+        },
+        "screens": {
+          "description": "Screens; absent means every non-reserved default screen.",
+          "items": {
+            "$ref": "#/$defs/UiScreen"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "stats": {
+          "description": "Stat display entries; absent means generated for every stat.",
+          "items": {
+            "$ref": "#/$defs/UiStat"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "ruleset"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "UiDocument"
+}

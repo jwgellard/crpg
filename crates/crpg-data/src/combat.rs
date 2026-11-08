@@ -652,7 +652,7 @@ pub struct Encounter {
     pub respawns: Option<bool>,
 }
 
-fn exact_keys<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn exact_keys<'de, D: serde::Deserializer<'de>>(
     map: &BTreeMap<String, Value>,
     allowed: &'static [&'static str],
 ) -> Result<(), D::Error> {
@@ -674,7 +674,7 @@ fn exact_keys<'de, D: serde::Deserializer<'de>>(
     Ok(())
 }
 
-fn field<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(
+pub(crate) fn field<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(
     map: &BTreeMap<String, Value>,
     name: &'static str,
 ) -> Result<T, D::Error> {
