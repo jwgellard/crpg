@@ -1,9 +1,9 @@
 # ADR-0036: Movement and navigation in both time modes
 
 Date: 2026-11-08 (UTC)
-Status: **Proposed** — filed by T034 (architect). The user answered the six
-design questions on 2026-11-08 (D46, recorded below); accepting the ADR is a
-separate user step, with the acceptance notes below in view.
+Status: **Accepted** by the user on 2026-11-08, with the acceptance notes
+below in view — filed by T034 (architect). The user answered the six design
+questions the same day (D46, recorded below).
 
 ## Context
 
@@ -478,7 +478,7 @@ ends; it stays due. This amends ADR-0029 T7 for this case only.
 
 ## Authority and affected surface
 
-- Decided by: pending the user (Proposed).
+- Decided by: the user, 2026-11-08 (Accepted; D46).
 - Authoritative contracts: the follow-on contracts below; this ADR fixes
   decisions, item numbers and limits, not final signatures.
 - Owning crates: `crpg-nav`, `crpg-data`, `crpg-sim`, `crpg-net`,
@@ -606,3 +606,4 @@ rule.
 
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 · Filed the proposed movement and navigation ADR. Authoritative positions are fixed-point with an `f32` mirror, the host supplies nav routes to sim by revision and tag, TB moves are atomic pool spends, and lane 1 carries reliable intents with datagram samples. Six user questions are left open.
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 D46 · Recorded the user's six answers as D46a-f in place of the open questions, and added section S so that grids and hexes plug into a `Measure` enum, a destination `snap` and a later nav query without changing the v1 core. Listed the five source conflicts as acceptance notes; the status stays Proposed.
+- 2026-11-08 (UTC) · claude-code/opus-5.5 (manager) + user acceptance · Marked the ADR Accepted: the user accepted it on 2026-11-08 after reviewing D46 and the five acceptance notes.
