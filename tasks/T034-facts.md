@@ -1,0 +1,155 @@
+# T034-facts — fact sheet for the movement and navigation ADR
+
+Facts only. Every `path:line` below was opened and checked on this branch.
+No recommendations, no proposed types, no opinions.
+
+## Requirements
+
+- Spec §2.4 substrate rule 3: "No floating point in rules math. Positions and velocities use `f32`. Anything a rule reads uses integers or fixed-point. Damage, modifiers, DCs, durations: integers." (`docs/CRPG_ENGINE_SPEC.md:306`)
+- Spec §2.4 World sketch lists `transforms: ComponentStore<Transform>`, `spatial: SpatialIndex` (uniform grid, rebuilt per tick), and `timeline: Timeline`. (`docs/CRPG_ENGINE_SPEC.md:283`-`298`)
+- Spec §2.4: "Areas are simulated independently. One `World` per loaded area. Cross-area effects go through a message queue on the `Campaign` object." (`docs/CRPG_ENGINE_SPEC.md:309`)
+- Spec §2.5: "Real-time-with-pause and turn-based are both expressed as a `Timeline`: an ordered queue of `(initiative_key, EntityId)`. In real time the timeline advances every tick; in turn-based it advances on `EndTurn`. One mechanism, two policies." (`docs/CRPG_ENGINE_SPEC.md:314`)
+- Spec §2.5: "The client renders at display refresh and interpolates between the last two received snapshots with a fixed ~100 ms delay buffer." (`docs/CRPG_ENGINE_SPEC.md:316`)
+- Spec tree line: "Presentation + input + prediction of own movement only." (`docs/CRPG_ENGINE_SPEC.md:24`)
+- Spec §1.1: "Prediction of own movement uses a buffer outside sim (bridge/client), never a mutable replica; `apply_delta` coverage is reserved here and defined fully in T018 (E015 decision 2026-09-06)." (`docs/CRPG_ENGINE_SPEC.md:175`)
+- Spec §6.3 Navigation: "Godot's `NavigationServer` is unavailable on the server, so navigation is replaced, not kept." (`docs/CRPG_ENGINE_SPEC.md:724`)
+- Spec §6.3: "Bake navmeshes with Recast (via Rust bindings) in the editor, at build time, from area geometry. Store as a build artifact keyed by area id and a hash of the source geometry." (`docs/CRPG_ENGINE_SPEC.md:726`)
+- Spec §6.3: "Server pathfinding uses Detour or a Rust equivalent over the same navmesh. Server and client must use the identical navmesh file, or clients will predict movement the server rejects." (`docs/CRPG_ENGINE_SPEC.md:727`)
+- Spec §6.3: "Player-visible latency tolerance is roughly 150–250 ms for anything except own-character movement." (`docs/CRPG_ENGINE_SPEC.md:739`)
+- Spec §6.3: "Prediction is needed for exactly one thing: the local player's own movement. Everything else is server-decided and displayed after the fact." (`docs/CRPG_ENGINE_SPEC.md:741`)
+- Spec §7.2 wire table: "`snapshot` | unreliable datagram | positions, orientations, animation state" (`docs/CRPG_ENGINE_SPEC.md:756`)
+- Spec §7.2 note: "movement will get its own separately versioned lane (D13)." (`docs/CRPG_ENGINE_SPEC.md:761`)
+- Spec §7.3 intents: "MoveTo { position, tick }" (`docs/CRPG_ENGINE_SPEC.md:791`)
+- Spec §7.3: "There is no `SetPosition`, no `ApplyDamage`, no `SetVariable`." (`docs/CRPG_ENGINE_SPEC.md:799`)
+- Spec §7.5: "Client predicts own movement: applies input immediately, keeps a ring buffer of `(tick, input, predicted_position)`." (`docs/CRPG_ENGINE_SPEC.md:821`)
+- Spec §7.5 note 2026-09-30: "movement prediction waits for an authoritative movement/nav specification (scheduled after T024), a separately versioned movement lane with processed-seq/server-tick acknowledgments (T026p), and the bridge task (T026). Thresholds are measured, not assumed (D06)." (`docs/CRPG_ENGINE_SPEC.md:825`)
+- Spec §8 (resource pools): "5e is `action`, `bonus_action`, `reaction`, `movement`." (`docs/CRPG_ENGINE_SPEC.md:382`)
+- Spec §9.2: "No authoritative logic. The client may compute predictions and display hints (estimated hit chance, movement range preview), but it must recompute nothing that determines an outcome." (`docs/CRPG_ENGINE_SPEC.md:879`)
+- Spec §10: "4. movement integration + collision + trigger volumes" (`docs/CRPG_ENGINE_SPEC.md:942`)
+- Spec §10.4: "Tactical positioning. Influence maps over the navmesh: threat, cover, AoE danger, chokepoints." (`docs/CRPG_ENGINE_SPEC.md:713`)
+- Spec §11.1 area editor: "walkable overlay and a one-key line-of-sight probe from the cursor"; "spawn points, encounter regions". (`docs/CRPG_ENGINE_SPEC.md:1056`)
+- Spec §12.1 tree: "crpg-sim/ ... spatial, movement, LOS" and "crpg-nav/ ... Recast/Detour bake + query". (`docs/CRPG_ENGINE_SPEC.md:1192`, `docs/CRPG_ENGINE_SPEC.md:1195`)
+- Spec §14.3: "Area size 500 × 500 m | one navmesh, one nav bake". (`docs/CRPG_ENGINE_SPEC.md:1138`)
+- Spec §15.6/§19.1 item 21: "Recast navmesh bake for one hardcoded box-shaped area." (`docs/CRPG_ENGINE_SPEC.md:1665`)
+- Spec §19.1 item 11 (medium): "Movement prediction and reconciliation." (`docs/CRPG_ENGINE_SPEC.md:1685`)
+- Spec §19.2 table row 10: "Navigation | Recast/Detour in Rust; navmesh baked as a build artifact" (`docs/CRPG_ENGINE_SPEC.md:1730`)
+- Spec §19.2 table row 12: "Replication model | Server-authoritative deltas + sim event stream; predict only own movement" (`docs/CRPG_ENGINE_SPEC.md:1732`)
+- Spec §21: "Recast navmesh bake for one hardcoded box-shaped area." (see §19.1 item 21) (`docs/CRPG_ENGINE_SPEC.md:1665`)
+- Spec §22 T2: "QUIC movement spike ... client sends MoveTo intents, server integrates at 20 Hz and returns positions with an input acknowledgement; client predicts and reconciles." (`docs/CRPG_ENGINE_SPEC.md:1905`-`1910`)
+- Spec §22 T7: "crpg-nav, crpg-ai, crpg-persist, crpg-script (Lua sandbox), the CLI, individual editor panels, ruleset data authoring, test fixtures, documentation." (`docs/CRPG_ENGINE_SPEC.md:1273`)
+- Spec §24 T7/T10/T14 mirror ADR-0008 assignments. (`docs/CRPG_ENGINE_SPEC.md:2093`)
+- Spec §25: "crpg-nav only core, crpg-ai imports crpg-nav, crpg-server may not" (`docs/CRPG_ENGINE_SPEC.md:217`)
+- AGENTS.md: "`crpg-sim` may use `f32` for spatial positions only (spec §2.4), never in a rules path. `f64` is banned in `crpg-sim` as well (E006-A)." (`AGENTS.md:46`-`47`)
+- IMPLEMENTATION_PLAN.md row T034: "Movement and navigation ADR, in both time modes: D13 path format, movement rules, numeric limits, and how sim consumes caller-supplied nav results (sim may not import nav)" (`docs/IMPLEMENTATION_PLAN.md:218`)
+- IMPLEMENTATION_PLAN.md row T035: "Navigation v1 (spec §19.1 #21). Opens the crate" (`docs/IMPLEMENTATION_PLAN.md:219`)
+- IMPLEMENTATION_PLAN.md row T036: "Authoritative movement; `World`/tick-order touch; new goldens (H-golden)" (`docs/IMPLEMENTATION_PLAN.md:220`)
+- IMPLEMENTATION_PLAN.md row T026p: "Lane-1 movement and acknowledgments. Vendors the T030 dedup patch (D23); re-runs the impairment probe on native Windows" (`docs/IMPLEMENTATION_PLAN.md:221`)
+- IMPLEMENTATION_PLAN.md row T037: "Movement host adapter" (`docs/IMPLEMENTATION_PLAN.md:222`)
+- IMPLEMENTATION_PLAN.md row T026: "Own-movement prediction and reconciliation" (`docs/IMPLEMENTATION_PLAN.md:254`)
+- IMPLEMENTATION_PLAN.md row T049: "Interpolation buffer (§19.1 #23)" (`docs/IMPLEMENTATION_PLAN.md:253`)
+- IMPLEMENTATION_PLAN.md row T050: "Camera, click-to-move, selection" (`docs/IMPLEMENTATION_PLAN.md:255`)
+
+## Decisions
+
+- D13 (POST-T018-DECISIONS.md): "Select authoritative movement/nav before movement wire/host adapter and bridge prediction. Nav computes paths in crpg-nav; host supplies typed path results to sim with revision/request identity; sim owns movement stepping and revalidation. No sim→nav edge. Exact movement rules/path format and numeric limits are a specification deliverable, not a choice to copy the spike unchecked." (`tasks/POST-T018-DECISIONS.md:312`-`315`)
+- D13: "Movement gets a separately versioned lane and processed-seq/server-tick acks; lane-0 remains window 1. Local-player movement prediction is outside immutable replica/sim, no combat prediction. Other actors interpolate permitted state." (`tasks/POST-T018-DECISIONS.md:317`-`319`)
+- D13 row (POST-T018.md): "T026: authoritative movement/nav then lane-1 ack semantics then external prediction buffer" (`tasks/POST-T018.md:161`)
+- POST-T018.md B3 note: "sim cannot import nav under ALLOWED: caller-supplied navigation results or separately approved graph decision." (`tasks/POST-T018.md:183`)
+- D24 (DECISIONS-2026-09-30.md): "Authoritative movement/nav specification (D13's path format, movement rules, numeric limits) is scheduled after T024 snapshot transfer. T026p/T026 stay blocked on it. It is not on the current critical path." (`tasks/DECISIONS-2026-09-30.md:103`-`105`)
+- D27c (DECISIONS-2026-10-04.md): "The navigation representation and bake are custom, with integer or Fx16_16 coordinates." (`tasks/DECISIONS-2026-10-04.md:53`)
+- D27c: "They live in the existing crpg-nav workspace crate. Staying in the workspace keeps the determinism lint, the dependency lint and dual-native CI on it, which a separate repository would lose." (`tasks/DECISIONS-2026-10-04.md:55`-`56`)
+- D27c: "The user's offer of a dedicated repository is recorded as an option to extract later once the API is stable, not as the starting point." (`tasks/DECISIONS-2026-10-04.md:58`-`59`)
+- D27c survey: "`landmass` 0.9.2, `polyanya` 0.17.1 and `rerecast` 0.4.0 ... are all built on `glam` `f32` geometry. Their results are not integer-exact." (`tasks/DECISIONS-2026-10-04.md:40`-`43`)
+- D27c survey: "`pathfinding` 4.16.0 (generic A*/Dijkstra over integer costs, MIT or Apache-2.0, about 3M downloads). It covers search only, not navmesh representation or baking." (`tasks/DECISIONS-2026-10-04.md:48`-`49`)
+- D27c: "The T035 contract may propose `pathfinding` (exact pin) for search. That edge needs the user's approval at contract review. Without it, search is written in-house." (`tasks/DECISIONS-2026-10-04.md:60`-`61`)
+- POST-T018.md row: "T026p | blocked | — | `crpg-net` N-LANES-policy/movement acknowledgments; authoritative movement + D13" (`tasks/POST-T018.md:123`)
+- POST-T018.md row: "T026 | blocked | — | `crpg-godot` external movement prediction; T026p + host movement adapter + E012" (`tasks/POST-T018.md:124`)
+- POST-T018.md: "N-LANES-policy and authoritative movement | crpg-nav navigation/bake → crpg-sim movement → crpg-net movement/acks → chosen host adapter, 4" (`tasks/POST-T018.md:183`)
+- T026p.md exists (`tasks/T026p.md`); T026.md exists (`tasks/T026.md`).
+
+## Time model
+
+- ADR-0029 §2 T1: "Mode is per encounter. `CombatState` (in `World`, hashed) carries `mode ∈ {TurnBased, RealTime}`. ... Outside an encounter every entity is in real time." (`docs/adr/0029-kernel-range-and-time-model.md:181`-`183`)
+- ADR-0029 §2 T2: "RT capability is data. A ruleset may declare `round_ticks` (a nonzero tick count per round: 120 is 6 s at 20 Hz), and an ability may declare `recovery_ticks` (nonzero; default `round_ticks`) and `repeats_in_real_time` (default false)." (`docs/adr/0029-kernel-range-and-time-model.md:186`-`188`)
+- ADR-0029 §2 T3: "An RT-capable encounter carries `clock: u64`. In RT it advances by one per world tick; in TB it advances by `round_ticks` at each round rollover. ... An `OnTick(n)` pool refreshes once per advance in which the clock crosses at least one multiple of `n`." (`docs/adr/0029-kernel-range-and-time-model.md:195`-`200`)
+- ADR-0029 §2 T5: "In RT each live combatant holds exactly one timeline entry, keyed by its ready clock value. The key is `i32` (`timeline.rs`), so an RT encounter's clock is bounded; the contract pins the behaviour at the bound, which must fail closed and never wrap or reorder." (`docs/adr/0029-kernel-range-and-time-model.md:207`-`210`)
+- ADR-0029 §2 T6: "When the advanced clock is a multiple of `round_ticks`: apply any pending mode (T9); then `round + 1` (saturating, as now); then `RoundStart` and `TurnStart` refreshes to every live combatant in ascending `EntityId` order; effects expire by round as now; journal one `RoundStarted { round }`." (`docs/adr/0029-kernel-range-and-time-model.md:212`-`216`)
+- ADR-0029 §2 T7: "Take the list of entries with key ≤ clock, in ascending `(key, EntityId)` order, before acting. For each one still alive with a standing order: validate it as a TB `UseAbility` without the active-turn check. If valid, execute it through the same resolution, cost, damage, effect, RNG stream (`combat.roll`) and journal path as TB, then re-key the actor to `clock + recovery_ticks`..." (`docs/adr/0029-kernel-range-and-time-model.md:218`-`224`)
+- ADR-0029 §2 T10: "RT→TB: clear all orders, rebuild the timeline from live combatants at their stored initiative, then run the normal TB round start. TB→RT: key every live combatant at `clock` (due now), then run the T6 round start." (`docs/adr/0029-kernel-range-and-time-model.md:240`-`242`)
+- ADR-0029 §2 T12: "Only combatants hold timeline entries. While an encounter is active the host keeps ticking the World at the fixed rate, so non-participants act in real time beside a TB fight (R14 rec 6). T034/T036 must move non-participants and RT participants every tick, and TB participants only through their own turn's actions." (`docs/adr/0029-kernel-range-and-time-model.md:250`-`254`)
+- ADR-0029 §2 T13: "One encounter per World. A second engagement in the same area joins the existing encounter; it never starts another one." (`docs/adr/0029-kernel-range-and-time-model.md:256`-`258`)
+- ADR-0029 §2 T16: "Every World change is a journaled operation (tick, command, mode request, start, end, join). Pause, auto-pause, turn timers and AI live in the host and reach the World only as journaled operations. Clock, keys, recovery and rounds are integers; RT adds no float. Positions stay `f32` in sim and are spatial only." (`docs/adr/0029-kernel-range-and-time-model.md:273`-`278`)
+- ADR-0029 §2 K6 action points: "Movement costs AP | Resource | T034/T036 (spend from a pool; no kernel change)" (`docs/adr/0029-kernel-range-and-time-model.md:158`)
+- ADR-0029 §3 P1: "Pause is host state. A paused host does not call `tick`. Pause is not a World field, is not hashed and is not journaled." (`docs/adr/0029-kernel-range-and-time-model.md:281`-`282`)
+- ADR-0029 §3 P2: "The host still admits and executes commands: TB actions resolve and RT orders and mode requests are stored. Only ticks stop (Baldur's Gate 'pause and give orders')." (`docs/adr/0029-kernel-range-and-time-model.md:284`-`286`)
+- ADR-0029 §4 N1: "World facts (hashed): mode, pending mode, round, clock (RT), timeline order with keys (the shared visible order, R14 rec 5, R16 rec 5), active combatant (TB), pool `current`/`max` per pool id, attached effects with expiry round, standing orders, stat values." (`docs/adr/0029-kernel-range-and-time-model.md:324`-`327`)
+- ADR-0029 Consequences: "T034 can be written once this ADR is accepted. Its inputs are T12 (who moves when), T16 (positions `f32`, costs integer: T034 pins the quantization in sim) and the AP verdict in K6 (movement spends a pool; no kernel change)." (`docs/adr/0029-kernel-range-and-time-model.md:459`-`462`)
+- ADR-0004 (spike): server "20 Hz authoritative loop (§2.5). Receives `MoveTo { seq, target }`-shaped client intents as QUIC datagrams, moves a single tracked position toward the latest (highest-`seq`) target at a fixed speed" (`docs/adr/0004-quic-movement-spike.md:18`-`21`)
+- ADR-0004: client "every 50 ms, predicts locally with the same deterministic step function the server uses, buffers `(seq, target, predicted_pos)`, sends the intent, and on each server ack snaps to the authoritative position for that `seq` and replays buffered inputs newer than it" (`docs/adr/0004-quic-movement-spike.md:23`-`27`)
+- ADR-0004 measured: "shim 75ms / ±15ms / 3% (≈150ms RTT, spec's condition) | 401 | 278 (69.3%) | 0.099 | 0.60 | 3 (1.1%)" (`docs/adr/0004-quic-movement-spike.md:45`)
+- ADR-0004 finding: "At ±15ms jitter (still a realistic WiFi/home-router figure, and well under the spec's own 150ms RTT target), loss jumps to ~26–30% with zero packets actually dropped" (`docs/adr/0004-quic-movement-spike.md:55`-`57`)
+- ADR-0004 finding: "That something is `quinn-proto`'s packet dedup window: a 129-packet-wide bitmask" (`docs/adr/0004-quic-movement-spike.md:62`-`63`)
+- ADR-0004 decision: "Conditional go. ... Proceed with QUIC / `quinn` and the predict-and-reconcile design as specified." (`docs/adr/0004-quic-movement-spike.md:88`-`93`)
+- ADR-0004 consequences: "crpg-net's eventual channel design (§7.2's `snapshot` = unreliable datagram) needs a decision on #2710 before it is trusted at anything but loopback-quality reordering." (`docs/adr/0004-quic-movement-spike.md:166`-`168`)
+- ADR-0004 NAT leg: "fails without manual configuration, cause fully attributed to the NAT layer" (`docs/adr/0004-quic-movement-spike.md:156`-`159`)
+
+## Sim today
+
+- `Transform` is `f32` position and velocity: `pub position: [f32; 3]`, `pub velocity: [f32; 3]`. "Rotation is deliberately absent. It arrives with the movement task." (`crates/crpg-sim/src/transform.rs:19`-`25`, `crates/crpg-sim/src/transform.rs:9`-`10`)
+- `transform.rs` module doc: "Positions and velocities live in `f32`, outside any rules path (spec §2.4, E006-A)." (`crates/crpg-sim/src/transform.rs:3`)
+- `area.rs` module doc: "A `World` simulates one loaded area. ... `[transfer_entity]` and `[transfer_history_entity]` are the one explicit simulation transition between two bound worlds, requested by a higher authorized owner — not automatic navigation, and not a client operation. They move only the currently supported noncombat, unscheduled shape (`EntityMeta` plus an optional `Transform` and an optional `CreatureState`)." (`crates/crpg-sim/src/area.rs:3`-`16`)
+- `area.rs` preflight checks entity liveness, combatant membership, timeline scheduling, transform finiteness, and (T139) placement uniqueness. (`crates/crpg-sim/src/area.rs:102`-`144`)
+- `timeline.rs` module doc: "Real-time-with-pause and turn-based play share one mechanism (spec §2.5): an ordered queue of `(InitiativeKey, EntityId)`. This module is the *container* only." (`crates/crpg-sim/src/timeline.rs:3`-`4`)
+- `timeline.rs`: `InitiativeKey(pub i32)`. "Position in the turn order. Lower acts first; ties break on `EntityId`." (`crates/crpg-sim/src/timeline.rs:17`-`21`, `crates/crpg-sim/src/timeline.rs:25`)
+- `tick.rs`: `tick(world)` "counter saturating +1, then the ordered system list (today exactly `[timeline_system]`)." (`crates/crpg-sim/src/tick.rs:16`-`24`)
+- `tick.rs` `run_systems`: stage 2 `encounter_clock_system`, stage 3 `timeline_system` (body loops timeline then calls `execution_stage`). (`crates/crpg-sim/src/tick.rs:50`-`82`)
+- `hash.rs`: `state_hash` BLAKE3 over canonical JSON, queue bytes included, exclusions none; asserts finiteness on every position/velocity before serializing. (`crates/crpg-sim/src/hash.rs:37`-`49`)
+- `event.rs`: `SimEvent` variants `Spawned`, `Despawned`, `Died`. "No new `SimEvent` variants without consumers." (module doc) (`crates/crpg-sim/src/event.rs:23`-`45`, `crates/crpg-sim/src/event.rs:6`-`10`)
+- `world.rs`: `World` fields include `transforms: ComponentStore<Transform>`, `timeline: Timeline`, `tick: Tick`, `area: Option<Ulid>`, `creatures: ComponentStore<CreatureState>`. (`crates/crpg-sim/src/world.rs:62`-`110`)
+- `world.rs`: `spawn` mints entity and enqueues `Spawned`; `despawn` strips transform/creature/timeline/combatant and enqueues `Despawned`. (`crates/crpg-sim/src/world.rs:956`-`1000`)
+- `world.rs`: `transforms()` / `transforms_mut()` accessors. (`crates/crpg-sim/src/world.rs:1108`-`1115`)
+- `world.rs`: `new_in_area(seed, area)` binds immutable area; `area()` / `area_of(entity)`. (`crates/crpg-sim/src/world.rs:913`-`940`)
+- `combat.rs`: no range or reach check found (grep `range`/`reach`/`distance` in combat.rs returns none). (`crates/crpg-sim/src/combat.rs`)
+- `docs/architecture/crpg-sim.md` Position section: "`Transform` — `f32` position and velocity, the only floating point in the crate (E006-A). No rotation until movement needs it." (`docs/architecture/crpg-sim.md:60`-`61`)
+- `docs/architecture/crpg-sim.md`: "Today versus planned" table: "`Transform` position/velocity | Rotation, movement, collision (later)" (`docs/architecture/crpg-sim.md:108`)
+- `docs/architecture/crpg-sim.md` Area identity section: transfer moves `EntityMeta` plus optional `Transform` and optional `CreatureState`. (`docs/architecture/crpg-sim.md:343`-`360`)
+- `docs/architecture/crpg-sim.md` Encounter mode section: T138a RT tick stages. (`docs/architecture/crpg-sim.md:360`-`370`)
+- `crates/crpg-sim/AGENTS.md` scope note: "Movement and every further component arrive in later tasks; they extend this file, following the module docs that already name their owner." (`crates/crpg-sim/AGENTS.md:5`-`6`)
+- `crates/crpg-sim/AGENTS.md`: "Tick order is serial territory (spec §15.2). `run_systems` is a hand-written list in spec §10 stage order" (`crates/crpg-sim/AGENTS.md:342`-`346`)
+- `crates/crpg-sim/AGENTS.md`: "The combat controller never invents actions (turn-based). In TB, `tick` / `run_systems` know nothing of combat" (`crates/crpg-sim/AGENTS.md:372`-`378`)
+- `crates/crpg-sim/AGENTS.md`: "`Transform` is `f32`-only (E006-A). Positions and velocities, never rules input. No `f64` anywhere in the crate." (`crates/crpg-sim/AGENTS.md:201`-`202`)
+- `crates/crpg-sim/src/lib.rs`: crate doc "Further systems, movement and components arrive in later tasks" and module list has no `movement`/`spatial` module. (`crates/crpg-sim/src/lib.rs:1`-`12`, `crates/crpg-sim/src/lib.rs:22`-`34`)
+
+## Data today
+
+- `crpg-data` `Transform`: `position: [Fx16_16; 3]`, `rotation: [Fx16_16; 3]`, `scale: [Fx16_16; 3]`. "Authored fixed-point transform, independent of runtime spatial storage." (`crates/crpg-data/src/types.rs:235`-`249`)
+- `crpg-data` `Bounds`: `min: [Fx16_16; 3]`, `max: [Fx16_16; 3]`. (`crates/crpg-data/src/types.rs:250`-`256`)
+- `crpg-data` `Area`: `bounds: Bounds`, `neighbours: Vec<Ulid>`, `ambience`. (`crates/crpg-data/src/document.rs:78`-`101`)
+- `crpg-data` `Placement`: `prefab: Ulid`, `transform: Transform`, `overrides: BTreeMap<String, DataValue>`. (`crates/crpg-data/src/document.rs:317`-`333`)
+- `crpg-data` `EntryPoint`: `world`, `area`, `spawn` (placement identity whose transform supplies the spawn point). (`crates/crpg-data/src/document.rs:42`-`55`)
+- `crpg-data` `World`: `areas: Vec<Ulid>`. (`crates/crpg-data/src/document.rs:57`-`76`)
+- `rulesets/` and `campaigns/fixtures/`: no `speed`/`move` field found; placement transforms carry fixed-point positions; spawn points are placement identities. (`campaigns/fixtures/combat_basic/areas/start/placements.json:1`-`45`)
+- `crpg-data` combat vocabulary: `Ruleset`, `Ability`, `OutcomeTable`, `Encounter`, `StatDecl`/`StatKindWire` (`Int`/`Fixed`/`Bool`/`Enum`/`Tags`/`Dice`), `ActionPoolTemplate`, `EncounterParticipant`. (`crates/crpg-data/AGENTS.md:158`)
+- `crpg-data` combat: `Ruleset` has `creature_persistence`, `late_join`, `effects_on_exit` (T139d); `Encounter` has `respawns`. (`crates/crpg-data/AGENTS.md:408`)
+- `crpg-data` has no movement/speed stat or nav field found (grep `speed`/`move` in `crates/crpg-data/src` returns none). (`crates/crpg-data/src`)
+
+## Net and client today
+
+- `crpg-net` lane constants: `LANE_COMBAT: u8 = 0`. "The only implemented lane in v1: reliable-ordered combat commands upstream and reliable-ordered combat deltas downstream." Lanes 1+ are reserved (movement and later channels). (`crates/crpg-net/src/protocol.rs:27`-`34`)
+- `crpg-net` `DeltaOp`: "There is no transform op in v1 (spatial replication waits for the lane-1 movement channel) and no open component bag." (`crates/crpg-net/src/protocol.rs:300`-`305`)
+- `crpg-net` `IntentBody`: "Movement, positional and multi-target abilities, dialogue, items, interaction, save/admin, and chat are future verbs with no v1 tag" (`crates/crpg-net/src/protocol.rs:265`)
+- `crpg-net` `observed_tick` freshness: "A command's `observed_tick` must lie within 200 ticks of the server tick" (`docs/adr/0029-kernel-range-and-time-model.md:64`)
+- T030 dedup dossier location: `docs/reviews/T030-quinn/` (README, patch, harness, probe, results). (`docs/reviews/T030-quinn/README.md:1`)
+- `apps/client/scripts/SceneSync.gd`: proxy positions set as `Vector3(3.0 * float(side_index), 0.0, 1.5 * float(rank))` at spawn; no movement integration. (`apps/client/scripts/SceneSync.gd:61`)
+- `crates/crpg-godot`: no `position`/`transform`/`Vector3` usage in `src/` (grep returns none). AGENTS.md mentions proxy position (`mesh.position.y = height / 2`). (`crates/crpg-godot/AGENTS.md:144`)
+
+## Crates
+
+- `crates/crpg-nav` exists; `src/lib.rs` is a 4-line stub: `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`, doc comment "Navigation and pathfinding: Recast navmesh baking (editor-side) and Detour-equivalent server-side path queries over the same baked navmesh." No code. `Cargo.toml` has no dependencies. (`crates/crpg-nav/src/lib.rs:1`-`4`, `crates/crpg-nav/Cargo.toml:1`-`8`)
+- `tools/lint/deps.py` `ALLOWED` table: `"crpg-nav": ({"crpg-core"}, set())`. (`tools/lint/deps.py:51`)
+- `tools/lint/deps.py` `ALLOWED` table: `"crpg-ai": ({"crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"}, set())`. (`tools/lint/deps.py:53`)
+- `tools/lint/deps.py` `ALLOWED` table: `"crpg-sim": ({"crpg-core", "crpg-data", "crpg-rules"}, set())` — no `crpg-nav` edge. (`tools/lint/deps.py:50`)
+
+## Agent log
+
+- 2026-11-08 (UTC) · opencode-go/beam-free + T034 facts · Gathered movement/navigation facts with path:line citations for the T034 ADR.
