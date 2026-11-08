@@ -742,6 +742,10 @@ func _expect_legible(proxy, tag: String) -> String:
 		return "%s pixel_size = %s, want 0.0075" % [tag, str(_label(proxy).pixel_size)]
 	if _label(proxy).outline_size != 16:
 		return "%s outline_size = %d, want 16" % [tag, _label(proxy).outline_size]
+	# Bottom alignment keeps the enlarged text above the anchor, so the lower
+	# half of the glyphs cannot sink into the mesh top.
+	if _label(proxy).vertical_alignment != VERTICAL_ALIGNMENT_BOTTOM:
+		return "%s vertical_alignment = %d, want %d" % [tag, _label(proxy).vertical_alignment, VERTICAL_ALIGNMENT_BOTTOM]
 	return "PASS"
 
 func _case_s19(host: Node, script: Script) -> String:

@@ -91,6 +91,7 @@ func _make_proxy(net_id: int) -> Node3D:
 	label.font_size = 64
 	label.pixel_size = 0.0075
 	label.outline_size = 16
+	label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	proxy.add_child(label)
 	add_child(proxy)
 	return proxy
