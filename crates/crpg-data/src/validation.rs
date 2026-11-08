@@ -895,6 +895,38 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
                         Some("author a positive whole health value"),
                     );
                 }
+                if let Some(movement) = &ruleset.movement {
+                    let stat_length = crate::LengthWire::Stat(stat.name.clone());
+                    if movement.speed == stat_length
+                        && !(1..=crate::MAX_SPEED_PER_TICK_RAW).contains(&raw)
+                    {
+                        push(
+                            out,
+                            path,
+                            at_placement.clone(),
+                            DiagnosticCode::InvalidStatValue,
+                            format!(
+                                "movement speed stat {:?} on creature {prefab} must be 1..=262144 raw",
+                                stat.name
+                            ),
+                            Some("author a speed above zero and at most 4 metres per tick"),
+                        );
+                        continue;
+                    }
+                    if movement.turn.step == stat_length && raw <= 0 {
+                        push(
+                            out,
+                            path,
+                            at_placement.clone(),
+                            DiagnosticCode::InvalidStatValue,
+                            format!(
+                                "movement step stat {:?} on creature {prefab} must be positive",
+                                stat.name
+                            ),
+                            Some("author a positive step length"),
+                        );
+                    }
+                }
             }
         }
     }

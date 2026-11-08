@@ -398,6 +398,7 @@ fn t10_generated_schemas_carry_optional_rt_properties() {
             "id",
             "initiative",
             "late_join",
+            "movement",
             "name",
             "package",
             "pools",

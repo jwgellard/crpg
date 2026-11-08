@@ -789,6 +789,16 @@ pub(crate) fn reference_occurrences(
                         "ruleset ability",
                     );
                 }
+                if let Some(m) = &v.movement {
+                    push_pool(
+                        &mut out,
+                        path,
+                        "/movement/turn/pool".into(),
+                        Some(v.id),
+                        m.turn.pool,
+                        "ruleset movement pool",
+                    );
+                }
             }
             Document::Ability(v) => {
                 push_generic(

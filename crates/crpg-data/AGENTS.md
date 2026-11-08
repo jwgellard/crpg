@@ -34,7 +34,8 @@ prescribed accessors. Do not extend the surface casually.
 - Reject unknown fields. Only `_note` (and the optional-missing `effect`,
   `natural_die`, `round_ticks`, `recovery_ticks`, `repeats_in_real_time`,
   `derived`, `initiative`, `bonus_stats`, damage `dice`, `grants`,
-  `creature_persistence`, `late_join`, `effects_on_exit`, encounter `respawns`) may
+  `creature_persistence`, `late_join`, `effects_on_exit`, `movement` and its
+  `measure`, encounter `respawns`) may
   be missing; other nullable fields
   need a required-nullable serde helper and matching schema required annotation.
 - A field may join a family at its current version, with no tag change and no
@@ -444,3 +445,16 @@ Public module `ui` (re-exported at the root) holds `UiDocument` (`crpg.ui/1`,
 
 - 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142a · Recorded the `ui/` layout family, the D5 never-strict trap, the optional-missing rule for `crpg.ui/1` and the eight declared codes.
 - 2026-11-08 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142b · Recorded that `walk_ui` now emits the eight codes and the R / one-finding-per-pointer rules it follows.
+
+## Ruleset movement block (T148)
+
+`Ruleset.movement` (`MovementWire`, `TurnMovementWire`, `LengthWire`,
+`MeasureWire`) joins `crpg.ruleset/2` at the current tag (D32c, D47): no
+migration edge. `LengthWire` keeps derived adjacent decoding because both
+variants carry a payload; `MeasureWire` has a hand-written `Deserialize` in the
+`LateJoinWire` style (unit variant, so the derived decoder would accept
+`{"type":"euclidean"}`). Read-time rules live in `validate_ruleset_movement`;
+the creature-value rule is in `walk_combat`. `MAX_SPEED_PER_TICK_RAW` is the one
+speed bound; sim imports it.
+
+- 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T148 · Added `movement` and `measure` to the optional-missing list and recorded that `LengthWire` keeps derived decoding while `MeasureWire` is hand-written.

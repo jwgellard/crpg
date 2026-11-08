@@ -272,6 +272,7 @@ fn documents(
             creature_persistence: None,
             late_join: None,
             effects_on_exit: None,
+            movement: None,
         }));
     }
     result.push(Document::Ability(Ability {

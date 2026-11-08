@@ -338,6 +338,90 @@
         }
       ]
     },
+    "LengthWire": {
+      "description": "A length: a constant or a creature's fixed stat.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Core's raw fixed-point length.",
+          "properties": {
+            "type": {
+              "const": "constant",
+              "type": "string"
+            },
+            "value": {
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The name of a declared fixed stat.",
+          "properties": {
+            "type": {
+              "const": "stat",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MeasureWire": {
+      "description": "How rule-visible distance is measured (ADR-0036 S2).",
+      "oneOf": [
+        {
+          "const": "euclidean",
+          "description": "Horizontal straight-line length.",
+          "type": "string"
+        }
+      ]
+    },
+    "MovementWire": {
+      "additionalProperties": false,
+      "description": "How a ruleset moves creatures; absent means nothing moves.",
+      "properties": {
+        "measure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MeasureWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How rule-visible distance is measured; absent means euclidean."
+        },
+        "speed": {
+          "$ref": "#/$defs/LengthWire",
+          "description": "Walking distance per tick: a constant or a fixed stat."
+        },
+        "turn": {
+          "$ref": "#/$defs/TurnMovementWire",
+          "description": "What a turn-based move costs."
+        }
+      },
+      "required": [
+        "speed",
+        "turn"
+      ],
+      "type": "object"
+    },
     "PackageId": {
       "description": "Immutable publication coordinate, distinct from an object ULID or slug.",
       "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
@@ -659,6 +743,33 @@
       "minimum": 0,
       "type": "integer"
     },
+    "TurnMovementWire": {
+      "additionalProperties": false,
+      "description": "The turn-based cost of a move: `ceil(length / step) * step_cost` from `pool`.",
+      "properties": {
+        "pool": {
+          "$ref": "#/$defs/UlidText",
+          "description": "Pool template paid from."
+        },
+        "step": {
+          "$ref": "#/$defs/LengthWire",
+          "description": "Distance bought by one step: a constant or a fixed stat."
+        },
+        "step_cost": {
+          "description": "Pool units per step, at least one.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pool",
+        "step",
+        "step_cost"
+      ],
+      "type": "object"
+    },
     "UlidText": {
       "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
       "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
@@ -747,6 +858,17 @@
             }
           ],
           "description": "Where a late first-round joiner acts; absent means the next round."
+        },
+        "movement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MovementWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Movement rules; absent means nothing moves."
         },
         "name": {
           "description": "Locale key for the display name.",
