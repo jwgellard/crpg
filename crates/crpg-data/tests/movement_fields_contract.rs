@@ -710,6 +710,14 @@ fn first_failure_order() {
         m["turn"]["step"]["value"] = json!(0);
     })));
     assert_eq!(got, POOL_MSG);
+    // pool before a step stat that is undeclared, or declared but not fixed
+    for stat in ["nope", "might"] {
+        let got = message(read(&case(|m| {
+            m["turn"]["pool"] = json!(ABILITY_17);
+            m["turn"]["step"] = json!({"type": "stat", "value": stat});
+        })));
+        assert_eq!(got, POOL_MSG, "step stat {stat:?}");
+    }
     // pool before step_cost
     let got = message(read(&case(|m| {
         m["turn"]["pool"] = json!(ABILITY_17);
