@@ -164,7 +164,7 @@ fn wire_example_round_trips() {
     let doc = read_ok(&ruleset_with(wire(), &[]));
     assert_eq!(
         ruleset_of(doc.clone()).movement,
-        Some(MovementWire {
+        Some(Box::new(MovementWire {
             speed: constant(16384),
             measure: Some(MeasureWire::Euclidean),
             turn: TurnMovementWire {
@@ -172,7 +172,7 @@ fn wire_example_round_trips() {
                 step: constant(98304),
                 step_cost: 1,
             },
-        })
+        }))
     );
     let text = written(&doc);
     assert!(text.contains("\"measure\": \"euclidean\""), "{text}");
@@ -533,7 +533,7 @@ fn pool_edge_in_introspection() {
     let mut campaign = srd_campaign();
     for doc in campaign.documents.values_mut() {
         if let Document::Ruleset(ruleset) = doc {
-            ruleset.movement = Some(movement_wire());
+            ruleset.movement = Some(Box::new(movement_wire()));
         }
     }
     let bytes = crpg_data::explain_object(&campaign, ulid("00000000000000000000000016"))
@@ -565,7 +565,7 @@ fn movement_setup(docs: &mut BTreeMap<SourcePath, Document>, speed: LengthWire, 
             derived: None,
         });
     }
-    ruleset.movement = Some(MovementWire {
+    ruleset.movement = Some(Box::new(MovementWire {
         speed,
         measure: None,
         turn: TurnMovementWire {
@@ -573,7 +573,7 @@ fn movement_setup(docs: &mut BTreeMap<SourcePath, Document>, speed: LengthWire, 
             step,
             step_cost: 1,
         },
-    });
+    }));
     for id in [HERO, "00000000000000000000000015"] {
         let creature = creature_mut(docs, id);
         creature

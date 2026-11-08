@@ -409,7 +409,7 @@ pub struct Ruleset {
     pub effects_on_exit: Option<EffectsOnExitWire>,
     /// Movement rules; absent means nothing moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub movement: Option<MovementWire>,
+    pub movement: Option<Box<MovementWire>>,
 }
 
 /// Which placed creatures keep their state after an encounter.
