@@ -12,12 +12,14 @@
 mod bake;
 mod geom;
 mod mesh;
+mod path;
 mod query;
 
 pub use bake::{bake_box, BakeError, NavRect, MAX_BAKE_HOLES};
 pub use crpg_core::Fx16_16;
 pub use geom::{ceil_sqrt, seg_len};
 pub use mesh::{NavDecodeError, NavMesh, NavMeshError, PolyId};
+pub use path::{NavError, NavPath};
 
 /// Largest absolute raw coordinate of any point (2^29, 8,192 m; ADR-0036 U3).
 pub const COORD_LIMIT_RAW: i32 = 1 << 29;
