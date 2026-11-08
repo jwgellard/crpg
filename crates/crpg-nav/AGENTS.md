@@ -39,6 +39,18 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - **Literal expected values in tests come from the contract.** If correct
   code disagrees with one, stop and report it; never edit the expected value.
 
+- **Query and bake tie-breaks are contract.** `nearest_on_mesh` keeps the
+  first *strictly* smaller `d2` (lowest polygon, then lowest edge); the edge
+  candidate tries `(fx,fz) (fx,cz) (cx,fz) (cx,cz)` in that order and keeps
+  the first on a tie; the none-contained fallback takes `a` when
+  `d2(a) <= d2(b)`. Use `div_euclid`/`rem_euclid`, never `/` or `%`, on a
+  signed product. `bake_box` checks `TooManyHoles` before `OutOfBounds`
+  before `EmptyOuter`, and per hole empty before outside.
+- **Rounding tests need searched cases.** A hand-picked query rarely reaches
+  the ceiling, negative-floor, order or tie rules; `tests/query.rs`
+  `b5_rounding_rules` holds cases found against an independent integer model.
+
 ## Agent log
 
 - 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T035a · Opened the file with the integer-only, `i128`, no-panic, error-order and canonical-version rules for the crate.
+- 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T035b · Added the bake and query tie-break traps (strict-less keeps the first, floor not truncation, error order) and the note that rounding rules need searched test cases.

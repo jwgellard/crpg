@@ -9,9 +9,12 @@
 //! geometry. There is no float anywhere (ADR-0036 V7), and the only
 //! dependency is `crpg-core`.
 
+mod bake;
 mod geom;
 mod mesh;
+mod query;
 
+pub use bake::{bake_box, BakeError, NavRect, MAX_BAKE_HOLES};
 pub use crpg_core::Fx16_16;
 pub use geom::{ceil_sqrt, seg_len};
 pub use mesh::{NavDecodeError, NavMesh, NavMeshError, PolyId};

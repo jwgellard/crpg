@@ -48,11 +48,36 @@ All modules are private; every public item is re-exported at the crate root.
     and `u32` indices. Adjacency is not stored. `from_canonical_bytes`
     rejects oversize counts before reading further, then runs `NavMesh::new`.
 
+- `bake`: `bake_box(y, outer, holes)`, `NavRect`, `BakeError`,
+  `MAX_BAKE_HOLES` (32). Errors are checked in declaration order: hole count,
+  then any coordinate (height, outer, each hole) above `COORD_LIMIT_RAW`, then
+  an empty outer, then per hole empty before outside. The bake is a full
+  grid: the sorted distinct `x` and `z` edges of the outer rectangle and every
+  hole cut the box into cells, and each cell no hole covers is one 4-vertex
+  rectangle. Cells are emitted `x` ascending then `z` ascending, corners
+  `(x0,z0) (x1,z0) (x1,z1) (x0,z1)`, and a vertex index is assigned on its
+  first appearance in that order. Cells are never merged, so there is no
+  T-junction and adjacency is exact. Holes may overlap and touch the outer
+  edge, not cross it. No uncovered cell is `NoWalkableArea`.
+- `query`: `NavMesh::locate` and `NavMesh::nearest_on_mesh`, all `i128`.
+  - `locate` is the lowest polygon id whose every edge has `cross >= 0`
+    (boundary included); `y` never matters.
+  - `nearest_on_mesh` of a located point is the point at the polygon's `y`.
+    Otherwise every polygon (id order) and edge (index order) yields a
+    candidate and the first strictly nearest wins, so ties go to the lowest
+    polygon id, then the lowest edge index.
+  - The edge candidate projects `p` on the edge with `t = (p - a) . e` and
+    `l2 = e . e`: `a` if `t <= 0`, `b` if `t >= l2`; otherwise the foot's
+    floor and ceiling in each axis (`div_euclid`, a floor for negatives too)
+    give four lattice points tried in the order `(fx,fz) (fx,cz) (cx,fz)
+    (cx,cz)`; the nearest contained one wins, the first on a tie. If none is
+    contained the nearer end wins (`a` on a tie), so `locate` of the answer is
+    always `Some`.
+
 ## What exists and what is planned
 
-Exists (T035a): `geom`, `mesh`, the limits and the canonical form.
-Planned: T035b adds `bake_box` (a full grid of unmerged rectangles),
-`locate` and `nearest_on_mesh`; T035c adds `find_path` and `NavPath` (pinned
+Exists (T035a, T035b): `geom`, `mesh`, `bake`, `query`, the limits and the
+canonical form. Planned: T035c adds `find_path` and `NavPath` (pinned
 A* and the integer funnel). Out of scope for this crate: baking from
 `Area.bounds`, `NavRevision`, `MoveRoute` (T037, T036).
 
@@ -65,3 +90,5 @@ integration), T026, T050.
 ## Agent log
 
 - 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T035a · Opened the doc with the crate's place in the graph, the nav-host-sim data flow, and the as-built geometry, mesh validation and canonical bytes, leaving the bake, queries and paths as T035b and T035c.
+
+- 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T035b · Added the as-built `bake` grid rule and the `locate` / `nearest_on_mesh` tie-breaks and four-candidate rounding rule, and moved the bake and queries from planned to existing.
