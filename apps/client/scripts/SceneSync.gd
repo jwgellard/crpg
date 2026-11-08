@@ -88,6 +88,9 @@ func _make_proxy(net_id: int) -> Node3D:
 	label.text = ""
 	label.position = Vector3(0.0, 1.2, 0.0)
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.font_size = 64
+	label.pixel_size = 0.0075
+	label.outline_size = 16
 	proxy.add_child(label)
 	add_child(proxy)
 	return proxy

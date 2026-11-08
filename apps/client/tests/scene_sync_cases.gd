@@ -60,6 +60,7 @@ func run(host: Node) -> String:
 		["S12", _case_s12], ["S13", _case_s13],
 		["S15", _case_s15], ["S16", _case_s16], ["S17", _case_s17],
 		["S18", _case_s18],
+		["S19", _case_s19],
 	]
 	for entry in cases:
 		var detail = entry[1].call(host, script)
@@ -732,6 +733,41 @@ func _case_s18(host: Node, script: Script) -> String:
 	# Names remain exactly proxy_<id>.
 	if String(p1.name) != "proxy_1" or String(p2.name) != "proxy_2":
 		return "names = %s, %s" % [String(p1.name), String(p2.name)]
+	return "PASS"
+
+func _expect_legible(proxy, tag: String) -> String:
+	if _label(proxy).font_size != 64:
+		return "%s font_size = %d, want 64" % [tag, _label(proxy).font_size]
+	if not is_equal_approx(_label(proxy).pixel_size, 0.0075):
+		return "%s pixel_size = %s, want 0.0075" % [tag, str(_label(proxy).pixel_size)]
+	if _label(proxy).outline_size != 16:
+		return "%s outline_size = %d, want 16" % [tag, _label(proxy).outline_size]
+	return "PASS"
+
+func _case_s19(host: Node, script: Script) -> String:
+	var sync = _new_sync(host, script)
+	sync.sync(_a())
+	var p1 = _proxy(sync, 1)
+	var p2 = _proxy(sync, 2)
+	if p1 == null or p2 == null:
+		return "a proxy is missing"
+	# After spawn: proxy_1 is the capsule row, proxy_2 the box row.
+	var detail := _expect_legible(p1, "proxy_1 (spawn, capsule)")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_legible(p2, "proxy_2 (spawn, box)")
+	if detail != "PASS": return _detail("", detail)
+	# A dead sync keeps the label legible on both mesh shapes.
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [2, 3]))
+	detail = _expect_legible(p1, "proxy_1 (dead, capsule)")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_legible(p2, "proxy_2 (dead, box)")
+	if detail != "PASS": return _detail("", detail)
+	# So does the alive sync that revives them.
+	sync.sync(_view([1, 2], ["Hero", "Goblin"], ["Player", "Monster"], [0, 0]))
+	detail = _expect_legible(p1, "proxy_1 (alive, capsule)")
+	if detail != "PASS": return _detail("", detail)
+	detail = _expect_legible(p2, "proxy_2 (alive, box)")
+	if detail != "PASS": return _detail("", detail)
 	return "PASS"
 
 func _read_stripped(path: String):
