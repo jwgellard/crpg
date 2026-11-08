@@ -1,9 +1,9 @@
 # ADR-0036: Movement and navigation in both time modes
 
 Date: 2026-11-08 (UTC)
-Status: **Proposed** — filed by T034 (architect). Nothing here is approved.
-The six open questions at the end need the user's answers before the T035
-and T036 contracts are written.
+Status: **Proposed** — filed by T034 (architect). The user answered the six
+design questions on 2026-11-08 (D46, recorded below); accepting the ADR is a
+separate user step, with the acceptance notes below in view.
 
 ## Context
 
@@ -56,8 +56,8 @@ What is true today:
 
 Items are normative and each is written so a test can prove it. Prefixes:
 A authority, U units and numbers, R route format, M sim state and
-operations, W time modes, C turn-based cost, V navigation, L wire, H host,
-G client, X range (only if Open question 4 adopts it).
+operations, W time modes, C turn-based cost, S the grid seam, V navigation,
+L wire, H host, G client, X range (adopted by D46d).
 
 ### A. Authority and data flow
 
@@ -275,25 +275,73 @@ W7. **AI moves through the same operations**, submitted by the host
 ### C. Turn-based movement cost
 
 C1. **Data.** A ruleset may declare
-`movement { speed: Length, turn: { pool, step: Length, step_cost } }`.
+`movement { speed: Length, measure, turn: { pool, step: Length, step_cost } }`.
 `Length` is a constant `Fx16_16 > 0` or the name of a declared `Fixed`
-stat. `pool` names a declared pool; `step_cost >= 1`; a constant speed is
-within U7. Absent means "nothing moves". This is a new `crpg-data` schema
-version with a migration to absence.
+stat. `measure` is optional and closed; v1 has the one value `"euclidean"`,
+which is also the default (S2). `pool` names a declared pool;
+`step_cost >= 1`; a constant speed is within U7. Absent means "nothing
+moves". This is a new `crpg-data` schema version with a migration to
+absence.
 
-C2. **Cost.** `cost = ceil(L / step) * step_cost`, in `u64`, where `L` is
-the route length (U4) and `step` is resolved at action time from the
-actor's stats, the same value `validate_action` would read. A resolved
-`step <= 0` is `InvalidStep`; a cost above `u32::MAX` is `CannotAfford`.
+C2. **Cost.** `cost = ceil(L / step) * step_cost`, in `u64`, where
+`L = route_measure(measure, points)` (S2; in v1 the U4 route length) and
+`step` is resolved at action time from the actor's stats, the same value
+`validate_action` would read. A resolved `step <= 0` is `InvalidStep`; a
+cost above `u32::MAX` is `CannotAfford`.
 
 C3. **Spending.** The pool must hold at least `cost`; exactly `cost` is
 spent (`ResourcePool::spend`). A move never ends the turn, and an actor may
 move any number of times while it can pay.
 
-C4. **Pure exports:** `route_length(&[[Fx16_16; 3]]) -> Option<u64>` and
-`route_cost(length: u64, step: Fx16_16, step_cost: u32) -> Option<u32>`.
+C4. **Pure exports:** `route_length(&[[Fx16_16; 3]]) -> Option<u64>` (U4),
+`route_measure(Measure, &[[Fx16_16; 3]]) -> Option<u64>` (S2) and
+`route_cost(measured: u64, step: Fx16_16, step_cost: u32) -> Option<u32>`.
 
 C5. **RT and exploration movement spends nothing.** Speed limits it.
+
+### S. The grid seam (D46a)
+
+v1 is free movement in metres. A square or hex grid is a ruleset-level
+layer on top of it: how destinations snap, and how distance and step cost
+are measured. It is not a second navigation core. The grid layer itself is
+deferred; these items keep its plug points open and say what each is.
+
+S1. **What stays the same under any grid.** Positions (U2), the
+`MoveRoute` path format (R1), its validation (R4), stage-4 stepping and
+walking speed (W1, U4, U5), the navmesh and its revision (V2, R2), and the
+wire (L2-L4). A grid route is an ordinary polyline through cell centres:
+R4 allows collinear points and forbids only zero-length segments, so a
+cell-by-cell route is a valid `MoveRoute`. Physical length (U4) still
+bounds a route (`MAX_ROUTE_LENGTH_RAW`) and still drives walking time.
+
+S2. **Measure: the seam for distance.** Every rule-visible distance goes
+through `route_measure(measure, points)` with
+`enum Measure { Euclidean }` (closed, one variant in v1, held by the
+encounter's combat definition from C1). `Euclidean` returns the U4 route
+length. A grid measure is a later variant returning raw `Fx16_16` metres
+for the whole route, so per-route rules such as 5e's alternating
+diagonals fit, and C2's formula is unchanged (`step` becomes the cell size).
+TB cost (C2) and range (X2) call the measure; nothing rule-visible calls
+`seg_len` directly.
+
+S3. **Destination snap: the seam for where a move ends.** The host (H2)
+and the client preview (G3) pass the clicked point through
+`snap(measure, point)` before `nearest_on_mesh`. `snap` is a pure
+`crpg-sim` export beside `route_measure` (A5), so both sides snap alike.
+In v1 it returns the point unchanged. A grid ruleset snaps to a cell
+centre. Sim's own operations never call `snap`; they see only the
+resulting route.
+
+S4. **Grid routes: the seam in navigation.** A grid ruleset needs routes
+that follow cells. That is a later, additive `crpg-nav` query (for example
+cell-constrained search that tests cells against the same mesh with
+`locate`). It does not change `find_path`, the mesh format or `MoveRoute`.
+Its output must still satisfy V5 and the point limit; a TB budget of tens
+of cells fits in 64 points.
+
+S5. **Not decided here.** Cell size and origin, where the grid is authored
+(ruleset or area), hex orientation, and whether exploration also snaps
+belong to the grid task.
 
 ### V. Navigation v1 (T035, `crpg-nav`)
 
@@ -378,7 +426,8 @@ H1. **Area load.** Bake from the area data (v1: `bake_box` from
 H2. **`MoveTo`.** Check that the peer controls the actor (D14). Run at most
 one navigation query per actor per tick; earlier queued intents for that
 actor get `Superseded`. Then `find_path(mover.position,
-nearest_on_mesh(destination))` and `set_route`. Success is
+nearest_on_mesh(snap(measure, destination)))` (S3; `snap` is the identity
+in v1) and `set_route`. Success is
 `Accepted { start_tick: t + 1 }` when submitted between ticks `t` and
 `t + 1`; failure is `Rejected`.
 
@@ -408,18 +457,20 @@ one. It uses local `find_path` and sim's pure step functions (A5), re-timed
 to `start_tick` on `Accepted` and dropped on `Rejected` or `Superseded`.
 It corrects beyond a measured threshold (D06). T026 pins the buffer bounds.
 
-G3. **T050, click-to-move.** Pick a ground point; preview the path and TB
-cost with local navigation and `route_cost` (display hints, spec §9.2);
+G3. **T050, click-to-move.** Pick a ground point and pass it through the
+same `snap` as the host (S3); preview the path and TB cost with local
+navigation, `route_measure` and `route_cost` (display hints, spec §9.2);
 send `MoveTo` or `DeclareMove` by mode; never send a path. The
 `crpg-godot` to `crpg-nav` path edge needs approval.
 
-### X. Range (only if Open question 4 adopts it)
+### X. Range (D46d: a follow-on right after T036)
 
 X1. An ability may declare `range: Fx16_16`. Absent means unlimited, so
 existing data is unchanged.
 
-X2. `validate_action` checks, after target liveness, that the actor-target
-`seg_len` is at most `range`. If either side has no mover, the result is
+X2. `validate_action` checks, after target liveness, that
+`route_measure(measure, [actor position, target position])` (S2) is at
+most `range`. If either side has no mover, the result is
 `OutOfRange`. `legal_actions` omits out-of-range targets.
 
 X3. In RT, a due order whose target is out of range neither executes nor
@@ -474,8 +525,9 @@ ends; it stays due. This amends ADR-0029 T7 for this case only.
   so a reliable stream costs little; positions still travel as datagrams.
 - **3D length**: rejected. Tabletop rules measure on the map, and it would
   tie cost to how heights are represented.
-- **A grid representation**: spec §20 row 10 rejected a custom grid for
-  navigation. A grid for rule measurement is Open question 1.
+- **A grid navigation core**: spec §20 row 10 rejected a custom grid for
+  navigation, and D46a puts grids in the rules layer on top of free
+  movement (section S).
 - **Third-party navigation crates**: rejected by D27c.
 
 ## Consequences and follow-on contracts
@@ -483,51 +535,61 @@ ends; it stays due. This amends ADR-0029 T7 for this case only.
 | Contract | Crate | Must pin | Depends on |
 |---|---|---|---|
 | T035 | `crpg-nav` (+ lint scope) | V1-V7, U3, U4 | Accepted |
-| new: movement schema | `crpg-data` | C1 | Accepted; Q2, Q3 |
-| T036 (may split: a = state, ops, stage 4; b = TB move, history v3) | `crpg-sim` | U2-U7, R1-R5, M1-M7, W1-W7, C2-C5 | the schema task |
+| new: movement schema | `crpg-data` | C1 (with `measure`, S2) | Accepted |
+| T036 (may split: a = state, ops, stage 4; b = TB move, history v3) | `crpg-sim` | U2-U7, R1-R5, M1-M7, W1-W7, C2-C5, S2 | the schema task |
 | T026p | `crpg-net` | L1-L6, U7 policies | T036, T140 |
-| T037 | `crpg-server` | H1-H5 | T026p, T035 |
-| T049, T026, T050 | `crpg-godot` | G1, G2, G3 | as the plan lists, plus T037 |
-| new, only if Q4 says so: range | `crpg-data`, then `crpg-sim` | X1-X3 | T036 |
+| T037 | `crpg-server` | H1-H5, S3 | T026p, T035 |
+| T049, T026, T050 | `crpg-godot` | G1, G2, G3 (with S3) | as the plan lists, plus T037 |
+| new: range (D46d) | `crpg-data`, then `crpg-sim` | X1-X3 | T036 |
+| later: grid or hex layer | data, sim measure, nav query | S2-S5 | a ruleset that needs it |
 
-- The plan lists T036 as needing only T034. It also needs the schema task.
-- Spec §6.3 (Recast bindings, Detour) and §20 row 10 need a note pointing to
-  D27c and this ADR after acceptance (the manager's edit).
+## Acceptance notes
 
-## Open questions for the user
+Source conflicts to see before accepting. Each says what has to change and
+in which task.
 
-1. **Free movement or a grid?** Characters can either walk anywhere on the
-   walkable ground, measured in metres (Baldur's Gate 3, Pillars), or step
-   between squares or hexes (XCOM, classic tabletop maps). The choice
-   decides how distances read to players and how authors write speeds and
-   ranges. The spec already picked a navigation mesh, which is free
-   movement. *Recommendation:* free movement in metres for v1. A ruleset
-   could later add a grid as its way of measuring distance.
-2. **How does a turn-based move get paid for?** In D&D 5e you have a
-   separate movement allowance per turn. In Fallout and Divinity, moving
-   uses the same action points as attacking. In Pathfinder 2e, one action
-   moves you up to your speed. *Recommendation:* one rule covers all three
-   (C2): the ruleset names the pool, how far one step is, and what a step
-   costs. Each ruleset picks its style in data.
-3. **How fast do characters walk in real time?** Either each creature has a
-   walking speed used when exploring and in real-time fights (Baldur's
-   Gate), or the speed comes from the turn-based allowance (for example
-   9 m per 6-second round, which is slow). *Recommendation:* a separate
-   walking speed, a constant or a creature stat. Turn-based distance stays
-   governed by the pool.
-4. **Do attacks need the attacker to be close enough?** Today any attack
-   reaches anyone, so movement changes nothing in a fight. *Recommendation:*
-   approve X1-X3 now, as a small follow-on (data, then sim) right after
-   T036, so movement matters before the Godot click-to-move demo.
-5. **Can characters walk through each other and stop on the same spot?**
-   Blocking needs body sizes and makes paths depend on who stands where,
-   which also breaks client prediction. *Recommendation:* yes, they pass
-   through in v1 (spec §6.3 skips avoidance). Spacing rules come later.
-6. **What waits until after v1?** *Recommendation:* defer difficult terrain,
-   slopes and multiple floors, doors that change the walkable area at
-   runtime (the revision mechanism R2 is ready for them), trigger volumes,
-   facing and rotation (the client turns models toward their motion),
-   opportunity attacks (ADR-0029 K5), formations, and follow-the-leader.
+1. **The determinism lint does not cover `crpg-nav`.** D27c says staying in
+   the workspace keeps the lint on it, but `determinism.py` `CRATES` lists
+   only core, rules and sim. T035 adds `crpg-nav` to the `no-hashmap` and
+   `no-float` scopes with a self-test (V1). That is an edit in
+   `tools/lint`, so the manager may run it as its own unit landing first.
+2. **`f32` positions.** Spec §2.4 rule 3 and ADR-0029 T16 say positions are
+   `f32`. D27c and the no-float-in-rules rule need fixed-point. U2 resolves
+   it: `Fx16_16` is authoritative, and `Transform` stays `f32` as a mirror
+   (M3). After acceptance, the spec §2.4 note and an ADR-0029 correction
+   entry point here (manager's documentation edit); T036 implements it.
+3. **Recast and Detour.** Spec §6.3 (Recast via Rust bindings, Detour) and
+   §20 row 10 predate D27c's custom, integer `crpg-nav`. After acceptance,
+   both need a note pointing to D27c and this ADR (manager's documentation
+   edit); T035 implements the custom crate.
+4. **T036's missing prerequisite.** The plan gives T036 only T034. It also
+   needs the new `crpg-data` movement-schema task (C1). The manager adds
+   that task and the edge to the plan and backlog.
+5. **The lane-0 move verb depends on T140.** `DeclareMove` and the `Moved`
+   projection (L6) need a protocol version at or after T140's. If T140's
+   contract is still open they fold into it; otherwise T026p defines the
+   next version. Either way T026p waits for T140.
+
+## User decisions (D46, 2026-11-08)
+
+- **D46a. Free movement first, grids per ruleset.** The user said: "It
+  should be per rules layer. Start with free, then algorithms can build on
+  that, right? Hex, square, whatever". v1 is free movement in metres; a grid
+  or hex is a later ruleset layer on the seams in section S.
+- **D46b. A turn-based move is paid by the ruleset's choice** of pool,
+  step and step cost (C1-C3), as recommended.
+- **D46c. Walking speed is separate** from the turn-based allowance: a
+  constant or a creature stat (C1), as recommended.
+- **D46d. Range checks X1-X3** come as a follow-on right after T036, as
+  recommended.
+- **D46e. Characters pass through each other in v1**, as recommended.
+- **D46f. Deferred past v1**, as recommended: difficult terrain, slopes and
+  multiple floors, doors that change the walkable area at runtime, trigger
+  volumes, facing and rotation, opportunity attacks (ADR-0029 K5),
+  formations, and follow-the-leader. Grid and hex layers follow D46a.
+
+The answers were relayed as Q1, Q2, Q3 and Q4 (a)-(c), a renumbered list:
+that Q3 is D46d (range), and Q4 (a), (b) and (c) are D46c, D46e and D46f.
 
 ## Acceptance and evidence
 
@@ -543,3 +605,4 @@ rule.
 ## Agent log
 
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 · Filed the proposed movement and navigation ADR. Authoritative positions are fixed-point with an `f32` mirror, the host supplies nav routes to sim by revision and tag, TB moves are atomic pool spends, and lane 1 carries reliable intents with datagram samples. Six user questions are left open.
+- 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 D46 · Recorded the user's six answers as D46a-f in place of the open questions, and added section S so that grids and hexes plug into a `Measure` enum, a destination `snap` and a later nav query without changing the v1 core. Listed the five source conflicts as acceptance notes; the status stays Proposed.
