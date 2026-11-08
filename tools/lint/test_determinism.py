@@ -5,6 +5,7 @@ Builds temporary fixture crate trees and asserts the lint produces the expected
 violations. Run: python -m unittest discover -s tools/lint -p "test_*.py"
 """
 
+import importlib.util
 import pathlib
 import re
 import subprocess
@@ -14,6 +15,7 @@ import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE / "determinism.py"
+REPO = HERE.parent.parent
 
 CLEAN_SRC = """
 pub fn apply(world: &mut World) {
@@ -633,6 +635,142 @@ class TestEncoding(LintCase):
         self.assert_flags(
             "crpg-rules", BOM_SRC, "no-hashmap", "BOM should not mask line 1",
         )
+
+
+# The exact code lines of crates/crpg-nav/src/lib.rs (the stub).
+NAV_STUB_SRC = (
+    "#![forbid(unsafe_code)]\n"
+    "#![warn(missing_docs)]\n"
+    "//! Navigation and pathfinding: Recast navmesh baking (editor-side) and\n"
+    "//! Detour-equivalent server-side path queries over the same baked navmesh.\n"
+)
+
+LINTED_CRATES = ("crpg-core", "crpg-rules", "crpg-sim", "crpg-nav")
+
+
+def make_workspace(root, crates, sources=None):
+    """A workspace root: a Cargo.toml plus the named crates (CLEAN_SRC default)."""
+    (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    for crate in crates:
+        src = (sources or {}).get(crate, CLEAN_SRC)
+        make_crate(root, crate, {"lib.rs": src})
+
+
+class TestNavScope(LintCase):
+    """crpg-nav gets the full float ban and every `both` rule (ADR-0036 V1)."""
+
+    ROWS = [
+        (HASHMAP_SRC, ["no-hashmap"]),
+        (HASHSET_SRC, ["no-hashset"]),
+        (WALLCLOCK_SRC, ["no-wallclock"]),
+        (THREAD_SRC, ["no-thread"]),
+        (RNG_SRC, ["no-external-rng"]),
+        (FLOAT_SRC, ["no-float"]),
+        (FLOAT_SIM_F32_SRC, ["no-float"]),
+        (FLOAT_LITERAL_SRC, ["no-float"]),
+        (UNSUFFIXED_FLOAT_SRC, ["no-float"]),
+        (DOCTEST_SRC, ["no-hashmap", "no-float"]),
+    ]
+
+    def test_nav_bans(self):
+        for src, expected in self.ROWS:
+            with self.subTest(expected=expected, src=src.strip()[:40]):
+                code, rules = self.lint_one("crpg-nav", src)
+                self.assertEqual(code, 1)
+                for rule in expected:
+                    self.assertIn(rule, rules)
+
+    def test_nav_clean_passes(self):
+        for src in (CLEAN_SRC, COMMENT_SRC, DOC_PROSE_SRC, DOCTEST_TEXT_FENCE_SRC):
+            with self.subTest(src=src.strip()[:40]):
+                self.assert_clean("crpg-nav", src, "clean nav source should pass")
+
+    def test_nav_stub_passes(self):
+        self.assert_clean("crpg-nav", NAV_STUB_SRC, "the crpg-nav stub should pass")
+
+
+class TestCrateCoverage(LintCase):
+    """A linted crate that vanishes from a workspace root is a failure (N4)."""
+
+    def test_workspace_with_all_crates_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            make_workspace(root, LINTED_CRATES)
+            proc = run_lint(root)
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertNotIn("VIOLATION", proc.stdout)
+
+    def test_missing_crate_fails_at_workspace_root(self):
+        for missing in LINTED_CRATES:
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as d:
+                    root = pathlib.Path(d)
+                    make_workspace(root, [c for c in LINTED_CRATES if c != missing])
+                    proc = run_lint(root)
+                    code, rules = rules_of(root)
+                    self.assertEqual(code, 1)
+                    self.assertEqual(rules, ["missing-crate"])
+                    lines = [
+                        ln for ln in proc.stdout.splitlines()
+                        if ln.startswith("VIOLATION")
+                    ]
+                    self.assertEqual(len(lines), 1)
+                    self.assertIn(
+                        f"crates/{missing}", lines[0].replace("\\", "/"),
+                    )
+                    self.assertTrue(
+                        lines[0].endswith("linted crate has no Rust source"),
+                        lines[0],
+                    )
+
+    def test_crate_without_sources_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            make_workspace(root, [c for c in LINTED_CRATES if c != "crpg-nav"])
+            nav = root / "crates" / "crpg-nav"
+            nav.mkdir(parents=True)
+            (nav / "Cargo.toml").write_text(
+                '[package]\nname = "crpg-nav"\n', encoding="utf-8",
+            )
+            code, rules = rules_of(root)
+            self.assertEqual(code, 1)
+            self.assertEqual(rules, ["missing-crate"])
+
+    def test_fixture_root_still_skips_absent_crates(self):
+        self.assert_clean(
+            "crpg-core", CLEAN_SRC, "a root without Cargo.toml skips absent crates",
+        )
+
+    def test_missing_crate_reported_before_file_violations(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            make_workspace(
+                root, ("crpg-core", "crpg-rules", "crpg-sim"),
+                {"crpg-core": HASHMAP_SRC},
+            )
+            code, rules = rules_of(root)
+            self.assertEqual(code, 1)
+            self.assertEqual(rules[0], "missing-crate")
+            self.assertIn("no-hashmap", rules[1:])
+
+
+class TestScopeIsPinned(unittest.TestCase):
+    """The linted-crate list and the full-float scope are pinned."""
+
+    def test_crates_list_is_exact(self):
+        spec = importlib.util.spec_from_file_location("determinism", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(
+            module.CRATES, ["crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"],
+        )
+        self.assertEqual(
+            module.NO_FLOAT_CRATES, ("crpg-core", "crpg-rules", "crpg-nav"),
+        )
+
+    def test_repository_passes(self):
+        proc = run_lint(REPO)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
 
 
 if __name__ == "__main__":

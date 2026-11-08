@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Determinism lint for the CRPG simulation crates.
 
-Scans every .rs file under crates/crpg-core/, crates/crpg-rules/ and
-crates/crpg-sim/ and fails on patterns that would make the deterministic
-simulation non-deterministic:
+Scans every .rs file under crates/crpg-core/, crates/crpg-rules/,
+crates/crpg-sim/ and crates/crpg-nav/ and fails on patterns that would make the
+deterministic simulation non-deterministic:
 
-All three crates:
+All four crates:
   - HashMap / HashSet iteration (use IndexMap or BTreeMap)
   - SystemTime / Instant / std::time:: (wall clock is not sim time)
   - std::thread
   - rand:: / thread_rng (use crpg_core's seeded RNG)
 
-crpg-core and crpg-rules only:
-  - f32 / f64 (rules maths uses integers or fixed-point)
+crpg-core, crpg-rules and crpg-nav only:
+  - f32 / f64 (rules maths uses integers or fixed-point; navigation uses
+    integers and Fx16_16 only, ADR-0036 V1)
 
 crpg-sim only:
   - f64 (E006-A: spatial positions are f32 per spec 2.4, outside the rules
@@ -40,6 +41,14 @@ over-reporting because this lint's dangerous failure mode is silence:
   - An unterminated block comment at end of file is reported, rather than
     silently swallowing the rest of the file.
 
+A linted crate must exist. A crate is present when crates/<name>/ is a
+directory holding at least one .rs file at any depth. When it is not present
+and ROOT holds a Cargo.toml file (a workspace root), the lint reports one
+`missing-crate` violation for it, so deleting or renaming a linted crate cannot
+silently drop it from the scan; when ROOT has no Cargo.toml (a self-test
+fixture) an absent crate is skipped. Missing-crate violations print first, in
+CRATES order.
+
 Lines that are comments are skipped. Any line ending in
   // determinism-ok: <reason>
 is skipped, provided <reason> is non-empty.
@@ -54,7 +63,9 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-CRATES = ["crpg-core", "crpg-rules", "crpg-sim"]
+CRATES = ["crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"]
+# Crates under the full float ban (no-float-crates scope).
+NO_FLOAT_CRATES = ("crpg-core", "crpg-rules", "crpg-nav")
 
 # (crate name, rule name, regex)
 RULES = [
@@ -255,7 +266,7 @@ def check_file(crate_name, path):
                 found.append((lineno, "escape-no-reason", masked))
             continue
         applies = ("both",)
-        if crate_name in ("crpg-core", "crpg-rules"):
+        if crate_name in NO_FLOAT_CRATES:
             applies = ("both", "no-float-crates")
         elif crate_name == "crpg-sim":
             applies = ("both", "no-f64-crates")
@@ -269,14 +280,22 @@ def check_file(crate_name, path):
 
 def main(args):
     root = pathlib.Path(args[0]) if args else ROOT
+    missing = []
     violations = []
+    is_workspace = (root / "Cargo.toml").is_file()
     for crate in CRATES:
         base = root / "crates" / crate
-        if not base.is_dir():
+        sources = sorted(base.rglob("*.rs")) if base.is_dir() else []
+        if not sources:
+            if is_workspace:
+                missing.append(
+                    (base, 0, "missing-crate", "linted crate has no Rust source")
+                )
             continue
-        for path in sorted(base.rglob("*.rs")):
+        for path in sources:
             for lineno, rule_name, line in check_file(crate, path):
                 violations.append((path, lineno, rule_name, line))
+    violations = missing + violations
 
     for path, lineno, rule_name, line in violations:
         print(f"VIOLATION {path}:{lineno} {rule_name} {line.strip()}")
