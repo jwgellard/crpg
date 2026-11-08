@@ -420,6 +420,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             creature_persistence: None,
             late_join: None,
             effects_on_exit: None,
+            movement: None,
         }),
         Document::Ability(Ability {
             id: id(21),

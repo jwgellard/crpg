@@ -426,3 +426,33 @@ migration path reads its fields, and `crpg-sim` never sees it.
 
 - 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142a · Documented the `ui` module, the tolerant-read rule for the six closed sets, the binding identities, the defaults and the inventory sites; `walk_ui` and the eight codes' emission remain T142b.
 - 2026-11-08 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T142b · Documented `walk_ui`, the R rule, the one-finding-per-pointer order and where each of the eight codes is emitted, and recorded the B31 bound gap.
+
+## Ruleset movement block (T148)
+
+`Ruleset.movement` is an optional `MovementWire` on `crpg.ruleset/2`: no version
+bump and no migration edge, because absence means nothing moves and every
+existing document decodes and re-encodes unchanged (D32c, user decision D47).
+Four wire types live in `combat.rs`: `MovementWire { speed, measure, turn }`,
+`TurnMovementWire { pool, step, step_cost }`, `LengthWire` (a raw `Fx16_16`
+constant or the name of a fixed stat, adjacent `type`/`value` shape) and
+`MeasureWire` (closed, one value `euclidean`, also the default when absent).
+`MAX_SPEED_PER_TICK_RAW` (`1 << 18`, 4 m per tick) is the one data-side speed
+bound; `crpg-sim` (T036) should import it rather than declare another.
+
+- Read-time (`Malformed`, run after the kernel checks, first failure wins): a
+  constant speed within `1..=MAX_SPEED_PER_TICK_RAW`, a stat speed or step naming
+  a declared `Fixed` stat (derived allowed), `turn.pool` equal to the `id` of one
+  of the ruleset's pool templates, a positive constant step, then
+  `step_cost >= 1`. A step constant has no upper bound.
+- Introspection lists the pool as a pool-template edge at
+  `/movement/turn/pool`; validation ignores pool-template sites, so it adds no
+  finding.
+- Semantic (`walk_combat`, per encounter creature stat, after the health check):
+  a creature whose value for the speed stat is outside the speed bound, or for
+  the step stat is not positive, gets `invalid_stat_value`; the speed finding
+  wins when one stat serves both. Derived and missing stats get no movement
+  finding.
+- This crate gives the block no runtime meaning: resolving speed and step and
+  computing cost belong to `crpg-sim`.
+
+- 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T148 · Documented the optional ruleset movement block, its read-time and creature-value rules, and that it joins `crpg.ruleset/2` without a version bump (D32c, D47).

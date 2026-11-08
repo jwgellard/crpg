@@ -215,10 +215,13 @@ Each I row needs its C row approved first unless it says **ready**.
 | T141 | C | `crpg-server` | T138, T140 (in-process pause can come first) | Host pause, mode requests, projection and heartbeat (ADR-0029 follow-on 8) |
 | T142 | C, S | `crpg-data` | Accepted; T104 report as input | `crpg.ui/1` schema, validation and generated defaults (ADR-0029 follow-on 9) |
 | T143 | C | `crpg-sim` | T137 | Read-only action preview with bounded integer distributions (ADR-0029 follow-on 10) |
-| T034 | A | — | T024 merged, T108 accepted | Movement and navigation ADR, in both time modes: D13 path format, movement rules, numeric limits, and how sim consumes caller-supplied nav results (sim may not import nav) |
+| T034 | A | — | T024 merged, T108 accepted | Movement and navigation ADR, in both time modes: D13 path format, movement rules, numeric limits, and how sim consumes caller-supplied nav results (sim may not import nav). Done 2026-11-08: ADR-0036 Accepted. |
+| T035v | C | tools (determinism lint) | D47 | Determinism lint covers `crpg-nav` and fails on a missing linted crate; before T035 |
 | T035 | C → I | crpg-nav | T034, D27c | Navigation v1 (spec §19.1 #21). Opens the crate |
-| T036 | C → I, S | crpg-sim | T034 | Authoritative movement; `World`/tick-order touch; new goldens (H-golden) |
-| T026p | C → I, S | crpg-net | T023, T036 | Lane-1 movement and acknowledgments. Vendors the T030 dedup patch (D23); re-runs the impairment probe on native Windows |
+| T148 | C | `crpg-data` | ADR-0036 | Ruleset `movement` block (speed, measure, turn-based cost data); not S-set under D47 |
+| T036 | C → I, S | crpg-sim | T034, T148 | Authoritative movement; `World`/tick-order touch; new goldens (H-golden) |
+| T149 | C | `crpg-data`, `crpg-sim` | T036 | Range checks X1–X3 under D46d, after T036 |
+| T026p | C → I, S | crpg-net | T023, T036, T140 | Lane-1 movement and acknowledgments. Vendors the T030 dedup patch (D23); re-runs the impairment probe on native Windows |
 | T037 | C → I | crpg-server | T026p, T035 | Movement host adapter |
 
 **4D — persistence**
@@ -453,3 +456,4 @@ estimates slip.
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Re-scoped T109 to data-only after T136/T137 and listed the ten ADR-0029 follow-on contract packages (T134–T143); no contract approved.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Added the user-ordered demo-first row above the later row (T027b, T046, T045, T047, T048, cut-down T051 ahead of movement, nav and the rest of M4).
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S29-bookkeeping · Pointed T045/T047 at `apps/client`, split T047a/T047c out of T047, and noted the cut-down T051 has no T104/T108 prerequisite.
+- 2026-11-08 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S44-bookkeeping · Marked T034 done with ADR-0036 Accepted, added T035v, T148 and T149 to §3 4C, and added T148 to T036's and T140 to T026p's prerequisites, so the plan matches the session 44 contracts.

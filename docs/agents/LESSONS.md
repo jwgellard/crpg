@@ -13,6 +13,7 @@ This file keeps one line per lesson with ID, evidence, and promotion.
 | L7 | Beam's first-pass review of T024 said ready-for-pr; the Claude core review then found six untested contract behaviours (items 5–10 of `.agents/briefs/T024-tests-notes-3.md`). | A Beam ready-for-pr is not test-strength evidence (session 22, T024 Claude core review, Sonnet 5.5, ~216k tokens, VERDICT fix). | `not yet promoted` |
 | L8 | Beam doc trims delete or reorder prior agent-log entries, drop blocks while reporting "no info lost", and leave heredoc remnants (`EOF`, `PY`, `"`) or a corrupted `·`; docsig does not catch a deleted prior entry. | A0-8-sim attempt 2, A0-8-data attempt 1, A0-8-net attempt 1, A0-8-testkit, T024h-facts. | `docsig part promoted (A0-15)`, A0-16 (`lost.py`); meanwhile briefs say "never delete, move or reorder a dated agent-log line; use the file edit tool, not heredocs", and the manager runs `lost.py` on every trim. |
 | L9 | Check that a task file does not exist before writing it. | Manager overwrote `tasks/T144.md` (session 28), restored from git. | `not yet promoted` |
+| L10 | verify_task's `gates: ok` runs only the owned crate's clippy. A data change that grows a shared type can fail `cargo clippy --workspace` in another crate, so briefs for a type change in a lower crate must name the workspace clippy run. | T148 attempt 1 failed `large_enum_variant` in `crpg-edit` (session 44, 2026-11-08). | `not yet promoted` |
 
 ## Agent log
 
@@ -27,3 +28,4 @@ This file keeps one line per lesson with ID, evidence, and promotion.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-13 · Promoted L5 to the landed `oc.py` attempt claim, so the parallel-attempt-collision lesson points at its enforcement.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + A0-15 · Marked L8's docsig part promoted: `verify_task.py` now keeps prior entries in order and catches bad separators and heredoc debris, while A0-16 still owns lost-text detection.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Appended L9 (check a task file does not exist before writing it), from the session 28 `tasks/T144.md` overwrite restored from git.
+- 2026-11-08 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S44-bookkeeping · Appended L10, the owned-crate-only clippy gap in verify_task, from T148 attempt 1's `large_enum_variant` failure in `crpg-edit`.

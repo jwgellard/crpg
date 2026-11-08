@@ -50,6 +50,8 @@ pub const MAX_DERIVED_DEPTH: usize = 128;
 pub const MAX_ENUM_VARIANTS: usize = 1024;
 /// Tags in one tag set, mirroring the rules kernel.
 pub const MAX_TAGS: usize = 1024;
+/// Largest movement speed per tick, raw `Fx16_16` (4 m per tick, ADR-0036 U7).
+pub const MAX_SPEED_PER_TICK_RAW: i32 = 1 << 18;
 
 /// Declared value category of one ruleset stat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -405,6 +407,9 @@ pub struct Ruleset {
     /// What attached effects become at exit; absent means suspend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects_on_exit: Option<EffectsOnExitWire>,
+    /// Movement rules; absent means nothing moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement: Option<Box<MovementWire>>,
 }
 
 /// Which placed creatures keep their state after an encounter.
@@ -480,6 +485,68 @@ impl<'de> Deserialize<'de> for EffectsOnExitWire {
                 other => Err(de::Error::unknown_variant(other, VARIANTS)),
             },
             _ => Err(de::Error::custom("effects_on_exit must be a policy name")),
+        }
+    }
+}
+
+/// How a ruleset moves creatures; absent means nothing moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MovementWire {
+    /// Walking distance per tick: a constant or a fixed stat.
+    pub speed: LengthWire,
+    /// How rule-visible distance is measured; absent means euclidean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure: Option<MeasureWire>,
+    /// What a turn-based move costs.
+    pub turn: TurnMovementWire,
+}
+
+/// The turn-based cost of a move: `ceil(length / step) * step_cost` from `pool`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TurnMovementWire {
+    /// Pool template paid from.
+    #[schemars(with = "crate::schema::UlidText")]
+    pub pool: Ulid,
+    /// Distance bought by one step: a constant or a fixed stat.
+    pub step: LengthWire,
+    /// Pool units per step, at least one.
+    pub step_cost: u32,
+}
+
+/// A length: a constant or a creature's fixed stat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum LengthWire {
+    /// Core's raw fixed-point length.
+    Constant(#[schemars(with = "i32")] Fx16_16),
+    /// The name of a declared fixed stat.
+    Stat(String),
+}
+
+/// How rule-visible distance is measured (ADR-0036 S2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasureWire {
+    /// Horizontal straight-line length.
+    Euclidean,
+}
+
+impl<'de> Deserialize<'de> for MeasureWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["euclidean"];
+        match Value::deserialize(deserializer)? {
+            Value::String(name) => match name.as_str() {
+                "euclidean" => Ok(Self::Euclidean),
+                other => Err(de::Error::unknown_variant(other, VARIANTS)),
+            },
+            _ => Err(de::Error::custom("measure must be a measure name")),
         }
     }
 }
@@ -1198,6 +1265,60 @@ fn expr_kind<'a>(
     }
 }
 
+/// Read-time movement rules of one ruleset (B4-B6).
+fn validate_ruleset_movement(ruleset: &Ruleset) -> Result<(), DataError> {
+    fn malformed(message: &'static str) -> DataError {
+        crate::error::malformed(message)
+    }
+    let Some(movement) = &ruleset.movement else {
+        return Ok(());
+    };
+    let declared_fixed = |name: &str| {
+        ruleset
+            .stats
+            .iter()
+            .any(|stat| stat.name == name && stat.kind == StatKindWire::Fixed)
+    };
+    match &movement.speed {
+        LengthWire::Constant(value) => {
+            if !(1..=MAX_SPEED_PER_TICK_RAW).contains(&value.to_raw()) {
+                return Err(malformed("ruleset movement speed must be 1..=262144 raw"));
+            }
+        }
+        LengthWire::Stat(name) => {
+            if !declared_fixed(name) {
+                return Err(malformed(
+                    "ruleset movement speed stat must name a declared fixed stat",
+                ));
+            }
+        }
+    }
+    let turn = &movement.turn;
+    if !ruleset.pools.iter().any(|pool| pool.id == turn.pool) {
+        return Err(malformed(
+            "ruleset movement pool must be a pool template of this ruleset",
+        ));
+    }
+    match &turn.step {
+        LengthWire::Constant(value) => {
+            if value.to_raw() <= 0 {
+                return Err(malformed("ruleset movement step must be positive"));
+            }
+        }
+        LengthWire::Stat(name) => {
+            if !declared_fixed(name) {
+                return Err(malformed(
+                    "ruleset movement step stat must name a declared fixed stat",
+                ));
+            }
+        }
+    }
+    if turn.step_cost == 0 {
+        return Err(malformed("ruleset movement step_cost must be at least 1"));
+    }
+    Ok(())
+}
+
 /// Typed-stat and derived-expression rules of one ruleset (behaviour 5.1-5.11).
 fn validate_ruleset_kernel(ruleset: &Ruleset) -> Result<(), DataError> {
     fn malformed(message: &'static str) -> DataError {
@@ -1436,7 +1557,8 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
             if ruleset.round_ticks == Some(0) {
                 return Err(malformed("ruleset round_ticks must be nonzero"));
             }
-            validate_ruleset_kernel(ruleset)
+            validate_ruleset_kernel(ruleset)?;
+            validate_ruleset_movement(ruleset)
         }
         crate::Document::Ability(ability) => {
             if ability.slug.is_empty() || ability.name.is_empty() {
