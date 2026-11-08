@@ -972,13 +972,35 @@ fn u7_layout_and_classifier() {
 // U-8 — B8, B9: loading is unaffected; `validate_files` equals `validate`.
 // ---------------------------------------------------------------------------
 
+const SPARE_ABILITY: &str = "00000000000000000000000020";
+
+/// `combat_basic` plus an unlisted `Ability` document and an enum stat, so that
+/// every B12-B23 defect kind can be planted.
+fn defect_base() -> Files {
+    let mut base = fixture("combat_basic");
+    let mut ruleset: Value =
+        serde_json::from_slice(&base[&path("rulesets/minimal-d6.json")]).unwrap();
+    ruleset["stats"].as_array_mut().unwrap().push(
+        json!({"name": "ward", "kind": {"enum": {"enum_id": "c", "variants": ["red", "blue"]}}}),
+    );
+    base.insert(path("rulesets/minimal-d6.json"), canonical(&ruleset));
+    add_json(
+        &base,
+        "abilities/spare.json",
+        &ability_doc(SPARE_ABILITY, "spare"),
+    )
+}
+
 fn defect_ui() -> Value {
     json!({
         "schema": "crpg.ui/1", "ruleset": BASIC_RULESET,
         "stats": [
             {"stat": "might", "label": KEY},
             {"stat": "might", "label": KEY},
-            {"stat": "nope", "label": KEY}
+            {"stat": "nope", "label": KEY},
+            {"stat": "ward", "label": "nokey.label", "format": {"type": "enum", "value": [
+                {"variant": "green", "label": KEY}]}},
+            {"stat": "health", "label": KEY, "format": {"type": "boolean"}}
         ],
         "pools": [
             {"pool": BASIC_POOL, "label": KEY},
@@ -986,7 +1008,9 @@ fn defect_ui() -> Value {
         ],
         "abilities": [
             {"ability": BASIC_ABILITY, "label": KEY, "target_hint": "sideways"},
-            {"ability": FOREIGN, "label": KEY, "category_tags": ["a", "a"]}
+            {"ability": FOREIGN, "label": KEY, "category_tags": ["a", "a"]},
+            {"ability": SPARE_ABILITY, "label": KEY},
+            {"ability": BASIC_CREATURE, "label": KEY}
         ],
         "effects": [{"effect": FOREIGN, "label": KEY, "icon": "ui/none.png"}],
         "outcomes": [
@@ -997,27 +1021,34 @@ fn defect_ui() -> Value {
         "screens": [
             {"kind": "level_up", "sections": [{"type": "timeline"}]},
             {"kind": "spellbook", "sections": [{"type": "gizmo"}]},
-            {"kind": "spellbook", "sections": []}
+            {"kind": "spellbook", "sections": []},
+            {"kind": "character_sheet", "sections": [
+                {"type": "stat_group", "value": {"type": "group", "value": "ghost"}}]},
+            {"kind": "inventory", "sections": [
+                {"type": "item_list", "value": {"type": "tag", "value": "rare"}}]},
+            {"kind": "action_bar", "sections": [{"type": "ability_list",
+                "value": {"select": {"type": "tag", "value": "nope"}}}]}
         ]
     })
 }
 
 #[test]
 fn u8_loading_is_unaffected() {
-    let base = fixture("combat_basic");
+    let base = defect_base();
     let base_loaded = load(&base);
-    let files = add_ui(&base, "ui/defect.json", &defect_ui());
+    let mut files = add_ui(&base, "ui/defect.json", &defect_ui());
+    files = add_ui(&files, "ui/second.json", &ui_json());
     let loaded = load_campaign(&files, &engine()).expect("UI-only defects still load");
     assert_eq!(loaded.index, base_loaded.index);
     assert_eq!(loaded.index.len(), base_loaded.index.len());
     let mut plain = serialize_campaign(&base_loaded).unwrap();
     let mut with = serialize_campaign(&loaded).unwrap();
-    with.remove(&path("ui/defect.json"));
     assert_eq!(plain.remove(&path("ui/defect.json")), None);
+    with.remove(&path("ui/defect.json"));
+    with.remove(&path("ui/second.json"));
     assert_eq!(plain, with);
 
     let findings = validate(&loaded);
-    assert!(!findings.is_empty());
     let codes = [
         "duplicate_binding",
         "unknown_stat",
@@ -1035,21 +1066,121 @@ fn u8_loading_is_unaffected() {
         "unknown_variant",
         "format_mismatch",
     ];
-    for finding in findings
+    let ui_findings: Vec<&Diagnostic> = findings
         .iter()
-        .filter(|d| d.file.as_ref().map(SourcePath::as_str) == Some("ui/defect.json"))
-    {
+        .filter(|d| {
+            matches!(
+                d.file.as_ref().map(SourcePath::as_str),
+                Some("ui/defect.json" | "ui/second.json")
+            )
+        })
+        .collect();
+    for finding in &ui_findings {
         assert!(
             codes.contains(&finding.code.as_str()),
             "unexpected UI code {finding:?}"
         );
     }
+    // Every planted defect kind is reported, by file, code and pointer.
+    let defect = "ui/defect.json";
+    let expected: Vec<(&str, DiagnosticCode, &str)> = vec![
+        (defect, DiagnosticCode::DuplicateBinding, "/stats/1/stat"),
+        (defect, DiagnosticCode::UnknownStat, "/stats/2/stat"),
+        (defect, DiagnosticCode::MissingLocaleKey, "/stats/3/label"),
+        (
+            defect,
+            DiagnosticCode::UnknownVariant,
+            "/stats/3/format/value/0/variant",
+        ),
+        (defect, DiagnosticCode::FormatMismatch, "/stats/4/format"),
+        (defect, DiagnosticCode::UnknownPool, "/pools/1/pool"),
+        (defect, DiagnosticCode::UnknownKind, "/pools/1/style"),
+        (
+            defect,
+            DiagnosticCode::UnknownKind,
+            "/abilities/0/target_hint",
+        ),
+        (
+            defect,
+            DiagnosticCode::DanglingReference,
+            "/abilities/1/ability",
+        ),
+        (
+            defect,
+            DiagnosticCode::DuplicateBinding,
+            "/abilities/1/category_tags/1",
+        ),
+        (
+            defect,
+            DiagnosticCode::ForeignReference,
+            "/abilities/2/ability",
+        ),
+        (
+            defect,
+            DiagnosticCode::WrongReferenceKind,
+            "/abilities/3/ability",
+        ),
+        (
+            defect,
+            DiagnosticCode::DanglingReference,
+            "/effects/0/effect",
+        ),
+        (defect, DiagnosticCode::MissingAsset, "/effects/0/icon"),
+        (
+            defect,
+            DiagnosticCode::DuplicateBinding,
+            "/outcomes/1/outcome",
+        ),
+        (
+            defect,
+            DiagnosticCode::UnknownOutcome,
+            "/outcomes/2/outcome",
+        ),
+        (defect, DiagnosticCode::ReservedKind, "/screens/0/kind"),
+        (
+            defect,
+            DiagnosticCode::UnknownKind,
+            "/screens/1/sections/0/type",
+        ),
+        (defect, DiagnosticCode::DuplicateBinding, "/screens/2/kind"),
+        (
+            defect,
+            DiagnosticCode::UnknownGroup,
+            "/screens/3/sections/0/value/value",
+        ),
+        (
+            defect,
+            DiagnosticCode::UnknownTag,
+            "/screens/4/sections/0/value/value",
+        ),
+        (
+            defect,
+            DiagnosticCode::UnknownTag,
+            "/screens/5/sections/0/value/select/value",
+        ),
+        (
+            "ui/second.json",
+            DiagnosticCode::DuplicateBinding,
+            "/ruleset",
+        ),
+    ];
+    for (file, code, pointer) in &expected {
+        assert!(
+            ui_findings.iter().any(|d| {
+                d.file.as_ref().map(SourcePath::as_str) == Some(*file)
+                    && d.code == *code
+                    && d.pointer == *pointer
+            }),
+            "missing {code:?} at {file}{pointer}: {ui_findings:#?}"
+        );
+    }
+    assert_eq!(ui_findings.len(), expected.len(), "{ui_findings:#?}");
     assert_eq!(validate_files(&files, &engine()), findings);
     // B9: a UI document is absent from the object index.
     assert!(loaded
         .index
         .values()
-        .all(|entry| entry.path.as_str() != "ui/defect.json"));
+        .all(|entry| !entry.path.as_str().starts_with("ui/")));
 }
 
 // ---------------------------------------------------------------------------
@@ -1996,6 +2127,13 @@ fn u15_locale_coverage() {
     assert!(findings
         .iter()
         .all(|d| d.code == DiagnosticCode::MissingLocaleKey && d.severity == Severity::Error));
+    // The no-table case uses the existing message for a campaign with no table.
+    assert!(
+        findings
+            .iter()
+            .all(|d| d.message == "locale key has no locale table to resolve against"),
+        "{findings:#?}"
+    );
 
     // With two tables, a key missing from one is reported for that table only.
     let all = all_locale_keys();
@@ -2115,15 +2253,22 @@ fn u16_order_one_finding_per_pointer_and_determinism() {
     }
     assert_eq!(sorted(&findings), findings);
 
-    // Insertion order of the file map is irrelevant.
+    // `Files` is a `BTreeMap`, so a reversed insertion order is not a
+    // distinct input and is not tested. A second run, and `validate_files`,
+    // must give byte-identical output instead.
     let files = add_ui(&base, "ui/a.json", &ui);
-    let reversed: Files = files
-        .iter()
-        .rev()
-        .map(|(key, value)| (key.clone(), value.clone()))
+    let first = validate(&load(&files));
+    let second = validate(&load(&files));
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    assert_eq!(
+        format!("{first:?}"),
+        format!("{:?}", validate_files(&files, &engine()))
+    );
+    let ours: Vec<Diagnostic> = first
+        .into_iter()
+        .filter(|d| d.file.as_ref().map(SourcePath::as_str) == Some("ui/a.json"))
         .collect();
-    assert_eq!(validate(&load(&reversed)), findings);
-    assert_eq!(validate(&load(&files)), findings);
+    assert_eq!(format!("{ours:?}"), format!("{findings:?}"));
 }
 
 // ---------------------------------------------------------------------------
@@ -2819,4 +2964,1336 @@ fn u21_schema_and_registry() {
     let before = value.clone();
     migrate_document(&mut value).unwrap();
     assert_eq!(value, before);
+}
+
+// ===========================================================================
+// Fix round: gaps found by the mutant review.
+// ===========================================================================
+
+fn ui_with(patch: Value) -> Value {
+    let mut value = ui_json();
+    if let Value::Object(map) = &patch {
+        for (key, item) in map {
+            value[key] = item.clone();
+        }
+    }
+    value
+}
+
+/// (pointer, code) pairs of the findings, sorted by pointer then code.
+fn pairs(diagnostics: &[Diagnostic]) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(String, &'static str)> = diagnostics
+        .iter()
+        .map(|d| (d.pointer.clone(), d.code.as_str()))
+        .collect();
+    out.sort();
+    out
+}
+
+fn expect_pairs(diagnostics: &[Diagnostic], expected: &[(&str, DiagnosticCode)]) {
+    let mut want: Vec<(String, &'static str)> = expected
+        .iter()
+        .map(|(pointer, code)| ((*pointer).to_string(), code.as_str()))
+        .collect();
+    want.sort();
+    assert_eq!(pairs(diagnostics), want, "{diagnostics:#?}");
+}
+
+fn at<'a>(diagnostics: &'a [Diagnostic], pointer: &str) -> &'a Diagnostic {
+    let found: Vec<&Diagnostic> = diagnostics
+        .iter()
+        .filter(|d| d.pointer == pointer)
+        .collect();
+    assert_eq!(found.len(), 1, "one finding at {pointer}: {diagnostics:#?}");
+    found[0]
+}
+
+fn with_spare_ability(base: &Files) -> Files {
+    add_json(
+        base,
+        "abilities/spare.json",
+        &ability_doc(SPARE_ABILITY, "spare"),
+    )
+}
+
+// --- Gap 1 (B14, B24): a repeated undeclared enum variant. ------------------
+
+#[test]
+fn u13_repeated_undeclared_variant_gets_duplicate_binding_only() {
+    let base = six_kind_campaign();
+    let labels = |variants: &[&str]| {
+        let entries: Vec<Value> = variants
+            .iter()
+            .map(|v| json!({"variant": v, "label": SRD_KEY}))
+            .collect();
+        ui_with(json!({
+            "ruleset": SRD_RULESET,
+            "stats": [{"stat": "ward", "label": SRD_KEY,
+                "format": {"type": "enum", "value": entries}}]
+        }))
+    };
+    let findings = check_ui(
+        &base,
+        "ui/a.json",
+        &labels(&["green", "green", "red", "green"]),
+    );
+    expect_pairs(
+        &findings,
+        &[
+            (
+                "/stats/0/format/value/0/variant",
+                DiagnosticCode::UnknownVariant,
+            ),
+            (
+                "/stats/0/format/value/1/variant",
+                DiagnosticCode::DuplicateBinding,
+            ),
+            (
+                "/stats/0/format/value/3/variant",
+                DiagnosticCode::DuplicateBinding,
+            ),
+        ],
+    );
+    assert_eq!(
+        at(&findings, "/stats/0/format/value/0/variant").message,
+        "variant \"green\" is not declared by enum stat \"ward\""
+    );
+    assert_eq!(
+        at(&findings, "/stats/0/format/value/1/variant").message,
+        "duplicate variant \"green\" (first at ui/a.json/stats/0/format/value/0/variant)"
+    );
+    assert_eq!(
+        at(&findings, "/stats/0/format/value/3/variant").message,
+        "duplicate variant \"green\" (first at ui/a.json/stats/0/format/value/0/variant)"
+    );
+    // Control: no repeat, so only the first-occurrence finding remains.
+    let findings = check_ui(&base, "ui/a.json", &labels(&["green", "red"]));
+    expect_pairs(
+        &findings,
+        &[(
+            "/stats/0/format/value/0/variant",
+            DiagnosticCode::UnknownVariant,
+        )],
+    );
+    // Control: declared variants, no repeat.
+    assert_eq!(
+        check_ui(&base, "ui/a.json", &labels(&["red", "blue"])),
+        Vec::new()
+    );
+}
+
+// --- Gap 2 (B20, B24): screen repeats of unresolved ids. --------------------
+
+#[test]
+fn u20_screen_repeats_of_unresolved_entries_get_duplicate_binding_only() {
+    let base = with_spare_ability(&fixture("combat_basic"));
+    let sections = json!([
+        {"type": "stat_group", "value": {"type": "names", "value": ["nope"]}},
+        {"type": "stat_group", "value": {"type": "names", "value": ["nope", "might", "might"]}},
+        {"type": "pool_group", "value": {"type": "ids", "value": [FOREIGN]}},
+        {"type": "pool_group", "value": {"type": "ids", "value": [FOREIGN]}},
+        {"type": "ability_list", "value": {"select": {"type": "ids", "value": [SPARE_ABILITY]}}},
+        {"type": "ability_list", "value": {"select": {"type": "ids", "value": [SPARE_ABILITY]}}}
+    ]);
+    let doc = ui_with(json!({"screens": [{"kind": "character_sheet", "sections": sections}]}));
+    let findings = check_ui(&base, "ui/a.json", &doc);
+    expect_pairs(
+        &findings,
+        &[
+            (
+                "/screens/0/sections/0/value/value/0",
+                DiagnosticCode::UnknownStat,
+            ),
+            (
+                "/screens/0/sections/1/value/value/0",
+                DiagnosticCode::DuplicateBinding,
+            ),
+            (
+                "/screens/0/sections/1/value/value/2",
+                DiagnosticCode::DuplicateBinding,
+            ),
+            (
+                "/screens/0/sections/2/value/value/0",
+                DiagnosticCode::UnknownPool,
+            ),
+            (
+                "/screens/0/sections/3/value/value/0",
+                DiagnosticCode::DuplicateBinding,
+            ),
+            (
+                "/screens/0/sections/4/value/select/value/0",
+                DiagnosticCode::ForeignReference,
+            ),
+            (
+                "/screens/0/sections/5/value/select/value/0",
+                DiagnosticCode::DuplicateBinding,
+            ),
+        ],
+    );
+    assert_eq!(
+        at(&findings, "/screens/0/sections/1/value/value/0").message,
+        "duplicate stat \"nope\" (first at ui/a.json/screens/0/sections/0/value/value/0)"
+    );
+    assert_eq!(
+        at(&findings, "/screens/0/sections/1/value/value/2").message,
+        "duplicate stat \"might\" (first at ui/a.json/screens/0/sections/1/value/value/1)"
+    );
+    assert_eq!(
+        at(&findings, "/screens/0/sections/3/value/value/0").message,
+        format!("duplicate pool {FOREIGN} (first at ui/a.json/screens/0/sections/2/value/value/0)")
+    );
+    assert_eq!(
+        at(&findings, "/screens/0/sections/5/value/select/value/0").message,
+        format!(
+            "duplicate ability {SPARE_ABILITY} (first at ui/a.json/screens/0/sections/4/value/select/value/0)"
+        )
+    );
+    assert_eq!(
+        at(&findings, "/screens/0/sections/4/value/select/value/0").message,
+        format!("ui ability {SPARE_ABILITY} is not listed by ruleset {BASIC_RULESET}")
+    );
+
+    // Control: the same unresolved ids on two screens are not repeats.
+    let one = json!([
+        {"type": "stat_group", "value": {"type": "names", "value": ["nope"]}},
+        {"type": "pool_group", "value": {"type": "ids", "value": [FOREIGN]}},
+        {"type": "ability_list", "value": {"select": {"type": "ids", "value": [SPARE_ABILITY]}}}
+    ]);
+    let doc = ui_with(json!({"screens": [
+        {"kind": "character_sheet", "sections": one},
+        {"kind": "combat_hud", "sections": one}
+    ]}));
+    let findings = check_ui(&base, "ui/a.json", &doc);
+    assert_eq!(findings.len(), 6, "{findings:#?}");
+    assert!(findings
+        .iter()
+        .all(|d| d.code != DiagnosticCode::DuplicateBinding));
+}
+
+// --- Gap 3 (U-10): pool checks never consult the object index. -------------
+
+#[test]
+fn u10_pool_check_rejects_existing_non_pool_objects() {
+    let base = fixture("combat_basic");
+    for object in [BASIC_CREATURE, BASIC_ABILITY, BASIC_RULESET] {
+        let message =
+            format!("unknown pool {object} for ui: not a template of ruleset {BASIC_RULESET}");
+        let docs = [
+            (
+                ui_with(json!({"pools": [{"pool": object, "label": KEY}]})),
+                "/pools/0/pool",
+            ),
+            (
+                ui_with(json!({"stats": [{"stat": "might", "label": KEY,
+                    "format": {"type": "fraction", "value": {"type": "pool", "value": object}}}]})),
+                "/stats/0/format/value/value",
+            ),
+            (
+                ui_with(json!({"screens": [{"kind": "combat_hud", "sections": [
+                    {"type": "pool_group", "value": {"type": "ids", "value": [object]}}]}]})),
+                "/screens/0/sections/0/value/value/0",
+            ),
+        ];
+        for (doc, pointer) in docs {
+            let finding = assert_only(
+                &check_ui(&base, "ui/a.json", &doc),
+                DiagnosticCode::UnknownPool,
+                pointer,
+            );
+            assert_eq!(finding.message, message);
+        }
+    }
+    // Control: the real template passes at the same three sites.
+    let ok = ui_with(json!({
+        "pools": [{"pool": BASIC_POOL, "label": KEY}],
+        "stats": [{"stat": "might", "label": KEY,
+            "format": {"type": "fraction", "value": {"type": "pool", "value": BASIC_POOL}}}],
+        "screens": [{"kind": "combat_hud", "sections": [
+            {"type": "pool_group", "value": {"type": "ids", "value": [BASIC_POOL]}}]}]
+    }));
+    assert_eq!(check_ui(&base, "ui/a.json", &ok), Vec::new());
+}
+
+// --- Gap 4 (B16, B17, B24): wrong-kind ids; repeated unlisted ability. ------
+
+#[test]
+fn u10_wrong_kind_ability_ids_get_the_generic_finding_only() {
+    let base = fixture("combat_basic");
+    for wrong in [BASIC_CREATURE, BASIC_RULESET] {
+        let doc = ui_with(json!({"abilities": [
+            {"ability": wrong, "label": KEY},
+            {"ability": wrong, "label": KEY}
+        ]}));
+        let findings = check_ui(&base, "ui/a.json", &doc);
+        expect_pairs(
+            &findings,
+            &[
+                ("/abilities/0/ability", DiagnosticCode::WrongReferenceKind),
+                ("/abilities/1/ability", DiagnosticCode::WrongReferenceKind),
+            ],
+        );
+        for (index, finding) in findings.iter().enumerate() {
+            assert!(
+                finding.message.starts_with(&format!(
+                    "wrong kind for ui ability reference to {wrong}: found "
+                )),
+                "{index}: {finding:?}"
+            );
+        }
+        // The same id in an `ability_list` selector: generic finding only.
+        let doc = ui_with(json!({"screens": [{"kind": "action_bar", "sections": [
+            {"type": "ability_list", "value": {"select": {"type": "ids", "value": [wrong, wrong]}}}
+        ]}]}));
+        let findings = check_ui(&base, "ui/a.json", &doc);
+        expect_pairs(
+            &findings,
+            &[
+                (
+                    "/screens/0/sections/0/value/select/value/0",
+                    DiagnosticCode::WrongReferenceKind,
+                ),
+                (
+                    "/screens/0/sections/0/value/select/value/1",
+                    DiagnosticCode::WrongReferenceKind,
+                ),
+            ],
+        );
+    }
+}
+
+#[test]
+fn u10_wrong_kind_effect_ids_get_the_generic_finding_only() {
+    let base = fixture("combat_srd");
+    for wrong in [SRD_HEAVY, SRD_RULESET] {
+        let doc = ui_with(json!({"ruleset": SRD_RULESET, "effects": [
+            {"effect": wrong, "label": SRD_KEY},
+            {"effect": wrong, "label": SRD_KEY}
+        ]}));
+        let findings = check_ui(&base, "ui/a.json", &doc);
+        expect_pairs(
+            &findings,
+            &[
+                ("/effects/0/effect", DiagnosticCode::WrongReferenceKind),
+                ("/effects/1/effect", DiagnosticCode::WrongReferenceKind),
+            ],
+        );
+        assert!(findings[0].message.starts_with(&format!(
+            "wrong kind for ui effect reference to {wrong}: found "
+        )));
+    }
+}
+
+#[test]
+fn u10_repeated_unlisted_ability_gets_one_finding_per_pointer() {
+    let base = with_spare_ability(&fixture("combat_basic"));
+    let doc = ui_with(json!({"abilities": [
+        {"ability": SPARE_ABILITY, "label": KEY},
+        {"ability": SPARE_ABILITY, "label": KEY},
+        {"ability": SPARE_ABILITY, "label": KEY}
+    ]}));
+    let findings = check_ui(&base, "ui/a.json", &doc);
+    expect_pairs(
+        &findings,
+        &[
+            ("/abilities/0/ability", DiagnosticCode::ForeignReference),
+            ("/abilities/1/ability", DiagnosticCode::DuplicateBinding),
+            ("/abilities/2/ability", DiagnosticCode::DuplicateBinding),
+        ],
+    );
+    assert_eq!(
+        at(&findings, "/abilities/2/ability").message,
+        format!("duplicate ability {SPARE_ABILITY} (first at ui/a.json/abilities/0/ability)")
+    );
+    // Control: listed once and listed-and-repeated differ only by the repeat.
+    let doc = ui_with(json!({"abilities": [
+        {"ability": BASIC_ABILITY, "label": KEY},
+        {"ability": BASIC_ABILITY, "label": KEY}
+    ]}));
+    let findings = check_ui(&base, "ui/a.json", &doc);
+    expect_pairs(
+        &findings,
+        &[("/abilities/1/ability", DiagnosticCode::DuplicateBinding)],
+    );
+}
+
+// --- Gap 5 (B14): fraction meters by stat kind. -----------------------------
+
+#[test]
+fn u13_fraction_meter_stat_kinds() {
+    let base = six_kind_campaign();
+    let meter = |stat: &str, meter_stat: &str| {
+        ui_with(
+            json!({"ruleset": SRD_RULESET, "stats": [{"stat": stat, "label": SRD_KEY,
+            "format": {"type": "fraction", "value": {"type": "stat", "value": meter_stat}}}]}),
+        )
+    };
+    // int and fixed meters are accepted, a fixed stat included.
+    for (stat, meter_stat) in [
+        ("might", "might"),
+        ("might", "guile"),
+        ("guile", "might"),
+        ("guile", "guile"),
+    ] {
+        assert_eq!(
+            check_ui(&base, "ui/a.json", &meter(stat, meter_stat)),
+            Vec::new(),
+            "{stat} metered by {meter_stat}"
+        );
+    }
+    // Every other declared kind gives format_mismatch at the meter pointer.
+    for (meter_stat, kind) in [
+        ("resolve", "bool"),
+        ("ward", "enum"),
+        ("talent", "tags"),
+        ("lore", "dice"),
+    ] {
+        let finding = assert_only(
+            &check_ui(&base, "ui/a.json", &meter("guile", meter_stat)),
+            DiagnosticCode::FormatMismatch,
+            "/stats/0/format/value/value",
+        );
+        assert_eq!(
+            finding.message,
+            format!("fraction meter stat \"{meter_stat}\" is {kind}, not int or fixed")
+        );
+        assert_eq!(
+            finding.suggested_fix.as_deref(),
+            Some("choose a format that suits the stat's kind")
+        );
+    }
+    // A real pool template passes; an existing non-pool object does not.
+    let pool = |id: &str| {
+        ui_with(
+            json!({"ruleset": SRD_RULESET, "stats": [{"stat": "guile", "label": SRD_KEY,
+            "format": {"type": "fraction", "value": {"type": "pool", "value": id}}}]}),
+        )
+    };
+    assert_eq!(check_ui(&base, "ui/a.json", &pool(SRD_POOL_1)), Vec::new());
+    assert_only(
+        &check_ui(&base, "ui/a.json", &pool(SRD_HEAVY)),
+        DiagnosticCode::UnknownPool,
+        "/stats/0/format/value/value",
+    );
+}
+
+// --- Gap 6 (B20): several groups and tags. -----------------------------------
+
+#[test]
+fn u12_group_selector_distinguishes_this_group_from_any_group() {
+    let base = fixture("combat_basic");
+    let doc = |selected: &[&str]| {
+        let sections: Vec<Value> = selected
+            .iter()
+            .map(|g| json!({"type": "stat_group", "value": {"type": "group", "value": g}}))
+            .collect();
+        ui_with(json!({
+            "stats": [
+                {"stat": "guile", "label": KEY},
+                {"stat": "might", "label": KEY, "group": "fixture.hero"},
+                {"stat": "resolve", "label": KEY, "group": "fixture.goblin"}
+            ],
+            "screens": [{"kind": "character_sheet", "sections": sections}]
+        }))
+    };
+    assert_eq!(
+        check_ui(
+            &base,
+            "ui/a.json",
+            &doc(&["fixture.hero", "fixture.goblin"])
+        ),
+        Vec::new()
+    );
+    let findings = check_ui(
+        &base,
+        "ui/a.json",
+        &doc(&["fixture.goblin", "fixture.start", "fixture.hero"]),
+    );
+    let finding = assert_only(
+        &findings,
+        DiagnosticCode::UnknownGroup,
+        "/screens/0/sections/1/value/value",
+    );
+    assert_eq!(
+        finding.message,
+        "stat group \"fixture.start\" is the group of no stats entry"
+    );
+    // A group that exists on no entry, with no other group present, fails too.
+    let mut bare = doc(&["fixture.hero"]);
+    bare["stats"] = json!([{"stat": "guile", "label": KEY}]);
+    assert_only(
+        &check_ui(&base, "ui/a.json", &bare),
+        DiagnosticCode::UnknownGroup,
+        "/screens/0/sections/0/value/value",
+    );
+}
+
+#[test]
+fn u12_ability_tag_selector_distinguishes_this_tag_from_any_tag() {
+    let base = fixture("combat_srd");
+    let doc = |selected: &[&str]| {
+        let sections: Vec<Value> = selected
+            .iter()
+            .map(|t| {
+                json!({"type": "ability_list",
+                    "value": {"select": {"type": "tag", "value": t}}})
+            })
+            .collect();
+        ui_with(json!({
+            "ruleset": SRD_RULESET,
+            "abilities": [
+                {"ability": SRD_HEAVY, "label": SRD_KEY, "category_tags": ["melee", "heavy"]},
+                {"ability": SRD_FOCUS, "label": SRD_KEY, "category_tags": ["magic"]}
+            ],
+            "screens": [{"kind": "action_bar", "sections": sections}]
+        }))
+    };
+    assert_eq!(
+        check_ui(&base, "ui/a.json", &doc(&["melee", "heavy", "magic"])),
+        Vec::new()
+    );
+    let findings = check_ui(&base, "ui/a.json", &doc(&["magic", "ghost", "heavy"]));
+    let finding = assert_only(
+        &findings,
+        DiagnosticCode::UnknownTag,
+        "/screens/0/sections/1/value/select/value",
+    );
+    assert_eq!(
+        finding.message,
+        "ability tag \"ghost\" is declared by no abilities entry"
+    );
+    assert_eq!(finding.severity, Severity::Error);
+}
+
+#[test]
+fn u12_item_tag_selector_distinguishes_this_tag_from_any_tag() {
+    let base = fixture("combat_basic");
+    let item = |id: &str, slug: &str, tags: Value| {
+        json!({"schema": "crpg.item/2", "id": id, "slug": slug, "name": KEY,
+            "stats": {}, "tags": tags})
+    };
+    let base = add_json(
+        &add_json(
+            &base,
+            "items/one.json",
+            &item("00000000000000000000000030", "one", json!(["rare"])),
+        ),
+        "items/two.json",
+        &item(
+            "00000000000000000000000031",
+            "two",
+            json!(["common", "epic"]),
+        ),
+    );
+    let doc = |selected: &[&str]| {
+        let sections: Vec<Value> = selected
+            .iter()
+            .map(|t| json!({"type": "item_list", "value": {"type": "tag", "value": t}}))
+            .collect();
+        ui_with(json!({"screens": [{"kind": "inventory", "sections": sections}]}))
+    };
+    assert_eq!(
+        check_ui(&base, "ui/a.json", &doc(&["rare", "common", "epic"])),
+        Vec::new()
+    );
+    let findings = check_ui(&base, "ui/a.json", &doc(&["epic", "ghost", "rare"]));
+    let finding = assert_only_warning(
+        &findings,
+        DiagnosticCode::UnknownTag,
+        "/screens/0/sections/1/value/value",
+    );
+    assert_eq!(
+        finding.message,
+        "item tag \"ghost\" is carried by no item in this campaign"
+    );
+}
+
+fn assert_only_warning(
+    diagnostics: &[Diagnostic],
+    code: DiagnosticCode,
+    pointer: &str,
+) -> Diagnostic {
+    let diagnostic = only(diagnostics);
+    assert_eq!(diagnostic.code, code, "{diagnostic:?}");
+    assert_eq!(diagnostic.pointer, pointer, "{diagnostic:?}");
+    assert_eq!(diagnostic.severity, Severity::Warning, "{diagnostic:?}");
+    diagnostic
+}
+
+// --- Gap 7 (B5): the 1-byte lower bound and the walk order. -----------------
+
+/// One document per string site, each holding `text` at that site.
+fn string_sites(text: &str) -> Vec<(Value, &'static str)> {
+    let t = json!(text);
+    let sel = |value: Value, kind: &str| json!({"screens": [{"kind": kind, "sections": [value]}]});
+    vec![
+        (
+            json!({"stats": [{"stat": t, "label": KEY}]}),
+            "/stats/0/stat",
+        ),
+        (
+            json!({"stats": [{"stat": "health", "label": t}]}),
+            "/stats/0/label",
+        ),
+        (
+            json!({"stats": [{"stat": "health", "label": KEY, "short_label": t}]}),
+            "/stats/0/short_label",
+        ),
+        (
+            json!({"stats": [{"stat": "health", "label": KEY, "description": t}]}),
+            "/stats/0/description",
+        ),
+        (
+            json!({"stats": [{"stat": "health", "label": KEY, "group": t}]}),
+            "/stats/0/group",
+        ),
+        (
+            json!({"stats": [{"stat": "health", "label": KEY,
+                "format": {"type": "enum", "value": [{"variant": t, "label": KEY}]}}]}),
+            "/stats/0/format/value/0/variant",
+        ),
+        (
+            json!({"stats": [{"stat": "health", "label": KEY,
+                "format": {"type": "enum", "value": [{"variant": "a", "label": t}]}}]}),
+            "/stats/0/format/value/0/label",
+        ),
+        (
+            json!({"stats": [{"stat": "health", "label": KEY, "format": {"type": t}}]}),
+            "/stats/0/format/type",
+        ),
+        (
+            json!({"pools": [{"pool": BASIC_POOL, "label": t}]}),
+            "/pools/0/label",
+        ),
+        (
+            json!({"pools": [{"pool": BASIC_POOL, "label": KEY, "icon": t}]}),
+            "/pools/0/icon",
+        ),
+        (
+            json!({"pools": [{"pool": BASIC_POOL, "label": KEY, "style": t}]}),
+            "/pools/0/style",
+        ),
+        (
+            json!({"abilities": [{"ability": BASIC_ABILITY, "label": t}]}),
+            "/abilities/0/label",
+        ),
+        (
+            json!({"abilities": [{"ability": BASIC_ABILITY, "label": KEY, "description": t}]}),
+            "/abilities/0/description",
+        ),
+        (
+            json!({"abilities": [{"ability": BASIC_ABILITY, "label": KEY, "icon": t}]}),
+            "/abilities/0/icon",
+        ),
+        (
+            json!({"abilities": [{"ability": BASIC_ABILITY, "label": KEY,
+                "category_tags": [t]}]}),
+            "/abilities/0/category_tags/0",
+        ),
+        (
+            json!({"abilities": [{"ability": BASIC_ABILITY, "label": KEY, "target_hint": t}]}),
+            "/abilities/0/target_hint",
+        ),
+        (
+            json!({"effects": [{"effect": SRD_EFFECT, "label": t}]}),
+            "/effects/0/label",
+        ),
+        (
+            json!({"effects": [{"effect": SRD_EFFECT, "label": KEY, "icon": t}]}),
+            "/effects/0/icon",
+        ),
+        (
+            json!({"outcomes": [{"outcome": t, "label": KEY}]}),
+            "/outcomes/0/outcome",
+        ),
+        (
+            json!({"outcomes": [{"outcome": "success", "label": t}]}),
+            "/outcomes/0/label",
+        ),
+        (
+            json!({"screens": [{"kind": t, "sections": []}]}),
+            "/screens/0/kind",
+        ),
+        (
+            sel(json!({"type": t}), "inventory"),
+            "/screens/0/sections/0/type",
+        ),
+        (
+            sel(
+                json!({"type": "stat_group", "value": {"type": "names", "value": [t]}}),
+                "character_sheet",
+            ),
+            "/screens/0/sections/0/value/value/0",
+        ),
+        (
+            sel(
+                json!({"type": "stat_group", "value": {"type": "group", "value": t}}),
+                "character_sheet",
+            ),
+            "/screens/0/sections/0/value/value",
+        ),
+        (
+            sel(
+                json!({"type": "ability_list",
+                    "value": {"select": {"type": "tag", "value": t}}}),
+                "action_bar",
+            ),
+            "/screens/0/sections/0/value/select/value",
+        ),
+        (
+            sel(
+                json!({"type": "ability_list",
+                    "value": {"select": {"type": "all"}, "sort": t}}),
+                "action_bar",
+            ),
+            "/screens/0/sections/0/value/sort",
+        ),
+        (
+            sel(
+                json!({"type": "item_list", "value": {"type": "tag", "value": t}}),
+                "inventory",
+            ),
+            "/screens/0/sections/0/value/value",
+        ),
+    ]
+}
+
+#[test]
+fn u3_empty_strings_are_rejected_at_every_site() {
+    for (patch, pointer) in string_sites("") {
+        assert_text_error(&ui_with(patch), pointer);
+    }
+    // Controls: a 1-byte and a 128-byte string pass at every site.
+    for text in ["a".to_string(), "b".repeat(128)] {
+        for (patch, pointer) in string_sites(&text) {
+            assert!(
+                read(&ui_with(patch)).is_ok(),
+                "{} bytes at {pointer} should read",
+                text.len()
+            );
+        }
+    }
+    // One byte over, at every site.
+    for (patch, pointer) in string_sites(&"c".repeat(129)) {
+        assert_text_error(&ui_with(patch), pointer);
+    }
+}
+
+#[test]
+fn u3_walk_order_between_and_within_entries() {
+    let over = "x".repeat(129);
+    let over = over.as_str();
+
+    // Between top-level lists: ruleset, stats, pools, abilities, effects,
+    // outcomes, screens.
+    let lists: Vec<(&str, Value, &str)> = vec![
+        (
+            "stats",
+            json!([{"stat": over, "label": KEY}]),
+            "/stats/0/stat",
+        ),
+        (
+            "pools",
+            json!([{"pool": BASIC_POOL, "label": over}]),
+            "/pools/0/label",
+        ),
+        (
+            "abilities",
+            json!([{"ability": BASIC_ABILITY, "label": over}]),
+            "/abilities/0/label",
+        ),
+        (
+            "effects",
+            json!([{"effect": SRD_EFFECT, "label": over}]),
+            "/effects/0/label",
+        ),
+        (
+            "outcomes",
+            json!([{"outcome": over, "label": KEY}]),
+            "/outcomes/0/outcome",
+        ),
+        (
+            "screens",
+            json!([{"kind": over, "sections": []}]),
+            "/screens/0/kind",
+        ),
+    ];
+    for first in 0..lists.len() {
+        let mut value = ui_json();
+        for (name, list, _) in &lists[first..] {
+            value[name] = list.clone();
+        }
+        assert_text_error(&value, lists[first].2);
+    }
+    // A later list's count failure does not pre-empt an earlier text failure,
+    // and an earlier count failure wins over a later text failure.
+    let mut value = ui_json();
+    value["effects"] = json!([{"effect": SRD_EFFECT, "label": over}]);
+    value["outcomes"] = entries(4097, |_| json!({"outcome": "success", "label": KEY}));
+    assert_text_error(&value, "/effects/0/label");
+    let mut value = ui_json();
+    value["outcomes"] = entries(4097, |_| json!({"outcome": "success", "label": KEY}));
+    value["screens"] = json!([{"kind": over, "sections": []}]);
+    assert_list_error(&value, "/outcomes", 4096);
+
+    // Within an entry: fields in declaration order. Each case lists the bad
+    // fields still set; the first declared of them is the one reported.
+    let stat_doc = |bad: &[&str]| {
+        let pick = |field: &str, ok: &str| json!(if bad.contains(&field) { over } else { ok });
+        ui_with(json!({"stats": [{
+            "stat": pick("stat", "health"), "label": pick("label", KEY),
+            "short_label": pick("short_label", KEY),
+            "description": pick("description", KEY), "group": pick("group", KEY),
+            "format": {"type": "enum", "value": [{"variant": over, "label": KEY}]}
+        }]}))
+    };
+    let stat_fields = ["stat", "label", "short_label", "description", "group"];
+    for first in 0..stat_fields.len() {
+        assert_text_error(
+            &stat_doc(&stat_fields[first..]),
+            &format!("/stats/0/{}", stat_fields[first]),
+        );
+    }
+    // `group` is declared before `format`, so group is reported first; with
+    // `group` fine, the format's enum label is reached.
+    assert_text_error(&stat_doc(&[]), "/stats/0/format/value/0/variant");
+
+    let pool_doc = |bad: &[&str]| {
+        let pick = |field: &str, ok: &str| json!(if bad.contains(&field) { over } else { ok });
+        ui_with(
+            json!({"pools": [{"pool": BASIC_POOL, "label": pick("label", KEY),
+            "icon": pick("icon", "i"), "style": over}]}),
+        )
+    };
+    assert_text_error(&pool_doc(&["label", "icon"]), "/pools/0/label");
+    assert_text_error(&pool_doc(&["icon"]), "/pools/0/icon");
+    assert_text_error(&pool_doc(&[]), "/pools/0/style");
+
+    let ability_doc_with = |bad: &[&str]| {
+        let pick = |field: &str, ok: &str| json!(if bad.contains(&field) { over } else { ok });
+        ui_with(
+            json!({"abilities": [{"ability": BASIC_ABILITY, "label": pick("label", KEY),
+            "description": pick("description", KEY), "icon": pick("icon", "i"),
+            "category_tags": [pick("category_tags", "t")], "target_hint": over}]}),
+        )
+    };
+    assert_text_error(
+        &ability_doc_with(&["label", "description", "icon", "category_tags"]),
+        "/abilities/0/label",
+    );
+    assert_text_error(
+        &ability_doc_with(&["description", "icon", "category_tags"]),
+        "/abilities/0/description",
+    );
+    assert_text_error(
+        &ability_doc_with(&["icon", "category_tags"]),
+        "/abilities/0/icon",
+    );
+    assert_text_error(
+        &ability_doc_with(&["category_tags"]),
+        "/abilities/0/category_tags/0",
+    );
+    assert_text_error(&ability_doc_with(&[]), "/abilities/0/target_hint");
+
+    // An effect's `label` is declared before its `icon`.
+    let effect_doc = |label: &str, icon: &str| {
+        ui_with(json!({"effects": [{"effect": SRD_EFFECT, "label": label, "icon": icon}]}))
+    };
+    assert_text_error(&effect_doc(over, over), "/effects/0/label");
+    assert_text_error(&effect_doc(KEY, over), "/effects/0/icon");
+    assert!(read(&effect_doc(KEY, "i")).is_ok());
+
+    // An outcome's `outcome` precedes its `label`; an enum label's `variant`
+    // precedes its `label`.
+    assert_text_error(
+        &ui_with(json!({"outcomes": [{"outcome": over, "label": over}]})),
+        "/outcomes/0/outcome",
+    );
+    assert_text_error(
+        &ui_with(json!({"stats": [{"stat": "health", "label": KEY,
+            "format": {"type": "enum", "value": [{"variant": over, "label": over}]}}]})),
+        "/stats/0/format/value/0/variant",
+    );
+    // A screen's `kind` precedes its `sections`.
+    assert_text_error(
+        &ui_with(json!({"screens": [{"kind": over, "sections": [{"type": over}]}]})),
+        "/screens/0/kind",
+    );
+    assert_text_error(
+        &ui_with(json!({"screens": [{"kind": "inventory", "sections": [{"type": over}]}]})),
+        "/screens/0/sections/0/type",
+    );
+}
+
+// --- Gap 8 (B25): first-wins resolution and first-use dedupe. ---------------
+
+fn uid(n: u128) -> String {
+    Ulid::from_u128(n).to_string()
+}
+
+fn srd_json(relative: &str) -> Value {
+    serde_json::from_slice(&fixture("combat_srd")[&path(relative)]).unwrap()
+}
+
+fn doc_map(entries: Vec<(&str, Value)>) -> BTreeMap<SourcePath, Document> {
+    entries
+        .into_iter()
+        .map(|(name, value)| (path(name), read_ok(&value)))
+        .collect()
+}
+
+fn ruleset_json(id: u128, slug: &str, abilities: &[u128]) -> Value {
+    let mut value = srd_json("rulesets/srd-lite.json");
+    value["id"] = json!(uid(id));
+    value["slug"] = json!(slug);
+    value["abilities"] = json!(abilities.iter().map(|a| uid(*a)).collect::<Vec<_>>());
+    value
+}
+
+fn ability_json(
+    id: u128,
+    name: &str,
+    effect: Option<u128>,
+    table: u128,
+    damage: &[OutcomeWire],
+) -> Value {
+    let mut value = srd_json("abilities/heavy.json");
+    value["id"] = json!(uid(id));
+    value["slug"] = json!(format!("ability-{id}-{name}"));
+    value["name"] = json!(name);
+    value["outcome_table"] = json!(uid(table));
+    value["damage"] = json!(damage
+        .iter()
+        .map(|outcome| json!({"outcome": outcome, "amount": 1}))
+        .collect::<Vec<_>>());
+    match effect {
+        Some(effect) => value["effect"] = json!(uid(effect)),
+        None => {
+            value.as_object_mut().unwrap().remove("effect");
+        }
+    }
+    value
+}
+
+fn effect_json(id: u128, name: &str) -> Value {
+    let mut value = srd_json("effects/focusing.json");
+    value["id"] = json!(uid(id));
+    value["slug"] = json!(format!("effect-{id}-{name}"));
+    value["name"] = json!(name);
+    value
+}
+
+fn table_json(
+    id: u128,
+    bands: &[(i64, OutcomeWire)],
+    naturals: &[(u32, NaturalEffectWire)],
+) -> Value {
+    json!({
+        "schema": "crpg.outcome-table/1", "id": uid(id), "slug": format!("table-{id}"),
+        "name": "fixture.table",
+        "bands": bands.iter()
+            .map(|(margin, outcome)| json!({"min_margin": margin, "outcome": outcome}))
+            .collect::<Vec<_>>(),
+        "natural_rules": naturals.iter()
+            .map(|(face, effect)| json!({"face": face, "effect": effect}))
+            .collect::<Vec<_>>()
+    })
+}
+
+#[test]
+fn u25_from_documents_first_wins_and_first_use_dedupe() {
+    use OutcomeWire::{Failure, Success};
+    let ruleset = uid(100);
+    let documents = doc_map(vec![
+        // Two rulesets with one id: the first in path order is the ruleset.
+        (
+            "rulesets/a.json",
+            ruleset_json(100, "first-ruleset", &[2, 109, 1, 4, 5]),
+        ),
+        ("rulesets/b.json", ruleset_json(100, "second-ruleset", &[1])),
+        // Two abilities with id 1: the first in path order wins.
+        (
+            "abilities/a1.json",
+            ability_json(1, "first.a1", Some(11), 21, &[Success]),
+        ),
+        (
+            "abilities/z1.json",
+            ability_json(1, "second.a1", Some(13), 23, &[Failure]),
+        ),
+        (
+            "abilities/a2.json",
+            ability_json(2, "first.a2", Some(12), 22, &[Success]),
+        ),
+        // Ability 4 shares ability 2's effect and ability 1's table.
+        (
+            "abilities/a4.json",
+            ability_json(4, "first.a4", Some(12), 21, &[Success]),
+        ),
+        // Ability 5 names an effect and a table that no document holds.
+        (
+            "abilities/a5.json",
+            ability_json(5, "first.a5", Some(99), 98, &[Success]),
+        ),
+        // Two effects with id 11, two tables with id 21.
+        ("effects/e11.json", effect_json(11, "first.e11")),
+        ("effects/e11b.json", effect_json(11, "second.e11")),
+        ("effects/e12.json", effect_json(12, "first.e12")),
+        ("effects/e13.json", effect_json(13, "first.e13")),
+        (
+            "outcome_tables/t21.json",
+            table_json(21, &[(i64::MIN, Failure)], &[]),
+        ),
+        (
+            "outcome_tables/t21b.json",
+            table_json(21, &[(i64::MIN, OutcomeWire::CriticalFailure)], &[]),
+        ),
+        (
+            "outcome_tables/t22.json",
+            table_json(22, &[(i64::MIN, Success)], &[]),
+        ),
+        (
+            "outcome_tables/t23.json",
+            table_json(23, &[(i64::MIN, Success)], &[]),
+        ),
+    ]);
+    let source = UiSource::from_documents(&documents, ulid(&ruleset)).unwrap();
+    assert_eq!(source.ruleset.slug, "first-ruleset");
+    // Ruleset order, unresolved id 109 skipped, first document of id 1.
+    let ids: Vec<String> = source.abilities.iter().map(|a| a.id.to_string()).collect();
+    assert_eq!(ids, vec![uid(2), uid(1), uid(4), uid(5)]);
+    let names: Vec<&str> = source.abilities.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, vec!["first.a2", "first.a1", "first.a4", "first.a5"]);
+    // Effects: first use in ability order (12 then 11), no repeat of 12, the
+    // unresolved 99 skipped, the first document of id 11, and 13 never used.
+    let effects: Vec<(String, &str)> = source
+        .effects
+        .iter()
+        .map(|e| (e.id.to_string(), e.name.as_str()))
+        .collect();
+    assert_eq!(
+        effects,
+        vec![(uid(12), "first.e12"), (uid(11), "first.e11")]
+    );
+    // Tables: first use (22, then 21), no repeat of 21, 98 skipped, first 21.
+    let tables: Vec<String> = source.tables.iter().map(|t| t.id.to_string()).collect();
+    assert_eq!(tables, vec![uid(22), uid(21)]);
+    assert_eq!(
+        source.tables[1].bands[0].outcome,
+        OutcomeWire::Failure,
+        "the first table document of id 21 wins"
+    );
+    // The generated entries follow the resolved lists.
+    let ui = generated_ui(&source);
+    let effect_labels: Vec<&str> = ui
+        .effects
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|e| e.label.as_str())
+        .collect();
+    assert_eq!(effect_labels, vec!["first.e12", "first.e11"]);
+    assert_eq!(ui.abilities.as_ref().unwrap().len(), 4);
+    // The second ruleset's id has no document of its own.
+    assert!(UiSource::from_documents(&documents, ulid(&uid(101))).is_none());
+    // A document of another kind with the ruleset's id is not a ruleset.
+    assert!(UiSource::from_documents(&documents, ulid(&uid(1))).is_none());
+}
+
+// --- Gap 9 (B26): outcome label order. ---------------------------------------
+
+#[test]
+fn u26_outcome_labels_band_then_natural_then_damage_per_ability() {
+    use NaturalEffectWire::{Override, Shift};
+    use OutcomeWire::{CriticalFailure, CriticalSuccess, Custom, Failure, Success};
+    let documents = doc_map(vec![
+        ("rulesets/r.json", ruleset_json(100, "r", &[1, 2, 3])),
+        (
+            "abilities/a1.json",
+            ability_json(1, "a1", None, 21, &[CriticalFailure, Custom(3), Success]),
+        ),
+        (
+            "abilities/a2.json",
+            ability_json(2, "a2", None, 22, &[Custom(5), Custom(4), Custom(6)]),
+        ),
+        // Ability 3's table has no document: only its damage is taken.
+        (
+            "abilities/a3.json",
+            ability_json(3, "a3", None, 98, &[Custom(11), Success]),
+        ),
+        (
+            "outcome_tables/t21.json",
+            table_json(
+                21,
+                &[(i64::MIN, Failure), (0, Success)],
+                &[
+                    (6, Override(CriticalSuccess)),
+                    (1, Shift(1)),
+                    (2, Override(Custom(7))),
+                ],
+            ),
+        ),
+        (
+            "outcome_tables/t22.json",
+            table_json(
+                22,
+                &[(i64::MIN, Custom(9)), (0, Failure)],
+                &[(4, Override(Custom(3))), (5, Override(Custom(4)))],
+            ),
+        ),
+    ]);
+    let source = UiSource::from_documents(&documents, ulid(&uid(100))).unwrap();
+    assert_eq!(source.abilities.len(), 3);
+    assert_eq!(source.tables.len(), 2);
+    // Ability 1: bands, then natural overrides (the shift adds nothing), then
+    // damage in order. Ability 2 then interleaves its own table before its
+    // damage; labels already seen are not repeated.
+    let expected = vec![
+        "failure",
+        "success",
+        "critical_success",
+        "custom:7",
+        "critical_failure",
+        "custom:3",
+        "custom:9",
+        "custom:4",
+        "custom:5",
+        "custom:6",
+        "custom:11",
+    ];
+    assert_eq!(source.outcome_labels(), expected);
+    let ui = generated_ui(&source);
+    let outcomes = ui.outcomes.as_ref().unwrap();
+    assert_eq!(
+        outcomes
+            .iter()
+            .map(|o| o.outcome.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    for outcome in outcomes {
+        assert_eq!(outcome.outcome, outcome.label);
+    }
+    // Every generated label is a B18 label.
+    for text in &expected {
+        assert!(ui_outcome(text).is_some(), "{text}");
+    }
+}
+
+// --- Gap 10 (B18): `custom:` takes a decimal u8 with no sign. ----------------
+
+#[test]
+fn u18_custom_labels_take_no_sign() {
+    for text in [
+        "custom:+1",
+        "custom:-1",
+        "custom:+0",
+        "custom:-0",
+        "custom: 1",
+        "custom:1 ",
+    ] {
+        assert_eq!(ui_outcome(text), None, "{text:?}");
+    }
+    assert_eq!(ui_outcome("custom:1"), Some(OutcomeWire::Custom(1)));
+    assert_eq!(ui_outcome("custom:0"), Some(OutcomeWire::Custom(0)));
+    assert_eq!(ui_outcome("custom:255"), Some(OutcomeWire::Custom(255)));
+
+    // A ruleset that produces custom:0 and custom:1 accepts those two labels
+    // and still rejects the signed spellings.
+    let mut base = fixture("combat_srd");
+    let mut heavy: Value = serde_json::from_slice(&base[&path("abilities/heavy.json")]).unwrap();
+    heavy["damage"].as_array_mut().unwrap().extend([
+        json!({"outcome": OutcomeWire::Custom(0), "amount": 1}),
+        json!({"outcome": OutcomeWire::Custom(1), "amount": 1}),
+    ]);
+    base.insert(path("abilities/heavy.json"), canonical(&heavy));
+    let check = |text: &str| {
+        let doc = ui_with(json!({"ruleset": SRD_RULESET,
+            "outcomes": [{"outcome": text, "label": SRD_KEY}]}));
+        check_ui(&base, "ui/a.json", &doc)
+    };
+    assert_eq!(check("custom:0"), Vec::new());
+    assert_eq!(check("custom:1"), Vec::new());
+    for text in ["custom:+1", "custom:-1", "custom:+0", "custom:-0"] {
+        let finding = assert_only(
+            &check(text),
+            DiagnosticCode::UnknownOutcome,
+            "/outcomes/0/outcome",
+        );
+        assert_eq!(
+            finding.message,
+            format!("outcome {text:?} is not produced by ruleset {SRD_RULESET}")
+        );
+    }
+}
+
+// --- Gap 11 (B30): merge keys with partially authored lists. -----------------
+
+fn pool_entry(id: &str, label: &str) -> UiPool {
+    UiPool {
+        pool: ulid(id),
+        label: label.into(),
+        icon: None,
+        style: None,
+        show_on_hud: None,
+    }
+}
+
+fn ability_entry(id: &str, label: &str) -> UiAbility {
+    UiAbility {
+        ability: ulid(id),
+        label: label.into(),
+        description: None,
+        icon: None,
+        category_tags: None,
+        target_hint: None,
+        show_odds: None,
+    }
+}
+
+fn effect_entry(id: &str, label: &str) -> UiEffect {
+    UiEffect {
+        effect: ulid(id),
+        label: label.into(),
+        icon: None,
+        show_duration: None,
+    }
+}
+
+fn outcome_entry(outcome: &str, label: &str) -> UiOutcome {
+    UiOutcome {
+        outcome: outcome.into(),
+        label: label.into(),
+    }
+}
+
+#[test]
+fn u30_partially_authored_lists_get_missing_generated_entries_appended() {
+    let srd = load(&fixture("combat_srd"));
+    let source = UiSource::from_documents(&srd.documents, ulid(SRD_RULESET)).unwrap();
+    let d = generated_ui(&source);
+    let d_pools = d.pools.clone().unwrap();
+    let d_abilities = d.abilities.clone().unwrap();
+    let d_effects = d.effects.clone().unwrap();
+    let d_outcomes = d.outcomes.clone().unwrap();
+    let d_screens = d.screens.clone().unwrap();
+
+    // Pools: the authored pool 2 first, then the generated pool 1.
+    let authored = UiDocument {
+        ruleset: ulid(SRD_RULESET),
+        pools: Some(vec![pool_entry(SRD_POOL_2, "mine")]),
+        ..empty_ui()
+    };
+    let merged = effective_ui(Some(&authored), &source);
+    assert_eq!(
+        merged.pools,
+        Some(vec![pool_entry(SRD_POOL_2, "mine"), d_pools[0].clone()])
+    );
+    // Absent lists come from the default whole.
+    assert_eq!(merged.stats, d.stats);
+    assert_eq!(merged.abilities, d.abilities);
+    assert_eq!(merged.effects, d.effects);
+    assert_eq!(merged.outcomes, d.outcomes);
+    assert_eq!(merged.screens, d.screens);
+    // An authored pool the ruleset lacks is kept, and both templates follow.
+    let authored = UiDocument {
+        pools: Some(vec![pool_entry(FOREIGN, "alien")]),
+        ..empty_ui()
+    };
+    assert_eq!(
+        effective_ui(Some(&authored), &source).pools,
+        Some(vec![
+            pool_entry(FOREIGN, "alien"),
+            d_pools[0].clone(),
+            d_pools[1].clone()
+        ])
+    );
+
+    // Abilities: the authored focus ability first, then the generated heavy.
+    let authored = UiDocument {
+        abilities: Some(vec![ability_entry(SRD_FOCUS, "mine")]),
+        ..empty_ui()
+    };
+    assert_eq!(
+        effective_ui(Some(&authored), &source).abilities,
+        Some(vec![
+            ability_entry(SRD_FOCUS, "mine"),
+            d_abilities[0].clone()
+        ])
+    );
+
+    // Effects: an authored list that lacks the generated effect gains it;
+    // one that has it keeps its own entry once; an empty list gains it.
+    let authored = UiDocument {
+        effects: Some(vec![effect_entry(FOREIGN, "alien")]),
+        ..empty_ui()
+    };
+    assert_eq!(
+        effective_ui(Some(&authored), &source).effects,
+        Some(vec![effect_entry(FOREIGN, "alien"), d_effects[0].clone()])
+    );
+    let authored = UiDocument {
+        effects: Some(vec![effect_entry(SRD_EFFECT, "mine")]),
+        ..empty_ui()
+    };
+    assert_eq!(
+        effective_ui(Some(&authored), &source).effects,
+        Some(vec![effect_entry(SRD_EFFECT, "mine")])
+    );
+    let authored = UiDocument {
+        effects: Some(Vec::new()),
+        ..empty_ui()
+    };
+    assert_eq!(
+        effective_ui(Some(&authored), &source).effects,
+        Some(d_effects.clone())
+    );
+
+    // Outcomes: keyed by text; the generated ones the author lacks follow in
+    // the default's order.
+    let authored = UiDocument {
+        outcomes: Some(vec![outcome_entry("success", "mine")]),
+        ..empty_ui()
+    };
+    assert_eq!(
+        effective_ui(Some(&authored), &source).outcomes,
+        Some(vec![
+            outcome_entry("success", "mine"),
+            d_outcomes[0].clone(),
+            d_outcomes[2].clone()
+        ])
+    );
+    let authored = UiDocument {
+        outcomes: Some(vec![outcome_entry("custom:99", "alien")]),
+        ..empty_ui()
+    };
+    let mut expected = vec![outcome_entry("custom:99", "alien")];
+    expected.extend(d_outcomes.clone());
+    assert_eq!(
+        effective_ui(Some(&authored), &source).outcomes,
+        Some(expected)
+    );
+
+    // Screens: authored first (sections kept), then the missing defaults.
+    let authored = UiDocument {
+        screens: Some(vec![
+            screen(UiScreenKind::CombatHud),
+            screen(UiScreenKind::Spellbook),
+        ]),
+        ..empty_ui()
+    };
+    let merged = effective_ui(Some(&authored), &source);
+    let screens = merged.screens.unwrap();
+    assert_eq!(
+        screens.iter().map(|s| s.kind.as_str()).collect::<Vec<_>>(),
+        vec![
+            "combat_hud",
+            "spellbook",
+            "character_sheet",
+            "action_bar",
+            "inventory"
+        ]
+    );
+    assert!(screens[0].sections.is_empty() && screens[1].sections.is_empty());
+    assert_eq!(screens[2], d_screens[0]);
+    assert_eq!(screens[3], d_screens[1]);
+    assert_eq!(screens[4], d_screens[3]);
 }
