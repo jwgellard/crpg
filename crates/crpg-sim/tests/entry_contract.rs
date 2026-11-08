@@ -18,8 +18,8 @@ use crpg_rules::ResourcePool;
 use crpg_sim::{
     end_encounter, join_encounter, leave_encounter, perform_action, start_encounter_in_mode,
     start_encounter_with_members, state_hash, tick, ActionOutcome, CombatAction, CombatError,
-    CombatState, Combatant, EncounterMode, EntityMeta, Entrant, SimEvent, Transform, World,
-    COMBAT_ROLL_STREAM, MAX_COMBATANTS,
+    CombatState, Combatant, EncounterMode, EntityMeta, Entrant, HistoryEvent, SimEvent, Transform,
+    World, COMBAT_ROLL_STREAM, MAX_COMBATANTS,
 };
 use serde_json::{json, Value};
 use support::creature::{
@@ -1318,8 +1318,12 @@ fn b25_join_initiative() {
     let before = p.w.clone();
     let mut rng = before.clone().rng_mut().clone();
     let rolled = draw(&mut rng, "1d20").total;
-    p.join(j, 11).expect("joins");
-    assert_eq!(combatant(&p.w, j).initiative(), rolled + 3 + 4 + 11);
+    p.join(j, 100).expect("joins");
+    assert_eq!(combatant(&p.w, j).initiative(), rolled + 3 + 4 + 100);
+    assert!(
+        p.tl().contains(&(rolled + 3 + 4 + 100, j)),
+        "the timeline slot is the drawn key, not the base 100"
+    );
     assert_eq!(
         next_draw(&p.w),
         rng.stream(COMBAT_ROLL_STREAM).next_u32(),
@@ -2141,4 +2145,177 @@ fn b34_reload_while_pending_and_waiting() {
     for at in 0..rt.len() {
         assert_eq!(run(&rt, true, SEED, Some(at)), straight, "rt at {at}");
     }
+}
+
+// ------------------------------------------------ mutant-review fixes
+
+/// A respawning fixture (so a registered record of an authored placement is
+/// a legal member or joiner), with a derived `ratio` and a granting effect.
+fn clash_fixture() -> (Fixture, World, EntityId) {
+    let mut f = Fixture::standard();
+    f.encounter.respawns = Some(true);
+    derived_ratio(&mut f);
+    attach_to_ability(&mut f, granting(701, &["zzz-new"]));
+    let mut w = World::new(SEED);
+    let held = f.register(&mut w, f.placement_a).expect("registers");
+    events(&mut w);
+    (f, w, held)
+}
+
+const GAMMA_FOUR: fn(&mut Value) =
+    |r| r["attributes"] = json!([["alpha", 8], ["beta", 6], ["gamma", 4]]);
+
+/// B21: each adjacent pair of M5, M6, M7, M8: a member failing both reports
+/// the earlier check.
+#[test]
+fn m5_to_m8_adjacent_precedence() {
+    let (f, w, held) = clash_fixture();
+    let in_use = CombatError::PlacementInUse {
+        placement: f.placement_a,
+    };
+    // Control: the clash alone is M6.
+    start_rejects(&f, &w, &[entrant(held, 5)], in_use.clone());
+    // M5 over M6.
+    let both = with_record(&w, held, |r| r["ruleset"] = json!(uid(999)));
+    start_rejects(
+        &f,
+        &both,
+        &[entrant(held, 5)],
+        CombatError::RulesetMismatch { entity: held },
+    );
+    // M6 over M7, and M6 over M8.
+    let both = with_record(&w, held, GAMMA_FOUR);
+    start_rejects(&f, &both, &[entrant(held, 5)], in_use.clone());
+    let both = with_record(&w, held, |r| r["tags"] = json!(tag_names(1024)));
+    start_rejects(&f, &both, &[entrant(held, 5)], in_use);
+    // M7 over M8, on an outsider.
+    let (mut f, mut w, _) = clash_fixture();
+    add_outsider(&mut f, 131, 141);
+    let o = f.register(&mut w, ulid(131)).expect("registers");
+    let both = with_record(&w, o, |r| {
+        GAMMA_FOUR(r);
+        r["tags"] = json!(tag_names(1024));
+    });
+    start_rejects(
+        &f,
+        &both,
+        &[entrant(o, 5)],
+        CombatError::InvalidStatValue {
+            stat: "ratio".to_owned(),
+        },
+    );
+    // Control: M8 alone.
+    let only = with_record(&w, o, |r| r["tags"] = json!(tag_names(1024)));
+    start_rejects(&f, &only, &[entrant(o, 5)], CombatError::TooManyTags);
+}
+
+/// B23: J8 over J9, and J9 over J10.
+#[test]
+fn j8_j9_j10_precedence() {
+    let (f, mut w, held) = clash_fixture();
+    start_with(&f, &mut w, TB, &[]).expect("starts");
+    let in_use = CombatError::PlacementInUse {
+        placement: f.placement_a,
+    };
+    join_rejects(&w, entrant(held, 1), in_use.clone());
+    let both = with_record(&w, held, |r| r["ruleset"] = json!(uid(999)));
+    join_rejects(
+        &both,
+        entrant(held, 1),
+        CombatError::RulesetMismatch { entity: held },
+    );
+    let both = with_record(&w, held, GAMMA_FOUR);
+    join_rejects(&both, entrant(held, 1), in_use);
+}
+
+/// B23 J3: the bound is exclusive of the joiner's own slot: a join into 1023
+/// combatants succeeds, and the next one is refused.
+#[test]
+fn j3_join_at_1023_succeeds() {
+    let mut f = Fixture::standard();
+    let mut w = World::new(SEED);
+    let mut members = Vec::new();
+    for n in 0..(MAX_COMBATANTS - 3) as u128 {
+        add_outsider(&mut f, 1000 + n, 2000 + n);
+        let e = f.register(&mut w, ulid(1000 + n)).expect("registers");
+        members.push(entrant(e, n as i32 + 20));
+    }
+    start_with(&f, &mut w, TB, &members).expect("1023 combatants start");
+    assert_eq!(w.combatants().len(), MAX_COMBATANTS - 1);
+    add_outsider(&mut f, 5000, 6000);
+    add_outsider(&mut f, 5001, 6001);
+    let x = f.register(&mut w, ulid(5000)).expect("registers");
+    let y = f.register(&mut w, ulid(5001)).expect("registers");
+    join_encounter(&mut w, &entrant(x, 40)).expect("the 1024th combatant joins");
+    assert_eq!(w.combatants().len(), MAX_COMBATANTS);
+    join_rejects(&w, entrant(y, 41), CombatError::TooManyParticipants);
+}
+
+/// B30: the leave round is captured before the removal. The head leaves, the
+/// round rolls over, and the suspended rounds count from the old round.
+#[test]
+fn b30_leave_captures_the_round_before_removal() {
+    let mut f = Fixture::trio();
+    with_effect(&mut f);
+    let mut p = Play::new(f);
+    let (a, b, c) = (p.a, p.b, ids(&p.w)[2]);
+    p.w = with_json(&p.w, |save| {
+        edit_combatant(save, a, |e| {
+            e["attached"] = json!([{"effect": uid(601), "expires_round": 3}]);
+        });
+    });
+    end(&mut p.w, c);
+    end(&mut p.w, b);
+    assert_eq!((active(&p.w), combat(&p.w).round), (Some(a), 0));
+    leave_encounter(&mut p.w, a).expect("the last head of round 0 leaves");
+    assert_eq!(combat(&p.w).round, 1, "the leave rolled the round over");
+    let r = p.w.creatures().get(a).expect("a record");
+    assert_eq!(r.suspended().len(), 1);
+    assert_eq!(r.suspended()[0].remaining_rounds, 3, "3 - round 0");
+}
+
+/// B33 Q1: the real-time arm and the no-active-turn arm, with the exact
+/// message; the loader half of D45a.
+#[test]
+fn b33_q1_other_arms() {
+    let q1 = "combat pending joins outside a first turn-based round";
+    let id = |e: EntityId| serde_json::to_value(e).unwrap();
+    let rt = Play::in_mode(capable(10), RT);
+    assert!(try_with_json(&rt.w, |_| {}).is_ok());
+    let err = try_with_json(&rt.w, |s| {
+        s["combat"]["pending_joins"] = json!([id(rt.a)]);
+    })
+    .expect_err("an RT save with pending joins must not load");
+    assert!(err.contains(q1), "{err}");
+
+    let t = terminal_play();
+    assert!(try_with_json(&t.w, |_| {}).is_ok());
+    let err = try_with_json(&t.w, |s| {
+        s["combat"]["pending_joins"] = json!([id(t.b)]);
+    })
+    .expect_err("a terminal save with pending joins must not load");
+    assert!(err.contains(q1), "{err}");
+}
+
+/// B30: an RT leave ends the encounter exactly when the alive count falls
+/// from two or more to below two. The world does not show it (`combat` is
+/// identical to a not-ended one), so this reads the journal's
+/// `EncounterEnded`.
+#[test]
+fn b30_rt_leave_ends_only_below_two_alive() {
+    let ended = |h: &crpg_sim::HistoryWorld| {
+        h.read_after(0, 256)
+            .expect("reads")
+            .iter()
+            .any(|e| matches!(e.payload, HistoryEvent::EncounterEnded { .. }))
+    };
+    let (mut h, v) = capable_trio(10).start_history(SEED, RT).expect("starts");
+    h.leave_encounter(v[0]).expect("3 -> 2 alive");
+    assert!(!ended(&h), "two alive: not ended");
+    h.leave_encounter(v[1]).expect("2 -> 1 alive");
+    assert!(ended(&h), "one alive: ended");
+
+    let (mut h, v) = capable(10).start_history(SEED, RT).expect("starts");
+    h.leave_encounter(v[0]).expect("2 -> 1 alive");
+    assert!(ended(&h));
 }
