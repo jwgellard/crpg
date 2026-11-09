@@ -140,11 +140,7 @@ fn bits(w: &World, e: EntityId) -> ([u32; 3], [u32; 3]) {
 }
 /// B's movement pool, 106, the first non-primary template.
 fn pool106(w: &World, e: EntityId) -> u32 {
-    w.combatants()
-        .get(e)
-        .expect("a combatant")
-        .extra_pools()[0]
-        .current()
+    w.combatants().get(e).expect("a combatant").extra_pools()[0].current()
 }
 fn remove_mover(save: &mut Value, entity: EntityId) {
     let key = serde_json::to_value(entity).expect("the id serializes");
@@ -152,15 +148,6 @@ fn remove_mover(save: &mut Value, entity: EntityId) {
         .as_array_mut()
         .expect("a mover list")
         .retain(|entry| entry[0] != key);
-}
-fn set_mirror_velocity(save: &mut Value, entity: EntityId, velocity: Value) {
-    let key = serde_json::to_value(entity).expect("the id serializes");
-    let entries = save["transforms"].as_array_mut().expect("a transform list");
-    let entry = entries
-        .iter_mut()
-        .find(|entry| entry[0] == key)
-        .expect("the entity holds a transform");
-    entry[1]["velocity"] = velocity;
 }
 
 // ------------------------------------------------------- C-1 / B-C1 route_cost
@@ -185,6 +172,8 @@ fn c1_route_cost_b_c1() {
     assert_eq!(route_cost(393_216, step(98_304), 1), Some(4));
     assert_eq!(route_cost(393_217, step(98_304), 1), Some(5));
     assert_eq!(route_cost(4_294_967_294, step(1), 1), Some(4_294_967_294));
+    assert_eq!(route_cost(1, step(1), u32::MAX), Some(u32::MAX));
+    assert_eq!(route_cost(2, step(1), u32::MAX), None);
 
     // A `u64` product that does not fit is `None`, never a wrap.
     assert_eq!(route_cost(u64::MAX, step(1), u32::MAX), None);
@@ -235,8 +224,8 @@ fn c2_move_spends_and_keeps_the_turn_b_c4() {
     assert_eq!(after["events"], before["events"], "no event");
 
     // Its turn is still B's: it moves again, then cannot afford one metre.
-    let outcome = perform_move(&mut w, b, &route(2, vec![p(7, 3), p(7, 1)]))
-        .expect("two metres cost two");
+    let outcome =
+        perform_move(&mut w, b, &route(2, vec![p(7, 3), p(7, 1)])).expect("two metres cost two");
     assert_eq!((outcome.cost, pool106(&w, b)), (2, 0));
     let before = bytes_of(&w);
     assert_eq!(
@@ -316,7 +305,14 @@ fn c2_mirror_velocity_is_rewritten_b_c4() {
         let mut w = w;
         w.bind_nav(rev());
         with_json(&w, |save| {
-            set_mirror_velocity(save, b, json!([1.0_f32, 0.0_f32, 0.0_f32]))
+            let key = serde_json::to_value(b).expect("the id serializes");
+            let entry = save["transforms"]
+                .as_array_mut()
+                .expect("a transform list")
+                .iter_mut()
+                .find(|entry| entry[0] == key)
+                .expect("B holds a transform");
+            entry[1]["velocity"] = json!([1.0_f32, 0.0_f32, 0.0_f32]);
         })
     };
     assert_eq!(bits(&w, b).1, [0x3f80_0000, 0, 0]);
@@ -483,7 +479,48 @@ fn c3_checks_in_order_b_c3() {
     let (w, ids) = fx.start(7);
     let b = ids[1];
     assert_eq!(w.nav(), None);
-    assert_eq!(validate_move(&w, b, &route_b(1)), Err(MoveError::NavUnbound));
+    assert_eq!(
+        validate_move(&w, b, &route_b(1)),
+        Err(MoveError::NavUnbound)
+    );
+}
+
+#[test]
+fn c3_route_failures_reach_the_mover_b_c3() {
+    // `validate_move` inherits every `validate_route` failure, with its
+    // exact payload (A-4's literals, the same checker).
+    let fx = move_fixture();
+    let (w, _, b) = tb_world(&fx);
+    let cases = [
+        (route(1, vec![p(10, 0)]), MoveError::RouteSize { points: 1 }),
+        (
+            route(1, vec![p(10, 0), rp((1 << 29) + 1, 0, 0)]),
+            MoveError::OutOfBounds { index: 1 },
+        ),
+        (
+            route(1, vec![p(10, 0), p(10, 0)]),
+            MoveError::ZeroSegment { index: 0 },
+        ),
+        (
+            // From B's start, one segment reaches at most 267 780 097 raw;
+            // two segments sum to 536 215 554, over the 2^28 limit.
+            route(1, vec![p(10, 0), rp(268_435_457, 0, 0), rp(0, 0, 0)]),
+            MoveError::TooLong {
+                length: 536_215_554,
+            },
+        ),
+        (
+            MoveRoute {
+                revision: NavRevision::of_bytes(b"mesh-b"),
+                tag: RouteTag(1),
+                points: vec![p(10, 0), p(11, 0)],
+            },
+            MoveError::StaleRevision,
+        ),
+    ];
+    for (move_route, expected) in cases {
+        assert_eq!(validate_move(&w, b, &move_route), Err(expected));
+    }
 }
 
 #[test]
@@ -505,20 +542,6 @@ fn c3_precedence_pairs_b_c3() {
     assert_eq!(
         validate_move(&w, b, &route(1, vec![p(0, 0), p(0, 10)])),
         Err(MoveError::StartMismatch)
-    );
-
-    // Both checks in order would have failed: NotMover before the route.
-    let (w, _, b) = tb_world(&fx);
-    let w = with_json(&w, |save| {
-        save["combat"]["definition"]
-            .as_object_mut()
-            .expect("a definition object")
-            .remove("movement")
-            .expect("the definition holds movement");
-    });
-    assert_eq!(
-        validate_move(&w, b, &route(1, vec![p(0, 0), p(0, 10)])),
-        Err(MoveError::NotMover { entity: b })
     );
 }
 
@@ -619,18 +642,6 @@ fn history_tb(fx: &Fixture) -> (HistoryWorld, EntityId, EntityId) {
     (h, ids[0], ids[1])
 }
 
-/// The moved payload of C-5.
-fn moved_payload(b: EntityId) -> HistoryEvent {
-    HistoryEvent::Moved {
-        entity: b,
-        points: vec![
-            rp(655_360, 0, 0),
-            rp(655_360, 0, 196_608),
-            rp(458_752, 0, 196_608),
-        ],
-    }
-}
-
 #[test]
 fn c5_history_v3_journal_and_version_b_h1_b_c5() {
     assert_eq!(HISTORY_VERSION, 3);
@@ -657,7 +668,17 @@ fn c5_history_v3_journal_and_version_b_h1_b_c5() {
     assert_eq!(pool106(h.world(), b), 2);
     let added = h.read_after(seq, 256).expect("a short read");
     assert_eq!(added.len(), 1, "exactly one envelope");
-    assert_eq!(added[0].payload, moved_payload(b));
+    assert_eq!(
+        added[0].payload,
+        HistoryEvent::Moved {
+            entity: b,
+            points: vec![
+                rp(655_360, 0, 0),
+                rp(655_360, 0, 196_608),
+                rp(458_752, 0, 196_608),
+            ],
+        }
+    );
 
     // Release and acknowledgement are sticky.
     h.end_encounter().expect("release");
@@ -774,7 +795,8 @@ fn c5_moved_payload_decoder_b_h3() {
     // A well-formed payload decodes, and encodes with raw `i32` points.
     let valid = format!("{{\"entity\":{e},\"points\":{two}}}");
     let decoded: HistoryEvent =
-        serde_json::from_str(&format!("{{\"type\":\"moved\",\"value\":{valid}}}")).expect("decodes");
+        serde_json::from_str(&format!("{{\"type\":\"moved\",\"value\":{valid}}}"))
+            .expect("decodes");
     assert!(matches!(decoded, HistoryEvent::Moved { .. }));
 
     let mut world = HistoryWorld::new(0);
@@ -802,22 +824,24 @@ fn c5_moved_payload_decoder_b_h3() {
         "{{\"entity\":{e},\"points\":{two},\"points\":{two}}}"
     ))
     .contains("duplicate history payload field `points`"));
-    assert!(decode_moved(&format!(
-        "{{\"entity\":{e},\"points\":{two},\"extra\":1}}"
-    ))
-    .contains("unknown history payload field"));
+    assert!(
+        decode_moved(&format!("{{\"entity\":{e},\"points\":{two},\"extra\":1}}"))
+            .contains("unknown history payload field")
+    );
     assert!(
         decode_moved(&format!("{{\"points\":{two}}}")).contains("history payload misses `entity`")
     );
-    assert!(decode_moved(&format!("{{\"entity\":{e}}}")).contains("history payload misses `points`"));
+    assert!(
+        decode_moved(&format!("{{\"entity\":{e}}}")).contains("history payload misses `points`")
+    );
 
     // The bounded sequence: at least two, at most 64, streamed.
-    assert!(decode_moved(&format!("{{\"entity\":{e},\"points\":[[0,0,0]]}}"))
-        .contains("history move points below 2"));
     assert!(
-        decode_moved(&format!("{{\"entity\":{e},\"points\":[]}}"))
+        decode_moved(&format!("{{\"entity\":{e},\"points\":[[0,0,0]]}}"))
             .contains("history move points below 2")
     );
+    assert!(decode_moved(&format!("{{\"entity\":{e},\"points\":[]}}"))
+        .contains("history move points below 2"));
     assert!(decode_moved(&format!(
         "{{\"entity\":{e},\"points\":{}}}",
         points_text(65)
@@ -849,3 +873,197 @@ fn c5_moved_payload_decoder_b_h3() {
     assert!(decode_moved("{\"points\":[[0,0,0]]}").contains("history move points below 2"));
 }
 
+// ------------------------------- C-6 / B-H4: the persisted TurnMovement
+
+#[test]
+fn c6_definition_persistence_b_h4_b_c2() {
+    let fx = move_fixture();
+    let (w, _ids) = fx.start(7);
+    let combat = w.combat().expect("an encounter");
+    assert_eq!(
+        combat.definition.movement,
+        Some(TurnMovement {
+            measure: Measure::Euclidean,
+            pool: Ulid::from_u128(106),
+            step_cost: 1,
+        })
+    );
+    assert_eq!(
+        serde_json::to_string(&combat.definition.movement).expect("serializes"),
+        format!(
+            "{{\"measure\":\"euclidean\",\"pool\":\"{}\",\"step_cost\":1}}",
+            uid(106)
+        )
+    );
+
+    // Without `movement` in the ruleset the definition holds none.
+    let mut bare = move_fixture();
+    edit_ruleset(&mut bare, |r| {
+        r.as_object_mut()
+            .expect("a ruleset object")
+            .remove("movement");
+    });
+    let (bare_world, _) = bare.start(7);
+    assert_eq!(
+        bare_world
+            .combat()
+            .expect("an encounter")
+            .definition
+            .movement,
+        None
+    );
+
+    // The standard fixture keeps the 15-field legacy form with no movement.
+    let (plain, _) = Fixture::standard().start(1);
+    let definition =
+        serde_json::to_value(&plain).expect("serializes")["combat"]["definition"].clone();
+    let object = definition.as_object().expect("an object");
+    assert_eq!(object.len(), 15, "the legacy definition writes 15 fields");
+    assert!(!object.contains_key("movement"));
+    // Both repr branches read `movement` with `#[serde(default)]`.
+    let bytes = serde_json::to_vec(&plain).expect("serializes");
+    let loaded: World = serde_json::from_slice(&bytes).expect("the legacy form loads");
+    assert_eq!(
+        loaded.combat().expect("an encounter").definition.movement,
+        None
+    );
+    assert_eq!(loaded, plain);
+
+    // The loader rejects an alien pool, then a zero step cost.
+    let err = try_with_json(&w, |save| {
+        save["combat"]["definition"]["movement"]["pool"] = json!(uid(999));
+    })
+    .expect_err("the movement pool must be one of the definition's pools");
+    assert!(
+        err.contains("combat movement pool outside its pools"),
+        "{err}"
+    );
+    let err = try_with_json(&w, |save| {
+        save["combat"]["definition"]["movement"]["step_cost"] = json!(0);
+    })
+    .expect_err("a zero movement step cost is refused");
+    assert!(err.contains("combat movement step cost is zero"), "{err}");
+
+    // Start: a movement pool outside the ruleset's templates.
+    let mut alien = move_fixture();
+    edit_ruleset(&mut alien, |r| {
+        r["movement"]["turn"]["pool"] = json!(uid(999));
+    });
+    let mut world = World::new(7);
+    assert_eq!(
+        alien.with_spec(|spec| start_encounter(&mut world, spec)),
+        Err(CombatError::MissingPool {
+            pool: Ulid::from_u128(999)
+        })
+    );
+
+    // Start: a zero step cost names that pool's maximum.
+    let mut free = move_fixture();
+    edit_ruleset(&mut free, |r| {
+        r["movement"]["turn"]["step_cost"] = json!(0);
+    });
+    let mut world = World::new(7);
+    assert_eq!(
+        free.with_spec(|spec| start_encounter(&mut world, spec)),
+        Err(CombatError::InvalidCost { cost: 0, max: 6 })
+    );
+}
+
+#[test]
+fn c6_legacy_shape_with_movement_b_h4() {
+    let fx = move1();
+    let (mut world, ids) = fx.start(7);
+    let b = ids[1];
+    let keys = {
+        let combat = world.combat().expect("an encounter");
+        assert_eq!(
+            serde_json::to_string(&combat.definition.movement).expect("serializes"),
+            format!(
+                "{{\"measure\":\"euclidean\",\"pool\":\"{}\",\"step_cost\":1}}",
+                uid(105)
+            )
+        );
+        top_level_keys(
+            serde_json::to_string(&combat.definition)
+                .expect("serializes")
+                .as_bytes(),
+        )
+    };
+    for name in ["abilities", "pools", "effects", "movement"] {
+        assert!(
+            keys.iter().any(|key| key == name),
+            "{name} missing from {keys:?}"
+        );
+    }
+    assert_eq!(keys.len(), 19, "the non-legacy form: {keys:?}");
+    assert_eq!(
+        keys.last().map(String::as_str),
+        Some("movement"),
+        "movement is the last definition field"
+    );
+
+    let bytes = serde_json::to_vec(&world).expect("serializes");
+    let loaded: World = serde_json::from_slice(&bytes).expect("loads");
+    assert_eq!(loaded, world);
+    assert!(loaded
+        .combat()
+        .expect("an encounter")
+        .definition
+        .movement
+        .is_some());
+    assert_eq!(
+        serde_json::to_vec(&loaded).expect("serializes"),
+        bytes,
+        "a legacy-shaped definition with movement re-serializes identically"
+    );
+
+    // The T036a creation checks run before the movement pool check.
+    let mut broken = move_fixture();
+    edit_ruleset(&mut broken, |r| {
+        r["movement"]["turn"]["pool"] = json!(uid(999));
+        r["movement"]["turn"]["step"] = json!({"type": "constant", "value": 0});
+    });
+    let mut empty = World::new(7);
+    assert_eq!(
+        broken.with_spec(|spec| start_encounter(&mut empty, spec)),
+        Err(CombatError::InvalidStep {
+            placement: Ulid::from_u128(111)
+        })
+    );
+
+    // The movement pool is the primary pool, so a move spends it.
+    world.bind_nav(rev());
+    let outcome =
+        perform_move(&mut world, b, &route(1, vec![p(10, 0), p(11, 0)])).expect("one step");
+    assert_eq!(
+        (
+            outcome.cost,
+            world
+                .combatants()
+                .get(b)
+                .expect("B")
+                .action_pool()
+                .current()
+        ),
+        (1, 0)
+    );
+
+    // `movement` persists after `initiative`.
+    let mut drawn = move1();
+    support::draws::set_initiative_rule(&mut drawn, "1d6", &[]);
+    let (world, _) = drawn.start(7);
+    let keys = top_level_keys(
+        serde_json::to_string(&world.combat().expect("an encounter").definition)
+            .expect("serializes")
+            .as_bytes(),
+    );
+    let initiative = keys
+        .iter()
+        .position(|key| key == "initiative")
+        .expect("an initiative key");
+    assert_eq!(
+        keys.get(initiative + 1).map(String::as_str),
+        Some("movement"),
+        "{keys:?}"
+    );
+}
