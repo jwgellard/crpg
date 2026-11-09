@@ -138,6 +138,11 @@ enum V {
     CentStart,
     CentGoal,
     SwapLr,
+    Trunc,
+    WrapX,
+    WrapZ,
+    RightSameLeft,
+    Dedupe3d,
 }
 const MUTANTS: [V; 7] = [
     V::NoH,
@@ -165,7 +170,7 @@ fn ref_locate(mesh: &NavMesh, q: P3) -> Option<u32> {
 }
 
 #[allow(unused_assignments)]
-fn funnel(portals: &[(P3, P3)]) -> Vec<P3> {
+fn funnel(portals: &[(P3, P3)], v: V) -> Vec<P3> {
     let (first_l, first_r) = portals[0];
     let mut apex = first_l;
     let mut left = first_l;
@@ -176,7 +181,8 @@ fn funnel(portals: &[(P3, P3)]) -> Vec<P3> {
     while i < portals.len() {
         let (l, r) = portals[i];
         if cr(apex, right, r) >= 0 {
-            if same(apex, right) || cr(apex, left, r) < 0 {
+            let anchor = if v == V::RightSameLeft { left } else { right };
+            if same(apex, anchor) || cr(apex, left, r) < 0 {
                 right = r;
                 right_i = i;
             } else {
@@ -230,7 +236,15 @@ fn ref_find(mesh: &NavMesh, from: P3, to: P3, v: V) -> Result<(Vec<P3>, u64), Na
             sx += i64::from(verts[vi as usize][0].to_raw());
             sz += i64::from(verts[vi as usize][2].to_raw());
         }
-        rw(sx.div_euclid(n) as i32, 0, sz.div_euclid(n) as i32)
+        let div = |sum: i64, wrap: bool| -> i32 {
+            let t = if wrap { i64::from(sum as i32) } else { sum };
+            if v == V::Trunc {
+                (t / n) as i32
+            } else {
+                t.div_euclid(n) as i32
+            }
+        };
+        rw(div(sx, v == V::WrapX), 0, div(sz, v == V::WrapZ))
     };
     let pt = |id: u32| -> P3 {
         if id == s && v != V::CentStart {
@@ -319,8 +333,14 @@ fn ref_find(mesh: &NavMesh, from: P3, to: P3, v: V) -> Result<(Vec<P3>, u64), Na
     }
     portals.push((goal, goal));
     let mut points = Vec::new();
-    for q in funnel(&portals) {
-        if points.last().is_none_or(|&l| !same(l, q)) {
+    for q in funnel(&portals, v) {
+        if points.last().is_none_or(|&l| {
+            if v == V::Dedupe3d {
+                l != q
+            } else {
+                !same(l, q)
+            }
+        }) {
             points.push(q);
         }
     }
@@ -777,5 +797,201 @@ fn c9_deterministic() {
             assert_eq!(first, find(&case.mesh, a, b));
             assert_eq!(first, find(&fresh, a, b));
         }
+    }
+}
+// ------------------------------------------------ fix round: pinned survivors
+
+/// Hand-built mesh: polygons as local `(x, z)` raw corners, counter-clockwise.
+/// `transpose` swaps the axes (and restores the winding).
+struct Layout {
+    dx: i32,
+    dz: i32,
+    transpose: bool,
+}
+impl Layout {
+    fn xz(&self, lx: i32, lz: i32) -> (i32, i32) {
+        let (x, z) = (lx + self.dx, lz + self.dz);
+        if self.transpose {
+            (z, x)
+        } else {
+            (x, z)
+        }
+    }
+    fn pt(&self, lx: i32, lz: i32) -> P3 {
+        let (x, z) = self.xz(lx, lz);
+        rw(x, 0, z)
+    }
+    fn mesh(&self, polys: &[Vec<(i32, i32)>]) -> NavMesh {
+        let mut verts: Vec<(i32, i32)> = Vec::new();
+        let mut out = Vec::new();
+        for poly in polys {
+            let mut ids = Vec::new();
+            for &(lx, lz) in poly {
+                let q = self.xz(lx, lz);
+                let at = verts.iter().position(|&v| v == q).unwrap_or_else(|| {
+                    verts.push(q);
+                    verts.len() - 1
+                });
+                ids.push(at as u32);
+            }
+            if self.transpose {
+                ids.reverse();
+            }
+            out.push(ids);
+        }
+        let vs = verts.iter().map(|&(x, z)| rw(x, 0, z)).collect();
+        NavMesh::new(vs, out).unwrap()
+    }
+}
+
+type Flat = Result<(Vec<P3>, u64), NavError>;
+
+/// Checks `find_path` and the full model against `expect`, and that the
+/// planted `mutant` model gives something else.
+fn pin(mesh: &NavMesh, a: P3, b: P3, expect: Flat, mutant: Option<V>) {
+    assert_eq!(flat(find(mesh, a, b)), expect);
+    assert_eq!(ref_find(mesh, a, b, V::Full), expect);
+    if let Some(mu) = mutant {
+        assert_ne!(ref_find(mesh, a, b, mu), expect, "{mu:?} not separated");
+    }
+}
+
+fn straight(a: P3, b: P3) -> Flat {
+    Ok((vec![a, b], seg_len(a, b)))
+}
+
+#[test]
+fn funnel_fan_around_the_apex_vertex() {
+    // Triangles V B_k B_k+1 fan around V = (0,0); a path that starts or ends at V
+    // keeps one portal end on the apex while the other end moves.
+    let bs = [(10, 0), (10, 5), (10, 10), (5, 10), (0, 10)];
+    let tri = |k: usize| vec![(0, 0), bs[k], bs[k + 1]];
+    let lay = Layout {
+        dx: 0,
+        dz: 0,
+        transpose: false,
+    };
+    // ccw numbering: every crossing edge ends at V (left end on the apex)
+    let ccw = lay.mesh(&[tri(0), tri(1), tri(2), tri(3)]);
+    // cw numbering: every crossing edge starts at V (right end on the apex)
+    let cw = lay.mesh(&[tri(3), tri(2), tri(1), tri(0)]);
+    let v = lay.pt(0, 0);
+    let far_ccw = lay.pt(1, 8); // inside the last triangle of `ccw`
+    let far_cw = lay.pt(8, 2); // inside the last triangle of `cw`
+    assert_eq!(ccw.neighbours(PolyId(0)).unwrap()[2], Some(PolyId(1)));
+    assert_eq!(cw.neighbours(PolyId(0)).unwrap()[0], Some(PolyId(1)));
+    pin(&ccw, v, far_ccw, straight(v, far_ccw), None);
+    pin(&ccw, far_ccw, v, straight(far_ccw, v), None);
+    pin(&cw, v, far_cw, straight(v, far_cw), Some(V::RightSameLeft));
+    pin(&cw, far_cw, v, straight(far_cw, v), None);
+    assert_eq!(seg_len(v, far_cw), 9);
+    assert_eq!(seg_len(v, far_ccw), 9);
+    // the fans mirrored in z swap the roles of left and right again
+    let mir = |k: usize| {
+        let (x0, z0) = bs[k];
+        let (x1, z1) = bs[k + 1];
+        vec![(0, 0), (x1, -z1), (x0, -z0)]
+    };
+    let cw2 = lay.mesh(&[mir(0), mir(1), mir(2), mir(3)]);
+    let ccw2 = lay.mesh(&[mir(3), mir(2), mir(1), mir(0)]);
+    let (g1, g2) = (lay.pt(1, -8), lay.pt(8, -2));
+    pin(&cw2, v, g1, straight(v, g1), Some(V::RightSameLeft));
+    pin(&ccw2, v, g2, straight(v, g2), None);
+    pin(&cw2, g1, v, straight(g1, v), None);
+    pin(&ccw2, g2, v, straight(g2, v), None);
+}
+
+#[test]
+fn dedupe_compares_x_and_z_only() {
+    let w = wall();
+    // start on the hole corner (4,8) with a y that differs from the polygon y
+    let from = [m(4), m(5), m(8)];
+    let expect = vec![from, [m(6), m(0), m(8)], [m(8), m(0), m(2)]];
+    let length = sum_len(&expect);
+    pin(&w, from, p(8, 2), Ok((expect, length)), Some(V::Dedupe3d));
+    // ending on a vertex: the last point takes the polygon y, no zero-length segment
+    let to = [m(4), m(5), m(8)];
+    let r = ok_points(&w, p(8, 2), to);
+    assert_eq!(r.first(), Some(&p(8, 2)));
+    assert_eq!(r.last(), Some(&p(4, 8)));
+    assert!(r.windows(2).all(|s| !same(s[0], s[1])));
+    assert_eq!(
+        flat(find(&w, p(8, 2), to)),
+        ref_find(&w, p(8, 2), to, V::Full)
+    );
+    // every wall corner as a start, with an odd y
+    for (x, z) in [(4, 0), (4, 8), (6, 8), (6, 0), (10, 10), (0, 10)] {
+        let a = [m(x), m(7), m(z)];
+        for b in [p(8, 2), p(2, 2), p(5, 9)] {
+            let got = find(&w, a, b);
+            assert_eq!(flat(got.clone()), ref_find(&w, a, b, V::Full));
+            if let Ok(path) = got {
+                assert_eq!(path.points()[0], a);
+                assert!(path.points().windows(2).all(|s| !same(s[0], s[1])));
+            }
+        }
+    }
+}
+
+#[test]
+fn exactly_65_points_is_too_complex() {
+    let c32 = comb(32, 6, 200);
+    let goal = p(199, 2);
+    // hole 31 (odd) is passed below at (188,4); a goal under its far corner needs no
+    // second corner, so 1 start + 62 corners + (188,4) + goal = 65 points
+    assert_eq!(
+        find(&c32, p(1, 10), goal),
+        Err(NavError::PathTooComplex { points: 65 })
+    );
+    assert_eq!(
+        ref_find(&c32, p(1, 10), goal, V::Full),
+        Err(NavError::PathTooComplex { points: 65 })
+    );
+    // control: 64 points is Ok
+    let c31 = comb(31, 6, 200);
+    assert_eq!(find(&c31, p(1, 10), p(199, 10)).unwrap().points().len(), 64);
+}
+
+#[test]
+fn centroid_uses_floor_division() {
+    // S, X, H, G in a row; H is the band whose centroid z floors to -2 (truncation
+    // gives -1). With floor, S-H-G costs 80 and S-X-G costs 82, so the path is straight.
+    // With truncation H costs 82, ties X on (f, h), the lower id (X) wins, and the path
+    // would bend around X.
+    let lay = Layout {
+        dx: 0,
+        dz: 0,
+        transpose: false,
+    };
+    let s = vec![(0, -7), (20, -7), (20, -3), (20, 0), (0, 0)];
+    let x = vec![(20, -7), (80, -7), (80, -3), (20, -3)];
+    let hh = vec![(20, -3), (80, -3), (80, 0), (20, 0)];
+    let g = vec![(80, -7), (100, -7), (100, 0), (80, 0), (80, -3)];
+    let mesh = lay.mesh(&[s, x, hh, g]);
+    let (a, b) = (lay.pt(10, -2), lay.pt(90, -2));
+    pin(&mesh, a, b, Ok((vec![a, b], 80)), Some(V::Trunc));
+}
+
+#[test]
+fn centroid_sums_do_not_wrap_at_the_coordinate_limit() {
+    // Row S, (X below | H above), G near x = 2^29. H has six vertices, so the i32 sum of
+    // its x values wraps and its centroid would jump far away, flipping the route.
+    let t = COORD_LIMIT_RAW - 100;
+    let s = vec![(0, -30), (20, -30), (20, 0), (20, 40), (0, 40)];
+    let x = vec![(20, -30), (80, -30), (80, 0), (20, 0)];
+    let hh = vec![(20, 0), (80, 0), (80, 40), (60, 40), (40, 40), (20, 40)];
+    let g = vec![(80, -30), (100, -30), (100, 40), (80, 40), (80, 0)];
+    let polys = [s, x, hh, g];
+    for (transpose, mutant) in [(false, V::WrapX), (true, V::WrapZ)] {
+        let lay = Layout {
+            dx: t,
+            dz: 0,
+            transpose,
+        };
+        let mesh = lay.mesh(&polys);
+        let (a, b) = (lay.pt(10, 10), lay.pt(90, 10));
+        pin(&mesh, a, b, Ok((vec![a, b], 80)), Some(mutant));
+        let back = flat(find(&mesh, b, a));
+        assert_eq!(back, ref_find(&mesh, b, a, V::Full));
     }
 }
