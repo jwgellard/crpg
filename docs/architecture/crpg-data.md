@@ -456,3 +456,23 @@ bound; `crpg-sim` (T036) should import it rather than declare another.
   computing cost belong to `crpg-sim`.
 
 - 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T148 · Documented the optional ruleset movement block, its read-time and creature-value rules, and that it joins `crpg.ruleset/2` without a version bump (D32c, D47).
+
+## Ability range (T149a)
+
+`Ability.range` is an optional `Option<Fx16_16>` on `crpg.ability/2`, added at
+the current tag with no version bump, no migration edge and no fixture change
+(D32c, D50): absence means unlimited and writes nothing, so every existing
+document decodes to the same value and re-encodes byte for byte. The wire is
+the raw `i32` (a constant only, not T148's constant-or-stat `LengthWire`); an
+explicit `null` reads as absent and is never written back.
+
+- Read-time (`Malformed`, last check of the `Ability` arm): a raw below `1`
+  fails `ability range must be positive`; there is no upper bound.
+- Semantic (`walk_combat`, per listed ability, directly after the real-time
+  warning): a range under a ruleset with no `movement` is
+  `range_without_movement`, a `Warning` at `/range`; it never fails
+  validation. With `movement` present there is no finding.
+- `crpg-data` gives the field no runtime meaning: X2's admission check, the
+  `within_range` formula and X3's retained order belong to `crpg-sim` (T149b).
+
+- 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash (implementer) + T149a · Documented the optional ability range, its raw `i32` wire, the positive read-time rule, the current-tag addition under D32c and the movement-less warning.

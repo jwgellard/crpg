@@ -203,6 +203,7 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
                 "recovery_ticks",
                 "repeats_in_real_time",
                 "bonus_stats",
+                "range",
             ],
             "ruleset" => &[
                 "_note",

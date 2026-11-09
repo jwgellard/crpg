@@ -116,6 +116,8 @@ pub enum DiagnosticCode {
     UnknownVariant,
     /// A UI stat format does not suit the stat's declared kind.
     FormatMismatch,
+    /// An ability declares a range under a ruleset with no movement.
+    RangeWithoutMovement,
 }
 
 impl DiagnosticCode {
@@ -162,6 +164,7 @@ impl DiagnosticCode {
             Self::UnknownGroup => "unknown_group",
             Self::UnknownVariant => "unknown_variant",
             Self::FormatMismatch => "format_mismatch",
+            Self::RangeWithoutMovement => "range_without_movement",
         }
     }
 }
@@ -753,6 +756,19 @@ fn walk_combat(tables: &Tables, docs: &BTreeMap<SourcePath, Document>, out: &mut
                         ruleset.id
                     ),
                     Some("add round_ticks to the ruleset or remove the real-time fields"),
+                );
+            }
+            if ability.range.is_some() && ruleset.movement.is_none() {
+                push_warning(
+                    out,
+                    file,
+                    "/range".into(),
+                    DiagnosticCode::RangeWithoutMovement,
+                    format!(
+                        "ability {ability_id} declares a range but ruleset {} has no movement",
+                        ruleset.id
+                    ),
+                    Some("add movement to the ruleset or remove the range"),
                 );
             }
             if ability.cost == 0 && ability.extra_costs.is_empty() {

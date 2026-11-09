@@ -355,6 +355,16 @@
           "$ref": "#/$defs/UlidText",
           "description": "Outcome-table identity."
         },
+        "range": {
+          "description": "Largest horizontal distance to the target, raw fixed-point metres; absent means unlimited.",
+          "format": "int32",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "recovery_ticks": {
           "description": "Real-time recovery ticks after use, nonzero; absent means round_ticks.",
           "format": "uint32",

@@ -436,6 +436,7 @@ fn t10_generated_schemas_carry_optional_rt_properties() {
             "name",
             "natural_die",
             "outcome_table",
+            "range",
             "recovery_ticks",
             "repeats_in_real_time",
             "requires_target",

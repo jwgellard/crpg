@@ -1362,6 +1362,7 @@ fn item9_semantic_unknown_stat() {
                 recovery_ticks: None,
                 repeats_in_real_time: None,
                 bonus_stats: Some(vec!["bogus".into()]),
+                range: None,
             }),
         );
     });
@@ -1607,6 +1608,7 @@ fn item11_rt_warning() {
                 recovery_ticks: Some(60),
                 repeats_in_real_time: None,
                 bonus_stats: None,
+                range: None,
             }),
         );
     });

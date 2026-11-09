@@ -785,6 +785,7 @@ fn duplicate_slugs_and_missing_locale_cover_new_kinds() {
                 recovery_ticks: None,
                 repeats_in_real_time: None,
                 bonus_stats: None,
+                range: None,
             }),
         );
     });
