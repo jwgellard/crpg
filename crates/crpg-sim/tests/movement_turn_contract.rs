@@ -190,3 +190,174 @@ fn c1_route_cost_b_c1() {
     assert_eq!(route_cost(u64::MAX, step(1), u32::MAX), None);
     assert_eq!(route_cost(u64::MAX, step(1), 1), None);
 }
+
+// --------------------------------------- C-2 / B-C4 spending from the pool
+
+#[test]
+fn c2_move_spends_and_keeps_the_turn_b_c4() {
+    let fx = move_fixture();
+    let (mut w, ids) = fx.start(7);
+    let (_, b) = (ids[0], ids[1]);
+    w.bind_nav(rev());
+    assert_eq!(w.combat().expect("an encounter").active, Some(b));
+    assert_eq!(pool106(&w, b), 6);
+    let before = value_of(&w);
+
+    let outcome = perform_move(&mut w, b, &route(1, vec![p(10, 0), p(10, 3), p(7, 3)]))
+        .expect("six metres at 1.5 m a step costs four");
+    assert_eq!(
+        outcome,
+        MoveOutcome {
+            actor: b,
+            cost: 4,
+            from: p(10, 0),
+            to: p(7, 3),
+        }
+    );
+    assert_eq!(pool106(&w, b), 2, "the pool pays exactly the cost");
+    assert_eq!(
+        raw3(w.movers().get(b).expect("a mover").position()),
+        [458_752, 0, 196_608]
+    );
+    assert!(w.movers().get(b).expect("a mover").route().is_none());
+    assert_eq!(
+        bits(&w, b),
+        ([0x40e0_0000, 0, 0x4040_0000], [0; 3]),
+        "the mirror follows the mover with zero velocity"
+    );
+    assert_eq!(
+        w.combat().expect("an encounter").active,
+        Some(b),
+        "the move keeps the turn"
+    );
+    let after = value_of(&w);
+    assert_eq!(after["rng"], before["rng"], "no draw");
+    assert_eq!(after["events"], before["events"], "no event");
+
+    // Its turn is still B's: it moves again, then cannot afford one metre.
+    let outcome = perform_move(&mut w, b, &route(2, vec![p(7, 3), p(7, 1)]))
+        .expect("two metres cost two");
+    assert_eq!((outcome.cost, pool106(&w, b)), (2, 0));
+    let before = bytes_of(&w);
+    assert_eq!(
+        perform_move(&mut w, b, &route(3, vec![p(7, 1), p(7, 0)])),
+        Err(MoveError::CannotAfford {
+            cost: 1,
+            current: 0
+        })
+    );
+    assert_eq!(bytes_of(&w), before, "a rejection changes nothing");
+
+    // A cost exactly equal to the pool is paid; one more is refused.
+    let (mut w, ids) = fx.start(7);
+    let b9 = ids[1];
+    w.bind_nav(rev());
+    let outcome =
+        perform_move(&mut w, b9, &route(4, vec![p(10, 0), p(10, 9)])).expect("six steps fit six");
+    assert_eq!((outcome.cost, pool106(&w, b9)), (6, 0));
+    let (mut w, ids) = fx.start(7);
+    let b10 = ids[1];
+    w.bind_nav(rev());
+    assert_eq!(
+        perform_move(&mut w, b10, &route(5, vec![p(10, 0), p(10, 10)])),
+        Err(MoveError::CannotAfford {
+            cost: 7,
+            current: 6
+        })
+    );
+
+    // A `u32::MAX`-sized cost is reported at its true `u64` value.
+    let mut wide = move_fixture();
+    edit_ruleset(&mut wide, |r| {
+        r["movement"]["turn"]["step"] = json!({"type": "constant", "value": 1});
+        r["movement"]["turn"]["step_cost"] = json!(u32::MAX);
+    });
+    let (mut w, ids) = wide.start(7);
+    let b = ids[1];
+    w.bind_nav(rev());
+    assert_eq!(
+        perform_move(&mut w, b, &route(6, vec![p(10, 0), p(11, 0)])),
+        Err(MoveError::CannotAfford {
+            cost: 281_474_976_645_120,
+            current: 6
+        })
+    );
+}
+
+#[test]
+fn c2_step_cost_scales_the_charge_b_c1() {
+    // One input differs from the C-2 world: `step_cost` 3 instead of 1.
+    let mut fx = move_fixture();
+    edit_ruleset(&mut fx, |r| {
+        r["movement"]["turn"]["step_cost"] = json!(3);
+    });
+    let (mut w, ids) = fx.start(7);
+    let b = ids[1];
+    w.bind_nav(rev());
+    assert_eq!(
+        perform_move(&mut w, b, &route(1, vec![p(10, 0), p(10, 3), p(7, 3)])),
+        Err(MoveError::CannotAfford {
+            cost: 12,
+            current: 6
+        })
+    );
+    let outcome =
+        perform_move(&mut w, b, &route(2, vec![p(10, 0), p(11, 0)])).expect("one step costs three");
+    assert_eq!((outcome.cost, pool106(&w, b)), (3, 3));
+}
+
+#[test]
+fn c2_mirror_velocity_is_rewritten_b_c4() {
+    let fx = move_fixture();
+    let (w, ids) = fx.start(7);
+    let b = ids[1];
+    let mut w = {
+        // The save loads with a velocity (L6 reads positions only).
+        let mut w = w;
+        w.bind_nav(rev());
+        with_json(&w, |save| {
+            set_mirror_velocity(save, b, json!([1.0_f32, 0.0_f32, 0.0_f32]))
+        })
+    };
+    assert_eq!(bits(&w, b).1, [0x3f80_0000, 0, 0]);
+    perform_move(&mut w, b, &route(1, vec![p(10, 0), p(10, 3), p(7, 3)])).expect("the move");
+    assert_eq!(bits(&w, b).1, [0; 3], "the move writes zero velocity");
+}
+
+#[test]
+fn c2_primary_pool_balance_and_spend_b_c3_b_c4() {
+    // MOVE1: the movement pool is the ability's own primary pool.
+    let fx = move1();
+    let (mut w, ids) = fx.start(7);
+    let (a, b) = (ids[0], ids[1]);
+    w.bind_nav(rev());
+    assert_eq!(w.combatants().get(b).expect("B").action_pool().current(), 1);
+    assert!(w.combatants().get(b).expect("B").extra_pools().is_empty());
+    let outcome = perform_move(&mut w, b, &route(1, vec![p(10, 0), p(11, 0)])).expect("one step");
+    assert_eq!(outcome.cost, 1);
+    assert_eq!(w.combatants().get(b).expect("B").action_pool().current(), 0);
+    assert_eq!(
+        perform_move(&mut w, b, &route(2, vec![p(11, 0), p(12, 0)])),
+        Err(MoveError::CannotAfford {
+            cost: 1,
+            current: 0
+        })
+    );
+
+    // The ability that shares the pool now cannot be afforded either.
+    assert_eq!(
+        validate_action(
+            &w,
+            &CombatAction::UseAbility {
+                actor: b,
+                ability: fx.ability,
+                target: a,
+            }
+        ),
+        Err(CombatError::InsufficientAction {
+            pool: Ulid::from_u128(105),
+            cost: 1,
+            current: 0
+        })
+    );
+}
