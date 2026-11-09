@@ -606,3 +606,246 @@ fn c4_validate_move_is_read_only_b_c3() {
         "ticking moves no turn-based participant"
     );
 }
+
+// -------------------------------- C-5 / B-C5, B-H1: the journal and version
+
+/// A MOVE `HistoryWorld` with the nav bound, turn-based, ids A then B.
+fn history_tb(fx: &Fixture) -> (HistoryWorld, EntityId, EntityId) {
+    let mut h = HistoryWorld::new(7);
+    h.bind_nav(rev()).expect("nav binds");
+    fx.with_spec(|spec| h.start_encounter_in_mode(spec, EncounterMode::TurnBased))
+        .expect("the fight starts");
+    let ids: Vec<EntityId> = h.world().combatants().iter().map(|(id, _)| id).collect();
+    (h, ids[0], ids[1])
+}
+
+/// The moved payload of C-5.
+fn moved_payload(b: EntityId) -> HistoryEvent {
+    HistoryEvent::Moved {
+        entity: b,
+        points: vec![
+            rp(655_360, 0, 0),
+            rp(655_360, 0, 196_608),
+            rp(458_752, 0, 196_608),
+        ],
+    }
+}
+
+#[test]
+fn c5_history_v3_journal_and_version_b_h1_b_c5() {
+    assert_eq!(HISTORY_VERSION, 3);
+    assert_eq!(HistoryWorld::new(0).version(), 1);
+
+    let fx = move_fixture();
+    let (mut h, _a, b) = history_tb(&fx);
+    assert_eq!(h.version(), 1, "a turn-based start keeps version 1");
+
+    let seq = h.last_sequence();
+    let outcome = h
+        .perform_move(b, &route(1, vec![p(10, 0), p(10, 3), p(7, 3)]))
+        .expect("the move is paid from pool 106");
+    assert_eq!(
+        outcome,
+        MoveOutcome {
+            actor: b,
+            cost: 4,
+            from: p(10, 0),
+            to: p(7, 3),
+        }
+    );
+    assert_eq!(h.version(), 3, "the first committed Moved sets version 3");
+    assert_eq!(pool106(h.world(), b), 2);
+    let added = h.read_after(seq, 256).expect("a short read");
+    assert_eq!(added.len(), 1, "exactly one envelope");
+    assert_eq!(added[0].payload, moved_payload(b));
+
+    // Release and acknowledgement are sticky.
+    h.end_encounter().expect("release");
+    assert_eq!(h.version(), 3, "release keeps 3");
+    let last = h.last_sequence();
+    h.acknowledge(last).expect("acknowledge");
+    assert_eq!(h.version(), 3, "acknowledgement keeps 3");
+
+    // A rejected move commits nothing and leaves version 1.
+    let (mut h, _, b) = history_tb(&fx);
+    let before = serde_json::to_vec(&h).expect("serializes");
+    assert_eq!(
+        h.perform_move(b, &route(1, vec![p(0, 0), p(1, 0)])),
+        Err(HistoryError::Move(MoveError::StartMismatch))
+    );
+    assert_eq!(h.version(), 1);
+    assert_eq!(serde_json::to_vec(&h).expect("serializes"), before);
+    assert_eq!(pool106(h.world(), b), 6, "nothing was spent");
+
+    // An RT-capable wrapper writes 2, and only a `Moved` raises it to 3.
+    let (mut h, _, b) = history_tb(&move_rt());
+    assert_eq!(h.version(), 2, "an RT-capable start still writes version 2");
+    h.perform_move(b, &route(1, vec![p(10, 0), p(10, 1)]))
+        .expect("one step");
+    assert_eq!(h.version(), 3);
+
+    // A move that is not A's commits nothing, so version 1 stays.
+    let (mut h, a, _) = history_tb(&fx);
+    assert!(h
+        .perform_move(a, &route(2, vec![p(10, 0), p(11, 0)]))
+        .is_err());
+    assert_eq!(h.version(), 1);
+}
+
+#[test]
+fn c5_history_loader_versions_b_h2() {
+    let fx = move_fixture();
+    let (mut h, _, b) = history_tb(&fx);
+    h.perform_move(b, &route(1, vec![p(10, 0), p(10, 1)]))
+        .expect("one step");
+    let value = serde_json::to_value(&h).expect("serializes");
+
+    // Versions 1 and 2 may not retain a v3 event.
+    for forged in [1, 2] {
+        let mut edited = value.clone();
+        edited["version"] = json!(forged);
+        let err = serde_json::from_value::<HistoryWorld>(edited)
+            .expect_err("a v3 event below version 3 fails")
+            .to_string();
+        assert!(
+            err.contains("history journal holds a v3 event below version 3"),
+            "version {forged}: {err}"
+        );
+    }
+    // 0 and 4 are unknown versions.
+    for forged in [0, 4] {
+        let mut edited = value.clone();
+        edited["version"] = json!(forged);
+        let err = serde_json::from_value::<HistoryWorld>(edited)
+            .expect_err("an unknown version fails")
+            .to_string();
+        assert!(
+            err.contains("unknown history version"),
+            "version {forged}: {err}"
+        );
+    }
+
+    // 1, 2 and 3 are read as written.
+    let fresh = HistoryWorld::new(0);
+    let text = serde_json::to_vec(&fresh).expect("serializes");
+    let loaded: HistoryWorld = serde_json::from_slice(&text).expect("version 1 loads");
+    assert_eq!(loaded.version(), 1);
+
+    let (rt, _, _) = history_tb(&move_rt());
+    assert_eq!(rt.version(), 2);
+    let text = serde_json::to_vec(&rt).expect("serializes");
+    let loaded: HistoryWorld = serde_json::from_slice(&text).expect("version 2 loads");
+    assert_eq!(loaded.version(), 2);
+
+    let bytes = serde_json::to_vec(&h).expect("serializes");
+    let loaded: HistoryWorld = serde_json::from_slice(&bytes).expect("version 3 loads");
+    assert_eq!(loaded.version(), 3);
+    assert_eq!(
+        serde_json::to_vec(&loaded).expect("serializes"),
+        bytes,
+        "a v3 wrapper round-trips byte-identically"
+    );
+}
+
+// ----------------------------------------- B-H3: the `moved` payload decoder
+
+fn entity_text() -> &'static str {
+    r#"{"index":1,"generation":1}"#
+}
+fn point_items(n: usize) -> String {
+    let items: Vec<&str> = (0..n).map(|_| "[0,0,0]").collect();
+    items.join(",")
+}
+/// A JSON array of `n` whole-number points.
+fn points_text(n: usize) -> String {
+    format!("[{}]", point_items(n))
+}
+fn decode_moved(value: &str) -> String {
+    serde_json::from_str::<HistoryEvent>(&format!("{{\"type\":\"moved\",\"value\":{value}}}"))
+        .expect_err("the payload is invalid")
+        .to_string()
+}
+
+#[test]
+fn c5_moved_payload_decoder_b_h3() {
+    let e = entity_text();
+    let two = points_text(2);
+
+    // A well-formed payload decodes, and encodes with raw `i32` points.
+    let valid = format!("{{\"entity\":{e},\"points\":{two}}}");
+    let decoded: HistoryEvent =
+        serde_json::from_str(&format!("{{\"type\":\"moved\",\"value\":{valid}}}")).expect("decodes");
+    assert!(matches!(decoded, HistoryEvent::Moved { .. }));
+
+    let mut world = HistoryWorld::new(0);
+    let _first = world.spawn(EntityMeta {}).expect("spawn");
+    let second = world.spawn(EntityMeta {}).expect("spawn");
+    assert_eq!((second.index(), second.generation()), (1, 1));
+    assert_eq!(
+        serde_json::to_string(&HistoryEvent::Moved {
+            entity: second,
+            points: vec![rp(1, 2, 3), rp(-4, 5, -6)],
+        })
+        .expect("serializes"),
+        concat!(
+            r#"{"type":"moved","value":{"entity":{"index":1,"generation":1},"#,
+            r#""points":[[1,2,3],[-4,5,-6]]}}"#
+        )
+    );
+
+    // The two key texts.
+    assert!(decode_moved(&format!(
+        "{{\"entity\":{e},\"entity\":{e},\"points\":{two}}}"
+    ))
+    .contains("duplicate history payload field `entity`"));
+    assert!(decode_moved(&format!(
+        "{{\"entity\":{e},\"points\":{two},\"points\":{two}}}"
+    ))
+    .contains("duplicate history payload field `points`"));
+    assert!(decode_moved(&format!(
+        "{{\"entity\":{e},\"points\":{two},\"extra\":1}}"
+    ))
+    .contains("unknown history payload field"));
+    assert!(
+        decode_moved(&format!("{{\"points\":{two}}}")).contains("history payload misses `entity`")
+    );
+    assert!(decode_moved(&format!("{{\"entity\":{e}}}")).contains("history payload misses `points`"));
+
+    // The bounded sequence: at least two, at most 64, streamed.
+    assert!(decode_moved(&format!("{{\"entity\":{e},\"points\":[[0,0,0]]}}"))
+        .contains("history move points below 2"));
+    assert!(
+        decode_moved(&format!("{{\"entity\":{e},\"points\":[]}}"))
+            .contains("history move points below 2")
+    );
+    assert!(decode_moved(&format!(
+        "{{\"entity\":{e},\"points\":{}}}",
+        points_text(65)
+    ))
+    .contains("history move points exceed 64"));
+    // The 65th element is never decoded, so its content cannot matter.
+    assert!(decode_moved(&format!(
+        "{{\"entity\":{e},\"points\":[{},\"x\"]}}",
+        point_items(64)
+    ))
+    .contains("history move points exceed 64"));
+    // 64 points are fine.
+    serde_json::from_str::<HistoryEvent>(&format!(
+        "{{\"type\":\"moved\",\"value\":{{\"entity\":{e},\"points\":{}}}}}",
+        points_text(64)
+    ))
+    .expect("64 points decode");
+
+    // Stream order decides which fault wins; the missing-key checks come
+    // only after the map ends.
+    assert!(decode_moved(&format!(
+        "{{\"entity\":{e},\"entity\":{e},\"extra\":1,\"points\":{two}}}"
+    ))
+    .contains("duplicate history payload field `entity`"));
+    assert!(decode_moved(&format!(
+        "{{\"extra\":1,\"entity\":{e},\"entity\":{e},\"points\":{two}}}"
+    ))
+    .contains("unknown history payload field"));
+    assert!(decode_moved("{\"points\":[[0,0,0]]}").contains("history move points below 2"));
+}
+
