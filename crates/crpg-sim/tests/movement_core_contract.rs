@@ -8,10 +8,11 @@ mod support;
 use std::error::Error;
 
 use crpg_core::{EntityId, Fx16_16, Ulid};
+use crpg_rules::MAX_TAGS;
 use crpg_sim::*;
 use serde_json::{json, Value};
 use support::creature::{add_outsider, enlist, top_level_keys, try_with_json, with_json};
-use support::draws::start_into;
+use support::draws::{set_tags, start_into};
 use support::rt::{bytes_of, json_keys, make_lethal, use_action, value_of};
 use support::surface::{always_success, set_stat_raw};
 use support::{uid, Fixture};
@@ -2012,4 +2013,120 @@ fn display_texts_a10() {
         assert_eq!(h.to_string(), e.to_string());
         assert_eq!(h.source().expect("a source").to_string(), e.to_string());
     }
+}
+
+// ------------------------------------------- mutant-review regressions (T036a)
+
+/// B-L3: registration runs the movement checks (R7-R9) only after R6
+/// `TooManyTags`, so an over-tagged creature with an invalid speed is
+/// `TooManyTags`. One tag fewer lets R7 fail as `InvalidSpeed`.
+#[test]
+fn registration_tag_bound_wins_over_the_movement_checks() {
+    let names: Vec<String> = (0..=MAX_TAGS).map(|i| format!("t{i:05}")).collect();
+    let over: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut fx = move_fixture();
+    set_tags(&mut fx, pl(121), &over);
+    set_stat_raw(&mut fx, pl(121), "pace", 0);
+    let mut w = World::new(7);
+    let before = serde_json::to_string(&w).unwrap();
+    assert_eq!(fx.register(&mut w, pl(111)), Err(CombatError::TooManyTags));
+    assert_eq!(serde_json::to_string(&w).unwrap(), before, "no mutation");
+    let at_bound: Vec<&str> = over[..MAX_TAGS].to_vec();
+    set_tags(&mut fx, pl(121), &at_bound);
+    assert_eq!(
+        reg_err(&fx),
+        CombatError::InvalidSpeed { placement: pl(111) }
+    );
+}
+
+/// B-L4: a turn-based start runs its movement checks after the tag-bound
+/// check and before S1, so an over-tagged A with `pace` raw 0 is
+/// `TooManyTags`. One tag fewer makes the movement check win.
+#[test]
+fn tb_start_tag_bound_wins_over_the_movement_checks() {
+    let names: Vec<String> = (0..=MAX_TAGS).map(|i| format!("t{i:05}")).collect();
+    let over: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut fx = move_fixture();
+    set_tags(&mut fx, pl(121), &over);
+    set_stat_raw(&mut fx, pl(121), "pace", 0);
+    let mut w = World::new(7);
+    let before = serde_json::to_string(&w).unwrap();
+    assert_eq!(start_into(&fx, &mut w), Err(CombatError::TooManyTags));
+    assert_eq!(serde_json::to_string(&w).unwrap(), before, "no mutation");
+    let at_bound: Vec<&str> = over[..MAX_TAGS].to_vec();
+    set_tags(&mut fx, pl(121), &at_bound);
+    assert_eq!(
+        start_into(&fx, &mut World::new(7)),
+        Err(CombatError::InvalidSpeed { placement: pl(111) })
+    );
+}
+
+/// B-R1: `ZeroSegment` reports the first zero-length segment's index.
+#[test]
+fn zero_segment_reports_the_first_zero_segment() {
+    let start = p(0, 0);
+    assert_eq!(
+        validate_route(
+            &route(1, vec![p(0, 0), p(0, 0), p(1, 0), p(1, 0)]),
+            Some(rev()),
+            start
+        ),
+        Err(MoveError::ZeroSegment { index: 0 })
+    );
+    // One point removed: the later zero segment is the first one left.
+    assert_eq!(
+        validate_route(
+            &route(1, vec![p(0, 0), p(1, 0), p(1, 0)]),
+            Some(rev()),
+            start
+        ),
+        Err(MoveError::ZeroSegment { index: 1 })
+    );
+    assert_eq!(
+        validate_route(&route(1, vec![p(0, 0), p(1, 0)]), Some(rev()), start),
+        Ok(65_536)
+    );
+}
+
+/// B-L2: the expression operators map one to one, so `divide` by a fixed
+/// 131072 halves raw 65536 to 32768; `multiply` would give 131072.
+#[test]
+fn speed_division_maps_one_to_one() {
+    let fx = quick(bin("divide", st("pace"), fixed_lit(131_072)));
+    let mut w = World::new(7);
+    let a = fx.register(&mut w, pl(111)).unwrap();
+    assert_eq!(w.movers().get(a).unwrap().speed().to_raw(), 32_768);
+    let fx = quick(bin("multiply", st("pace"), fixed_lit(131_072)));
+    let mut w = World::new(7);
+    let a = fx.register(&mut w, pl(111)).unwrap();
+    assert_eq!(w.movers().get(a).unwrap().speed().to_raw(), 131_072);
+}
+
+/// B-M2: the history transfer writes `mirror(mover, zero velocity)` at the
+/// destination, overwriting the transform copied from a source whose velocity
+/// was hand-edited (L6 checks position only, so that save loads).
+#[test]
+fn history_transfer_rewrites_the_mirror_with_zero_velocity() {
+    let fx = move_fixture();
+    let mut src = HistoryWorld::new_in_area(1, pl(131));
+    let a = fx.register_history(&mut src, pl(111)).unwrap();
+    let mut save = serde_json::to_value(&src).unwrap();
+    save["world"]["transforms"][0][1]["velocity"] = json!([1.0, 0.0, 0.0]);
+    let mut src: HistoryWorld = serde_json::from_value(save).unwrap();
+    assert_eq!(
+        bits(src.world(), a).1,
+        [0x3f80_0000, 0, 0],
+        "the hand edit loads, so only the transfer can zero it"
+    );
+    let mut dst = HistoryWorld::new_in_area(2, pl(132));
+    let new = transfer_history_entity(&mut src, &mut dst, a).unwrap();
+    assert_eq!(
+        raw3(dst.world().movers().get(new).unwrap().position()),
+        [0, 0, 0]
+    );
+    assert_eq!(
+        bits(dst.world(), new),
+        ([0; 3], [0; 3]),
+        "the mover's mirror wins over the copied transform"
+    );
 }
