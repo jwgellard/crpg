@@ -620,7 +620,7 @@ fn r18_tb_only_histories_stay_version_one() {
         .expect_err("ModeUnsupported");
     assert_eq!(error, HistoryError::Combat(CombatError::ModeUnsupported));
     assert_eq!(fresh.version(), 1);
-    assert_eq!(HISTORY_VERSION, 2);
+    assert_eq!(HISTORY_VERSION, 3);
 }
 
 /// R18 (H3): the first commit that stages an RT-capable encounter upgrades the
@@ -761,7 +761,7 @@ fn r18_loader_rejections() {
     );
 
     // Unknown versions.
-    for unknown in [0_u64, 3, 4, u64::from(u32::MAX)] {
+    for unknown in [0_u64, 4, 5, u64::from(u32::MAX)] {
         let mut forged = value(&rt);
         forged["version"] = serde_json::Value::from(unknown);
         let message = load(forged).expect_err("unknown version").to_string();
@@ -873,6 +873,6 @@ fn r19_over_cap_rt_tick_commits_nothing() {
             HistoryEvent::Died { entity: b }
         ]
     );
-    // `HISTORY_VERSION` is the newest version this build writes.
-    assert_eq!(tight.version(), HISTORY_VERSION);
+    // An RT-capable wrapper writes version 2.
+    assert_eq!(tight.version(), 2);
 }

@@ -819,7 +819,7 @@ fn h3_version_upgrades_on_join_and_leave() {
     let left_over = history.clone();
     history.join_encounter(&entrant(j, 12)).expect("J joins");
     assert_eq!(history.version(), 2);
-    assert_eq!(HISTORY_VERSION, 2);
+    assert_eq!(HISTORY_VERSION, 3);
     assert!(text(&history).starts_with("{\"version\":2,"));
     // Control: the same operations on the clone give a different version only
     // through the join.

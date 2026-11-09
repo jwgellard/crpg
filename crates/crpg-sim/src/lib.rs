@@ -51,9 +51,10 @@ pub use history::{
     MAX_HISTORY_BYTES, MAX_HISTORY_EVENTS, MAX_HISTORY_PAGE, MAX_HISTORY_STRING_BYTES,
 };
 pub use movement::{
-    point_at, route_length, route_measure, seg_len, snap, to_f32, validate_route, ActiveRoute,
-    CancelReason, Measure, MoveError, MoveRoute, MovementFact, Mover, NavRevision, RouteTag,
-    COORD_LIMIT_RAW, MAX_ROUTE_LENGTH_RAW, MAX_ROUTE_POINTS,
+    perform_move, point_at, route_cost, route_length, route_measure, seg_len, snap, to_f32,
+    validate_move, validate_route, ActiveRoute, CancelReason, Measure, MoveError, MoveOutcome,
+    MoveRoute, MovementFact, Mover, NavRevision, RouteTag, TurnMovement, COORD_LIMIT_RAW,
+    MAX_ROUTE_LENGTH_RAW, MAX_ROUTE_POINTS,
 };
 pub use store::ComponentStore;
 pub use tick::{end_turn, tick, tick_with_movement};

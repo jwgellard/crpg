@@ -43,7 +43,7 @@ use crpg_rules::{
 
 use crate::creature::{CreatureState, Entrant, SuspendedEffect};
 use crate::event::SimEvent;
-use crate::movement::{build_mover, stop, write_mirror, MovementFact};
+use crate::movement::{build_mover, stop, write_mirror, Measure, MovementFact, TurnMovement};
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
 use crate::world::{EntityMeta, World};
@@ -505,6 +505,8 @@ pub struct CombatDefinition {
     pub derived: Vec<DerivedStat>,
     /// Rolled initiative; `None` means each participant's authored key.
     pub initiative: Option<InitiativeRule>,
+    /// The turn-based movement rules (T036c); `None` means nothing moves.
+    pub movement: Option<TurnMovement>,
 }
 
 /// Reports whether one ability entry carries only legacy-compatible behavior.
@@ -532,11 +534,12 @@ fn vectors_are_legacy(definition: &CombatDefinition) -> bool {
     ability_is_legacy(&definition.abilities[0], definition.pools[0].id)
 }
 
-/// `vectors_are_legacy` plus the two definition-level fields (T137).
+/// `vectors_are_legacy` plus the definition-level fields (T137, T036c).
 fn definition_is_legacy(definition: &CombatDefinition) -> bool {
     vectors_are_legacy(definition)
         && definition.derived.is_empty()
         && definition.initiative.is_none()
+        && definition.movement.is_none()
 }
 
 fn policy_to_text(policy: StackingPolicy) -> &'static str {
@@ -628,7 +631,9 @@ impl Serialize for CombatDefinition {
         let len = if legacy {
             15
         } else {
-            18 + usize::from(!self.derived.is_empty()) + usize::from(self.initiative.is_some())
+            18 + usize::from(!self.derived.is_empty())
+                + usize::from(self.initiative.is_some())
+                + usize::from(self.movement.is_some())
         };
         let mut shape = serializer.serialize_struct("CombatDefinition", len)?;
         shape.serialize_field("encounter", &self.encounter)?;
@@ -655,6 +660,9 @@ impl Serialize for CombatDefinition {
             }
             if let Some(initiative) = &self.initiative {
                 shape.serialize_field("initiative", initiative)?;
+            }
+            if let Some(movement) = &self.movement {
+                shape.serialize_field("movement", movement)?;
             }
         }
         shape.end()
@@ -689,6 +697,8 @@ struct CombatDefinitionRepr {
     derived: Vec<DerivedStat>,
     #[serde(default)]
     initiative: Option<InitiativeRule>,
+    #[serde(default)]
+    movement: Option<TurnMovement>,
 }
 
 impl<'de> Deserialize<'de> for CombatDefinition {
@@ -748,6 +758,7 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 effects: Vec::new(),
                 derived: repr.derived,
                 initiative: repr.initiative,
+                movement: repr.movement,
             })
         } else {
             Ok(Self {
@@ -771,6 +782,7 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 effects: repr.effects.unwrap_or_default(),
                 derived: repr.derived,
                 initiative: repr.initiative,
+                movement: repr.movement,
             })
         }
     }
@@ -2064,6 +2076,14 @@ pub(crate) fn start_encounter_with_members_tracked(
         .iter()
         .map(|item| (map_outcome(item.outcome), item.amount))
         .collect();
+    // T036c B-C2: the turn-based movement rules; checked after the movers below.
+    let turn_movement = ruleset.movement.as_deref().map(|movement| TurnMovement {
+        measure: match movement.measure {
+            None | Some(crpg_data::MeasureWire::Euclidean) => Measure::Euclidean,
+        },
+        pool: movement.turn.pool,
+        step_cost: movement.turn.step_cost,
+    });
     let definition = CombatDefinition {
         encounter: encounter.id,
         ruleset: ruleset.id,
@@ -2085,6 +2105,7 @@ pub(crate) fn start_encounter_with_members_tracked(
         effects,
         derived,
         initiative: initiative_rule,
+        movement: turn_movement,
     };
 
     // T139 B11: the lifecycle rules this encounter runs under.
@@ -2105,6 +2126,24 @@ pub(crate) fn start_encounter_with_members_tracked(
     let mut movers = Vec::with_capacity(pending.len());
     for (member, (_, resolved)) in pending.iter().zip(&placements) {
         movers.push(build_mover(ruleset, resolved.placement, &member.fixed)?);
+    }
+    // T036c B-C2: the movement pool is a template and a step costs something.
+    if let Some(movement) = &definition.movement {
+        let Some(template) = definition
+            .pools
+            .iter()
+            .find(|template| template.id == movement.pool)
+        else {
+            return Err(MissingPool {
+                pool: movement.pool,
+            });
+        };
+        if movement.step_cost == 0 {
+            return Err(InvalidCost {
+                cost: 0,
+                max: template.max,
+            });
+        }
     }
 
     // T139 B13: each participant spawns, enters from its record, or is
@@ -2818,7 +2857,7 @@ fn effect_entry(definition: &CombatDefinition, effect: Ulid) -> Option<&EffectDe
 }
 
 /// Returns the balance of one template pool on one combatant.
-fn pool_balance(combatant: &Combatant, pool: Ulid) -> Option<u32> {
+pub(crate) fn pool_balance(combatant: &Combatant, pool: Ulid) -> Option<u32> {
     if combatant.action_pool.id().0 == pool {
         return Some(combatant.action_pool.current());
     }
@@ -2827,6 +2866,21 @@ fn pool_balance(combatant: &Combatant, pool: Ulid) -> Option<u32> {
         .iter()
         .find(|entry| entry.id().0 == pool)
         .map(|entry| entry.current())
+}
+
+/// Spends `amount` from one template pool of one combatant: the primary pool
+/// when `pool` is its id, else the matching extra pool (T036c B-C4). Returns
+/// whether a pool was found and paid; a failure changes nothing.
+pub(crate) fn spend_pool(combatant: &mut Combatant, pool: Ulid, amount: u32) -> bool {
+    let target = if combatant.action_pool.id().0 == pool {
+        Some(&mut combatant.action_pool)
+    } else {
+        combatant
+            .extra_pools
+            .iter_mut()
+            .find(|entry| entry.id().0 == pool)
+    };
+    target.is_some_and(|entry| entry.spend(amount).is_ok())
 }
 
 /// Converts one authored derived formula node for node (T137 B4).

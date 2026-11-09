@@ -122,9 +122,10 @@ join_encounter, leave_encounter}`.
   `EncounterEnded`; explicit release, RT order setting, `Stop` and
   `request_mode` journal nothing. The wrapper `version` is 1 until the first
   `commit` whose staged world holds a clock or whose events include a v2
-  variant, then 2 for good (`commit` is its only writer); the loader rejects
-  a version-1 wrapper holding a v2 event or a clock, and any version other
-  than 1 or 2. A history change that moves a `history_v2` or `history_v1`
+  variant, then 2 for good, and 3 from the first committed `Moved` (T036c;
+  `commit` is its only writer); the loader rejects a version-1 wrapper
+  holding a v2 event or a clock, a version below 3 holding a `Moved`, and any
+  version other than 1, 2 or 3. A history change that moves a `history_v2` or `history_v1`
   golden is a stop, not a re-bless. `read_after` pages at
   most 256 envelopes with `StaleCursor`/`FutureCursor` errors and inert
   reads; `acknowledge` is monotonic and idempotent with no slow-peer cursor.
@@ -601,6 +602,17 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - Trap: "dead" for stage 4 is a dead combatant or a dead creature record, as for `set_route`; a corpse's route is dropped with `Cancelled { Dead }`, one fact, not every tick.
 - Tests: `tests/movement_tick.rs` (the implementer suite; `movement_tick_contract.rs` is the two-keys writer's) and `tests/movement_golden.rs` with its schedule `tests/support/movement_schedule.rs`. Regenerate the golden with `cargo run -p crpg-sim --example generate_movement_golden --profile test --locked` only with review; the two targets are never compared.
 
+## Movement turn-based move (T036c, ADR-0036)
+
+- Public additions: `TurnMovement { measure, pool, step_cost }` (and `CombatDefinition.movement: Option<TurnMovement>`), `MoveOutcome { actor, cost, from, to }`, `route_cost`, `validate_move`, `perform_move`, `HistoryWorld::perform_move`, `HistoryEvent::Moved { entity, points }`; `HISTORY_VERSION` is now 3. `pool_balance` and `spend_pool` (`combat.rs`) are crate-private.
+- Invariant: `validate_move` is the one place a turn-based move is judged and `perform_move` runs it first, then changes state with no other check. The turn checks are `validate_action(EndTurn { actor })` wrapped as `MoveError::Combat`; do not copy them. The cost is `u64` end to end (`CannotAfford` reports the true value); only `route_cost` narrows to `u32`.
+- Trap: a new v3 variant joins `HistoryEvent::is_v3`, as a new v2 variant joins `is_v2`; forgetting it lets a version-2 wrapper retain it. `commit` is the only writer of `version`, and it never lowers it.
+- Trap: the movement pool is spent from the same place `pool_balance` reads (the primary `action_pool` when it is the primary template, else the matching `extra_pools` entry). A balance read or a spend that looks only at `extra_pools` breaks a ruleset whose movement pool is the ability's pool.
+- Trap: `definition_is_legacy` must keep requiring `movement == None`; a legacy-shaped definition that carries movement would otherwise lose it in the 15-field form and reload as `None`.
+- Trap: persisting `movement` in the definition moves the `state_hash` of any world started under a ruleset that declares `movement` (the T036b `movement_v1` golden). A new definition field is a re-baseline of every golden whose ruleset sets it; check with the golden tests before assuming "only when `Some`" is enough.
+- Trap: the `moved` decoder bounds `points` while streaming (64 points, at least 2, the 65th element never decoded); do not decode into a `Vec` first.
+- Tests: `tests/movement_turn.rs` (the implementer suite; `movement_turn_contract.rs` is the two-keys writer's) and `tests/history_v3_golden.rs` with its schedule `tests/support/history_v3_schedule.rs`. Regenerate the golden with `cargo run -p crpg-sim --example generate_history_v3_golden --profile test --locked` only with review; the two targets are never compared.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -635,3 +647,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T139c · Added the journaled join/leave surface and the records-never-upgrade trap to the creature-records section, so a later change to `commit` does not make records a v2 trigger.
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036a · Added the movement section: public API, the no-`f32`-read invariant and the traps (host transform writes failing L6, horizontal `seg_len`, stored step, creation-check order, spawned-only movers, id-ordered `bind_nav`, dead records, new per-entity fields).
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036b · Added the stage-4 section: the facts reader, the tick order, the three `stop` call sites and the traps (id order, carry-over, new TB entry must call `stop`, dead corpses).
+- 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036c · Added the turn-based move section: the public additions, the single `validate_move` judgement, the `is_v3` and persistence traps (including the `movement_v1` hash move), and updated the history version statement to 3.
