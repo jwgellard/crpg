@@ -52,7 +52,9 @@ use crate::combat::{
 };
 use crate::creature::{CreatureSpec, CreatureState, Entrant};
 use crate::event::SimEvent;
-use crate::movement::{write_mirror, MoveError, MoveRoute, Mover, NavRevision, RouteTag};
+use crate::movement::{
+    write_mirror, MoveError, MoveRoute, MovementFact, Mover, NavRevision, RouteTag,
+};
 use crate::transform::Transform;
 use crate::world::{EntityMeta, World};
 
@@ -667,6 +669,14 @@ impl HistoryWorld {
     /// zero-event operations need no free journal slot or sequence. A tick
     /// whose events exceed a cap commits nothing, not even the clock.
     pub fn tick(&mut self) -> Result<(), HistoryError> {
+        self.tick_with_movement().map(|_| ())
+    }
+
+    /// [`HistoryWorld::tick`], returning stage 4's movement facts (T036b).
+    ///
+    /// Journals exactly what `tick` journals: movement facts are for the host,
+    /// not history events. A failed tick commits nothing.
+    pub fn tick_with_movement(&mut self) -> Result<Vec<MovementFact>, HistoryError> {
         let mut world = self.world.clone();
         let facts = crate::tick::tick_tracked(&mut world);
         let drained = world.events_mut().drain();
@@ -707,7 +717,7 @@ impl HistoryWorld {
             });
         }
         self.commit(world, events, tick)?;
-        Ok(())
+        Ok(facts.moves)
     }
 
     /// Validates and publishes one encounter, journaling one `Spawned` per

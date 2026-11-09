@@ -590,6 +590,17 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - Trap: a new per-entity movement field must join the mover, the transfer copy (`area.rs`, both functions), the despawn removal and the load rules L1-L12. The history wrappers commit zero events; do not give them an event without a version decision.
 - Tests: `tests/movement_core.rs` (the implementer suite; `movement_core_contract.rs` is the two-keys writer's). The MOVE fixture is built from `Fixture::standard()` by JSON edits inside the test file.
 
+## Movement stage 4 (T036b, ADR-0036)
+
+- Public additions: `tick_with_movement(world) -> Vec<MovementFact>`, `HistoryWorld::tick_with_movement() -> Result<Vec<MovementFact>, HistoryError>`, `MovementFact::{Arrived, Cancelled}`, `CancelReason::Dead`. `tick` delegates and discards the facts. `movement_system`, `stop` and `TickFacts.moves` are crate-private.
+- Tick order: `run_systems` is now `encounter_clock_system`, `timeline_system`, then `movement_system` (stage 4). Serial territory as before: reordering or adding a stage is a reviewed behaviour change.
+- Invariant: stage 4 reads only `Fx16_16` positions and writes the `f32` mirror; it never reads a `Transform`, and it touches no pool, order, timeline, RNG or event. The facts are not history events and the journal does not change.
+- Trap: stage 4 visits movers in ascending `EntityId`, not store order; a reused index makes the two differ. Facts must come out in that order too.
+- Trap: leftover budget carries across vertices but is discarded at arrival; a budget that lands exactly on a vertex continues with `along == 0` on the next segment.
+- Trap: a new way into a turn-based encounter (a start variant, a join variant, a mode switch) must call `stop` on whoever becomes a turn-based combatant, or its routes keep walking under turn-based rules. The three call sites are the turn-based start, `join_encounter` into a turn-based encounter and `switch_to_turn_based`; the switch stops dead combatants too. Do not clear `route` by hand.
+- Trap: "dead" for stage 4 is a dead combatant or a dead creature record, as for `set_route`; a corpse's route is dropped with `Cancelled { Dead }`, one fact, not every tick.
+- Tests: `tests/movement_tick.rs` (the implementer suite; `movement_tick_contract.rs` is the two-keys writer's) and `tests/movement_golden.rs` with its schedule `tests/support/movement_schedule.rs`. Regenerate the golden with `cargo run -p crpg-sim --example generate_movement_golden --profile test --locked` only with review; the two targets are never compared.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -623,3 +634,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 (implementer) + T139b2 · Amended the dead-pending-joiner trap for D45a and named the single terminal helper, so a new terminal path does not leave pending joins that fail Q1 on reload.
 - 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T139c · Added the journaled join/leave surface and the records-never-upgrade trap to the creature-records section, so a later change to `commit` does not make records a v2 trigger.
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036a · Added the movement section: public API, the no-`f32`-read invariant and the traps (host transform writes failing L6, horizontal `seg_len`, stored step, creation-check order, spawned-only movers, id-ordered `bind_nav`, dead records, new per-entity fields).
+- 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036b · Added the stage-4 section: the facts reader, the tick order, the three `stop` call sites and the traps (id order, carry-over, new TB entry must call `stop`, dead corpses).

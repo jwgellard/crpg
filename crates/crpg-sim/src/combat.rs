@@ -43,7 +43,7 @@ use crpg_rules::{
 
 use crate::creature::{CreatureState, Entrant, SuspendedEffect};
 use crate::event::SimEvent;
-use crate::movement::{build_mover, write_mirror};
+use crate::movement::{build_mover, stop, write_mirror, MovementFact};
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
 use crate::world::{EntityMeta, World};
@@ -1258,6 +1258,8 @@ pub(crate) struct TickFacts {
     pub transitions: TransitionFacts,
     /// The stage-3 facts in execution order.
     pub events: Vec<TickEvent>,
+    /// The stage-4 movement facts in ascending `EntityId` order (T036b).
+    pub moves: Vec<MovementFact>,
 }
 
 /// Initial-turn facts one encounter start actually published.
@@ -2371,6 +2373,13 @@ pub(crate) fn start_encounter_with_members_tracked(
         lifecycle,
         pending_joins: Vec::new(),
     });
+    // T036 B-T2: a turn-based start stops every combatant; an RT start, none.
+    if mode == EncounterMode::TurnBased {
+        let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
+        for id in ids {
+            stop(world, id);
+        }
+    }
     Ok(StartFacts {
         initial_turn: active.map(|actor| (actor, 0)),
     })
@@ -2714,6 +2723,10 @@ pub fn join_encounter(world: &mut World, joiner: &Entrant) -> Result<(), CombatE
         .expect("the join checks found this record");
     let entered = enter_combatant(&definition, record, round, key);
     world.combatants_mut().insert(entity, entered);
+    // T036 B-T3: a joiner of a turn-based encounter stops; an RT join, nobody.
+    if mode == EncounterMode::TurnBased {
+        stop(world, entity);
+    }
 
     // B26, B28: scheduling.
     match mode {
@@ -4337,6 +4350,8 @@ fn switch_to_turn_based(world: &mut World) -> (EntityId, u32) {
             .get_mut(id)
             .expect("listed ids are combatants")
             .order = None;
+        // T036 B-T4: every combatant, dead or alive, stops before the TB round.
+        stop(world, id);
     }
     world
         .combat_mut()

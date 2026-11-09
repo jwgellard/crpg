@@ -52,11 +52,11 @@ pub use history::{
 };
 pub use movement::{
     point_at, route_length, route_measure, seg_len, snap, to_f32, validate_route, ActiveRoute,
-    Measure, MoveError, MoveRoute, Mover, NavRevision, RouteTag, COORD_LIMIT_RAW,
-    MAX_ROUTE_LENGTH_RAW, MAX_ROUTE_POINTS,
+    CancelReason, Measure, MoveError, MoveRoute, MovementFact, Mover, NavRevision, RouteTag,
+    COORD_LIMIT_RAW, MAX_ROUTE_LENGTH_RAW, MAX_ROUTE_POINTS,
 };
 pub use store::ComponentStore;
-pub use tick::{end_turn, tick};
+pub use tick::{end_turn, tick, tick_with_movement};
 pub use timeline::{InitiativeKey, Timeline};
 pub use transform::Transform;
 pub use world::{EntityMeta, World};

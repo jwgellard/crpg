@@ -12,10 +12,11 @@
 //! what [`validate_route`] can check without geometry. The arithmetic below is
 //! integer-only and total: no input panics.
 //!
-//! This module holds the T036a surface only: the pure arithmetic, the data
-//! types, mover creation, and the four operations [`World::bind_nav`],
-//! [`World::place`], [`World::set_route`] and [`World::clear_route`]. It
-//! changes no tick; the stage-4 walk is a later task.
+//! This module holds the pure arithmetic, the data types, mover creation, the
+//! four operations [`World::bind_nav`], [`World::place`], [`World::set_route`]
+//! and [`World::clear_route`] (T036a), and the stage-4 walk with its
+//! [`MovementFact`]s and the crate-private `stop` the turn-based transitions
+//! use (T036b).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -123,6 +124,34 @@ impl Mover {
             route: None,
         }
     }
+}
+
+/// Why stage 4 dropped a route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelReason {
+    /// The mover is dead (Reading 6).
+    Dead,
+}
+
+/// One stage-4 fact, for the host; never a history event (ADR-0036 W1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovementFact {
+    /// The mover reached the last point of its route; the route is cleared.
+    Arrived {
+        /// The mover's entity.
+        entity: EntityId,
+        /// The finished route's tag.
+        tag: RouteTag,
+    },
+    /// Stage 4 dropped the route without finishing it.
+    Cancelled {
+        /// The mover's entity.
+        entity: EntityId,
+        /// The dropped route's tag.
+        tag: RouteTag,
+        /// Why the route was dropped.
+        reason: CancelReason,
+    },
 }
 
 /// A route being walked (fields private).
@@ -760,4 +789,88 @@ impl World {
         write_mirror(self, entity, &mover);
         Ok(cleared.map(|active| active.tag()))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4 and the transitions that stop movers (W1-W3)
+// ---------------------------------------------------------------------------
+
+impl Mover {
+    /// One stage-4 step (B-W2): walks the route by one tick of speed, or drops
+    /// it when the mover is dead. Returns the fact it produced, if any.
+    fn walk(&mut self, entity: EntityId, dead: bool) -> Option<MovementFact> {
+        let active = self.route.as_mut()?;
+        let tag = active.tag();
+        if dead {
+            self.route = None;
+            return Some(MovementFact::Cancelled {
+                entity,
+                tag,
+                reason: CancelReason::Dead,
+            });
+        }
+        let mut budget = self.speed.to_raw() as u64;
+        let points = &active.route.points;
+        loop {
+            let segment = usize::from(active.segment);
+            let (from, to) = (points[segment], points[segment + 1]);
+            let len = seg_len(from, to);
+            let left = len - active.along;
+            if budget < left {
+                active.along += budget;
+                self.position = point_at(from, to, len, active.along);
+                return None;
+            }
+            budget -= left;
+            active.segment += 1;
+            active.along = 0;
+            if usize::from(active.segment) == points.len() - 1 {
+                self.position = to;
+                self.route = None;
+                return Some(MovementFact::Arrived { entity, tag });
+            }
+        }
+    }
+}
+
+/// Tick stage 4 (B-W1, B-W2): every route advances by its mover's speed, in
+/// ascending [`EntityId`] order, and every mover's mirror is rewritten.
+///
+/// Reads only fixed-point positions and writes the `f32` mirror; it never reads
+/// a [`Transform`], touches a pool, an order, the timeline, the RNG or the
+/// event queue (B-W3). Leftover budget at arrival is discarded.
+pub(crate) fn movement_system(world: &mut World, facts: &mut crate::combat::TickFacts) {
+    let mut entities: Vec<EntityId> = world.movers().iter().map(|(entity, _)| entity).collect();
+    entities.sort();
+    for entity in entities {
+        let dead = is_dead(world, entity);
+        let Some(mover) = world.movers_mut().get_mut(entity) else {
+            continue;
+        };
+        let old = mover.position;
+        if let Some(fact) = mover.walk(entity, dead) {
+            facts.moves.push(fact);
+        }
+        let displacement = |axis: usize| {
+            to_f32(Fx16_16::from_raw(
+                mover.position[axis]
+                    .to_raw()
+                    .wrapping_sub(old[axis].to_raw()),
+            ))
+        };
+        let velocity = [displacement(0), displacement(1), displacement(2)];
+        let transform = mirror(mover, velocity);
+        world.transforms_mut().insert(entity, transform);
+    }
+}
+
+/// B-T1: clears the entity's route, rewrites its mirror with zero velocity and
+/// returns the cleared tag. Does nothing, returning `None`, for a creature with
+/// no mover or no route. The one way W3 clears routes.
+pub(crate) fn stop(world: &mut World, entity: EntityId) -> Option<RouteTag> {
+    let mover = world.movers_mut().get_mut(entity)?;
+    let route = mover.route.take()?;
+    let mover = mover.clone();
+    write_mirror(world, entity, &mover);
+    Some(route.tag())
 }
