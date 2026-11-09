@@ -2485,7 +2485,8 @@ impl PeerView<'_> {
             | HistoryEvent::ModeChanged { .. }
             | HistoryEvent::OrderEnded { .. }
             | HistoryEvent::Joined { .. }
-            | HistoryEvent::Left { .. } => None,
+            | HistoryEvent::Left { .. }
+            | HistoryEvent::Moved { .. } => None,
         }
     }
 
