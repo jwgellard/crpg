@@ -778,4 +778,4 @@ newer status is in the handover above and in `tasks/BACKLOG.md`.
 - 2026-11-08 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S42-43-bookkeeping · Replaced the handover with the session 42/43 batch state and next steps, and added the session 42/43 facts.
 - 2026-11-08 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S44-bookkeeping · Replaced the handover with the session 44 batch state and next steps, and added the session 44 facts.
 - 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + S46-bookkeeping · Moved the handover to the sessions 45–46 batch with T036c, T149a, T149b and T037 next, and added the session 45/46 facts.
-- 2026-11-10 (UTC) · claude-code/opus-5.5 (manager) + session 47 handover · Moved the handover to the session 47 batch (T149a, T036c with re-baselined `movement_v1`, T140 facts) and recorded the session's dispatch facts.
+- 2026-11-09 (UTC) · claude-code/opus-5.5 (manager) + session 47 handover · Moved the handover to the session 47 batch (T149a, T036c with re-baselined `movement_v1`, T140 facts) and recorded the session's dispatch facts.
