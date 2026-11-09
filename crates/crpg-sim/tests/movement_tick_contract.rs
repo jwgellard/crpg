@@ -1099,3 +1099,45 @@ fn movement_runs_after_an_rt_clock_freeze() {
     assert_eq!(elapsed(&w), RT_CLOCK_MAX, "the clock stays frozen");
     assert_eq!(raw3(w.movers().get(a).unwrap().position()), [65_536, 0, 0]);
 }
+
+// ------------------------ B-7 history wrapper fact order (B-3's setup)
+
+#[test]
+fn history_tick_keeps_the_fact_order_of_a_plain_world_b7_b3() {
+    let fx = move_fixture();
+    let (mut plain, plain_ids) = registered(&fx, &[111, 112]);
+    let (pa, pb) = (plain_ids[0], plain_ids[1]);
+    let mut h = HistoryWorld::new(7);
+    let a = fx.register_history(&mut h, pl(111)).unwrap();
+    let b = fx.register_history(&mut h, pl(112)).unwrap();
+    h.bind_nav(rev()).unwrap();
+    // B-3's setup: B's route is set first, A's second; the facts must still
+    // come out in ascending `EntityId` order (A then B).
+    plain
+        .set_route(pb, route(2, vec![p(10, 0), rp(655_360, 0, 32_768)]))
+        .unwrap();
+    plain
+        .set_route(pa, route(1, vec![p(0, 0), p(1, 0)]))
+        .unwrap();
+    h.set_route(b, route(2, vec![p(10, 0), rp(655_360, 0, 32_768)]))
+        .unwrap();
+    h.set_route(a, route(1, vec![p(0, 0), p(1, 0)])).unwrap();
+    assert_eq!((a, b), (pa, pb), "the two worlds allocate alike");
+    let facts = h.tick_with_movement().unwrap();
+    assert_eq!(
+        facts,
+        vec![
+            MovementFact::Arrived {
+                entity: a,
+                tag: RouteTag(1)
+            },
+            MovementFact::Arrived {
+                entity: b,
+                tag: RouteTag(2)
+            },
+        ],
+        "the wrapper must not reverse the facts"
+    );
+    let plain_facts = tick_with_movement(&mut plain);
+    assert_eq!(facts, plain_facts, "the wrapper equals a plain World");
+}
