@@ -361,3 +361,248 @@ fn c2_primary_pool_balance_and_spend_b_c3_b_c4() {
         })
     );
 }
+
+// -------------------------------------- C-3 / B-C3 the ordered move checks
+
+/// B's one-metre route from its start position.
+fn route_b(tag: u64) -> MoveRoute {
+    route(tag, vec![p(10, 0), p(11, 0)])
+}
+
+#[test]
+fn c3_checks_in_order_b_c3() {
+    let fx = move_fixture();
+
+    // NoEncounter: a registered outsider in a world with no fight.
+    let mut plain = World::new(7);
+    let c = fx.register(&mut plain, pl(113)).expect("C registers");
+    plain.bind_nav(rev());
+    assert_eq!(
+        validate_move(&plain, c, &route(1, vec![p(0, 10), p(1, 10)])),
+        Err(MoveError::Combat(CombatError::NoEncounter))
+    );
+
+    // NotParticipant: the same outsider, this time in a live fight.
+    let (mut w, a, b) = tb_world(&fx);
+    let c = fx.register(&mut w, pl(113)).expect("C registers");
+    assert_eq!(
+        validate_move(&w, c, &route(1, vec![p(0, 10), p(1, 10)])),
+        Err(MoveError::Combat(CombatError::NotParticipant { entity: c }))
+    );
+
+    // AbsentActor: a despawned world-local id.
+    let ghost = w.spawn(EntityMeta {});
+    assert!(w.despawn(ghost));
+    assert_eq!(
+        validate_move(&w, ghost, &route(1, vec![p(0, 0), p(1, 0)])),
+        Err(MoveError::Combat(CombatError::AbsentActor { actor: ghost }))
+    );
+
+    // OutOfTurn: A asks while B holds the turn.
+    assert_eq!(
+        validate_move(&w, a, &route(1, vec![p(0, 0), p(1, 0)])),
+        Err(MoveError::Combat(CombatError::OutOfTurn {
+            actor: a,
+            active: Some(b)
+        }))
+    );
+
+    // DeadActor, then terminal OutOfTurn with no active actor.
+    let mut fight = move_fixture();
+    lethal(&mut fight);
+    let (mut w, a, b) = tb_world(&fight);
+    perform_action(
+        &mut w,
+        &CombatAction::UseAbility {
+            actor: b,
+            ability: fight.ability,
+            target: a,
+        },
+    )
+    .expect("B acts")
+    .expect("a hit");
+    assert!(w.combatants().get(a).expect("A").dead());
+    assert_eq!(
+        validate_move(&w, a, &route(1, vec![p(0, 0), p(1, 0)])),
+        Err(MoveError::Combat(CombatError::DeadActor { actor: a }))
+    );
+    assert_eq!(
+        validate_move(&w, b, &route(1, vec![p(10, 0), p(11, 0)])),
+        Err(MoveError::Combat(CombatError::OutOfTurn {
+            actor: b,
+            active: None
+        }))
+    );
+
+    // WrongMode: a real-time encounter's turn checks reject an EndTurn.
+    let mut rt = World::new(7);
+    rt.bind_nav(rev());
+    move_rt()
+        .with_spec(|spec| start_encounter_in_mode(&mut rt, spec, EncounterMode::RealTime))
+        .expect("the RT fight starts");
+    let b = who(&rt, 112);
+    assert_eq!(
+        validate_move(&rt, b, &route_b(1)),
+        Err(MoveError::Combat(CombatError::WrongMode {
+            mode: EncounterMode::RealTime
+        }))
+    );
+
+    // NotMover: a combatant whose mover is missing from the save.
+    let (w, _, b) = tb_world(&fx);
+    let w = with_json(&w, |save| remove_mover(save, b));
+    assert!(w.movers().get(b).is_none());
+    assert_eq!(
+        validate_move(&w, b, &route_b(1)),
+        Err(MoveError::NotMover { entity: b })
+    );
+
+    // NotMover: a definition that holds no movement rules.
+    let (w, _, b) = tb_world(&fx);
+    let w = with_json(&w, |save| {
+        save["combat"]["definition"]
+            .as_object_mut()
+            .expect("a definition object")
+            .remove("movement")
+            .expect("the definition holds movement");
+    });
+    assert!(w.movers().get(b).is_some(), "the mover survives the edit");
+    assert_eq!(
+        validate_move(&w, b, &route_b(1)),
+        Err(MoveError::NotMover { entity: b })
+    );
+
+    // StartMismatch: the route does not start where the mover stands.
+    let (w, _, b) = tb_world(&fx);
+    assert_eq!(
+        validate_move(&w, b, &route(1, vec![p(0, 0), p(1, 0)])),
+        Err(MoveError::StartMismatch)
+    );
+
+    // NavUnbound: nothing bound, a valid route.
+    let (w, ids) = fx.start(7);
+    let b = ids[1];
+    assert_eq!(w.nav(), None);
+    assert_eq!(validate_move(&w, b, &route_b(1)), Err(MoveError::NavUnbound));
+}
+
+#[test]
+fn c3_precedence_pairs_b_c3() {
+    let fx = move_fixture();
+
+    // NotMover beats NavUnbound: no mover, and nothing bound.
+    let (w, ids) = fx.start(7);
+    let b = ids[1];
+    let w = with_json(&w, |save| remove_mover(save, b));
+    assert_eq!(w.nav(), None);
+    assert_eq!(
+        validate_move(&w, b, &route_b(1)),
+        Err(MoveError::NotMover { entity: b })
+    );
+
+    // StartMismatch beats CannotAfford: ten metres from the wrong start.
+    let (w, _, b) = tb_world(&fx);
+    assert_eq!(
+        validate_move(&w, b, &route(1, vec![p(0, 0), p(0, 10)])),
+        Err(MoveError::StartMismatch)
+    );
+
+    // Both checks in order would have failed: NotMover before the route.
+    let (w, _, b) = tb_world(&fx);
+    let w = with_json(&w, |save| {
+        save["combat"]["definition"]
+            .as_object_mut()
+            .expect("a definition object")
+            .remove("movement")
+            .expect("the definition holds movement");
+    });
+    assert_eq!(
+        validate_move(&w, b, &route(1, vec![p(0, 0), p(0, 10)])),
+        Err(MoveError::NotMover { entity: b })
+    );
+}
+
+// ------------------------------ C-4 read-only validation and TB immobility
+
+#[test]
+fn c4_validate_move_is_read_only_b_c3() {
+    let fx = move_fixture();
+    let (mut w, a, b) = tb_world(&fx);
+    let before = bytes_of(&w);
+    assert_eq!(
+        validate_move(&w, b, &route(1, vec![p(10, 0), p(10, 3), p(7, 3)])),
+        Ok(4)
+    );
+    assert_eq!(bytes_of(&w), before, "validation changes nothing");
+
+    // Every C-3 rejection of `perform_move` leaves the same bytes behind.
+    let cases: [(EntityId, MoveRoute, MoveError); 3] = [
+        (
+            a,
+            route(1, vec![p(0, 0), p(1, 0)]),
+            MoveError::Combat(CombatError::OutOfTurn {
+                actor: a,
+                active: Some(b),
+            }),
+        ),
+        (
+            b,
+            route(1, vec![p(0, 0), p(1, 0)]),
+            MoveError::StartMismatch,
+        ),
+        (
+            b,
+            route(1, vec![p(10, 0), p(10, 10)]),
+            MoveError::CannotAfford {
+                cost: 7,
+                current: 6,
+            },
+        ),
+    ];
+    for (actor, move_route, expected) in cases {
+        let before = bytes_of(&w);
+        assert_eq!(perform_move(&mut w, actor, &move_route), Err(expected));
+        assert_eq!(bytes_of(&w), before, "a rejected move changes nothing");
+    }
+
+    // The dead-actor rejection is read-only too.
+    let mut fight = move_fixture();
+    lethal(&mut fight);
+    let (mut w, a, b) = tb_world(&fight);
+    perform_action(
+        &mut w,
+        &CombatAction::UseAbility {
+            actor: b,
+            ability: fight.ability,
+            target: a,
+        },
+    )
+    .expect("B acts")
+    .expect("a hit");
+    let before = bytes_of(&w);
+    assert_eq!(
+        perform_move(&mut w, a, &route(1, vec![p(0, 0), p(1, 0)])),
+        Err(MoveError::Combat(CombatError::DeadActor { actor: a }))
+    );
+    assert_eq!(bytes_of(&w), before);
+
+    // A turn-based combatant takes no stage-4 route, and a tick moves nobody.
+    let (mut w, a, b) = tb_world(&fx);
+    assert_eq!(
+        w.set_route(b, route_b(2)),
+        Err(MoveError::TurnBased { entity: b })
+    );
+    let positions = [
+        raw3(w.movers().get(a).expect("A").position()),
+        raw3(w.movers().get(b).expect("B").position()),
+    ];
+    assert!(tick_with_movement(&mut w).is_empty());
+    assert_eq!(
+        [
+            raw3(w.movers().get(a).expect("A").position()),
+            raw3(w.movers().get(b).expect("B").position()),
+        ],
+        positions,
+        "ticking moves no turn-based participant"
+    );
+}
