@@ -304,6 +304,10 @@ Rules for this store, enforced by review and lint:
 1. **Systems are ordinary functions** taking `&mut World` plus explicit parameters, called in a fixed, hand-written order by `fn tick(world: &mut World)`. No scheduler. No parallelism inside a single area's tick.
 2. **No `HashMap` iteration in simulation code.** Use `IndexMap` or `BTreeMap`. Lint-enforced.
 3. **No floating point in rules math.** Positions and velocities use `f32`. Anything a rule reads uses integers or fixed-point. Damage, modifiers, DCs, durations: integers.
+   > **Note (ADR-0036, 2026-11-08):** Authoritative positions are `[Fx16_16; 3]`
+   > (ADR-0036 U2). `Transform` stays `f32` only as a mirror the simulation
+   > writes (M3) and nothing in a rules path reads it. See
+   > `docs/adr/0036-movement-and-navigation.md` and D27c (`tasks/DECISIONS-2026-10-04.md`).
 4. **The entire `World` implements `Serialize`/`Deserialize`.** Saves are world snapshots. This is checked by a round-trip property test on every commit. (Skeleton only: the derive covers the world skeleton; every interned-handle boundary persists strings through the explicit `to_serializable`/`from_serializable` conversion owned by T014 per ADR-0006 Decision 4 — E014 clarification 2026-09-06.)
 5. **Areas are simulated independently.** One `World` per loaded area. Cross-area effects go through a message queue on the `Campaign` object. This is your future scalability lever and it costs nothing now.
 
@@ -726,6 +730,10 @@ Godot's `NavigationServer` is unavailable on the server, so navigation is **repl
 - Bake navmeshes with **Recast** (via Rust bindings) in the editor, at build time, from area geometry. Store as a build artifact keyed by area id and a hash of the source geometry.
 - Server pathfinding uses **Detour** or a Rust equivalent over the same navmesh. Server and client must use the identical navmesh file, or clients will predict movement the server rejects.
 - Local avoidance: skip it initially. Party members bumping into each other is a known CRPG aesthetic. Add simple steering later if it grates.
+
+> **Note (ADR-0036, 2026-11-08):** Navigation is a custom, deterministic,
+> integer crate `crpg-nav` (D27c), specified by ADR-0036 and implemented by
+> T035. Recast and Detour are not used.
 
 ---
 
@@ -1747,6 +1755,10 @@ These are real backlog items, ordered roughly as they become available.
 | 27 | Licence | **MIT or Apache-2.0 for the engine; ruleset packages licensed separately** | GPL; proprietary | Permissive maximises adoption and keeps Godot compatibility trivial | Low | Low |
 | 28 | Platform and hosting | **Windows/MSVC primary development/product/release/baseline; Linux/GNU fully supported headless server/tooling/extensions/tests; one authoritative host (ADR-0012)** | Linux-only server; separate single-player sim | Windows embedded and Windows/Linux dedicated adapters preserve the same client/server authority boundary | Explicit support decision required | Target-specific failures are defects |
 
+> **Note (ADR-0036, 2026-11-08):** Row 10 (navigation) is superseded by D27c
+> and ADR-0036: navigation is a custom, deterministic, integer `crpg-nav`,
+> not Recast/Detour.
+
 ---
 
 ## 21. The twenty biggest risks
@@ -2106,3 +2118,4 @@ Everything else in this document is recoverable. The Godot decision is reversibl
 - 2026-10-04 (UTC) · claude-code + T023s · Added `crpg-net-quic` to the §14 tree with dated notes in §14, §2.2 and §2.3, so the spec says where real QUIC I/O lives without rewriting the decision text; §7.2, §9/§10 and §17 are left to a later bookkeeping pass.
 - 2026-10-05 (UTC) · claude-code + T023v · Added a dated §14 note that `third_party/` also holds vendored crates.io patches (quinn-proto, VENDOR.md), so the layout tree does not read as Godot-only once T023v vendors quinn-proto.
 - 2026-10-16 (UTC) · claude-code + D28l · Noted on the rules editor entry that it must also create rulesets and is built after Phase 6 (T110), because the user made rule-defining a core pillar.
+- 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + ADR36-notes · Added pointer notes at §2.4 rule 3, §6.3 and §20 row 10 so readers of the old `f32`-positions and Recast/Detour text are sent to ADR-0036 and D27c; no existing text changed.

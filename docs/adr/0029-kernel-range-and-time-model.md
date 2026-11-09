@@ -529,9 +529,12 @@ including the toggle-refresh count (T10).
 
 ## Supersession and corrections
 
+2026-11-09: T16's f32 positions are superseded by ADR-0036 U2/M3: authoritative positions are Fx16_16 and Transform is an f32 mirror the simulation writes.
+
 ## Agent log
 
 - 2026-10-21 (UTC) · claude-code/opus-5.5 architect + T108 · Filed the proposed kernel-range, two-mode time model and ruleset-UI decision from the Beam and LongCat drafts and the R13/R14/R16 research, after checking each engine claim against the code. The main finding is that the kernel covers the five families except three named gaps, while the data/sim surface is the real limit; numbered 0029 because T024 reserves 0028.
 - 2026-10-21 (UTC) · opencode/deepseek-v4.1-flash-free + T108-adr-fix · Corrected the two combat.rs citations, moved the hashed-World rule to ADR-0013 Decision 1, and marked the pool setter S-set because a new ResourcePool field reaches World.
 - 2026-10-21 (UTC) · claude-code/opus-5.5 + D30c answered · Marked the ADR accepted with all nine open-question recommendations, as the user answered ("Accepted.").
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Filled the follow-on table's Id column (T134–T143) and rewrote row-number dependencies as those IDs, per the session 12 assignment; no decision changed.
+- 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + ADR36-notes · Added the dated correction entry to "Supersession and corrections" so T16's `f32` positions point at ADR-0036 U2/M3; no prior entry changed.
