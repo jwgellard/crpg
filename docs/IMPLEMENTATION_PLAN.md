@@ -220,9 +220,9 @@ Each I row needs its C row approved first unless it says **ready**.
 | T035 | C → I | crpg-nav | T034, D27c | Navigation v1 (spec §19.1 #21). Opens the crate |
 | T148 | C | `crpg-data` | ADR-0036 | Ruleset `movement` block (speed, measure, turn-based cost data); not S-set under D47 |
 | T036 | C → I, S | crpg-sim | T034, T148 | Authoritative movement; `World`/tick-order touch; new goldens (H-golden) |
-| T149 | C | `crpg-data`, `crpg-sim` | T036 | Range checks X1–X3 under D46d, after T036 |
+| T149 | C | `crpg-data`, `crpg-sim` | T036c, T149a | Range checks X1–X3 under D46d, after T036 |
 | T026p | C → I, S | crpg-net | T023, T036, T140 | Lane-1 movement and acknowledgments. Vendors the T030 dedup patch (D23); re-runs the impairment probe on native Windows |
-| T037 | C → I | crpg-server | T026p, T035 | Movement host adapter |
+| T037 | C → I | crpg-server | T026p, T035, T036c | Movement host adapter |
 
 **4D — persistence**
 
@@ -457,3 +457,4 @@ estimates slip.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Added the user-ordered demo-first row above the later row (T027b, T046, T045, T047, T048, cut-down T051 ahead of movement, nav and the rest of M4).
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S29-bookkeeping · Pointed T045/T047 at `apps/client`, split T047a/T047c out of T047, and noted the cut-down T051 has no T104/T108 prerequisite.
 - 2026-11-08 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S44-bookkeeping · Marked T034 done with ADR-0036 Accepted, added T035v, T148 and T149 to §3 4C, and added T148 to T036's and T140 to T026p's prerequisites, so the plan matches the session 44 contracts.
+- 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + S46-bookkeeping · Added the T036c → T149b and T149a → T149b prerequisites on the T149 row and T036c → T037 on the T037 row, so the plan carries the session 46 contract split.

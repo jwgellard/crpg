@@ -18,6 +18,7 @@ use crpg_rules::{ResourcePool, ResourcePoolId, MAX_TAGS};
 use crate::combat::{
     convert_refresh, read_creature_stats, CombatError, CreatureStats, MAX_COMBAT_STATS,
 };
+use crate::movement::{build_mover, write_mirror};
 use crate::world::{EntityMeta, World};
 
 /// One suspended effect attachment: the rounds it had left when its holder
@@ -131,10 +132,13 @@ pub struct CreatureSpec<'a> {
 ///
 /// Checks in order, mutating nothing on failure: `TooManyStats` (R1),
 /// `AreaMismatch` (R2), `MissingCreature` (R3), the prefab's stat errors in
-/// start's order (R4), `PlacementInUse` (R5) and `TooManyTags` (R6). It draws
-/// no RNG, interns nothing, adds no transform and no timeline entry, and is
-/// allowed while an encounter is active. On success it enqueues one
-/// `Spawned`.
+/// start's order (R4), `PlacementInUse` (R5) and `TooManyTags` (R6), then, when
+/// the ruleset declares `movement`, `InvalidPosition`, `InvalidSpeed` and
+/// `InvalidStep` (T036 B-L1, R7-R9). It draws no RNG, interns nothing, adds no
+/// timeline entry and, unless the ruleset declares `movement`, no transform;
+/// with `movement` it also inserts a mover and its transform mirror (zero
+/// velocity). It is allowed while an encounter is active. On success it
+/// enqueues one `Spawned`.
 ///
 /// # Panics
 ///
@@ -187,6 +191,8 @@ pub fn register_creature(
     if tags.len() > MAX_TAGS {
         return Err(CombatError::TooManyTags);
     }
+    // R7-R9 (T036 B-L1): the mover, after every existing check.
+    let mover = build_mover(spec.ruleset, spec.placement, &fixed)?;
     if spec.ruleset.pools.is_empty() {
         panic!("ruleset pools are validated nonempty by data read-time checks");
     }
@@ -219,5 +225,9 @@ pub fn register_creature(
             tags,
         },
     );
+    if let Some(mover) = mover {
+        write_mirror(world, entity, &mover);
+        world.movers_mut().insert(entity, mover);
+    }
     Ok(entity)
 }

@@ -10,6 +10,7 @@
 use crpg_core::EntityId;
 
 use crate::combat::TickFacts;
+use crate::movement::MovementFact;
 use crate::timeline::InitiativeKey;
 use crate::world::World;
 
@@ -20,7 +21,16 @@ use crate::world::World;
 /// tick it runs under. `run_systems` is the whole point of the function —
 /// the list, its order, and its stage comments are the contract.
 pub fn tick(world: &mut World) {
-    let _ = tick_tracked(world);
+    let _ = tick_with_movement(world);
+}
+
+/// [`tick`], returning stage 4's movement facts in ascending [`EntityId`] order
+/// (T036b, ADR-0036 W1).
+///
+/// The facts are for the host; they are never history events. [`tick`]
+/// delegates here and discards them.
+pub fn tick_with_movement(world: &mut World) -> Vec<MovementFact> {
+    tick_tracked(world).moves
 }
 
 /// [`tick`], reporting the transitions and executions the encounter stages
@@ -56,6 +66,8 @@ fn run_systems(world: &mut World, facts: &mut TickFacts) {
     encounter_clock_system(world, facts);
     // §10 stage 3 (timeline order) — T138: RT execution of due orders.
     timeline_system(world, facts);
+    // §10 stage 4 (movement) — T036: routes advance, mirrors rewrite.
+    crate::movement::movement_system(world, facts);
 }
 
 /// Encounter-clock step (T138, ADR-0029 T3, T6, T9, T10): advances the clock

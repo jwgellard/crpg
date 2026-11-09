@@ -10,8 +10,8 @@
 //! simulation transition between two bound worlds, requested by a higher
 //! authorized owner — not automatic navigation, and not a client operation.
 //! They move only the currently supported noncombat, unscheduled shape
-//! (`EntityMeta` plus an optional `Transform` and an optional `CreatureState`),
-//! allocating a fresh identity in the destination. Runtime identity across worlds is `(area, EntityId)`
+//! (`EntityMeta` plus an optional `Transform`, an optional `CreatureState` and
+//! an optional `Mover`, T036), allocating a fresh identity in the destination. Runtime identity across worlds is `(area, EntityId)`
 //! because two worlds can mint equal arena ids. Anything the move cannot
 //! carry fails the whole transfer instead of disappearing.
 
@@ -20,6 +20,7 @@ use std::fmt;
 use crpg_core::{EntityId, Ulid};
 
 use crate::history::{HistoryError, HistoryWorld};
+use crate::movement::write_mirror;
 use crate::world::World;
 
 /// Every transfer failure, checked in declaration order.
@@ -151,7 +152,10 @@ fn preflight(source: &World, destination: &World, entity: EntityId) -> Result<()
 /// `Despawned` at its tick), the destination spawns the copied `EntityMeta`
 /// (one `Spawned` at its tick) and receives the copied `Transform` if one
 /// existed — an absent transform stays absent — and the copied
-/// `CreatureState` if one existed (T139), likewise. RNG, interners, encounter
+/// `CreatureState` if one existed (T139), likewise. A mover is copied without
+/// its route and its mirror is rewritten at zero velocity (T036 M6); the
+/// destination's bound revision is not read, so the host binds and places next.
+/// RNG, interners, encounter
 /// state and ticks do not migrate or change. The returned id may equal the
 /// old one numerically; it belongs to the destination area. A rejection
 /// leaves both worlds unchanged.
@@ -166,6 +170,10 @@ pub fn transfer_entity(
         .expect("preflight checks the entity is live");
     let transform = source.transforms().get(entity).copied();
     let creature = source.creatures().get(entity).cloned();
+    let mover = source
+        .movers()
+        .get(entity)
+        .map(|mover| mover.without_route());
     let mut staged_source = source.clone();
     let mut staged_destination = destination.clone();
     let removed = staged_source.despawn(entity);
@@ -176,6 +184,10 @@ pub fn transfer_entity(
     }
     if let Some(creature) = creature {
         staged_destination.creatures_mut().insert(moved, creature);
+    }
+    if let Some(mover) = mover {
+        write_mirror(&mut staged_destination, moved, &mover);
+        staged_destination.movers_mut().insert(moved, mover);
     }
     *source = staged_source;
     *destination = staged_destination;
@@ -202,6 +214,11 @@ pub fn transfer_history_entity(
         .expect("preflight checks the entity is live");
     let transform = source.world().transforms().get(entity).copied();
     let creature = source.world().creatures().get(entity).cloned();
+    let mover = source
+        .world()
+        .movers()
+        .get(entity)
+        .map(|mover| mover.without_route());
     let mut staged_source = source.clone();
     let mut staged_destination = destination.clone();
     let removed = staged_source
@@ -213,6 +230,9 @@ pub fn transfer_history_entity(
         .map_err(AreaError::DestinationHistory)?;
     if let Some(transform) = transform {
         staged_destination.attach_transform(moved, transform);
+    }
+    if let Some(mover) = mover {
+        staged_destination.attach_mover(moved, mover);
     }
     *source = staged_source;
     *destination = staged_destination;
