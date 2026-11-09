@@ -43,6 +43,7 @@ use crpg_rules::{
 
 use crate::creature::{CreatureState, Entrant, SuspendedEffect};
 use crate::event::SimEvent;
+use crate::movement::{build_mover, write_mirror};
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
 use crate::world::{EntityMeta, World};
@@ -1141,6 +1142,23 @@ pub enum CombatError {
     },
     /// A join targets a terminal encounter (T139 D8).
     EncounterTerminal,
+    /// A placement's position lies outside the coordinate limit (T036).
+    InvalidPosition {
+        /// The placement whose position is out of bounds.
+        placement: Ulid,
+    },
+    /// A creature's movement speed is unresolvable or outside
+    /// `1..=MAX_SPEED_PER_TICK_RAW` (T036).
+    InvalidSpeed {
+        /// The placement whose creature has the bad speed.
+        placement: Ulid,
+    },
+    /// A creature's turn-based step length is unresolvable or not positive
+    /// (T036).
+    InvalidStep {
+        /// The placement whose creature has the bad step.
+        placement: Ulid,
+    },
 }
 
 impl std::fmt::Display for CombatError {
@@ -1190,6 +1208,9 @@ impl std::fmt::Display for CombatError {
             Self::NotCreature { .. } => write!(f, "NotCreature at creatures"),
             Self::AlreadyParticipant { .. } => write!(f, "AlreadyParticipant at combatants"),
             Self::EncounterTerminal => write!(f, "EncounterTerminal at combat/active"),
+            Self::InvalidPosition { .. } => write!(f, "InvalidPosition at spec/placements"),
+            Self::InvalidSpeed { .. } => write!(f, "InvalidSpeed at spec/movement"),
+            Self::InvalidStep { .. } => write!(f, "InvalidStep at spec/movement"),
         }
     }
 }
@@ -1388,8 +1409,10 @@ fn map_policy(policy: crpg_data::PolicyWire) -> StackingPolicy {
 /// damage-dice, effect, and natural checks; global effect checks in
 /// ascending effect order (reserved bonus type, then per modifier the policy
 /// checks and the `Stat` target name); duplicate modifiers; policy conflicts;
-/// the tag bound (`TooManyTags`); then publication, whose first draws are the
-/// rolled initiative keys.
+/// the tag bound (`TooManyTags`); then, when the ruleset declares `movement`,
+/// each participant's `InvalidPosition`, `InvalidSpeed` and `InvalidStep` in
+/// authored order (T036 B-L4); then publication, whose first draws are the
+/// rolled initiative keys. A spawned participant gets its mover at publication.
 ///
 /// Data-owned preconditions (enforced at data read time, asserted here):
 /// participants and the ruleset ability list are nonempty.
@@ -2074,6 +2097,14 @@ pub(crate) fn start_encounter_with_members_tracked(
         join_after_active: ruleset.late_join == Some(LateJoinWire::AfterActive),
     };
 
+    // T036 B-L4: each authored participant's mover, in authored order, after
+    // the lifecycle and before the resolution loop so every existing check
+    // still wins. Nothing here mutates the world.
+    let mut movers = Vec::with_capacity(pending.len());
+    for (member, (_, resolved)) in pending.iter().zip(&placements) {
+        movers.push(build_mover(ruleset, resolved.placement, &member.fixed)?);
+    }
+
     // T139 B13: each participant spawns, enters from its record, or is
     // skipped. Nothing here mutates the world.
     let mut sources: Vec<Source> = Vec::with_capacity(pending.len());
@@ -2234,7 +2265,7 @@ pub(crate) fn start_encounter_with_members_tracked(
         }
     }
 
-    for (member, source) in pending.into_iter().zip(sources) {
+    for ((member, source), mover) in pending.into_iter().zip(sources).zip(movers) {
         let id = match source {
             Source::Skip => continue,
             Source::Enter(entity) => {
@@ -2294,6 +2325,11 @@ pub(crate) fn start_encounter_with_members_tracked(
             EncounterMode::RealTime => 0,
         };
         world.timeline_mut().insert(InitiativeKey(key), id);
+        // T036 B-L4: only a spawned participant gets a new mover.
+        if let Some(mover) = mover {
+            write_mirror(world, id, &mover);
+            world.movers_mut().insert(id, mover);
+        }
     }
     // T139 B22: members enter after the participants, in slice order, at
     // round zero. They are not spawned and enqueue nothing.

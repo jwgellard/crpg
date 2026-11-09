@@ -39,6 +39,7 @@ use crate::combat::{
 };
 use crate::creature::CreatureState;
 use crate::event::SimEvent;
+use crate::movement::{load_failure, Mover, NavRevision};
 use crate::store::ComponentStore;
 use crate::timeline::{InitiativeKey, Timeline};
 use crate::transform::Transform;
@@ -102,6 +103,15 @@ pub struct World {
     /// a compatibility shape, not a hash exclusion.
     #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
     creatures: ComponentStore<CreatureState>,
+    /// Authoritative movement state (T036, ADR-0036 M1). Absent (empty) in
+    /// worlds without a mover, so those serialize byte-identically; a
+    /// compatibility shape, not a hash exclusion.
+    #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
+    movers: ComponentStore<Mover>,
+    /// The bound navmesh revision routes are validated against (T036); absent
+    /// until the host binds one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nav: Option<NavRevision>,
 }
 
 /// Reports whether an interner holds no strings in either namespace.
@@ -131,6 +141,10 @@ struct WorldRepr {
     area: Option<Ulid>,
     #[serde(default = "ComponentStore::new")]
     creatures: ComponentStore<CreatureState>,
+    #[serde(default = "ComponentStore::new")]
+    movers: ComponentStore<Mover>,
+    #[serde(default)]
+    nav: Option<NavRevision>,
 }
 
 impl<'de> Deserialize<'de> for World {
@@ -240,6 +254,17 @@ impl<'de> Deserialize<'de> for World {
                 if record.tags().len() > crpg_rules::MAX_TAGS {
                     return Err(serde::de::Error::custom("creature tags exceed their bound"));
                 }
+            }
+        }
+        // T036 L1-L12: the mover store is coherent, in store order.
+        for (id, mover) in repr.movers.iter() {
+            if !repr.entities.contains(id) {
+                return Err(serde::de::Error::custom(format!(
+                    "dangling mover for non-live {id:?}"
+                )));
+            }
+            if let Some(text) = load_failure(mover, repr.transforms.get(id), repr.nav) {
+                return Err(serde::de::Error::custom(text));
             }
         }
         match &repr.combat {
@@ -885,6 +910,8 @@ impl<'de> Deserialize<'de> for World {
             interners: repr.interners,
             area: repr.area,
             creatures: repr.creatures,
+            movers: repr.movers,
+            nav: repr.nav,
         })
     }
 }
@@ -907,6 +934,8 @@ impl World {
             interners: Interners::new(),
             area: None,
             creatures: ComponentStore::new(),
+            movers: ComponentStore::new(),
+            nav: None,
         }
     }
 
@@ -993,6 +1022,7 @@ impl World {
         }
         self.transforms.remove(id);
         self.creatures.remove(id);
+        self.movers.remove(id);
         let (_, facts) = self.remove_combatant_tracked(id);
         self.events
             .push(self.tick, SimEvent::Despawned { entity: id });
@@ -1165,6 +1195,28 @@ impl World {
     /// Mutably, the creature store. Crate-visible only.
     pub(crate) fn creatures_mut(&mut self) -> &mut ComponentStore<CreatureState> {
         &mut self.creatures
+    }
+
+    /// The authoritative mover store (T036, ADR-0036 M1).
+    pub fn movers(&self) -> &ComponentStore<Mover> {
+        &self.movers
+    }
+
+    /// Mutably, the mover store. Crate-visible only: movement code owns
+    /// mover mutation and the transform mirror that goes with it.
+    pub(crate) fn movers_mut(&mut self) -> &mut ComponentStore<Mover> {
+        &mut self.movers
+    }
+
+    /// The bound navmesh revision, or `None` until the host binds one.
+    pub fn nav(&self) -> Option<NavRevision> {
+        self.nav
+    }
+
+    /// Records the bound revision. Crate-visible only:
+    /// [`bind_nav`](Self::bind_nav) is the one way in.
+    pub(crate) fn set_nav(&mut self, revision: NavRevision) {
+        self.nav = Some(revision);
     }
 
     /// Encounter-level state, or `None` when no encounter is active.

@@ -576,6 +576,20 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - Trap: `Combatant.tags` is no longer gated on a granting effect. The hash of any world that starts an encounter over tagged prefabs moved once (the four `crpg-sim` goldens here; four `crpg-testkit` goldens in T139g).
 - Tests: `tests/creature_state.rs`, `tests/creature_lifecycle.rs`, `tests/creature_entry.rs` (members and joiner seeding), `tests/creature_join.rs`, `tests/creature_exit.rs`, and `combat::join_leave_facts_tests` (the crate-visible transition facts); the helpers are `support::creature`.
 
+## Movement state and operations (T036a, ADR-0036)
+
+- Public additions (`movement.rs`, re-exported at the crate root): `Mover`, `ActiveRoute`, `MoveRoute`, `NavRevision`, `RouteTag`, `Measure`, `MoveError`, `seg_len`, `point_at`, `route_length`, `route_measure`, `snap`, `to_f32`, `validate_route`, `COORD_LIMIT_RAW`, `MAX_ROUTE_POINTS`, `MAX_ROUTE_LENGTH_RAW`; `World::{movers, nav, bind_nav, place, set_route, clear_route}`; `HistoryWorld::{bind_nav, place, set_route, clear_route}`, `HistoryError::Move`; the `CombatError` variants `InvalidPosition`, `InvalidSpeed`, `InvalidStep`. `movers_mut`, `set_nav` and `HistoryWorld::attach_mover` are crate-private.
+- Invariant: movement reads no `f32`; only movement code writes a mover's `Transform`. The mirror is `to_f32` of the position with a velocity (zero outside stage 4); nothing converts an `f32` back, and L6 compares, it does not read.
+- Trap: a host write through `transforms_mut` to a mover's transform makes the save fail L6 (`mover transform disagrees with its position`) until the next operation or stage 4 rewrites the mirror. Velocity is not checked.
+- Trap: `seg_len` is *horizontal* (`y` ignored), while `point_at` interpolates `y`. A route that only changes height is a `ZeroSegment`.
+- Trap: `step` is stored at creation (Reading 2), not read at action time; a later task that lets an operation change a `Fixed` stat must also update the mover.
+- Trap: a new creation check (`InvalidPosition`, `InvalidSpeed`, `InvalidStep` and any after them) goes after every existing check: at registration after R6, at start after the lifecycle is built and before the T139 resolution loop. An existing check must keep winning.
+- Trap: a mover is built for a *spawned* participant only. Enter participants, members and joiners keep the mover their registration made (the ruleset is checked equal, S1/M5/J8); do not build a second one.
+- Trap: `bind_nav` returns the cleared pairs in ascending `EntityId`, not store order (a despawned index is reused, so the two differ). Sort; do not rely on `ComponentStore::iter`.
+- Trap: "dead" for `set_route` is a dead combatant *or* a dead creature record (a written-back corpse keeps its mover).
+- Trap: a new per-entity movement field must join the mover, the transfer copy (`area.rs`, both functions), the despawn removal and the load rules L1-L12. The history wrappers commit zero events; do not give them an event without a version decision.
+- Tests: `tests/movement_core.rs` (the implementer suite; `movement_core_contract.rs` is the two-keys writer's). The MOVE fixture is built from `Fixture::standard()` by JSON edits inside the test file.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -608,3 +622,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 (implementer) + T139b2 · Added the join/leave surface, the pending-flush and waiting-joiner traps and the shared settlement rule, and amended the death/despawn/release trap, so a later change to turn settlement keeps leave and despawn in step.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 (implementer) + T139b2 · Amended the dead-pending-joiner trap for D45a and named the single terminal helper, so a new terminal path does not leave pending joins that fail Q1 on reload.
 - 2026-11-07 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T139c · Added the journaled join/leave surface and the records-never-upgrade trap to the creature-records section, so a later change to `commit` does not make records a v2 trigger.
+- 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036a · Added the movement section: public API, the no-`f32`-read invariant and the traps (host transform writes failing L6, horizontal `seg_len`, stored step, creation-check order, spawned-only movers, id-ordered `bind_nav`, dead records, new per-entity fields).

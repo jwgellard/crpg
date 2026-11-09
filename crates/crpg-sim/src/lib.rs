@@ -24,6 +24,7 @@ pub mod creature;
 pub mod event;
 pub mod hash;
 pub mod history;
+pub mod movement;
 pub mod store;
 pub mod tick;
 pub mod timeline;
@@ -48,6 +49,11 @@ pub use hash::state_hash;
 pub use history::{
     history_hash, HistoryEnvelope, HistoryError, HistoryEvent, HistoryWorld, HISTORY_VERSION,
     MAX_HISTORY_BYTES, MAX_HISTORY_EVENTS, MAX_HISTORY_PAGE, MAX_HISTORY_STRING_BYTES,
+};
+pub use movement::{
+    point_at, route_length, route_measure, seg_len, snap, to_f32, validate_route, ActiveRoute,
+    Measure, MoveError, MoveRoute, Mover, NavRevision, RouteTag, COORD_LIMIT_RAW,
+    MAX_ROUTE_LENGTH_RAW, MAX_ROUTE_POINTS,
 };
 pub use store::ComponentStore;
 pub use tick::{end_turn, tick};

@@ -52,6 +52,7 @@ use crate::combat::{
 };
 use crate::creature::{CreatureSpec, CreatureState, Entrant};
 use crate::event::SimEvent;
+use crate::movement::{write_mirror, MoveError, MoveRoute, Mover, NavRevision, RouteTag};
 use crate::transform::Transform;
 use crate::world::{EntityMeta, World};
 
@@ -285,6 +286,8 @@ pub enum HistoryError {
     ByteLimit,
     /// A history string payload exceeds 256 UTF-8 bytes.
     StringLimit,
+    /// The staged movement operation failed; nothing was committed (T036).
+    Move(MoveError),
 }
 
 impl fmt::Display for HistoryError {
@@ -292,6 +295,7 @@ impl fmt::Display for HistoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Combat(error) => write!(f, "{error}"),
+            Self::Move(error) => write!(f, "{error}"),
             Self::InvalidPageLimit { .. } => write!(f, "InvalidPageLimit at history"),
             Self::StaleCursor { .. } => write!(f, "StaleCursor at history"),
             Self::FutureCursor { .. } => write!(f, "FutureCursor at history"),
@@ -308,6 +312,7 @@ impl std::error::Error for HistoryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Combat(error) => Some(error),
+            Self::Move(error) => Some(error),
             _ => None,
         }
     }
@@ -464,6 +469,68 @@ impl HistoryWorld {
     pub(crate) fn attach_transform(&mut self, entity: EntityId, transform: Transform) {
         debug_assert!(self.world.contains(entity), "attach to a live entity");
         self.world.transforms_mut().insert(entity, transform);
+    }
+
+    /// Attaches a mover and its mirror (zero velocity) to a live entity of the
+    /// staged wrapper, journaling nothing. Crate-visible only: the area
+    /// transfer's pair transaction uses it after `attach_transform`, so the
+    /// mirror wins; no public mutable-inner path exists.
+    pub(crate) fn attach_mover(&mut self, entity: EntityId, mover: Mover) {
+        debug_assert!(self.world.contains(entity), "attach to a live entity");
+        write_mirror(&mut self.world, entity, &mover);
+        self.world.movers_mut().insert(entity, mover);
+    }
+
+    /// Journaled [`World::bind_nav`](crate::World::bind_nav) (T036 B-O6): the
+    /// staged operation commits zero events, so it needs no free journal slot
+    /// or sequence and never changes `version`.
+    pub fn bind_nav(
+        &mut self,
+        revision: NavRevision,
+    ) -> Result<Vec<(EntityId, RouteTag)>, HistoryError> {
+        let mut world = self.world.clone();
+        let cleared = world.bind_nav(revision);
+        let tick = world.tick();
+        self.commit(world, Vec::new(), tick)?;
+        Ok(cleared)
+    }
+
+    /// Journaled [`World::place`](crate::World::place) (T036 B-O6); commits
+    /// zero events. A movement failure is [`HistoryError::Move`].
+    pub fn place(
+        &mut self,
+        entity: EntityId,
+        position: [crpg_core::Fx16_16; 3],
+    ) -> Result<(), HistoryError> {
+        let mut world = self.world.clone();
+        world.place(entity, position).map_err(HistoryError::Move)?;
+        let tick = world.tick();
+        self.commit(world, Vec::new(), tick)
+    }
+
+    /// Journaled [`World::set_route`](crate::World::set_route) (T036 B-O6);
+    /// commits zero events. A movement failure is [`HistoryError::Move`].
+    pub fn set_route(
+        &mut self,
+        entity: EntityId,
+        route: MoveRoute,
+    ) -> Result<Option<RouteTag>, HistoryError> {
+        let mut world = self.world.clone();
+        let replaced = world.set_route(entity, route).map_err(HistoryError::Move)?;
+        let tick = world.tick();
+        self.commit(world, Vec::new(), tick)?;
+        Ok(replaced)
+    }
+
+    /// Journaled [`World::clear_route`](crate::World::clear_route) (T036
+    /// B-O6); commits zero events. A movement failure is
+    /// [`HistoryError::Move`].
+    pub fn clear_route(&mut self, entity: EntityId) -> Result<Option<RouteTag>, HistoryError> {
+        let mut world = self.world.clone();
+        let cleared = world.clear_route(entity).map_err(HistoryError::Move)?;
+        let tick = world.tick();
+        self.commit(world, Vec::new(), tick)?;
+        Ok(cleared)
     }
 
     /// The wrapper version: 1 until the first RT-capable commit, then 2 (D16).
