@@ -1228,6 +1228,203 @@ fn b5_flag_bytes_other_than_0_or_1_are_malformed() {
     assert_eq!(dec_err(&[0x0D, 2]), CodecError::Malformed);
 }
 
+/// The `02` frames above are short, so a reader taking `u8 != 0` would still
+/// fail on truncation. Here each frame is a full valid one (the control, which
+/// decodes `Ok`) with exactly one flag byte replaced by `02`.
+#[test]
+fn b5_flag_02_with_a_full_remainder_is_malformed() {
+    let flip = |full: &[u8], at: usize| {
+        assert_eq!(full[at], 1, "flag at {at}");
+        assert!(dec(full).is_ok(), "control");
+        let mut bad = full.to_vec();
+        bad[at] = FLAG_BAD;
+        assert_eq!(dec_err(&bad), CodecError::Malformed, "flag at {at}");
+    };
+    // Encounter: tag, mode_disclosed, mode, pending_disclosed, pending_some,
+    // pending, clock_disclosed, clock_some, round_ticks, elapsed.
+    let encounter = [0x0B, 1, 0, 1, 1, 0, 1, 1, 1, 0];
+    for at in [1, 3, 4, 6, 7] {
+        flip(&encounter, at);
+    }
+    // Timeline: tag, disclosed, count, key, entity.
+    flip(&[0x0C, 1, 1, 0, 1], 1);
+    // EntityFacts, every family disclosed with a valid remainder.
+    let pools = cat(&[&[1, 1], &ulid_wire(1), &[1, 1]]);
+    let effects = cat(&[&[1, 1], &ulid_wire(1), &[1]]);
+    let order = cat(&[&[1, 1], &ulid_wire(3), &[1, 1]]); // some, ability, target 1, repeat
+    let stats = cat(&[&[1, 1], &text("a"), &[0, 2]]);
+    let tag_family = cat(&[&[1, 1], &text("a")]);
+    let full = entity_facts_bytes([&pools, &effects, &order, &stats, &tag_family]);
+    let pools_at = 2;
+    let effects_at = pools_at + pools.len();
+    let order_at = effects_at + effects.len();
+    let stats_at = order_at + order.len();
+    let tags_at = stats_at + stats.len();
+    for at in [
+        pools_at,
+        effects_at,
+        order_at,
+        order_at + 1,
+        stats_at - 1, // order `repeat`, the last order byte
+        stats_at,
+        tags_at,
+    ] {
+        flip(&full, at);
+    }
+}
+
+#[test]
+fn b2_timeline_refuses_a_duplicate_entity_that_is_not_adjacent() {
+    // Equal keys (zigzag 1 is `02`), so only the entity repeat is wrong.
+    assert!(dec(&[0x0C, 1, 3, 2, 1, 2, 2, 2, 3]).is_ok()); // control
+    assert_eq!(
+        dec_err(&[0x0C, 1, 3, 2, 1, 2, 2, 2, 1]),
+        CodecError::Malformed
+    );
+    assert_eq!(
+        try_op_bytes(timeline(&[(1, 1), (1, 2), (1, 1)])),
+        Err(CodecError::Malformed)
+    );
+    assert_eq!(
+        check_timeline(&tl(&[(1, 1), (1, 2), (1, 1)])),
+        Err(CodecError::Malformed)
+    );
+    assert_eq!(check_timeline(&tl(&[(1, 1), (1, 2), (1, 3)])), Ok(()));
+    // Four entries, the repeat of the second; and under differing keys.
+    assert_eq!(
+        dec_err(&[0x0C, 1, 4, 2, 1, 2, 2, 2, 3, 2, 2]),
+        CodecError::Malformed
+    );
+    assert_eq!(
+        check_timeline(&tl(&[(1, 1), (1, 2), (1, 3), (1, 2)])),
+        Err(CodecError::Malformed)
+    );
+    assert_eq!(
+        dec_err(&[0x0C, 1, 3, 2, 1, 4, 2, 6, 1]),
+        CodecError::Malformed
+    );
+    assert_eq!(
+        try_op_bytes(timeline(&[(1, 1), (2, 2), (3, 1)])),
+        Err(CodecError::Malformed)
+    );
+}
+
+#[test]
+fn b5_stat_kind_is_refused_before_its_value_is_read() {
+    // The frame ends right after the kind byte: no value byte at all.
+    assert_eq!(
+        dec_err(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 2]),
+        CodecError::UnknownMessage
+    );
+    assert_eq!(
+        dec_err(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 0xFF]),
+        CodecError::UnknownMessage
+    );
+    // Kind 02 with an out-of-range value: the kind is still first.
+    assert_eq!(
+        dec_err(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 2, 0x80, 0x80, 0x80, 0x80, 0x10, 0]),
+        CodecError::UnknownMessage
+    );
+    // Controls: a valid kind with its value decodes; with none, Malformed.
+    assert!(dec(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 1, 0, 0]).is_ok());
+    assert_eq!(
+        dec_err(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 1]),
+        CodecError::Malformed
+    );
+}
+
+#[test]
+fn b5_stat_names_differing_only_in_case_are_distinct() {
+    let two = |first: &str, second: &str| {
+        entity_facts_bytes([
+            W,
+            W,
+            W,
+            &cat(&[&[1, 2], &text(first), &[0, 2], &text(second), &[0, 4]]),
+            W,
+        ])
+    };
+    for (first, second) in [("might", "MIGHT"), ("MIGHT", "might")] {
+        assert_eq!(
+            dec(&two(first, second)),
+            Ok(stats_only(vec![
+                stat(first, StatValue::Int(1)),
+                stat(second, StatValue::Int(2)),
+            ])),
+            "{first} then {second}"
+        );
+    }
+    assert_eq!(
+        dec_err(&two("might", "might")),
+        CodecError::Malformed,
+        "control: equal names"
+    );
+    assert_eq!(
+        check_stats(&[
+            stat("might", StatValue::Int(1)),
+            stat("MIGHT", StatValue::Int(2))
+        ]),
+        Ok(())
+    );
+}
+
+#[test]
+fn b5_decode_refuses_a_non_adjacent_duplicate_pool_or_stat() {
+    let pools = |ids: [u8; 3]| {
+        entity_facts_bytes([
+            &cat(&[
+                &[1, 3],
+                &ulid_wire(ids[0]),
+                &[1, 1],
+                &ulid_wire(ids[1]),
+                &[1, 1],
+                &ulid_wire(ids[2]),
+                &[1, 1],
+            ]),
+            W,
+            W,
+            W,
+            W,
+        ])
+    };
+    assert!(dec(&pools([1, 2, 3])).is_ok()); // control
+    assert_eq!(dec_err(&pools([1, 2, 1])), CodecError::Malformed);
+    assert_eq!(dec_err(&pools([2, 1, 2])), CodecError::Malformed);
+    let stats = |names: [&str; 3]| {
+        entity_facts_bytes([
+            W,
+            W,
+            W,
+            &cat(&[
+                &[1, 3],
+                &text(names[0]),
+                &[0, 2],
+                &text(names[1]),
+                &[0, 2],
+                &text(names[2]),
+                &[0, 2],
+            ]),
+            W,
+        ])
+    };
+    assert!(dec(&stats(["a", "b", "c"])).is_ok()); // control
+    assert_eq!(dec_err(&stats(["a", "b", "a"])), CodecError::Malformed);
+    assert_eq!(dec_err(&stats(["b", "a", "b"])), CodecError::Malformed);
+}
+
+#[test]
+fn b5_decode_compares_tag_order_by_bytes_not_by_case() {
+    let two = |first: &str, second: &str| {
+        entity_facts_bytes([W, W, W, W, &cat(&[&[1, 2], &text(first), &text(second)])])
+    };
+    // `B` (0x42) sorts before `a` (0x61) in byte order.
+    assert!(dec(&two("B", "a")).is_ok());
+    assert_eq!(dec_err(&two("a", "B")), CodecError::Malformed);
+    assert!(dec(&two("a", "ab")).is_ok());
+    assert_eq!(dec_err(&two("ab", "a")), CodecError::Malformed);
+    assert_eq!(dec_err(&two("A", "A")), CodecError::Malformed);
+}
+
 // ---------------------------------------------------------------------------
 // B6 fact_precedence
 // ---------------------------------------------------------------------------

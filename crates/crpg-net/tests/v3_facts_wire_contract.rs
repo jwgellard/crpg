@@ -750,6 +750,152 @@ fn b5_fact_set_shape() {
     dec_err(&efb(NO, NO, NO, NO, &[0, 0]), MALFORMED);
 }
 
+/// A flag byte of `02` is `Malformed` (A-7), and the frame must reach that
+/// verdict through the flag, not through running out of bytes. Each frame
+/// below is a full valid one (the control, decoded `Ok`) with one flag byte
+/// replaced by `02`; a reader taking `u8 != 0` would still decode it.
+#[test]
+fn b1_encounter_flag_02_with_a_full_remainder() {
+    // tag, mode_disclosed, mode, pending_disclosed, pending_some, pending,
+    // clock_disclosed, clock_some, round_ticks, elapsed.
+    let full = [0x0B, 1, 0, 1, 1, 0, 1, 1, 1, 0];
+    check_op(encounter(Some(TB), Some(Some(TB)), clock(1, 0)), &full);
+    // mode_disclosed, pending_disclosed, pending-some, clock_disclosed, clock_some.
+    for at in [1, 3, 4, 6, 7] {
+        assert_eq!(full[at], 1);
+        let mut bad = full;
+        bad[at] = 2;
+        dec_err(&bad, MALFORMED);
+    }
+}
+
+#[test]
+fn b2_timeline_flag_02_with_a_full_remainder() {
+    check_op(timeline(&[(0, 1)]), &[0x0C, 1, 1, 0, 1]); // control
+    dec_err(&[0x0C, 2, 1, 0, 1], MALFORMED);
+}
+
+#[test]
+fn b3_entity_facts_flag_02_with_a_full_remainder() {
+    let pools = [1, 0];
+    let effects = [1, 0];
+    let order = [&[1, 1][..], &utext(3), &[1, 1]].concat(); // some, ability, target 1, repeat
+    let stats = [1, 1, 1, 0x61, 0, 0];
+    let tags = [1, 1, 1, 0x61];
+    let full = efb(&pools, &effects, &order, &stats, &tags);
+    let set = FactSet {
+        pools: Some(vec![]),
+        effects: Some(vec![]),
+        order: Some(Some(OrderFact {
+            ability: ulid(3),
+            target: net(1),
+            repeat: true,
+        })),
+        stats: Some(vec![int_stat("a", 0)]),
+        tags: Some(vec!["a".to_string()]),
+    };
+    check_op(facts_op(set), &full); // control: every flag is 01
+    let pools_at = 2;
+    let effects_at = pools_at + pools.len();
+    let order_at = effects_at + effects.len();
+    let stats_at = order_at + order.len();
+    let tags_at = stats_at + stats.len();
+    let at_list = [
+        pools_at,     // pools disclosed
+        effects_at,   // effects disclosed
+        order_at,     // order disclosed
+        order_at + 1, // order some
+        stats_at - 1, // order repeat (the last order byte)
+        stats_at,     // stats disclosed
+        tags_at,      // tags disclosed
+    ];
+    for at in at_list {
+        assert_eq!(full[at], 1, "flag at {at}");
+        let mut bad = full.clone();
+        bad[at] = 2;
+        dec_err(&bad, MALFORMED);
+    }
+}
+
+#[test]
+fn b2_timeline_refuses_a_duplicate_entity_that_is_not_adjacent() {
+    // Equal keys (zigzag 1 is `02`), so only the entity repeat is wrong.
+    check_op(
+        timeline(&[(1, 1), (1, 2), (1, 3)]),
+        &[0x0C, 1, 3, 2, 1, 2, 2, 2, 3],
+    ); // control
+    dec_err(&[0x0C, 1, 3, 2, 1, 2, 2, 2, 1], MALFORMED);
+    enc_err(timeline(&[(1, 1), (1, 2), (1, 1)]), MALFORMED);
+    // The repeat is of the middle entry, three entries after the start.
+    dec_err(&[0x0C, 1, 4, 2, 1, 2, 2, 2, 3, 2, 2], MALFORMED);
+    enc_err(timeline(&[(1, 1), (1, 2), (1, 3), (1, 2)]), MALFORMED);
+    // Different keys do not excuse the repeat.
+    dec_err(&[0x0C, 1, 3, 2, 1, 4, 2, 6, 1], MALFORMED);
+    enc_err(timeline(&[(1, 1), (2, 2), (3, 1)]), MALFORMED);
+    assert_eq!(
+        p3::check_timeline(&[
+            TimelineEntry {
+                key: 1,
+                entity: net(1)
+            },
+            TimelineEntry {
+                key: 1,
+                entity: net(2)
+            },
+            TimelineEntry {
+                key: 1,
+                entity: net(1)
+            },
+        ]),
+        Err(MALFORMED)
+    );
+}
+
+#[test]
+fn b3_stat_kind_is_refused_before_its_value_is_read() {
+    // The frame ends right after the kind byte: no value byte at all.
+    dec_err(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 2], UNKNOWN);
+    dec_err(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 0xFF], UNKNOWN);
+    // A kind of 02 with an out-of-range value: the kind still comes first.
+    dec_err(
+        &[
+            0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 2, 0x80, 0x80, 0x80, 0x80, 0x10, 0,
+        ],
+        UNKNOWN,
+    );
+    // Controls: kinds 00 and 01 with a value decode; with no value, Malformed.
+    assert!(c3::decode_delta(&d1(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 0, 0, 0])).is_ok());
+    assert!(c3::decode_delta(&d1(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 1, 0, 0])).is_ok());
+    dec_err(&[0x0D, 2, 0, 0, 0, 1, 1, 1, 0x61, 1], MALFORMED);
+}
+
+#[test]
+fn b3_stat_names_that_differ_only_in_case_are_distinct() {
+    for (first, second) in [("might", "MIGHT"), ("MIGHT", "might")] {
+        check_op(
+            stats_only(vec![int_stat(first, 1), int_stat(second, 2)]),
+            &efb(
+                NO,
+                NO,
+                NO,
+                &list(&[stat_b(first, 0, 1), stat_b(second, 0, 2)]),
+                NO,
+            ),
+        );
+    }
+    // Control: the same name twice is still refused.
+    dec_err(
+        &efb(
+            NO,
+            NO,
+            NO,
+            &list(&[stat_b("might", 0, 1), stat_b("might", 0, 2)]),
+            NO,
+        ),
+        MALFORMED,
+    );
+}
+
 #[test]
 fn b6_fact_precedence() {
     // current > max, then a stats count of 33: the pool fails first.
