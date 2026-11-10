@@ -1067,3 +1067,189 @@ fn c6_legacy_shape_with_movement_b_h4() {
         "{keys:?}"
     );
 }
+
+// ------------------------------------------- T036c-fix: the seven survivors
+
+/// The current balance of the extra pool `id` of `e`.
+fn extra_current(w: &World, e: EntityId, id: u128) -> u32 {
+    w.combatants()
+        .get(e)
+        .expect("a combatant")
+        .extra_pools()
+        .iter()
+        .find(|entry| entry.id().0 == pl(id))
+        .expect("the extra pool exists")
+        .current()
+}
+
+/// MOVE with one more extra pool, `uid(107)` holding 9, authored before 106.
+fn move_two_extras() -> Fixture {
+    let mut fx = move_fixture();
+    edit_ruleset(&mut fx, |r| {
+        let pools = r["pools"].as_array_mut().unwrap();
+        let at = pools
+            .iter()
+            .position(|pool| pool["id"] == json!(uid(106)))
+            .expect("pool 106 is authored");
+        pools.insert(
+            at,
+            json!({"id": uid(107), "max": 9, "refresh": {"type": "on_turn_start"}}),
+        );
+    });
+    fx
+}
+
+#[test]
+fn c1_route_cost_overflow_in_u64() {
+    // ceil(9223372036854775809 / 1) * 2 = 2^64 + 2 does not fit `u64`: `None`,
+    // never the wrapped 2.
+    assert_eq!(route_cost(9_223_372_036_854_775_809, step(1), 2), None);
+    // 2^63 * 2 = 2^64 also overflows `u64` (the wrap would give `Some(0)`).
+    assert_eq!(route_cost(9_223_372_036_854_775_808, step(1), 2), None);
+    // Control: 2^64 - 2 fits `u64` but not `u32`: `None` all the same.
+    assert_eq!(route_cost(9_223_372_036_854_775_807, step(1), 2), None);
+    // Control: a small honest product is exact.
+    assert_eq!(route_cost(3, step(1), 2), Some(6));
+}
+
+#[test]
+fn c3_combat_checks_precede_the_route_checks_b_c3() {
+    // A is out of turn (B holds it) and the route does not start at A's
+    // position: the Combat check wins over StartMismatch (Reading 8).
+    let fx = move_fixture();
+    let (mut w, a, b) = tb_world(&fx);
+    let wrong_start = route(1, vec![p(5, 5), p(6, 5)]);
+    let expected = Err(MoveError::Combat(CombatError::OutOfTurn {
+        actor: a,
+        active: Some(b),
+    }));
+    assert_eq!(validate_move(&w, a, &wrong_start), expected);
+    let before = bytes_of(&w);
+    assert_eq!(
+        perform_move(&mut w, a, &wrong_start),
+        Err(MoveError::Combat(CombatError::OutOfTurn {
+            actor: a,
+            active: Some(b)
+        }))
+    );
+    assert_eq!(bytes_of(&w), before);
+    // Control: the same route from the turn holder is the route failure.
+    assert_eq!(
+        validate_move(&w, b, &wrong_start),
+        Err(MoveError::StartMismatch)
+    );
+}
+
+#[test]
+fn c4_movement_pool_is_matched_by_id_among_extras_b_c3_b_c4() {
+    let fx = move_two_extras();
+    let (mut w, _a, b) = tb_world(&fx);
+    // The other extra pool is authored first.
+    let order: Vec<Ulid> = w
+        .combatants()
+        .get(b)
+        .expect("B")
+        .extra_pools()
+        .iter()
+        .map(|entry| entry.id().0)
+        .collect();
+    assert_eq!(order, vec![pl(107), pl(106)]);
+    assert_eq!(extra_current(&w, b, 107), 9);
+    assert_eq!(extra_current(&w, b, 106), 6);
+
+    // The balance read is pool 106's: ten metres is seven steps, over six.
+    assert_eq!(
+        validate_move(&w, b, &route(1, vec![p(10, 0), p(10, 10)])),
+        Err(MoveError::CannotAfford {
+            cost: 7,
+            current: 6
+        })
+    );
+    // The spend lands on pool 106 and only there.
+    let outcome = perform_move(&mut w, b, &route(2, vec![p(10, 0), p(10, 3), p(7, 3)]))
+        .expect("four steps fit six");
+    assert_eq!(outcome.cost, 4);
+    assert_eq!(extra_current(&w, b, 106), 2, "the movement pool pays");
+    assert_eq!(extra_current(&w, b, 107), 9, "the other pool is untouched");
+}
+
+#[test]
+fn c5_version_never_decreases_after_a_move_b_h1() {
+    let fx = move_rt();
+    let (mut h, _a, b) = history_tb(&fx);
+    assert_eq!(h.version(), 2);
+    h.perform_move(b, &route(1, vec![p(10, 0), p(10, 1)]))
+        .expect("one step");
+    assert_eq!(h.version(), 3);
+
+    // A later RT-capable commit (an accepted EndTurn) keeps version 3.
+    h.perform_action(&CombatAction::EndTurn { actor: b })
+        .expect("B ends the turn");
+    assert_eq!(h.version(), 3, "a commit never lowers the version");
+    let bytes = serde_json::to_vec(&h).expect("serializes");
+    let loaded: HistoryWorld = serde_json::from_slice(&bytes).expect("version 3 loads");
+    assert_eq!(loaded.version(), 3, "and the save reloads as 3");
+    assert_eq!(serde_json::to_vec(&loaded).expect("serializes"), bytes);
+}
+
+#[test]
+fn c6_legacy_form_reads_movement_b_h4() {
+    let (plain, _) = Fixture::standard().start(1);
+    let loaded = with_json(&plain, |save| {
+        let definition = save["combat"]["definition"]
+            .as_object_mut()
+            .expect("a definition object");
+        assert_eq!(definition.len(), 15, "the legacy form");
+        let pool = definition["pool_id"].clone();
+        definition.insert(
+            "movement".to_string(),
+            json!({"measure": "euclidean", "pool": pool, "step_cost": 1}),
+        );
+    });
+    let definition = &loaded.combat().expect("an encounter").definition;
+    assert_eq!(
+        definition.movement,
+        Some(TurnMovement {
+            measure: Measure::Euclidean,
+            pool: definition.pool_id,
+            step_cost: 1,
+        })
+    );
+}
+
+#[test]
+fn c6_pool_checks_precede_the_movement_checks_b_h4() {
+    let (w, _) = move_fixture().start(7);
+    let err = try_with_json(&w, |save| {
+        save["combat"]["definition"]["pools"] = json!([]);
+    })
+    .expect_err("a definition with no pools is refused");
+    assert!(err.contains("combat definition declares no pools"), "{err}");
+    assert!(!err.contains("movement"), "{err}");
+}
+
+#[test]
+fn c4_move_clears_the_actors_route_b_c4() {
+    let fx = move_fixture();
+    let (w, _a, b) = tb_world(&fx);
+    let injected = serde_json::to_value(route(9, vec![p(10, 0), p(12, 0)])).expect("serializes");
+    let mut w = with_json(&w, |save| {
+        let key = serde_json::to_value(b).expect("the id serializes");
+        let entry = save["movers"]
+            .as_array_mut()
+            .expect("a mover list")
+            .iter_mut()
+            .find(|entry| entry[0] == key)
+            .expect("B holds a mover");
+        entry[1]["route"] = json!({"route": injected, "segment": 0, "along": 0});
+    });
+    assert!(
+        w.movers().get(b).expect("a mover").route().is_some(),
+        "the injected route loaded"
+    );
+    perform_move(&mut w, b, &route(1, vec![p(10, 0), p(11, 0)])).expect("one step");
+    assert!(
+        w.movers().get(b).expect("a mover").route().is_none(),
+        "the move clears the route"
+    );
+}
