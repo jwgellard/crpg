@@ -288,8 +288,8 @@ Its T034+ ids are reserved places in that order, not written contracts.
 | T140b | `crpg-net` | in review — PR #91 open, waits on the user (S-set, plan §7.4 rule 3); batch commits `431fa88` (implementation), `5cd00d4`, `01e2ebb`, `5286e43` (two-keys and fix); edits EX1–EX5 to the T140a suites made under D53 | Yes | encounter, turn order, per-creature facts; same routing as T140a | T140a (merged) |
 | T140c | `crpg-net` | in review — PR #91 (not S-set; rides with T140b); batch commits `6e21ba1` (implementation), `3524f7a`, `2d2413e`, `40bac7e` | — (H-filter) | `facts_v3` per-viewer filter; OpenCode O1 or Sonnet | T140b |
 | T140d | `crpg-net` | in review — PR #91 waits on the user (S-set); batch commits `8bd2146` (implementation), then `3131ed8`, `96221e5`, `11b72fe`, `1ae2e9a`, `f23a774`, `b4fdc68` | Yes | `transfer_v3` `0x82` reconnect package with its own Begin/Chunk codec | T140c |
-| T140e | `crpg-net` | ready — next package; briefs still to write (Sonnet implementer, blind Sonnet two-keys writer, Sonnet reviewer with a mutant run; not S-set) | — | `reassembly_v3` receiver sizing (`TransferAssemblyV3`, `TransferLimitsV3`) | T140d |
-| T140r | `crpg-net` | contract to write | — | client-side v3 receiver: `ReassemblyPool`/`ReplicaWorld` for v3, built on T140e's types | T140e |
+| T140e | `crpg-net` | in review — PR #91 (not S-set; rides with T140b–T140d); batch commits `5d8e87e` (implementation), `3b838d9`, `548c127`, `2d810ec` (two-keys and fix) | — | `reassembly_v3` receiver sizing (`TransferAssemblyV3`, `TransferLimitsV3`) | T140d |
+| T140r | `crpg-net` | contract to write — next (T140e is in review) | — | client-side v3 receiver: `ReassemblyPool`/`ReplicaWorld` for v3, built on T140e's types | T140e |
 
 Exploding dice and glitch rules are deferred until a ruleset asks for them (ADR-0029 Q3).
 
@@ -481,6 +481,7 @@ Record it here, one line per week.
 | 2026-11-10 | — | Sessions 47–49 batch (`mgr/session-47-batch`): T149a, T036c, T149b, T140 fact sheet, T140 contract (D51, D52). Claude: Opus architect ×3 (T140 contract, fix, limits revision), Opus reviewer ×2 (T036c, T149b), Sonnet implementer ×2 + two-keys ×3 + fix rounds ×2, Sonnet reviewer ×3 (T140). OpenCode: free DeepSeek (fact-sheet check, draft A), free GLM (draft B). |
 | 2026-11-10 | — | Session 50 batch (`mgr/session-50-batch`): T140a (S-set). Claude: Sonnet implementer ×1 (verify passed after the manager added a missing agent-log entry), blind Sonnet two-keys ×1 + one fix round, Sonnet reviewer ×1 + one mutant re-check (63 mutants; code: no defect; 5 survived both suites, all killed after the fix round). OpenCode: none (Go monthly quota and free Zen out). |
 | 2026-11-10 | — | Session 51 batch (mgr/session-51-batch, PR #91): D53, T140b (S-set), T140c, T140d (S-set). Claude: Sonnet implementer ×3, blind Sonnet two-keys ×3, fix rounds ×3 (one fresh Sonnet implementer for T140b, two resumed writers), Sonnet reviewer ×3 each with a mutant run and one re-check (T140b 140 mutants / 16 real survivors; T140c 149 / 6; T140d 138 / 2; all killed after the fix rounds; no code defect in any part). Haiku bookkeeper ×1. OpenCode: none (Go monthly quota and free Zen out). |
+| 2026-11-10 | — | Session 52 (added to PR #91, mgr/session-51-batch): T140e. Claude: Sonnet implementer ×1 (verify passed first attempt), blind Sonnet two-keys ×1 + one fix round (resumed writer), Sonnet reviewer ×1 with a mutant run (244 mutants; 3 real survivors of both suites, one gap: the stored Begin's epoch/base_tick/cursor; killed after the fix, checked by the manager). No code defect. OpenCode: none (Go monthly quota and free Zen out). |
 
 ---
 
@@ -624,3 +625,4 @@ Record it here, one line per week.
 - 2026-11-10 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S49-bookkeeping · Marked T036c and T149 done with the D51 approvals and the T149a/T149b hashes, added the T140a–T140e and T140r rows under D52, pointed T141 and T026p at the new parts, and added the sessions 47–49 throughput row.
 - 2026-11-10 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S50-bookkeeping · Set T140a to in review (S-set, PR open, waiting on the user) with batch commits 7b4e0d4, 6ce4988, 9be936e, 500b9ca and 544e789; T140b now waits on T140a's merge; added the session 50 throughput row.
 - 2026-11-10 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S51-bookkeeping · Marked T140a done (PR #90, `ec4669d`), set T140b to T140d in review on the session 51 PR #91 with their batch commits, made T140e the ready next package, and added the session 51 throughput row.
+- 2026-11-10 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S52-bookkeeping · Set T140e to in review on the session 51 PR #91 with its four batch commits, moved T140r to contract-to-write next, and added the session 52 throughput row.
