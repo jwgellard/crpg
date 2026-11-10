@@ -672,3 +672,39 @@ fn e6_v1_sizing_unchanged() {
     // Controls: the v1 envelope's own limit is still accepted by v1.
     assert!(TransferAssembly::new(&begin(1_048_576, 8, 32)).is_ok());
 }
+
+// E-1 / E-2 (1): the stored Begin is a copy of every field of the given one.
+
+#[test]
+fn e1_stored_begin_keeps_its_own_fields() {
+    let epoch: [u8; 16] = core::array::from_fn(|i| i as u8 + 1);
+    let b = BeginTransfer {
+        epoch,
+        transfer: tid(7),
+        base_tick: 12_345,
+        cursor: 678,
+        total_bytes: 6,
+        entity_count: 3,
+        segments_per_chunk: 1,
+        chunk_count: 1,
+    };
+    assert_eq!(t3::check_begin(&b), Ok(()));
+    let mut asm = TransferAssemblyV3::new(&b).expect("a valid v3 Begin");
+    assert_eq!(asm.begin(), &b);
+    let payload = vec![9, 8, 7, 6, 5, 4];
+    // The all-zero epoch is not this assembly's epoch; nor is another id.
+    let zero_epoch = raw(Z, 7, 0, payload.clone());
+    assert_eq!(
+        refused(&mut asm, &zero_epoch),
+        Err(AssemblyError::WrongTransfer)
+    );
+    let other_id = raw(epoch, 1, 0, payload.clone());
+    assert_eq!(
+        refused(&mut asm, &other_id),
+        Err(AssemblyError::WrongTransfer)
+    );
+    assert_eq!(asm.received_chunks(), 0);
+    assert_eq!(asm.accept(&raw(epoch, 7, 0, payload.clone())), COMPLETE);
+    assert_eq!(asm.begin(), &b);
+    assert_eq!(asm.into_bytes(), Ok(payload));
+}
