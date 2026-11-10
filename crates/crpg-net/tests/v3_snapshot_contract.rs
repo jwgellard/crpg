@@ -1037,6 +1037,8 @@ fn with_facts(n: u64, facts: FactSet) -> SnapshotEntityV3 {
 // D3 / D4: body layout and decode order.
 // ---------------------------------------------------------------------------
 
+type FlagBody = (&'static str, Box<dyn Fn(u8) -> Vec<u8>>);
+
 #[test]
 fn d3_body_literals() {
     let empty = hx("00 00 00 00 00 00");
@@ -1059,12 +1061,52 @@ fn d3_body_literals() {
     ctrl[5] = 1;
     assert_eq!(t3::decode_body(&ctrl), Ok(health(true)));
     assert_eq!(t3::encode_body(&health(true)), Ok(ctrl));
-    // A flag byte of 02 is Malformed wherever it stands, with a valid remainder.
-    for at in [2usize, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
-        let mut bad = lit.clone();
-        bad[at] = 2;
-        assert_eq!(t3::decode_body(&bad), Err(Malformed), "flag at {at}");
+    // A flag byte of 02 is Malformed wherever it stands. Each body below has
+    // the remainder that makes flag 01 decode Ok, so 02 fails on the flag
+    // itself and not on truncation or trailing bytes.
+    let flag_bodies: Vec<FlagBody> = vec![
+        (
+            "health_present",
+            Box::new(|f| rb0(&[eb(1, &[f, 10, 10, 0], &NONE5)])),
+        ),
+        ("dead", Box::new(|f| rb0(&[eb(1, &[1, 10, 10, f], &NONE5)]))),
+        ("pools", Box::new(|f| one_fam(0, vec![f, 0]))),
+        ("effects", Box::new(|f| one_fam(1, vec![f, 0]))),
+        ("order", Box::new(|f| one_fam(2, vec![f, 0]))),
+        ("stats", Box::new(|f| one_fam(3, vec![f, 0]))),
+        ("tags", Box::new(|f| one_fam(4, vec![f, 0]))),
+        (
+            "turn_present",
+            Box::new(|f| rb(&[e0(1)], &[f, 0, 5], &[0, 0, 0], &[0])),
+        ),
+        (
+            "mode_disclosed",
+            Box::new(|f| rb(&[e0(1)], &[0], &[f, 0, 0, 0], &[0])),
+        ),
+        (
+            "pending_disclosed",
+            Box::new(|f| rb(&[e0(1)], &[0], &[0, f, 0, 0], &[0])),
+        ),
+        (
+            "clock_disclosed",
+            Box::new(|f| rb(&[e0(1)], &[0], &[0, 0, f, 0], &[0])),
+        ),
+        (
+            "timeline_disclosed",
+            Box::new(|f| rb(&[e0(1)], &[0], &[0, 0, 0], &[f, 0])),
+        ),
+    ];
+    for (name, build) in &flag_bodies {
+        assert!(t3::decode_body(&build(1)).is_ok(), "{name} control");
+        assert_eq!(t3::decode_body(&build(2)), Err(Malformed), "{name} = 02");
     }
+    // The same on the 16-byte literal, where a flag of 02 has a valid tail.
+    let mut bad = lit.clone();
+    bad[2] = 2;
+    assert_eq!(t3::decode_body(&bad), Err(Malformed));
+    let mut bad = lit.clone();
+    bad[5] = 2;
+    assert_eq!(t3::decode_body(&bad), Err(Malformed));
     // Nested flags (order `some` and `repeat`, turn `active_present`, pending and
     // clock `some`), each with the remainder it would need if the flag were 1.
     let order = |some: u8, repeat: u8| {
@@ -2610,4 +2652,91 @@ fn d7_snapshot_all_or_nothing() {
     );
     let wrong_view = (InterestView::new(other_epoch()), FactView::new(epoch()));
     refuses("view epoch", &good, None, wrong_view, FactError::WrongEpoch);
+}
+
+#[test]
+fn d6_snapshot_memory_is_exactly_the_snapshot() {
+    let ks = keys(4);
+    // Every key has a granted image, so a stale entry would be a real image.
+    let mut warm_scene = base(&ks);
+    let mut k3 = row(
+        ks[2],
+        FactMask {
+            pools: true,
+            ..FactMask::default()
+        },
+    );
+    k3.pools = vec![pool(9, 1, 2)];
+    warm_scene.rows[1] = k3;
+    // The snapshot scene: the last key is gone (its row stays, but is invisible).
+    let mut gone = warm_scene.clone();
+    gone.state[2].fields.presence = false;
+    let (mut v, mut warm) = fresh();
+    let page = warm_scene.page(&mut v, &mut warm).unwrap();
+    assert!(page.ops.contains(&facts_op(
+        3,
+        FactSet {
+            pools: Some(vec![pool(9, 1, 2)]),
+            ..FactSet::default()
+        }
+    )));
+    let after = gone.snap(&mut v, &mut warm).unwrap().body;
+    assert_eq!(after.entities.len(), 2);
+    // NetIds 1 and 2 are the same as on a fresh view, so the FactViews compare.
+    let (mut v2, mut clean) = fresh();
+    let again = gone.snap(&mut v2, &mut clean).unwrap().body;
+    assert_eq!(after, again);
+    assert_eq!(
+        warm, clean,
+        "nothing but the snapshot's images is remembered"
+    );
+    // The same with the encounter gone: its remembered images are replaced too.
+    let mut no_enc = gone.clone();
+    no_enc.enc = None;
+    let (mut v, mut warm) = fresh();
+    warm_scene.page(&mut v, &mut warm).unwrap();
+    no_enc.snap(&mut v, &mut warm).unwrap();
+    let (mut v2, mut clean) = fresh();
+    no_enc.snap(&mut v2, &mut clean).unwrap();
+    assert_eq!(warm, clean);
+}
+
+#[test]
+fn d6_snapshot_bounds_at_the_limit() {
+    let ks = keys(1026);
+    let all_visible = |n: usize| -> Scene {
+        let mut sc = base(&ks);
+        sc.state = ks[..n].iter().map(|k| state_row(*k, None)).collect();
+        sc.rows = Vec::new();
+        sc.timeline = Vec::new();
+        sc
+    };
+    // Exactly 1,024 rows are accepted.
+    let mut sc = all_visible(1024);
+    sc.rows = ks[..1024]
+        .iter()
+        .map(|k| row(*k, FactMask::default()))
+        .collect();
+    let body = sc.first_body();
+    assert_eq!(body.entities.len(), 1024);
+    assert!(t3::encode_body(&body).is_ok());
+    sc.rows.push(row(ks[1024], FactMask::default()));
+    let (mut v, mut f) = fresh();
+    assert_eq!(sc.snap(&mut v, &mut f).err(), Some(FactError::TooManyFacts));
+    // Exactly 1,024 timeline entries are accepted, all kept (all are visible).
+    let mut sc = all_visible(1024);
+    sc.timeline = ks[..1024]
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (i as i32, *k))
+        .collect();
+    let body = sc.first_body();
+    let timeline = body.timeline.as_ref().expect("timeline disclosed");
+    assert_eq!(timeline.len(), 1024);
+    assert_eq!(timeline[1023], tl(1023, 1024));
+    assert!(t3::encode_body(&body).is_ok());
+    assert_eq!(t3::decode_body(&t3::encode_body(&body).unwrap()), Ok(body));
+    sc.timeline.push((0, ks[1024]));
+    let (mut v, mut f) = fresh();
+    assert_eq!(sc.snap(&mut v, &mut f).err(), Some(FactError::TooManyFacts));
 }
