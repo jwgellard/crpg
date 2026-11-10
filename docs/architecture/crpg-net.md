@@ -605,7 +605,7 @@ no `Paused` code.
 **Scalar ops.** 14 `RoundStarted`, 15 `ModeChanged`, 16 `OrderEnded`, 17
 `Joined`, 18 `Left` (notices that mint or retire no id), 19 `Clock`, 20
 `HostFacts`. Round and the active combatant stay in the v1 `Turn` op.
-Tags 11..=13 are `UnknownMessage` until T140b.
+Tags 11..=13 are the T140b fact ops (below).
 
 **`Clock` is the only pause carrier.** `Clock { paused }` is
 `Option<Option<PauseReason>>`: `None` is running (`00`), `Some(None)` is
@@ -632,6 +632,65 @@ trailing bytes are `Malformed`; counts and strings over their bounds are
 frame cap, and never returns partial bytes. `tests/v3_wire.rs` carries the
 literal byte oracles (A1–A11).
 
+### T140b: fact ops, bounds and `frame_spans`
+
+Three ops carry the viewer's complete image of one subject, so a `None` is
+"not disclosed", never zero, and a disclosed nullable value is a nested
+`Option`. An op whose fields are all withheld tells the client to forget its
+subject. Every flag is a raw `bool`; a byte other than 0/1 is `Malformed`.
+
+| Tag | Op | Fields after the tag |
+|---|---|---|
+| 11 | `Encounter(EncounterFacts)` | `mode_disclosed` [`mode`]; `pending_disclosed` [`pending_some` [`pending`]]; `clock_disclosed` [`clock_some` [`round_ticks` u32, `elapsed` u64]] |
+| 12 | `Timeline { entries }` | `disclosed` [`count` varint, then per entry `key` i32 zigzag, `entity` u64] |
+| 13 | `EntityFacts { entity, facts }` | `entity` u64, then the fact set: pools, effects, order, stats, tags, each a `disclosed` flag then its body |
+
+**Limits, and Reading 8.** At most 16 pools, 16 effects, 32 stats, 8 tags,
+1,024 timeline entries; stat names and tags are 1..=32 bytes; `round_ticks`
+is nonzero and `elapsed` is at most `i32::MAX`. A count over its cap is
+`LimitExceeded`, read before any element (a ten-byte hostile count
+included). Shape faults are `Malformed`: `current > max`, a repeated pool or
+stat name, effects not strictly ascending by id, tags not strictly ascending
+by bytes, an empty name, a descending timeline key, a repeated timeline
+entity, target 0. A stat `kind` byte over 1 is `UnknownMessage`. The public
+`check_pools`, `check_effects`, `check_stats`, `check_tags`, `check_timeline`
+and `ClockFact::check` are the encode-side checks and return exactly the
+error `encode_delta` returns. The wire never truncates or refuses an
+over-limit subject: the host (T140c) renders an over-limit family as
+withheld, which fails closed and keeps the session going.
+
+**Timeline tie rule.** Entries are in the authority's `(key, EntityId)`
+order, but the client sees `NetId`s, whose order can differ inside a tie. The
+codec therefore checks only non-decreasing keys and distinct entities, and
+never `NetId` order. Hidden entities have no entry.
+
+**`frame_spans`.** `codec_v3::frame_spans(ops)` is the one frame splitter. It
+runs the per-op encode checks first (the first failure is returned, no
+spans), then closes a frame exactly when the next op would make it hold more
+than 256 ops or more than `MAX_FRAME_OP_BYTES_V3` = 65,512 bytes of encoded
+ops (tags included). 65,512 is the 65,536-byte frame cap less the 24-byte
+largest header (version 1, lane 1, two 10-byte varints, a 2-byte count), so a
+lane-0 frame holding one span encodes for every tick and `event_seq`. No valid
+op is larger than 15,364 bytes (`Timeline` of 1,024; an `EntityFacts` is at
+most 2,755), so the split never fails on size. A page of v3 ops is not a
+frame: counting ops alone (as the v1/v2 host does) would build frames that
+`encode_delta` refuses with `FrameTooLarge`.
+
+**`projection_v3`.** `project_events` is `projection_v2::project_events` for
+v3: more than 256 candidates is `TooManyEvents`; candidates are visited in
+input order and each fully disclosed one yields one op; nothing is sorted or
+deduplicated. `V2(c)` yields exactly the v2 ops for `c`, converted with
+`From`, and its `StringLimit`/`InvalidOutcome` fail the whole call.
+`RoundStarted` needs `round`, `ModeChanged` needs `mode` and `round`,
+`OrderEnded` needs `actor`, `Joined`/`Left` need `entity` and
+`disclose == true`; a candidate missing any of these is omitted without
+looking at its other fields. `tests/v3_facts_wire.rs` carries the literal
+oracles (B1-B9). `codec_v3` also exposes crate-private `extend_*`/`take_*`
+for the encounter block, the timeline block and the fact set, which T140d
+reuses for the `0x82` body.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Added the fact-op table, limits and Reading 8, the timeline tie rule, `frame_spans` with its 65,512-byte rule, and `projection_v3`; the T140a text that called tags 11..=13 unknown is superseded here.
+
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the Protocol v3 section for the version gate, intents, native tags 0..=10, codes 21..=30, the scalar ops and `Clock` as the only pause carrier; fact ops, filters and `0x82` follow in T140b–e.
 
 ## Agent log
@@ -647,3 +706,4 @@ literal byte oracles (A1–A11).
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Absorbed the moved Public surface, Invariants, and Allowed dependencies sections from AGENTS.md; no content lost.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the "Protocol v3 (T140, ADR-0029 N1–N4)" section for the new `protocol_v3`/`codec_v3` pair; no earlier section changed.
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Extended the Protocol v3 section with the fact ops, their limits, the timeline tie rule, `frame_spans` and `projection_v3`; no earlier section changed.

@@ -127,6 +127,16 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   1..=20. `Clock` carries no tick; the frame header does, and `Clock` is the
   only carrier of pause state. A withheld value is `None` (a `00` flag),
   never a zero.
+- *2026-11-10 (UTC), T140b:* **Fact ops** (tags 11..=13, `Encounter`,
+  `Timeline`, `EntityFacts`; supersedes the T140a "reserved" note above).
+  Never check timeline `NetId` order: the authority orders ties by
+  `EntityId`, the client sees `NetId`s, so the codec checks only
+  non-decreasing keys and distinct entities. A v3 page is not a frame: split
+  with `codec_v3::frame_spans`, never by op count (1,024 full `EntityFacts`
+  are about 2.8 MB; ops-only chunking builds frames `encode_delta` refuses).
+  Over-limit families are withheld by the host, never truncated or refused
+  here. The encode checks are the public `check_*` functions; keep them and
+  the decoder in the same order.
 
 ## Agent log
 
@@ -161,3 +171,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T046 · Added the `replica` pointer and the apply-only/no-reset/no-grave/`Died`-is-a-notice traps, with the DoD count 226 (the base suites plus 17 `replica` unit tests).
 
 - 2026-11-10 (UTC) · claude-code/opus-5.5 (manager) + T140a · Signed for the Sonnet implementer, who added the protocol v3 entry with its three traps (no tag reuse, no `Legacy` wrap of v2, `Clock` carries no tick), so agents extending v3 in T140b–e keep the wire stable.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Added the fact-op entry with its two traps (never check timeline `NetId` order; a v3 page is not a frame, split with `frame_spans`), superseding the T140a note that tags 11..=13 are reserved.

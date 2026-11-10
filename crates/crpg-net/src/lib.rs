@@ -40,6 +40,7 @@ pub mod codec_v2;
 pub mod codec_v3;
 pub mod interest;
 pub mod projection_v2;
+pub mod projection_v3;
 pub mod protocol;
 pub mod protocol_resume;
 pub mod protocol_transfer;

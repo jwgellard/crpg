@@ -24,13 +24,13 @@ use crpg_net::protocol::{
 };
 use crpg_net::protocol_v2::{DeltaFrame as DeltaFrameV2, DeltaOp as DeltaOpV2};
 use crpg_net::protocol_v3::{
-    AutoPauseToggles, AutoPauseTrigger, DeltaFrame, DeltaOp, EncounterMode, HostFacts, IntentBody,
-    IntentFrame, NetId, PauseReason, PauseRights, ReceiptStatus, RejectionCode,
-    AUTO_PAUSE_TOGGLE_MASK, DELTA_TAG_CLOCK, DELTA_TAG_ENCOUNTER, DELTA_TAG_ENTITY_FACTS,
-    DELTA_TAG_HOST_FACTS, DELTA_TAG_JOINED, DELTA_TAG_LEFT, DELTA_TAG_MODE_CHANGED,
-    DELTA_TAG_ORDER_ENDED, DELTA_TAG_ROUND_STARTED, DELTA_TAG_TIMELINE, INTENT_TAG_DECLARE_ACTION,
-    INTENT_TAG_END_TURN, INTENT_TAG_PAUSE, INTENT_TAG_REQUEST_MODE, INTENT_TAG_STOP,
-    INTENT_TAG_UNPAUSE, POLICY_CLOCK_HEARTBEAT_TICKS, PROTOCOL_VERSION,
+    AutoPauseToggles, AutoPauseTrigger, DeltaFrame, DeltaOp, EncounterFacts, EncounterMode,
+    HostFacts, IntentBody, IntentFrame, NetId, PauseReason, PauseRights, ReceiptStatus,
+    RejectionCode, AUTO_PAUSE_TOGGLE_MASK, DELTA_TAG_CLOCK, DELTA_TAG_ENCOUNTER,
+    DELTA_TAG_ENTITY_FACTS, DELTA_TAG_HOST_FACTS, DELTA_TAG_JOINED, DELTA_TAG_LEFT,
+    DELTA_TAG_MODE_CHANGED, DELTA_TAG_ORDER_ENDED, DELTA_TAG_ROUND_STARTED, DELTA_TAG_TIMELINE,
+    INTENT_TAG_DECLARE_ACTION, INTENT_TAG_END_TURN, INTENT_TAG_PAUSE, INTENT_TAG_REQUEST_MODE,
+    INTENT_TAG_STOP, INTENT_TAG_UNPAUSE, POLICY_CLOCK_HEARTBEAT_TICKS, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -1056,8 +1056,9 @@ fn a8_v3_tag_table_closed() {
     assert_eq!(AUTO_PAUSE_TOGGLE_MASK, 0x1F);
     assert_eq!(POLICY_CLOCK_HEARTBEAT_TICKS, 100);
 
-    // Tag 21 (0x15) and FF are unknown; the reserved 11..=13 are unknown in
-    // T140a, with and without a plausible payload. Control: tag 20 decodes.
+    // Tag 21 (0x15) and FF are unknown; 11..=13 are the T140b fact ops, so a
+    // bare tag is truncated (`Malformed`) and `0B 00 00 00` is the all-withheld
+    // encounter op. Control: tag 20 decodes.
     assert!(decode_delta(&delta_bytes(1, &[0x14, 1, 1, 0, 0])).is_ok());
     for tag in [0x15u8, 0xFF] {
         assert_eq!(
@@ -1068,19 +1069,31 @@ fn a8_v3_tag_table_closed() {
     for tag in [0x0Bu8, 0x0C, 0x0D] {
         assert_eq!(
             decode_delta(&delta_bytes(1, &[tag])),
-            Err(CodecError::UnknownMessage),
+            Err(CodecError::Malformed),
             "tag {tag:#x}"
         );
-        assert_eq!(
-            decode_delta(&delta_bytes(1, &[tag, 0, 0, 0])),
-            Err(CodecError::UnknownMessage),
-            "tag {tag:#x} with payload"
-        );
     }
-    // Every byte outside 0..=10 and 14..=20 is unknown, with an empty tail.
+    assert_eq!(
+        decode_delta(&delta_bytes(1, &[0x0B, 0, 0, 0])),
+        Ok(delta(vec![DeltaOp::Encounter(EncounterFacts::default())])),
+        "tag 0x0b with payload"
+    );
+    assert_eq!(
+        decode_delta(&delta_bytes(1, &[0x0C, 0, 0, 0])),
+        Err(CodecError::Malformed),
+        "tag 0x0c with payload"
+    );
+    assert_eq!(
+        decode_delta(&delta_bytes(1, &[0x0D, 0, 0, 0])),
+        Err(CodecError::Malformed),
+        "tag 0x0d with payload"
+    );
+    // Every byte above 20 is unknown, with an empty tail; 11..=13 are truncated.
     for tag in 0..=255u8 {
         let result = decode_delta(&delta_bytes(1, &[tag]));
-        if (11..=13).contains(&tag) || tag >= 21 {
+        if (11..=13).contains(&tag) {
+            assert_eq!(result, Err(CodecError::Malformed), "tag {tag}");
+        } else if tag >= 21 {
             assert_eq!(result, Err(CodecError::UnknownMessage), "tag {tag}");
         } else {
             assert_ne!(result, Err(CodecError::UnknownMessage), "tag {tag}");
