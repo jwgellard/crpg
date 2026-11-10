@@ -1094,3 +1094,79 @@ fn v3_delta_encode_checks() {
     );
     assert_eq!(c3::encode_delta(&dfr(vec![over, seq0])), Err(LimitExceeded));
 }
+
+// ---------------------------------------------------------------------------
+// Review round: flag bytes must be exactly 00/01 even with a full remainder.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v3_flag_bytes_strict_with_full_remainder() {
+    use CodecError::*;
+    for bad in [2u8, 0xFF] {
+        // HostFacts auto_disclosed: bad flag, then bits and a complete timer.
+        op_err(&[0x14, 1, 1, bad, 0x1F, 1, 1, 5], Malformed);
+        op_err(&[0x14, 1, 1, bad, 0x1F, 0], Malformed);
+        // HostFacts timer_disclosed: bad flag, then a complete running timer.
+        op_err(&[0x14, 1, 1, 0, bad, 1, 5], Malformed);
+        op_err(&[0x14, 1, 1, 0, bad, 0], Malformed);
+        // HostFacts timer_running: bad flag, then a full u32.
+        op_err(&[0x14, 1, 1, 0, 1, bad, 5], Malformed);
+        // Turn present flag: bad flag, then entity and round.
+        op_err(&[0x06, bad, 1, 5], Malformed);
+        op_err(&[0x06, bad, 5], Malformed);
+    }
+    // Passing controls: the identical frames with 01.
+    check_op(
+        host_facts(true, true, Some(0x1F), Some(Some(5))),
+        &[0x14, 1, 1, 1, 0x1F, 1, 1, 5],
+    );
+    check_op(
+        host_facts(true, true, None, Some(Some(5))),
+        &[0x14, 1, 1, 0, 1, 1, 5],
+    );
+    check_op(
+        host_facts(true, true, None, Some(Some(5))),
+        &[0x14, 1, 1, 0, 1, 1, 5],
+    );
+    check_op(
+        DeltaOp::Turn {
+            active: Some(net(1)),
+            round: 5,
+        },
+        &[0x06, 1, 1, 5],
+    );
+    // A HostFacts timer varint above u32::MAX is Malformed; u32::MAX passes.
+    op_err(
+        &[0x14, 1, 1, 0, 1, 1, 0x80, 0x80, 0x80, 0x80, 0x10],
+        Malformed,
+    );
+    op_err(
+        &[0x14, 1, 1, 0, 1, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0x1F],
+        Malformed,
+    );
+    check_op(
+        host_facts(true, true, None, Some(Some(u32::MAX))),
+        &[0x14, 1, 1, 0, 1, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F],
+    );
+}
+
+#[test]
+fn v3_toggles_with_false_on_clear_bit() {
+    let base = AutoPauseToggles::default();
+    for t in TRIGGERS {
+        // Clearing a bit that is already clear changes nothing.
+        assert_eq!(base.with(t, false).bits(), 0);
+        let others = TRIGGERS
+            .into_iter()
+            .filter(|o| *o != t)
+            .fold(base, |acc, o| acc.with(o, true));
+        let expected = 0x1F & !(1u8 << t.as_u8());
+        assert_eq!(others.bits(), expected);
+        assert_eq!(others.with(t, false).bits(), expected);
+        assert!(!others.with(t, false).get(t));
+        // Setting then clearing, and clearing twice, are stable.
+        assert_eq!(others.with(t, true).bits(), 0x1F);
+        assert_eq!(others.with(t, true).with(t, false).bits(), expected);
+        assert_eq!(others.with(t, false).with(t, false).bits(), expected);
+    }
+}
