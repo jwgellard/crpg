@@ -1689,3 +1689,163 @@ fn c14_error_text_and_source() {
         FactError::Interest(InterestError::IdExhausted)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Revocation of each remembered image (C-2, C-3, C-4, C-6) and C-5 new id.
+// ---------------------------------------------------------------------------
+
+/// `Fx` with k2's row carrying every family under a full mask, no encounter grants.
+fn full_row_fx() -> Fx {
+    let mut fx = Fx::new();
+    fx.grants = EncounterGrants::default();
+    let k1 = fx.k(1);
+    let r = fx.row_mut(2);
+    r.fields = mask(true, true, true, true, true);
+    r.effects = vec![effect(2, 5)];
+    r.order = order_in(k1, true);
+    r.tags = vec!["a".to_string()];
+    fx
+}
+
+#[test]
+fn revoke_timeline_grant_emits_forget_once() {
+    let mut fx = Fx::new();
+    let mut p = Pair::new();
+    assert_eq!(p.step(&fx), c2_tail());
+    fx.grants.timeline = false;
+    assert_eq!(p.step(&fx), vec![tl_none()]);
+    assert_eq!(p.step(&fx), vec![]);
+    // Control: granting again discloses the list again, once.
+    fx.grants.timeline = true;
+    assert_eq!(p.step(&fx), vec![tl(&[(-1, 1), (-1, 2), (5, 3)])]);
+    assert_eq!(p.step(&fx), vec![]);
+    // Ungranted to granted from the start is the control direction too.
+    let mut late = Fx::new();
+    late.grants.timeline = false;
+    let mut q = Pair::new();
+    assert_eq!(q.step(&late).len(), 2); // Encounter and EntityFacts, no Timeline
+    late.grants.timeline = true;
+    assert_eq!(q.step(&late), vec![tl(&[(-1, 1), (-1, 2), (5, 3)])]);
+}
+
+#[test]
+fn revoke_one_row_family_at_a_time() {
+    type Revoke = fn(&mut FactMask);
+    let revokes: [(&str, Revoke); 3] = [
+        ("effects", |m| m.effects = false),
+        ("order", |m| m.order = false),
+        ("tags", |m| m.tags = false),
+    ];
+    for (name, revoke) in revokes {
+        let mut fx = full_row_fx();
+        let mut p = Pair::new();
+        let full = expect_image(fx.row_mut(2), Some(1));
+        assert!(full.effects.is_some() && full.order.is_some() && full.tags.is_some());
+        assert_eq!(p.step(&fx), vec![ef(2, full.clone())], "{name}");
+        let original = fx.row_mut(2).fields;
+        revoke(&mut fx.row_mut(2).fields);
+        let mut want = full.clone();
+        match name {
+            "effects" => want.effects = None,
+            "order" => want.order = None,
+            _ => want.tags = None,
+        }
+        assert_eq!(want, expect_image(fx.row_mut(2), Some(1)), "{name}");
+        assert_eq!(p.step(&fx), vec![ef(2, want)], "{name}");
+        assert_eq!(p.step(&fx), vec![], "{name}");
+        // Control: the grant coming back re-discloses the full image.
+        fx.row_mut(2).fields = original;
+        assert_eq!(p.step(&fx), vec![ef(2, full)], "{name}");
+        assert_eq!(p.step(&fx), vec![], "{name}");
+    }
+    // An order with `Some(None)` disclosed ("granted, none") is also revoked alone.
+    let mut fx = full_row_fx();
+    fx.row_mut(2).order = None;
+    let mut p = Pair::new();
+    let full = expect_image(fx.row_mut(2), None);
+    assert_eq!(full.order, Some(None));
+    assert_eq!(p.step(&fx), vec![ef(2, full.clone())]);
+    fx.row_mut(2).fields.order = false;
+    let want = FactSet {
+        order: None,
+        ..full
+    };
+    assert_eq!(p.step(&fx), vec![ef(2, want)]);
+    assert_eq!(p.step(&fx), vec![]);
+}
+
+#[test]
+fn revoke_pending_mode_and_clock_grants_alone() {
+    let mut base = Fx::new();
+    base.pending = Some(TB);
+    base.rows.clear();
+    let full = enc(Some(RT), Some(Some(TB)), Some(Some(CLOCK)));
+    let tail = |fx: &Fx, p: &mut Pair| p.step(fx);
+    // Pending mode first, then the clock.
+    let mut fx = base.clone();
+    let mut p = Pair::new();
+    assert_eq!(
+        tail(&fx, &mut p),
+        vec![full.clone(), tl(&[(-1, 1), (-1, 2), (5, 3)])]
+    );
+    fx.grants.pending_mode = false;
+    assert_eq!(
+        tail(&fx, &mut p),
+        vec![enc(Some(RT), None, Some(Some(CLOCK)))]
+    );
+    assert_eq!(tail(&fx, &mut p), vec![]);
+    fx.grants.clock = false;
+    assert_eq!(tail(&fx, &mut p), vec![enc(Some(RT), None, None)]);
+    assert_eq!(tail(&fx, &mut p), vec![]);
+    // Control: both grants back.
+    fx.grants.pending_mode = true;
+    assert_eq!(tail(&fx, &mut p), vec![enc(Some(RT), Some(Some(TB)), None)]);
+    fx.grants.clock = true;
+    assert_eq!(tail(&fx, &mut p), vec![full.clone()]);
+    assert_eq!(tail(&fx, &mut p), vec![]);
+    // Clock first, then the pending mode.
+    let mut fx = base.clone();
+    let mut p = Pair::new();
+    tail(&fx, &mut p);
+    fx.grants.clock = false;
+    assert_eq!(tail(&fx, &mut p), vec![enc(Some(RT), Some(Some(TB)), None)]);
+    assert_eq!(tail(&fx, &mut p), vec![]);
+    fx.grants.pending_mode = false;
+    assert_eq!(tail(&fx, &mut p), vec![enc(Some(RT), None, None)]);
+    assert_eq!(tail(&fx, &mut p), vec![]);
+    // The mode alone, with the rest already withheld.
+    fx.grants.mode = false;
+    assert_eq!(tail(&fx, &mut p), vec![enc(None, None, None)]);
+    assert_eq!(tail(&fx, &mut p), vec![]);
+}
+
+#[test]
+fn reentry_resends_the_full_image_under_the_new_id() {
+    // Every family disclosed; the key leaves and returns as NetId 4, then 5.
+    let mut fx = full_row_fx();
+    let mut p = Pair::new();
+    let full = expect_image(fx.row_mut(2), Some(1));
+    assert_eq!(p.step(&fx), vec![ef(2, full.clone())]);
+    fx.set_presence(2, false);
+    assert_eq!(p.step(&fx), vec![]);
+    fx.set_presence(2, true);
+    assert_eq!(p.step(&fx), vec![ef(4, full.clone())]);
+    assert_eq!(p.step(&fx), vec![]);
+    // Leave and return with the row itself unchanged, in a call that also
+    // changes another key, so the call is not otherwise empty.
+    fx.set_presence(2, false);
+    fx.row_mut(3).fields.pools = true;
+    let leave = p.step(&fx);
+    assert_eq!(
+        leave,
+        vec![ef(
+            3,
+            FactSet {
+                pools: Some(vec![pool(2, 1, 1)]),
+                ..FactSet::default()
+            }
+        )]
+    );
+    fx.set_presence(2, true);
+    assert_eq!(p.step(&fx), vec![ef(5, full)]);
+}
