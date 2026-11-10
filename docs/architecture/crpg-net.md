@@ -824,6 +824,48 @@ replaces its memory with exactly these images, so the next `project_page` emits
 only differences; a key the snapshot retired forgets its image. The body always
 passes `encode_body`. `tests/v3_snapshot.rs` carries the oracles (D1-D10).
 
+### T140e: `reassembly_v3`, v3 receiver sizing
+
+`reassembly_v3` re-sizes T024's receiver for the 4 MiB `0x82` envelope. It
+fixes no byte: every number is policy. It reuses `AssemblyError`,
+`ChunkOutcome` and `LimitsError` from `reassembly` by path and edits no
+existing module. `TransferAssembly` and `TransferLimits` keep the v1 caps (1
+MiB, 32 chunks, a `u32` bitmap) and stay byte- and test-identical.
+
+**`TransferAssemblyV3`.** `TransferAssembly`'s behaviour with a `u128` chunk
+bitmap and the v3 Begin rules: `new` is `transfer_v3::check_begin` and then a
+zeroed `total_bytes` buffer; `accept` checks the transfer (`WrongTransfer`),
+the index against `chunk_count` (`OutOfRange`), the length against
+`transfer_v3::chunk_len` (`WrongLength`), then a set bit (`Duplicate` for equal
+bytes, `Conflict` otherwise); an `Err` or `Duplicate` changes nothing. Inside
+the v1 envelope it equals `TransferAssembly` call by call (E3).
+
+**`TransferLimitsV3` (Reading 18).** Same seven fields in the same order as
+`TransferLimits`, with `v3()` at the upper bound of every range:
+`{ 8, 20_000, 4_194_304, 33_554_432, 128, 2_097_152, 16_777_216 }`. Staging
+per receiver is the whole envelope (4,194,304), floored at the largest valid
+body (2,847,788, as v1's floor is its largest body); pool staging is 8 x 4 MiB,
+so eight maximal transfers still fit at once. The deadline is 20,000 ms: T024's
+5 s per 1 MiB at four times the bytes. The held-delta budgets stay 128 frames,
+2 MiB per receiver and 16 MiB per pool, because T024 tied them to the egress
+caps (`POLICY_EGRESS_*`), which do not change; a receiver whose held deltas
+overflow during a slow transfer resyncs by T024's existing overflow rule.
+Worst-case pool memory goes from 24 MiB to 48 MiB (32 MiB staging + 16 MiB held
+deltas), plus decoded bodies. `validate` checks the fields in declaration order,
+first failure wins; per field, zero or under the floor is `InvalidLimits`
+before an over-bound `LoosensPolicy`. The bounds are read by path from
+`protocol` and `transfer_v3` rather than repeated.
+
+**Transport (Reading 19).** The `crpg-net-quic` windows are flow control, not
+size caps, so a larger transfer needs no change there. What bounds a `0x82`
+plan is the egress queue: the largest plan is 88 frames and 2,851,124 bytes,
+above the 2 MiB per-peer egress bytes, so the host paces the frames (H-7, T141)
+and the egress caps do not grow.
+
+The client receiver (`ReassemblyPool` gating of v3 deltas, publication of
+`0x82` bodies, a v3 `ReplicaWorld`) is a later `crpg-net` task built on these
+two types. `tests/v3_reassembly.rs` carries the oracles (E1-E6).
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -841,3 +883,5 @@ passes `encode_body`. `tests/v3_snapshot.rs` carries the oracles (D1-D10).
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Extended the Protocol v3 section with `facts_v3` (`FactView`, `project_page`, the per-row, per-encounter and host-fact grants, the op-owner table and emission rules); no earlier section changed.
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Extended the Protocol v3 section with `transfer_v3` (the `0x82` frames, the v3 caps and `check_begin`, the body and its 2,847,788-byte bound, `plan_transfer`) and `project_snapshot_v3`; no earlier section changed.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140e · Extended the Protocol v3 section with `reassembly_v3` (the 128-chunk assembly, the re-sized limits, the worst-case memory and the transport note); no earlier section changed.

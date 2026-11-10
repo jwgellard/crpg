@@ -159,6 +159,17 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   same order, so they agree on every refusal; keep them so, and never add a
   host-fact field to the body.
 
+- *2026-11-10 (UTC), T140e:* **v3 receiver sizing** (`reassembly_v3`; see
+  architecture §"T140e"). A v3 transfer is never sized by `TransferLimits` or
+  assembled by `TransferAssembly`: both keep the v1 caps (1 MiB, 32 chunks,
+  a `u32` bitmap) and refuse a 4 MiB Begin; use `TransferLimitsV3` and
+  `TransferAssemblyV3`. The host paces `0x82` frames (H-7): the largest plan
+  is 88 frames and 2,851,124 bytes, above the 2 MiB per-peer egress bytes, so
+  the egress caps do not grow and a plan is never admitted whole. The v3
+  limits are read by path from `protocol` and `transfer_v3`; never copy a
+  number into them, and keep `validate` in field order, `InvalidLimits`
+  before `LoosensPolicy`.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
@@ -198,3 +209,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Added the fact-filter entry with its three traps (`FactView` never mints and is driven only through `project_page`; no controller input, the order grant is the host's; withheld is `None`, never a disclosed nothing).
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Added the `0x82` snapshot entry with its traps (v3 Begin/Chunk go through `check_begin`, never the `0x81` codec or `validate`; the v1 caps stay frozen; the chunk count is computed in `usize`; encode and decode check in one order).
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140e · Added the v3 receiver-sizing entry with its two traps (a v3 transfer is never sized by `TransferLimits` or assembled by `TransferAssembly`; the host paces `0x82` frames and the egress caps do not grow).
