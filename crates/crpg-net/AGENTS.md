@@ -119,6 +119,14 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   leaves the replica equal to its pre-call clone; live rows may reach 2,048
   mid-page (D8). DoD count: 226 passed (the base suites plus 17 `replica`
   unit tests).
+- *2026-11-10 (UTC), T140a:* **Protocol v3** (`protocol_v3`, `codec_v3`; see
+  architecture §"Protocol v3"). A v3 tag is never reused or moved: tags
+  11..=13 stay reserved for the fact ops (T140b) and are `UnknownMessage`
+  until then. v3 never wraps v2 in `Legacy`: tags 0..=10 are native, because
+  a receipt's code must reach 21..=30 and v1's `RejectionCode` is frozen at
+  1..=20. `Clock` carries no tick; the frame header does, and `Clock` is the
+  only carrier of pause state. A withheld value is `None` (a `00` flag),
+  never a zero.
 
 ## Agent log
 
