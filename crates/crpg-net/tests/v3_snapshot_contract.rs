@@ -531,12 +531,7 @@ fn d1_begin_encode_and_check_begin_agree() {
             segments_per_chunk: b.spc,
             chunk_count: b.chunks,
         };
-        assert_eq!(
-            t3::check_begin(&msg),
-            expect,
-            "check_begin {b:?}",
-            b = b.total
-        );
+        assert_eq!(t3::check_begin(&msg), expect, "total {}", b.total);
         let enc = t3::encode_down(&TransferDown::Begin(msg.clone()));
         match expect {
             Ok(()) => assert_eq!(enc, Ok(bb(0x82, b))),
@@ -928,4 +923,727 @@ fn d10_chunk_index_bounds() {
         t3::encode_down(&TransferDown::Chunk(chunk(128, vec![0]))),
         Err(LimitExceeded)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Body helpers: hand-built bytes from the D-2 layout.
+// ---------------------------------------------------------------------------
+
+fn ent(n: u64) -> SnapshotEntityV3 {
+    SnapshotEntityV3 {
+        entity: nid(n),
+        health: None,
+        facts: FactSet::default(),
+    }
+}
+
+fn body_of(ents: Vec<SnapshotEntityV3>) -> SnapshotBodyV3 {
+    SnapshotBodyV3 {
+        entities: ents,
+        ..empty_body()
+    }
+}
+
+fn tl(key: i32, entity: u64) -> TimelineEntry {
+    TimelineEntry {
+        key,
+        entity: nid(entity),
+    }
+}
+
+fn fam_list<T>(items: &[T], one: impl Fn(&T) -> Vec<u8>) -> Vec<u8> {
+    let mut out = vec![1];
+    out.extend(vi(items.len() as u64));
+    for item in items {
+        out.extend(one(item));
+    }
+    out
+}
+
+fn fam_pools(p: &[(u128, u32, u32)]) -> Vec<u8> {
+    fam_list(p, |&(id, c, m)| {
+        [ut(id), vi(c.into()), vi(m.into())].concat()
+    })
+}
+
+fn fam_effects(e: &[(u128, u64)]) -> Vec<u8> {
+    fam_list(e, |&(id, round)| [ut(id), vi(round)].concat())
+}
+
+fn fam_order(ability: u128, target: u64, repeat: bool) -> Vec<u8> {
+    [vec![1, 1], ut(ability), vi(target), vec![u8::from(repeat)]].concat()
+}
+
+fn fam_stats(s: &[(&str, u8, i32)]) -> Vec<u8> {
+    fam_list(s, |&(n, k, v)| {
+        [string_bytes(n), vec![k], vi(zz(v))].concat()
+    })
+}
+
+fn fam_tags(t: &[&str]) -> Vec<u8> {
+    fam_list(t, |t| string_bytes(t))
+}
+
+/// Five families in wire order; each argument is raw family bytes.
+fn facts_b(pools: &[u8], effects: &[u8], order: &[u8], stats: &[u8], tags: &[u8]) -> Vec<u8> {
+    [pools, effects, order, stats, tags].concat()
+}
+
+const NONE5: [u8; 5] = [0; 5];
+
+fn eb(net: u64, health: &[u8], facts: &[u8]) -> Vec<u8> {
+    [vi(net).as_slice(), health, facts].concat()
+}
+
+fn e0(net: u64) -> Vec<u8> {
+    eb(net, &[0], &NONE5)
+}
+
+fn rb(ents: &[Vec<u8>], turn: &[u8], enc: &[u8], tl: &[u8]) -> Vec<u8> {
+    [
+        vi(ents.len() as u64),
+        ents.concat(),
+        turn.to_vec(),
+        enc.to_vec(),
+        tl.to_vec(),
+    ]
+    .concat()
+}
+
+fn rb0(ents: &[Vec<u8>]) -> Vec<u8> {
+    rb(ents, &[0], &[0, 0, 0], &[0])
+}
+
+fn pool(id: u128, current: u32, max: u32) -> PoolFact {
+    PoolFact {
+        pool: u(id),
+        current,
+        max,
+    }
+}
+
+fn stat(name: &str, value: StatValue) -> StatFact {
+    StatFact {
+        name: name.to_owned(),
+        value,
+    }
+}
+
+fn with_facts(n: u64, facts: FactSet) -> SnapshotEntityV3 {
+    SnapshotEntityV3 { facts, ..ent(n) }
+}
+
+// ---------------------------------------------------------------------------
+// D3 / D4: body layout and decode order.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn d3_body_literals() {
+    let empty = hx("00 00 00 00 00 00");
+    assert_eq!(t3::encode_body(&empty_body()), Ok(empty.clone()));
+    assert_eq!(t3::decode_body(&empty), Ok(empty_body()));
+    let lit = hx("01 01 01 0A 0A 00 00 00 00 00 00 00 00 00 00 00");
+    let health = |dead| {
+        let mut e = ent(1);
+        e.health = Some(HealthFact {
+            health: 10,
+            max_health: 10,
+            dead,
+        });
+        body_of(vec![e])
+    };
+    assert_eq!(t3::encode_body(&health(false)), Ok(lit.clone()));
+    assert_eq!(t3::decode_body(&lit), Ok(health(false)));
+    // Control: one byte differs (`dead`), and the body differs with it.
+    let mut ctrl = lit.clone();
+    ctrl[5] = 1;
+    assert_eq!(t3::decode_body(&ctrl), Ok(health(true)));
+    assert_eq!(t3::encode_body(&health(true)), Ok(ctrl));
+    // A flag byte of 02 is Malformed wherever it stands, with a valid remainder.
+    for at in [2usize, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
+        let mut bad = lit.clone();
+        bad[at] = 2;
+        assert_eq!(t3::decode_body(&bad), Err(Malformed), "flag at {at}");
+    }
+    // Nested flags (order `some` and `repeat`, turn `active_present`, pending and
+    // clock `some`), each with the remainder it would need if the flag were 1.
+    let order = |some: u8, repeat: u8| {
+        let fam = [vec![1, some], ut(7), vec![1, repeat]].concat();
+        rb0(&[eb(1, &[0], &facts_b(&[0], &[0], &fam, &[0], &[0]))])
+    };
+    let bad = [
+        order(2, 1),
+        order(1, 2),
+        rb(&[e0(1)], &[1, 2, 1, 5], &[0, 0, 0], &[0]),
+        rb(&[e0(1)], &[0], &[0, 1, 2, 0, 0], &[0]),
+        rb(&[e0(1)], &[0], &[0, 0, 1, 2, 120, 5], &[0]),
+    ];
+    assert!(t3::decode_body(&order(1, 1)).is_ok());
+    for b in bad {
+        assert_eq!(t3::decode_body(&b), Err(Malformed), "{b:02x?}");
+    }
+}
+
+fn full_layout_body() -> SnapshotBodyV3 {
+    let mut e2 = ent(2);
+    e2.health = Some(HealthFact {
+        health: 1,
+        max_health: 2,
+        dead: true,
+    });
+    e2.facts = FactSet {
+        pools: Some(vec![pool(1, 2, 3)]),
+        effects: Some(vec![EffectFact {
+            effect: u(5),
+            expires_round: 9,
+        }]),
+        order: Some(Some(OrderFact {
+            ability: u(7),
+            target: nid(1),
+            repeat: true,
+        })),
+        stats: Some(vec![
+            stat("might", StatValue::Int(4)),
+            stat("grit", StatValue::Fixed(-65_536)),
+        ]),
+        tags: Some(vec!["a".to_owned(), "b".to_owned()]),
+    };
+    SnapshotBodyV3 {
+        entities: vec![ent(1), e2],
+        turn: Some(TurnFact {
+            active: Some(nid(2)),
+            round: 3,
+        }),
+        encounter: EncounterFacts {
+            mode: Some(EncounterMode::RealTime),
+            pending_mode: Some(None),
+            clock: Some(Some(ClockFact {
+                round_ticks: 120,
+                elapsed: 240,
+            })),
+        },
+        timeline: Some(vec![tl(-1, 2), tl(5, 1)]),
+    }
+}
+
+fn full_layout_bytes() -> Vec<u8> {
+    let facts = facts_b(
+        &fam_pools(&[(1, 2, 3)]),
+        &fam_effects(&[(5, 9)]),
+        &fam_order(7, 1, true),
+        &fam_stats(&[("might", 0, 4), ("grit", 1, -65_536)]),
+        &fam_tags(&["a", "b"]),
+    );
+    rb(
+        &[e0(1), eb(2, &[1, 1, 2, 1], &facts)],
+        &[1, 1, 2, 3],
+        &hx("01 01 01 00 01 01 78 F0 01"),
+        &hx("01 02 01 02 0A 01"),
+    )
+}
+
+#[test]
+fn d3_body_full_layout_literal() {
+    let bytes = full_layout_bytes();
+    assert_eq!(t3::encode_body(&full_layout_body()), Ok(bytes.clone()));
+    assert_eq!(t3::decode_body(&bytes), Ok(full_layout_body()));
+    // zigzag(-65536) is 131071: `FF FF 07`.
+    assert!(bytes.windows(3).any(|w| w == [0xFF, 0xFF, 0x07]));
+    // Control: round 3 -> 4 is one byte and one field.
+    let mut ctrl = bytes.clone();
+    let turn_round = bytes.len() - hx("01 01 01 00 01 01 78 F0 01").len() - 6 - 1;
+    assert_eq!(bytes[turn_round], 3);
+    ctrl[turn_round] = 4;
+    let mut want = full_layout_body();
+    want.turn = Some(TurnFact {
+        active: Some(nid(2)),
+        round: 4,
+    });
+    assert_eq!(t3::decode_body(&ctrl), Ok(want));
+    // Every proper prefix is Malformed.
+    for cut in 0..bytes.len() {
+        assert_eq!(t3::decode_body(&bytes[..cut]), Err(Malformed), "cut {cut}");
+    }
+}
+type Refusal = (&'static str, SnapshotBodyV3, Option<Vec<u8>>, CodecError);
+
+fn one_fam(index: usize, fam: Vec<u8>) -> Vec<u8> {
+    let mut fams: Vec<Vec<u8>> = vec![vec![0]; 5];
+    fams[index] = fam;
+    rb0(&[eb(1, &[0], &fams.concat())])
+}
+
+fn only(facts: FactSet) -> SnapshotBodyV3 {
+    body_of(vec![with_facts(1, facts)])
+}
+
+fn order_to(target: u64) -> FactSet {
+    FactSet {
+        order: Some(Some(OrderFact {
+            ability: u(7),
+            target: nid(target),
+            repeat: false,
+        })),
+        ..FactSet::default()
+    }
+}
+
+/// Entity 1 whose order targets entity 9.
+fn order9_entity() -> Vec<u8> {
+    let fam = [vec![1, 1], ut(7), vec![9, 0]].concat();
+    eb(1, &[0], &facts_b(&[0], &[0], &fam, &[0], &[0]))
+}
+
+/// That entity alone, with a chosen timeline block.
+fn dangling_order_bytes(tail: &[u8]) -> Vec<u8> {
+    rb(&[order9_entity()], &[0], &[0, 0, 0], tail)
+}
+
+fn stats33() -> FactSet {
+    FactSet {
+        stats: Some(
+            (0..33)
+                .map(|i| stat(&format!("s{i}"), StatValue::Int(0)))
+                .collect(),
+        ),
+        ..FactSet::default()
+    }
+}
+
+fn bad_clock(round_ticks: u32, elapsed: u64) -> SnapshotBodyV3 {
+    let mut b = body_of(vec![ent(1)]);
+    b.encounter.clock = Some(Some(ClockFact {
+        round_ticks,
+        elapsed,
+    }));
+    b
+}
+
+fn active_9() -> Option<TurnFact> {
+    Some(TurnFact {
+        active: Some(nid(9)),
+        round: 1,
+    })
+}
+
+/// Each refused body, its hand-built bytes, and the one error both
+/// `encode_body` and `decode_body` must give.
+fn refusals() -> Vec<Refusal> {
+    let (m, l) = (Malformed, LimitExceeded);
+    let hostile = Some((1..=1025).map(|i| tl(0, i)).collect::<Vec<_>>());
+    let h = [1, 0x81, 8];
+    let one = || body_of(vec![ent(1)]);
+    let two = || body_of(vec![ent(1), ent(2)]);
+    let clock_bytes = hx("00 00 01 01 00 05");
+    let mut rows: Vec<Refusal> = vec![
+        (
+            "dup entity",
+            body_of(vec![ent(1), ent(1)]),
+            Some(rb0(&[e0(1), e0(1)])),
+            m,
+        ),
+        (
+            "descending",
+            body_of(vec![ent(2), ent(1)]),
+            Some(rb0(&[e0(2), e0(1)])),
+            m,
+        ),
+        (
+            "1025 entities",
+            body_of((1..=1025).map(ent).collect()),
+            Some(hx("81 08")),
+            l,
+        ),
+        (
+            "order target",
+            only(order_to(9)),
+            Some(dangling_order_bytes(&[0])),
+            m,
+        ),
+        (
+            "active",
+            SnapshotBodyV3 {
+                turn: active_9(),
+                ..one()
+            },
+            Some(rb(&[e0(1)], &[1, 1, 9, 1], &[0, 0, 0], &[0])),
+            m,
+        ),
+        (
+            "timeline entity",
+            SnapshotBodyV3 {
+                timeline: Some(vec![tl(0, 9)]),
+                ..one()
+            },
+            Some(rb(&[e0(1)], &[0], &[0, 0, 0], &[1, 1, 0, 9])),
+            m,
+        ),
+        (
+            "keys 5,4",
+            SnapshotBodyV3 {
+                timeline: Some(vec![tl(5, 1), tl(4, 2)]),
+                ..two()
+            },
+            Some(rb(
+                &[e0(1), e0(2)],
+                &[0],
+                &[0, 0, 0],
+                &hx("01 02 0A 01 08 02"),
+            )),
+            m,
+        ),
+        (
+            "repeated timeline entity",
+            SnapshotBodyV3 {
+                timeline: Some(vec![tl(1, 1), tl(2, 1)]),
+                ..two()
+            },
+            Some(rb(
+                &[e0(1), e0(2)],
+                &[0],
+                &[0, 0, 0],
+                &hx("01 02 02 01 04 01"),
+            )),
+            m,
+        ),
+        (
+            "round_ticks 0",
+            bad_clock(0, 5),
+            Some(rb(&[e0(1)], &[0], &clock_bytes, &[0])),
+            m,
+        ),
+        (
+            "elapsed 2^31",
+            bad_clock(120, 2_147_483_648),
+            Some(rb(
+                &[e0(1)],
+                &[0],
+                &hx("00 00 01 01 78 80 80 80 80 08"),
+                &[0],
+            )),
+            m,
+        ),
+        (
+            "timeline 1025",
+            SnapshotBodyV3 {
+                timeline: hostile.clone(),
+                ..one()
+            },
+            Some(rb(&[e0(1)], &[0], &[0, 0, 0], &h)),
+            l,
+        ),
+        (
+            "[2 (33 stats), 1]",
+            body_of(vec![with_facts(2, stats33()), ent(1)]),
+            Some(hx("02 02 00 00 00 00 01 21")),
+            l,
+        ),
+        (
+            "[2, 1 (33 stats)]",
+            body_of(vec![ent(2), with_facts(1, stats33())]),
+            Some([hx("02"), e0(2), hx("01 00 00 00 00 01 21")].concat()),
+            m,
+        ),
+        (
+            "[1 (dangling order), 2 (33 stats)]",
+            body_of(vec![with_facts(1, order_to(9)), with_facts(2, stats33())]),
+            Some([hx("02"), order9_entity(), hx("02 00 00 00 00 01 21")].concat()),
+            l,
+        ),
+        (
+            "dangling order beats timeline 1025",
+            SnapshotBodyV3 {
+                timeline: hostile.clone(),
+                ..only(order_to(9))
+            },
+            Some(dangling_order_bytes(&h)),
+            m,
+        ),
+        (
+            "dangling active beats timeline 1025",
+            SnapshotBodyV3 {
+                turn: active_9(),
+                timeline: hostile.clone(),
+                ..one()
+            },
+            Some(rb(&[e0(1)], &[1, 1, 9, 1], &[0, 0, 0], &h)),
+            m,
+        ),
+        (
+            "bad clock beats timeline 1025",
+            SnapshotBodyV3 {
+                timeline: hostile,
+                ..bad_clock(0, 5)
+            },
+            Some(rb(&[e0(1)], &[0], &clock_bytes, &h)),
+            m,
+        ),
+    ];
+    let pools = |p: Vec<PoolFact>| {
+        only(FactSet {
+            pools: Some(p),
+            ..FactSet::default()
+        })
+    };
+    let effects = |e: Vec<EffectFact>| {
+        only(FactSet {
+            effects: Some(e),
+            ..FactSet::default()
+        })
+    };
+    let stats = |s: Vec<StatFact>| {
+        only(FactSet {
+            stats: Some(s),
+            ..FactSet::default()
+        })
+    };
+    let tags = |t: &[&str]| {
+        let tags = t.iter().map(|s| (*s).to_owned()).collect();
+        only(FactSet {
+            tags: Some(tags),
+            ..FactSet::default()
+        })
+    };
+    let eff = |id: u128| EffectFact {
+        effect: u(id),
+        expires_round: 1,
+    };
+    let n = |s: &str| stat(s, StatValue::Int(0));
+    let long = "a".repeat(33);
+    let nine = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    rows.extend([
+        (
+            "17 pools",
+            pools((1..=17).map(|i| pool(i, 1, 1)).collect()),
+            Some(one_fam(0, vec![1, 0x11])),
+            l,
+        ),
+        (
+            "current > max",
+            pools(vec![pool(1, 3, 2)]),
+            Some(one_fam(0, fam_pools(&[(1, 3, 2)]))),
+            m,
+        ),
+        (
+            "dup pool",
+            pools(vec![pool(1, 1, 1), pool(1, 2, 2)]),
+            Some(one_fam(0, fam_pools(&[(1, 1, 1), (1, 2, 2)]))),
+            m,
+        ),
+        (
+            "17 effects",
+            effects((1..=17).map(eff).collect()),
+            Some(one_fam(1, vec![1, 0x11])),
+            l,
+        ),
+        (
+            "effects 5,4",
+            effects(vec![eff(5), eff(4)]),
+            Some(one_fam(1, fam_effects(&[(5, 1), (4, 1)]))),
+            m,
+        ),
+        (
+            "effects 5,5",
+            effects(vec![eff(5), eff(5)]),
+            Some(one_fam(1, fam_effects(&[(5, 1), (5, 1)]))),
+            m,
+        ),
+        (
+            "33 stats",
+            stats((0..33).map(|i| n(&format!("s{i}"))).collect()),
+            Some(one_fam(3, vec![1, 0x21])),
+            l,
+        ),
+        (
+            "33-byte stat name",
+            stats(vec![n(&long)]),
+            Some(one_fam(3, vec![1, 1, 0x21])),
+            l,
+        ),
+        (
+            "empty stat name",
+            stats(vec![n("")]),
+            Some(one_fam(3, fam_stats(&[("", 0, 0)]))),
+            m,
+        ),
+        (
+            "dup stat name",
+            stats(vec![n("a"), stat("a", StatValue::Fixed(1))]),
+            Some(one_fam(3, fam_stats(&[("a", 0, 0), ("a", 1, 1)]))),
+            m,
+        ),
+        ("9 tags", tags(&nine), Some(one_fam(4, vec![1, 9])), l),
+        (
+            "33-byte tag",
+            tags(&[&long]),
+            Some(one_fam(4, vec![1, 1, 0x21])),
+            l,
+        ),
+        (
+            "empty tag",
+            tags(&[""]),
+            Some(one_fam(4, fam_tags(&[""]))),
+            m,
+        ),
+        (
+            "tags b,a",
+            tags(&["b", "a"]),
+            Some(one_fam(4, fam_tags(&["b", "a"]))),
+            m,
+        ),
+        (
+            "tags a,a",
+            tags(&["a", "a"]),
+            Some(one_fam(4, fam_tags(&["a", "a"]))),
+            m,
+        ),
+    ]);
+    rows
+}
+
+#[test]
+fn d9_body_encode_checks() {
+    for (name, body, _, err) in refusals() {
+        assert_eq!(t3::encode_body(&body), Err(err), "{name}");
+    }
+    // Controls: each fault fixed gives bytes.
+    let ok = |b: &SnapshotBodyV3| assert!(t3::encode_body(b).is_ok(), "{b:?}");
+    ok(&body_of(vec![ent(1), ent(2)]));
+    ok(&body_of((1..=1024).map(ent).collect()));
+    let first = with_facts(1, order_to(2));
+    let mut b = body_of(vec![first, ent(2)]);
+    ok(&b);
+    b.turn = Some(TurnFact {
+        active: Some(nid(2)),
+        round: 1,
+    });
+    b.timeline = Some(vec![tl(4, 2), tl(4, 1)]);
+    ok(&b);
+    b.encounter.clock = Some(Some(ClockFact {
+        round_ticks: 1,
+        elapsed: 2_147_483_647,
+    }));
+    ok(&b);
+    b.timeline = Some(Vec::new());
+    ok(&b);
+}
+
+#[test]
+fn d9_encode_agrees_with_decode() {
+    let rows = refusals();
+    assert!(rows.iter().all(|r| r.2.is_some()));
+    for (name, _, bytes, err) in rows {
+        assert_eq!(t3::decode_body(&bytes.unwrap()), Err(err), "{name}");
+    }
+}
+
+#[test]
+fn d4_body_refusals() {
+    assert_eq!(t3::decode_body(&hx("81 08")), Err(LimitExceeded));
+    assert_eq!(t3::decode_body(&hx("80 08")), Err(Malformed));
+    assert_eq!(t3::decode_body(&rb0(&[e0(2), e0(1)])), Err(Malformed));
+    assert_eq!(
+        t3::decode_body(&rb0(&[e0(1), e0(2)])),
+        Ok(body_of(vec![ent(1), ent(2)]))
+    );
+    assert_eq!(t3::decode_body(&rb0(&[e0(0)])), Err(Malformed));
+    // Entity 0 is refused before its health and facts are read.
+    assert_eq!(
+        t3::decode_body(&hx("01 00 00 00 00 00 01 21")),
+        Err(Malformed)
+    );
+    // The 4 MiB input cap is checked first; the cap itself is not over.
+    assert_eq!(t3::decode_body(&vec![0; 4_194_305]), Err(LimitExceeded));
+    assert_eq!(t3::decode_body(&vec![0; 4_194_304]), Err(Malformed));
+    let mut trailing = rb0(&[e0(1)]);
+    assert!(t3::decode_body(&trailing).is_ok());
+    trailing.push(0);
+    assert_eq!(t3::decode_body(&trailing), Err(Malformed));
+    for (name, _, bytes, err) in refusals() {
+        if ["order target", "active", "timeline entity"].contains(&name) {
+            assert_eq!(t3::decode_body(&bytes.unwrap()), Err(err), "{name}");
+        }
+    }
+}
+
+#[test]
+fn d4_body_decode_order() {
+    let order_ent = |target: u64| {
+        let fam = [vec![1, 1], ut(7), vi(target), vec![0]].concat();
+        eb(1, &[0], &facts_b(&[0], &[0], &fam, &[0], &[0]))
+    };
+    let dec = |ents: &[Vec<u8>], turn: &[u8], enc: &[u8], tl: &[u8]| {
+        t3::decode_body(&rb(ents, turn, enc, tl))
+    };
+    // Order targets are checked after the last entity, so a forward target is fine.
+    assert!(t3::decode_body(&rb0(&[order_ent(2), e0(2)])).is_ok());
+    assert!(t3::decode_body(&rb0(&[order_ent(1)])).is_ok());
+    assert_eq!(
+        t3::decode_body(&rb0(&[order_ent(3), e0(2)])),
+        Err(Malformed)
+    );
+    // Membership (order, then turn) comes before the encounter block.
+    let bad_mode = hx("01 02");
+    let order9 = [order_ent(9)];
+    assert_eq!(dec(&order9, &[0], &bad_mode, &[0]), Err(Malformed));
+    assert_eq!(
+        dec(&[e0(1)], &[1, 1, 9, 1], &bad_mode, &[0]),
+        Err(Malformed)
+    );
+    assert_eq!(
+        dec(&[e0(1)], &[1, 1, 1, 1], &bad_mode, &[0]),
+        Err(UnknownMessage)
+    );
+    // The encounter block comes before the timeline block.
+    let h = [1, 0x81, 8];
+    let e1 = [e0(1)];
+    assert_eq!(dec(&e1, &[0], &bad_mode, &h), Err(UnknownMessage));
+    assert_eq!(dec(&e1, &[0], &hx("00 01 01 02"), &h), Err(UnknownMessage));
+    assert_eq!(dec(&e1, &[0], &hx("00 00 01 01 00 05"), &h), Err(Malformed));
+    assert_eq!(dec(&e1, &[0], &[0, 0, 0], &h), Err(LimitExceeded));
+    // Timeline entries: entity 0, duplicate; equal keys may come in any order.
+    let e12 = [e0(1), e0(2)];
+    assert_eq!(
+        dec(&e12, &[0], &[0, 0, 0], &hx("01 01 00 00")),
+        Err(Malformed)
+    );
+    assert_eq!(
+        dec(&e12, &[0], &[0, 0, 0], &hx("01 02 0A 01 0A 01")),
+        Err(Malformed)
+    );
+    let ties_bytes = rb(&e12, &[0], &[0, 0, 0], &hx("01 02 0A 02 0A 01"));
+    let ties = t3::decode_body(&ties_bytes).expect("equal keys, any order");
+    assert_eq!(ties.timeline, Some(vec![tl(5, 2), tl(5, 1)]));
+    assert_eq!(t3::encode_body(&ties), Ok(ties_bytes));
+    // Unknown bytes and bad values inside the fact set and encounter.
+    let stat_bytes = |name: &[u8], kind: u8, value: Vec<u8>| {
+        let fam = [vec![1, 1], name.to_vec(), vec![kind], value].concat();
+        rb0(&[eb(1, &[0], &facts_b(&[0], &[0], &[0], &fam, &[0]))])
+    };
+    let n = string_bytes("a");
+    assert!(t3::decode_body(&stat_bytes(&n, 0, vec![0])).is_ok());
+    let kinds = [(2u8, UnknownMessage), (255, UnknownMessage)];
+    for (kind, err) in kinds {
+        assert_eq!(t3::decode_body(&stat_bytes(&n, kind, vec![0])), Err(err));
+    }
+    assert_eq!(
+        t3::decode_body(&stat_bytes(&n, 0, vi(1 << 32))),
+        Err(Malformed)
+    );
+    assert_eq!(
+        t3::decode_body(&stat_bytes(&[1, 0xFF], 0, vec![0])),
+        Err(Malformed)
+    );
+    assert_eq!(
+        t3::decode_body(&stat_bytes(&[0], 0, vec![0])),
+        Err(Malformed)
+    );
+    for mode in [2u8, 3, 255] {
+        assert_eq!(dec(&[], &[0], &[1, mode, 0, 0], &[0]), Err(UnknownMessage));
+        assert_eq!(
+            dec(&[], &[0], &[0, 1, 1, mode, 0], &[0]),
+            Err(UnknownMessage)
+        );
+    }
+    assert!(dec(&[], &[0], &[1, 1, 1, 1, 1, 0], &[0]).is_ok());
 }
