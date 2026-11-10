@@ -16,14 +16,15 @@
 //! four operations [`World::bind_nav`], [`World::place`], [`World::set_route`]
 //! and [`World::clear_route`] (T036a), and the stage-4 walk with its
 //! [`MovementFact`]s and the crate-private `stop` the turn-based transitions
-//! use (T036b).
+//! use (T036b); then the turn-based move: [`TurnMovement`], [`route_cost`],
+//! [`validate_move`] and [`perform_move`] (T036c).
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crpg_core::{EntityId, Fx16_16, GenerationalArena, Interners};
+use crpg_core::{EntityId, Fx16_16, GenerationalArena, Interners, Ulid};
 use crpg_data::{
     ExprWire, LengthWire, Placement as AuthoredPlacement, Ruleset as AuthoredRuleset, StatKindWire,
     StatValueWire, MAX_SPEED_PER_TICK_RAW,
@@ -32,7 +33,9 @@ use crpg_rules::{
     Expr, ModifierPipeline, QueryContext, StatBlock, StatDefinition, StatKind, StatValue, TagSet,
 };
 
-use crate::combat::{CombatError, EncounterMode};
+use crate::combat::{
+    pool_balance, spend_pool, validate_action, CombatAction, CombatError, EncounterMode,
+};
 use crate::transform::Transform;
 use crate::world::World;
 
@@ -77,6 +80,20 @@ pub enum Measure {
     /// The U4 route length.
     #[default]
     Euclidean,
+}
+
+/// The turn-based movement rules one encounter runs under (ADR-0036 C1, S2).
+///
+/// Persisted inside the combat definition's non-legacy form, only when `Some`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnMovement {
+    /// How a move's length is measured.
+    pub measure: Measure,
+    /// The pool template moves are paid from.
+    pub pool: Ulid,
+    /// Pool units per step, at least one.
+    pub step_cost: u32,
 }
 
 /// One creature's authoritative movement state (fields private).
@@ -348,6 +365,19 @@ pub fn route_measure(measure: Measure, points: &[[Fx16_16; 3]]) -> Option<u64> {
     match measure {
         Measure::Euclidean => route_length(points),
     }
+}
+
+/// X2: whether `to` is within `range` of `from` under `measure` (ADR-0036 S2, X2).
+/// `route_measure(measure, &[from, to])` is `Some(d)` and `range.to_raw() >= 0`
+/// and `d <= range.to_raw() as u64`; otherwise `false`.
+pub fn within_range(
+    measure: Measure,
+    range: Fx16_16,
+    from: [Fx16_16; 3],
+    to: [Fx16_16; 3],
+) -> bool {
+    let raw = range.to_raw();
+    raw >= 0 && route_measure(measure, &[from, to]).is_some_and(|d| d <= raw as u64)
 }
 
 /// S3: a destination snapped by `measure`; the identity in v1 (B-U4).
@@ -789,6 +819,114 @@ impl World {
         write_mirror(self, entity, &mover);
         Ok(cleared.map(|active| active.tag()))
     }
+}
+
+// ---------------------------------------------------------------------------
+// The turn-based move (W4, C2-C4)
+// ---------------------------------------------------------------------------
+
+/// The observed result of one turn-based move (never persisted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveOutcome {
+    /// The creature that moved.
+    pub actor: EntityId,
+    /// The pool units spent.
+    pub cost: u32,
+    /// Where the creature stood before the move.
+    pub from: [Fx16_16; 3],
+    /// Where the creature stands after the move: the route's last point.
+    pub to: [Fx16_16; 3],
+}
+
+/// C4: `ceil(measured / raw(step)) * step_cost` when it fits `u32` (B-C1).
+///
+/// `None` for a non-positive step or a cost above `u32::MAX`.
+pub fn route_cost(measured: u64, step: Fx16_16, step_cost: u32) -> Option<u32> {
+    let raw = u64::try_from(step.to_raw()).ok().filter(|raw| *raw > 0)?;
+    let total = measured.div_ceil(raw).checked_mul(u64::from(step_cost))?;
+    u32::try_from(total).ok()
+}
+
+/// W4's read-only twin of [`perform_move`]: the cost it would spend (B-C3).
+///
+/// Checks in order: `validate_action(EndTurn { actor })` wrapped as
+/// `Combat(..)`; `NotMover` (no mover, or an encounter whose definition holds no
+/// movement rules); [`validate_route`] against the bound revision and the
+/// mover's position; then `CannotAfford` when the cost exceeds the actor's
+/// balance of the movement pool. The cost is computed in `u64`, so a cost above
+/// `u32::MAX` is reported as its true value.
+pub fn validate_move(world: &World, actor: EntityId, route: &MoveRoute) -> Result<u32, MoveError> {
+    validate_action(world, &CombatAction::EndTurn { actor }).map_err(MoveError::Combat)?;
+    let movement = world
+        .combat()
+        .and_then(|state| state.definition.movement)
+        .ok_or(MoveError::NotMover { entity: actor })?;
+    let mover = world
+        .movers()
+        .get(actor)
+        .ok_or(MoveError::NotMover { entity: actor })?;
+    validate_route(route, world.nav(), mover.position)?;
+    let measured = route_measure(movement.measure, &route.points)
+        .expect("a validated route has a measured length");
+    let step = u64::try_from(mover.step.to_raw()).map_or(1, |raw| raw.max(1));
+    let cost = measured
+        .div_ceil(step)
+        .saturating_mul(u64::from(movement.step_cost));
+    let current = world
+        .combatants()
+        .get(actor)
+        .and_then(|combatant| pool_balance(combatant, movement.pool))
+        .unwrap_or(0);
+    if cost > u64::from(current) {
+        return Err(MoveError::CannotAfford { cost, current });
+    }
+    Ok(u32::try_from(cost).expect("a cost within the balance fits u32"))
+}
+
+/// W4: one atomic turn-based move (B-C4).
+///
+/// Runs [`validate_move`], then spends exactly its cost from the movement pool,
+/// sets the mover's position to the route's last point, clears its route and
+/// writes the mirror with zero velocity. It keeps the turn, draws no RNG,
+/// enqueues no event and never ends the turn. A failure changes nothing.
+pub fn perform_move(
+    world: &mut World,
+    actor: EntityId,
+    route: &MoveRoute,
+) -> Result<MoveOutcome, MoveError> {
+    let cost = validate_move(world, actor, route)?;
+    let pool = world
+        .combat()
+        .and_then(|state| state.definition.movement)
+        .ok_or(MoveError::NotMover { entity: actor })?
+        .pool;
+    let paid = world
+        .combatants_mut()
+        .get_mut(actor)
+        .is_some_and(|combatant| spend_pool(combatant, pool, cost));
+    if !paid {
+        // Unreachable after `validate_move`; kept total instead of panicking.
+        return Err(MoveError::NotMover { entity: actor });
+    }
+    let to = *route
+        .points
+        .last()
+        .expect("a validated route has at least two points");
+    let mover = world
+        .movers_mut()
+        .get_mut(actor)
+        .ok_or(MoveError::NotMover { entity: actor })?;
+    let from = mover.position;
+    mover.position = to;
+    mover.route = None;
+    let mover = mover.clone();
+    write_mirror(world, actor, &mover);
+    Ok(MoveOutcome {
+        actor,
+        cost,
+        from,
+        to,
+    })
 }
 
 // ---------------------------------------------------------------------------

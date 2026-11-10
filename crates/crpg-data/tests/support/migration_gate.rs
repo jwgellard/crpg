@@ -446,6 +446,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             recovery_ticks: None,
             repeats_in_real_time: None,
             bonus_stats: None,
+            range: None,
         }),
         Document::OutcomeTable(OutcomeTable {
             id: id(22),

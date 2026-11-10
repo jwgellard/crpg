@@ -383,6 +383,22 @@ impl<'de> Deserialize<'de> for World {
                         }
                     }
                 }
+                if let Some(movement) = &definition.movement {
+                    if !definition
+                        .pools
+                        .iter()
+                        .any(|template| template.id == movement.pool)
+                    {
+                        return Err(serde::de::Error::custom(
+                            "combat movement pool outside its pools",
+                        ));
+                    }
+                    if movement.step_cost == 0 {
+                        return Err(serde::de::Error::custom(
+                            "combat movement step cost is zero",
+                        ));
+                    }
+                }
                 for pair in definition.abilities.windows(2) {
                     if pair[0].ability >= pair[1].ability {
                         return Err(serde::de::Error::custom(

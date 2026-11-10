@@ -321,6 +321,7 @@ fn documents(
         recovery_ticks: None,
         repeats_in_real_time: None,
         bonus_stats: None,
+        range: None,
     }));
     result.push(Document::Effect(Effect {
         id,

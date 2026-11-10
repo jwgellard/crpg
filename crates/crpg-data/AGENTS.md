@@ -33,7 +33,7 @@ prescribed accessors. Do not extend the surface casually.
   both dispatch and `schema_versions`, with no caller registration.
 - Reject unknown fields. Only `_note` (and the optional-missing `effect`,
   `natural_die`, `round_ticks`, `recovery_ticks`, `repeats_in_real_time`,
-  `derived`, `initiative`, `bonus_stats`, damage `dice`, `grants`,
+  `derived`, `initiative`, `bonus_stats`, `range`, damage `dice`, `grants`,
   `creature_persistence`, `late_join`, `effects_on_exit`, `movement` and its
   `measure`, encounter `respawns`) may
   be missing; other nullable fields
@@ -294,7 +294,9 @@ generator only.
   unreachable. "Valid stat" in the semantic rules always means declared,
   non-health and `Int`; `missing_stat` skips derived and non-numeric stats.
 - `real_time_fields_without_round_ticks` is a `Warning` via `push_warning`;
-  warnings never fail validation. Never add a runtime meaning here: T137 owns
+  warnings never fail validation. `range_without_movement` is the second:
+  an ability with `range` listed by a ruleset with no `movement`.
+  Never add a runtime meaning here: T137 owns
   every mapping and `crpg-data` still never depends on `crpg-rules`.
 
 - 2026-10-23 (UTC) · claude-code/sonnet-5.5 + T136b · Recorded the kernel-range wire vocabulary, the additive-variant rule at the current tag (D32c), the odd-node-count reading of the 4096 bound and the first warning diagnostic.
@@ -458,3 +460,18 @@ the creature-value rule is in `walk_combat`. `MAX_SPEED_PER_TICK_RAW` is the one
 speed bound; sim imports it.
 
 - 2026-11-08 (UTC) · claude-code/sonnet-5.5 (implementer) + T148 · Added `movement` and `measure` to the optional-missing list and recorded that `LengthWire` keeps derived decoding while `MeasureWire` is hand-written.
+
+## Ability range (T149a)
+
+`Ability.range: Option<Fx16_16>` is the last field of `crpg.ability/2`, added at
+the current tag with no migration edge (D32c, D50). It is optional-missing:
+absence means unlimited, so every existing document decodes and re-encodes
+byte for byte. The wire is a raw `i32` only (unlike T148's constant-or-stat
+`LengthWire`); an explicit `null` reads as absent and is never written back.
+Read time rejects a raw below `1` as `malformed("ability range must be
+positive")`, as the last check of the `Ability` arm. `walk_combat` warns
+`range_without_movement` on an ability that declares a range under a ruleset
+with no `movement`; the warning never fails validation and adds no runtime
+meaning here.
+
+- 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash (implementer) + T149a · Recorded the optional range field, its raw `i32` wire, the positive read-time rule, the current-tag addition under D32c and the second warning diagnostic.

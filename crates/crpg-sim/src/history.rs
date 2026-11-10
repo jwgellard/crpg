@@ -41,7 +41,7 @@ use std::fmt;
 use serde::de::{DeserializeSeed, Error as DeError, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crpg_core::{EntityId, Tick, Ulid};
+use crpg_core::{EntityId, Fx16_16, Tick, Ulid};
 use crpg_rules::Outcome;
 
 use crate::combat::{
@@ -53,7 +53,8 @@ use crate::combat::{
 use crate::creature::{CreatureSpec, CreatureState, Entrant};
 use crate::event::SimEvent;
 use crate::movement::{
-    write_mirror, MoveError, MoveRoute, MovementFact, Mover, NavRevision, RouteTag,
+    perform_move as perform_move_free, write_mirror, MoveError, MoveOutcome, MoveRoute,
+    MovementFact, Mover, NavRevision, RouteTag, MAX_ROUTE_POINTS,
 };
 use crate::transform::Transform;
 use crate::world::{EntityMeta, World};
@@ -66,10 +67,12 @@ pub const MAX_HISTORY_BYTES: usize = 1_048_576;
 pub const MAX_HISTORY_PAGE: usize = 256;
 /// Maximum UTF-8 bytes in one retained history string payload.
 pub const MAX_HISTORY_STRING_BYTES: usize = 256;
-/// The newest history wrapper version this build writes; 1 is still read.
-pub const HISTORY_VERSION: u32 = 2;
+/// The newest history wrapper version this build writes; 1 and 2 are still read.
+pub const HISTORY_VERSION: u32 = 3;
 /// The version a new wrapper starts at (T138 D16): it upgrades lazily.
 const HISTORY_VERSION_V1: u32 = 1;
+/// The version an RT-capable commit or a v2 event upgrades a wrapper to (T138 D16).
+const HISTORY_VERSION_V2: u32 = 2;
 
 /// One authoritative history fact, in the wrapper's own terms.
 ///
@@ -142,7 +145,9 @@ pub enum HistoryEvent {
         /// The round the switch started, widened.
         round: u64,
     },
-    /// A due order failed validation and was cleared (ADR-0029 T7, D11).
+    /// A due order failed validation and was cleared (ADR-0029 T7, D11). An
+    /// `OutOfRange` failure is not journaled: that order stays due (ADR-0036
+    /// X3).
     OrderEnded {
         /// The combatant whose order ended.
         actor: EntityId,
@@ -157,6 +162,13 @@ pub enum HistoryEvent {
         /// The leaver.
         entity: EntityId,
     },
+    /// A turn-based move (ADR-0036 W4); version 3.
+    Moved {
+        /// The creature that moved.
+        entity: EntityId,
+        /// The route walked, start first; 2 to 64 points.
+        points: Vec<[Fx16_16; 3]>,
+    },
 }
 
 impl HistoryEvent {
@@ -170,6 +182,11 @@ impl HistoryEvent {
                 | Self::Joined { .. }
                 | Self::Left { .. }
         )
+    }
+
+    /// Whether this is the version 3 variant (T036c, ADR-0036 W4).
+    fn is_v3(&self) -> bool {
+        matches!(self, Self::Moved { .. })
     }
 }
 
@@ -430,7 +447,7 @@ impl Serialize for Journal {
 /// after acknowledgement.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryWorld {
-    /// The wrapper version, 1 or 2 (T138 D16); first for canonical order.
+    /// The wrapper version, 1, 2 or 3 (T138 D16, T036c); first for canonical order.
     version: u32,
     /// The privately owned authoritative world.
     world: World,
@@ -535,7 +552,35 @@ impl HistoryWorld {
         Ok(cleared)
     }
 
-    /// The wrapper version: 1 until the first RT-capable commit, then 2 (D16).
+    /// Journaled [`perform_move`](crate::perform_move) (T036c B-C5): one
+    /// atomic, pool-paid turn-based move, committing exactly
+    /// `[Moved { entity: actor, points }]` and raising the wrapper to
+    /// version 3. A movement failure is [`HistoryError::Move`] and commits
+    /// nothing.
+    pub fn perform_move(
+        &mut self,
+        actor: EntityId,
+        route: &MoveRoute,
+    ) -> Result<MoveOutcome, HistoryError> {
+        let mut world = self.world.clone();
+        let outcome = perform_move_free(&mut world, actor, route).map_err(HistoryError::Move)?;
+        let drained = world.events_mut().drain();
+        debug_assert!(drained.is_empty(), "a move enqueues no legacy events");
+        let tick = world.tick();
+        let mut events = Vec::with_capacity(drained.len() + 1);
+        for envelope in &drained {
+            events.push(translate_legacy(&envelope.payload));
+        }
+        events.push(HistoryEvent::Moved {
+            entity: actor,
+            points: route.points.clone(),
+        });
+        self.commit(world, events, tick)?;
+        Ok(outcome)
+    }
+
+    /// The wrapper version: 1 until the first RT-capable commit, then 2 (D16);
+    /// 3 from the first committed `Moved` (T036c).
     pub fn version(&self) -> u32 {
         self.version
     }
@@ -1057,13 +1102,16 @@ impl HistoryWorld {
             seq = seq.checked_add(1).ok_or(HistoryError::SequenceExhausted)?;
         }
         // D16: the first commit that stages an RT-capable encounter or
-        // journals a v2 event upgrades the wrapper, for good. Rejected
-        // commits returned above, so a failed operation never upgrades.
-        if self.version < HISTORY_VERSION
+        // journals a v2 event upgrades the wrapper to 2, and the first that
+        // journals a v3 event (`Moved`) to 3, for good. Rejected commits
+        // returned above, so a failed operation never upgrades.
+        if envelopes.iter().any(|envelope| envelope.payload.is_v3()) {
+            self.version = HISTORY_VERSION;
+        } else if self.version < HISTORY_VERSION_V2
             && (world.combat().is_some_and(|state| state.clock.is_some())
                 || envelopes.iter().any(|envelope| envelope.payload.is_v2()))
         {
-            self.version = HISTORY_VERSION;
+            self.version = HISTORY_VERSION_V2;
         }
         self.world = world;
         self.pending.append(envelopes, bytes);
@@ -1761,6 +1809,118 @@ impl<'de> Visitor<'de> for OrderEndedVisitor {
     }
 }
 
+/// The decoded points of a `moved` payload: 2 to [`MAX_ROUTE_POINTS`] points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MovePoints(Vec<[Fx16_16; 3]>);
+
+impl<'de> Deserialize<'de> for MovePoints {
+    /// Decodes the sequence through a bounded visitor.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(MovePointsVisitor)
+    }
+}
+
+/// The [`MovePoints`] sequence visitor: ignores the size hint, rejects a
+/// 65th element before decoding it and a sequence below 2 points.
+struct MovePointsVisitor;
+
+impl<'de> Visitor<'de> for MovePointsVisitor {
+    type Value = MovePoints;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a `moved` points sequence of 2 to 64 `[x, y, z]` points")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<MovePoints, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut points: Vec<[Fx16_16; 3]> = Vec::new();
+        while points.len() < MAX_ROUTE_POINTS {
+            match seq.next_element::<[Fx16_16; 3]>()? {
+                Some(point) => points.push(point),
+                None => break,
+            }
+        }
+        if points.len() == MAX_ROUTE_POINTS
+            && seq.next_element::<serde::de::IgnoredAny>()?.is_some()
+        {
+            return Err(A::Error::custom("history move points exceed 64"));
+        }
+        if points.len() < 2 {
+            return Err(A::Error::custom("history move points below 2"));
+        }
+        Ok(MovePoints(points))
+    }
+}
+
+/// The decoded `moved` payload (version 3).
+///
+/// Deserialization is manual so a duplicate key fails instead of silently
+/// keeping the last value. Keys are processed in stream order, so the first
+/// bad key or value wins; the missing-key checks run after the map ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MovedFields {
+    /// The creature that moved.
+    entity: EntityId,
+    /// The route walked.
+    points: MovePoints,
+}
+
+impl<'de> Deserialize<'de> for MovedFields {
+    /// Decodes one payload, rejecting duplicate/unknown/missing keys.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(MovedVisitor)
+    }
+}
+
+/// The [`MovedFields`] map visitor.
+struct MovedVisitor;
+
+impl<'de> Visitor<'de> for MovedVisitor {
+    type Value = MovedFields;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a `moved` payload with `entity` and `points`")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<MovedFields, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entity: Option<EntityId> = None;
+        let mut points: Option<MovePoints> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "entity" => {
+                    if entity.is_some() {
+                        return Err(A::Error::custom("duplicate history payload field `entity`"));
+                    }
+                    entity = Some(map.next_value()?);
+                }
+                "points" => {
+                    if points.is_some() {
+                        return Err(A::Error::custom("duplicate history payload field `points`"));
+                    }
+                    points = Some(map.next_value()?);
+                }
+                _ => {
+                    return Err(A::Error::custom("unknown history payload field"));
+                }
+            }
+        }
+        let entity = entity.ok_or_else(|| A::Error::custom("history payload misses `entity`"))?;
+        let points = points.ok_or_else(|| A::Error::custom("history payload misses `points`"))?;
+        Ok(MovedFields { entity, points })
+    }
+}
+
 impl<'de> Deserialize<'de> for HistoryEvent {
     /// Decodes one adjacent-tagged payload, requiring `type` before `value`.
     ///
@@ -1892,6 +2052,13 @@ impl<'de> Visitor<'de> for PayloadVisitor {
                     entity: fields.entity,
                 }
             }
+            "moved" => {
+                let fields: MovedFields = map.next_value()?;
+                HistoryEvent::Moved {
+                    entity: fields.entity,
+                    points: fields.points.0,
+                }
+            }
             _ => return Err(A::Error::custom("unknown history event type")),
         };
         if map.next_key::<String>()?.is_some() {
@@ -1992,7 +2159,10 @@ impl<'de> Visitor<'de> for WrapperVisitor {
             next_seq.ok_or_else(|| A::Error::custom("history wrapper misses `next_seq`"))?;
         let pending =
             pending.ok_or_else(|| A::Error::custom("history wrapper misses `pending`"))?;
-        if version != HISTORY_VERSION_V1 && version != HISTORY_VERSION {
+        if version != HISTORY_VERSION_V1
+            && version != HISTORY_VERSION_V2
+            && version != HISTORY_VERSION
+        {
             return Err(A::Error::custom("unknown history version"));
         }
         if version == HISTORY_VERSION_V1 {
@@ -2011,6 +2181,16 @@ impl<'de> Visitor<'de> for WrapperVisitor {
                     "history v1 wrapper holds a real-time-capable encounter",
                 ));
             }
+        }
+        if version < HISTORY_VERSION
+            && pending
+                .as_slice()
+                .iter()
+                .any(|envelope| envelope.payload.is_v3())
+        {
+            return Err(A::Error::custom(
+                "history journal holds a v3 event below version 3",
+            ));
         }
         if next_seq == 0 {
             return Err(A::Error::custom("history next sequence must not be zero"));

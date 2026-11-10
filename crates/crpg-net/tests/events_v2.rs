@@ -1738,6 +1738,9 @@ fn candidate_for(
         HistoryEvent::Left { .. } => {
             panic!("the TB fixture journals no v2 event")
         }
+        HistoryEvent::Moved { .. } => {
+            panic!("the TB fixture journals no v3 event")
+        }
     }
 }
 

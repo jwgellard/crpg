@@ -465,7 +465,7 @@ fn h2_tb_to_rt_perform_action_trailing_transition() {
 /// H3: the lazy, sticky wrapper version.
 #[test]
 fn h3_version_lifecycle() {
-    assert_eq!(HISTORY_VERSION, 2, "the newest written version is 2");
+    assert_eq!(HISTORY_VERSION, 3, "the newest written version is 3");
 
     // A new wrapper starts at version 1.
     let fresh = HistoryWorld::new(0);
@@ -518,10 +518,10 @@ fn h3_version_lifecycle() {
 /// H4: the loader rules under "Hash and history".
 #[test]
 fn h4_loader_rules() {
-    // Version 3 is unknown.
+    // Version 4 is unknown.
     let fresh = serde_json::to_string(&HistoryWorld::new(0)).expect("serializes");
     let mut value: serde_json::Value = serde_json::from_str(&fresh).expect("parses");
-    value["version"] = serde_json::Value::from(3);
+    value["version"] = serde_json::Value::from(4);
     assert!(serde_json::from_value::<HistoryWorld>(value)
         .expect_err("unknown version fails")
         .to_string()

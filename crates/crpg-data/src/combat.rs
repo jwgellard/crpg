@@ -631,6 +631,10 @@ pub struct Ability {
     /// Distinct non-health int stat names added to this ability's roll; absent means none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bonus_stats: Option<Vec<String>>,
+    /// Largest horizontal distance to the target, raw fixed-point metres; absent means unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<i32>")]
+    pub range: Option<Fx16_16>,
 }
 
 /// One margin band: the inclusive lower bound selecting an outcome.
@@ -1632,6 +1636,9 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
                         return Err(malformed("ability damage dice must be 1..=128 UTF-8 bytes"));
                     }
                 }
+            }
+            if ability.range.is_some_and(|range| range.to_raw() < 1) {
+                return Err(malformed("ability range must be positive"));
             }
             Ok(())
         }

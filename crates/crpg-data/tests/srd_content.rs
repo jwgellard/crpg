@@ -1166,6 +1166,7 @@ fn orphan_effects_keep_only_generic_checks_and_no_orphans_shipped() {
                 recovery_ticks: None,
                 repeats_in_real_time: None,
                 bonus_stats: None,
+                range: None,
             }),
         );
     });
