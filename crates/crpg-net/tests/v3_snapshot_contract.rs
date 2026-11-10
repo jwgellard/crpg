@@ -1647,3 +1647,309 @@ fn d4_body_decode_order() {
     }
     assert!(dec(&[], &[0], &[1, 1, 1, 1, 1, 0], &[0]).is_ok());
 }
+// ---------------------------------------------------------------------------
+// D5 / D8: the largest body and `plan_transfer`.
+// ---------------------------------------------------------------------------
+
+const BIG_BASE: u64 = 1 << 63;
+
+/// One entity with every limit-sized family (2,766 bytes with a 10-byte id).
+fn full_entity(i: u64, first: u64) -> SnapshotEntityV3 {
+    SnapshotEntityV3 {
+        entity: nid(BIG_BASE + i),
+        health: Some(HealthFact {
+            health: u32::MAX,
+            max_health: u32::MAX,
+            dead: true,
+        }),
+        facts: FactSet {
+            pools: Some((0..16).map(|j| pool(100 + j, u32::MAX, u32::MAX)).collect()),
+            effects: Some(
+                (0..16)
+                    .map(|j| EffectFact {
+                        effect: u(200 + j),
+                        expires_round: u64::MAX,
+                    })
+                    .collect(),
+            ),
+            order: Some(Some(OrderFact {
+                ability: u(300),
+                target: nid(first),
+                repeat: true,
+            })),
+            stats: Some(
+                (0..32)
+                    .map(|j| stat(&format!("s{j:031}"), StatValue::Int(i32::MIN)))
+                    .collect(),
+            ),
+            tags: Some((0..8).map(|j| format!("t{j:031}")).collect()),
+        },
+    }
+}
+
+fn full_entity_bytes(i: u64, first: u64) -> Vec<u8> {
+    let max = vi(u64::from(u32::MAX));
+    let health = [vec![1], max.clone(), max.clone(), vec![1]].concat();
+    let pools: Vec<(u128, u32, u32)> = (0..16).map(|j| (100 + j, u32::MAX, u32::MAX)).collect();
+    let effects: Vec<(u128, u64)> = (0..16).map(|j| (200 + j, u64::MAX)).collect();
+    let names: Vec<String> = (0..32).map(|j| format!("s{j:031}")).collect();
+    let stats: Vec<(&str, u8, i32)> = names.iter().map(|n| (n.as_str(), 0, i32::MIN)).collect();
+    let tag_names: Vec<String> = (0..8).map(|j| format!("t{j:031}")).collect();
+    let tags: Vec<&str> = tag_names.iter().map(String::as_str).collect();
+    let facts = facts_b(
+        &fam_pools(&pools),
+        &fam_effects(&effects),
+        &fam_order(300, first, true),
+        &fam_stats(&stats),
+        &fam_tags(&tags),
+    );
+    eb(BIG_BASE + i, &health, &facts)
+}
+
+/// `n` full entities and nothing else (2 + n * 2,766 + 5 bytes for n >= 128).
+fn full_entities(n: u64) -> SnapshotBodyV3 {
+    body_of((0..n).map(|i| full_entity(i, BIG_BASE)).collect())
+}
+
+struct Largest {
+    body: SnapshotBodyV3,
+    encoded: Vec<u8>,
+    hand: Vec<u8>,
+    plan: Vec<Vec<u8>>,
+}
+
+/// The D5 body, encoded, hand-built, and planned once for every test.
+fn largest() -> &'static Largest {
+    static LARGEST: OnceLock<Largest> = OnceLock::new();
+    LARGEST.get_or_init(|| {
+        let mut body = full_entities(1024);
+        body.turn = Some(TurnFact {
+            active: Some(nid(BIG_BASE)),
+            round: u64::MAX,
+        });
+        body.encounter = EncounterFacts {
+            mode: Some(EncounterMode::RealTime),
+            pending_mode: Some(Some(EncounterMode::TurnBased)),
+            clock: Some(Some(ClockFact {
+                round_ticks: u32::MAX,
+                elapsed: 2_147_483_647,
+            })),
+        };
+        body.timeline = Some((0..1024).map(|i| tl(i32::MIN, BIG_BASE + i)).collect());
+        let mut hand = vi(1024);
+        for i in 0..1024 {
+            hand.extend(full_entity_bytes(i, BIG_BASE));
+        }
+        hand.extend([vec![1, 1], vi(BIG_BASE), vi(u64::MAX)].concat());
+        hand.extend(
+            [
+                vec![1, 1, 1, 1, 0, 1, 1],
+                vi(u64::from(u32::MAX)),
+                vi(2_147_483_647),
+            ]
+            .concat(),
+        );
+        hand.extend([1]);
+        hand.extend(vi(1024));
+        for i in 0..1024 {
+            hand.extend(vi(zz(i32::MIN)));
+            hand.extend(vi(BIG_BASE + i));
+        }
+        let encoded = t3::encode_body(&body).expect("the largest valid body encodes");
+        let plan = t3::plan_transfer(Z, tid(1), 0, 0, 8, &body).expect("plans at 8 segments");
+        Largest {
+            body,
+            encoded,
+            hand,
+            plan,
+        }
+    })
+}
+
+#[test]
+fn d5_largest_body() {
+    let big = largest();
+    assert_eq!(big.hand.len(), 2_847_788);
+    assert_eq!(big.encoded.len(), t3::MAX_ENCODED_BODY_BYTES_V3);
+    assert_eq!(big.encoded, big.hand);
+    assert_eq!(t3::decode_body(&big.encoded).as_ref(), Ok(&big.body));
+    // One entity is 2,766 bytes: 10 + 12 + (2 + 592) + (2 + 592) + 40 + (2 + 1248) + (2 + 264).
+    assert_eq!(full_entity_bytes(0, BIG_BASE).len(), 2766);
+    // A 33rd stat on one entity is LimitExceeded; the control has 32.
+    let mut over = big.body.clone();
+    over.entities[0]
+        .facts
+        .stats
+        .as_mut()
+        .unwrap()
+        .push(stat("extra", StatValue::Int(0)));
+    assert_eq!(t3::encode_body(&over), Err(LimitExceeded));
+    // The same body decoded with one byte more or less is refused.
+    let mut longer = big.encoded.clone();
+    longer.push(0);
+    assert_eq!(t3::decode_body(&longer), Err(Malformed));
+    assert_eq!(
+        t3::decode_body(&big.encoded[..big.encoded.len() - 1]),
+        Err(Malformed)
+    );
+}
+
+#[test]
+fn d5_largest_body_plan() {
+    let big = largest();
+    let frames = &big.plan;
+    assert_eq!(frames.len(), 88);
+    assert_eq!(frames.iter().map(Vec::len).sum::<usize>(), 2_851_124);
+    assert_eq!(
+        frames[0],
+        hx("82 02 10 Z16 01 00 00 AC E8 AD 01 80 08 08 57")
+    );
+    assert_eq!(frames[0].len(), 30);
+    assert!(frames[1..87].iter().all(|f| f.len() == 32_806));
+    assert_eq!(frames[87].len(), 29_778);
+    let Ok(TransferDown::Begin(b)) = t3::decode_down(&frames[0]) else {
+        panic!("first frame is a Begin");
+    };
+    assert_eq!(t3::check_begin(&b), Ok(()));
+    assert_eq!(t3::chunk_len(&b, 86), Some(29_740));
+    assert_eq!(t3::chunk_len(&b, 85), Some(32_768));
+    assert_eq!(t3::chunk_len(&b, 87), None);
+    let mut joined = Vec::new();
+    for (i, frame) in frames[1..].iter().enumerate() {
+        let Ok(TransferDown::Chunk(c)) = t3::decode_down(frame) else {
+            panic!("frame {} is a Chunk", i + 1);
+        };
+        assert_eq!(usize::from(c.index), i);
+        assert_eq!(Some(c.bytes.len()), t3::chunk_len(&b, c.index));
+        joined.extend(c.bytes);
+    }
+    assert_eq!(joined, big.encoded);
+}
+
+#[test]
+fn d8_plan_parameters() {
+    let plan = |cursor: u64, spc: u8, body: &SnapshotBodyV3| {
+        t3::plan_transfer(Z, tid(1), 0, cursor, spc, body)
+    };
+    let empty = empty_body();
+    assert!(plan(SEQ_LAST, 1, &empty).is_ok());
+    assert_eq!(plan(u64::MAX, 1, &empty), Err(Malformed));
+    assert_eq!(plan(0, 0, &empty), Err(Malformed));
+    assert_eq!(plan(0, 9, &empty), Err(LimitExceeded));
+    assert_eq!(plan(0, 255, &empty), Err(LimitExceeded));
+    assert!(plan(0, 8, &empty).is_ok());
+    assert_eq!(plan(u64::MAX, 9, &empty), Err(Malformed));
+    assert_eq!(plan(u64::MAX, 0, &empty), Err(Malformed));
+    // Parameters before the body.
+    let bad = body_of(vec![ent(2), ent(1)]);
+    assert_eq!(plan(0, 9, &bad), Err(LimitExceeded));
+    assert_eq!(plan(0, 0, &bad), Err(Malformed));
+    assert_eq!(plan(0, 8, &bad), Err(Malformed));
+    assert_eq!(plan(u64::MAX, 8, &bad), Err(Malformed));
+    // The body before the chunk cap, whatever the segment count.
+    let big = largest();
+    let mut broken = big.body.clone();
+    broken.turn = active_9();
+    assert_eq!(plan(0, 1, &broken), Err(Malformed));
+    let mut too_many = big.body.clone();
+    too_many.entities[0]
+        .facts
+        .stats
+        .as_mut()
+        .unwrap()
+        .push(stat("x", StatValue::Int(0)));
+    assert_eq!(plan(0, 1, &too_many), Err(LimitExceeded));
+    // Chunk cap 128, counted in usize: 1 segment gives 696, which would wrap to 184.
+    for spc in 1..=5u8 {
+        assert_eq!(plan(0, spc, &big.body), Err(LimitExceeded), "spc {spc}");
+    }
+    for (spc, chunks) in [(6u8, 116u8), (7, 100), (8, 87)] {
+        let frames = plan(0, spc, &big.body).expect("fits 128 chunks");
+        assert_eq!(frames.len(), usize::from(chunks) + 1, "spc {spc}");
+        let Ok(TransferDown::Begin(b)) = t3::decode_down(&frames[0]) else {
+            panic!("Begin");
+        };
+        assert_eq!(b.chunk_count, chunks);
+        assert_eq!(b.segments_per_chunk, spc);
+        assert_eq!(b.total_bytes, 2_847_788);
+        assert_eq!(b.entity_count, 1024);
+    }
+}
+
+#[test]
+fn d5_plan_chunk_split() {
+    let body = full_entities(10);
+    let bytes = t3::encode_body(&body).unwrap();
+    assert_eq!(bytes.len(), 1 + 10 * 2766 + 5);
+    for spc in 1..=8u8 {
+        let epoch = [7; 16];
+        let frames = t3::plan_transfer(epoch, tid(9), 5, 3, spc, &body).unwrap();
+        let size = usize::from(spc) * 4096;
+        let chunks = bytes.len().div_ceil(size);
+        assert_eq!(frames.len(), chunks + 1, "spc {spc}");
+        let Ok(TransferDown::Begin(b)) = t3::decode_down(&frames[0]) else {
+            panic!("Begin");
+        };
+        assert_eq!(
+            b,
+            BeginTransfer {
+                epoch,
+                transfer: tid(9),
+                base_tick: 5,
+                cursor: 3,
+                total_bytes: bytes.len() as u32,
+                entity_count: 10,
+                segments_per_chunk: spc,
+                chunk_count: chunks as u8,
+            }
+        );
+        let mut joined = Vec::new();
+        for (i, frame) in frames[1..].iter().enumerate() {
+            assert!(frame.len() <= 65_536);
+            let Ok(TransferDown::Chunk(c)) = t3::decode_down(frame) else {
+                panic!("Chunk");
+            };
+            assert_eq!(
+                (c.epoch, c.transfer, usize::from(c.index)),
+                (epoch, tid(9), i)
+            );
+            let want = if i + 1 < chunks {
+                size
+            } else {
+                bytes.len() - i * size
+            };
+            assert_eq!(c.bytes.len(), want, "spc {spc} chunk {i}");
+            assert_eq!(c.bytes, bytes[i * size..i * size + want]);
+            joined.extend(c.bytes);
+        }
+        assert_eq!(joined, bytes);
+    }
+}
+
+#[test]
+fn d5_plan_chunk_cap_boundary() {
+    // One segment per chunk is 4,096 bytes; n full entities are 2,766 n + 7 bytes.
+    for (n, chunks) in [(188u64, 127usize), (189, 128)] {
+        let body = full_entities(n);
+        let bytes = t3::encode_body(&body).unwrap();
+        assert_eq!(bytes.len() as u64, 2766 * n + 7);
+        assert_eq!(bytes.len().div_ceil(4096), chunks);
+        let frames = t3::plan_transfer(Z, tid(1), 0, 0, 1, &body).unwrap();
+        assert_eq!(frames.len(), chunks + 1);
+        let Ok(TransferDown::Begin(b)) = t3::decode_down(&frames[0]) else {
+            panic!("Begin");
+        };
+        assert_eq!(usize::from(b.chunk_count), chunks);
+        let Ok(TransferDown::Chunk(last)) = t3::decode_down(frames.last().unwrap()) else {
+            panic!("Chunk");
+        };
+        assert_eq!(usize::from(last.index), chunks - 1);
+        assert_eq!(last.bytes, bytes[(chunks - 1) * 4096..]);
+    }
+    let body = full_entities(190);
+    assert_eq!(t3::encode_body(&body).unwrap().len().div_ceil(4096), 129);
+    assert_eq!(
+        t3::plan_transfer(Z, tid(1), 0, 0, 1, &body),
+        Err(LimitExceeded)
+    );
+}
