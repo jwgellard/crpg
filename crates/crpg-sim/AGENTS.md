@@ -613,6 +613,15 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - Trap: the `moved` decoder bounds `points` while streaming (64 points, at least 2, the 65th element never decoded); do not decode into a `Vec` first.
 - Tests: `tests/movement_turn.rs` (the implementer suite; `movement_turn_contract.rs` is the two-keys writer's) and `tests/history_v3_golden.rs` with its schedule `tests/support/history_v3_schedule.rs`. Regenerate the golden with `cargo run -p crpg-sim --example generate_history_v3_golden --profile test --locked` only with review; the two targets are never compared.
 
+## Ability range (T149b, ADR-0036 X1-X3)
+
+- Public additions: `within_range(measure, range, from, to)` (`movement.rs`, re-exported), `CombatError::OutOfRange` (fieldless, `OutOfRange at combat/target`) and `AbilityDefinition.range: Option<Fx16_16>`, skipped when `None`. `range_stage` is crate-private.
+- Invariant: a new admission stage goes last in `validate_action` unless a contract says otherwise; the range stage is last, so every existing check (`OutOfTurn`, `SelfTarget`, `InsufficientAction`, `DeadTarget`, `StatEvaluation`) keeps winning over `OutOfRange`.
+- Invariant: `ability_is_legacy` must keep requiring `range.is_none()`; otherwise the 15-field legacy form drops the range and the reload reads `None`.
+- Trap: X3 retains only `Err(OutOfRange)`; a retained order keeps its key and is due every tick (at most once per tick), spending, journaling and re-keying nothing. Any other failure still clears the order and reports `OrderEnded`; do not widen the match arm.
+- Trap: a range needs a mover on both sides. A ruleset without `movement` creates no movers, so a ranged ability can never be used there; a mover missing from a save is `OutOfRange`, never "unlimited".
+- Tests: `tests/ability_range.rs` (the implementer suite; `ability_range_contract.rs` is the two-keys writer's).
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -648,3 +657,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036a · Added the movement section: public API, the no-`f32`-read invariant and the traps (host transform writes failing L6, horizontal `seg_len`, stored step, creation-check order, spawned-only movers, id-ordered `bind_nav`, dead records, new per-entity fields).
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036b · Added the stage-4 section: the facts reader, the tick order, the three `stop` call sites and the traps (id order, carry-over, new TB entry must call `stop`, dead corpses).
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036c · Added the turn-based move section: the public additions, the single `validate_move` judgement, the `is_v3` and persistence traps (including the `movement_v1` hash move), and updated the history version statement to 3.
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T149b · Added the ability-range section: the new public items, the last-admission-stage invariant, the legacy-form invariant and the X3 and missing-mover traps.

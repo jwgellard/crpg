@@ -145,7 +145,9 @@ pub enum HistoryEvent {
         /// The round the switch started, widened.
         round: u64,
     },
-    /// A due order failed validation and was cleared (ADR-0029 T7, D11).
+    /// A due order failed validation and was cleared (ADR-0029 T7, D11). An
+    /// `OutOfRange` failure is not journaled: that order stays due (ADR-0036
+    /// X3).
     OrderEnded {
         /// The combatant whose order ended.
         actor: EntityId,

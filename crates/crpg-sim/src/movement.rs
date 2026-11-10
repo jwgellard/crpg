@@ -367,6 +367,19 @@ pub fn route_measure(measure: Measure, points: &[[Fx16_16; 3]]) -> Option<u64> {
     }
 }
 
+/// X2: whether `to` is within `range` of `from` under `measure` (ADR-0036 S2, X2).
+/// `route_measure(measure, &[from, to])` is `Some(d)` and `range.to_raw() >= 0`
+/// and `d <= range.to_raw() as u64`; otherwise `false`.
+pub fn within_range(
+    measure: Measure,
+    range: Fx16_16,
+    from: [Fx16_16; 3],
+    to: [Fx16_16; 3],
+) -> bool {
+    let raw = range.to_raw();
+    raw >= 0 && route_measure(measure, &[from, to]).is_some_and(|d| d <= raw as u64)
+}
+
 /// S3: a destination snapped by `measure`; the identity in v1 (B-U4).
 pub fn snap(measure: Measure, point: [Fx16_16; 3]) -> [Fx16_16; 3] {
     match measure {

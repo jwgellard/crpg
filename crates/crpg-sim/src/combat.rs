@@ -43,7 +43,9 @@ use crpg_rules::{
 
 use crate::creature::{CreatureState, Entrant, SuspendedEffect};
 use crate::event::SimEvent;
-use crate::movement::{build_mover, stop, write_mirror, Measure, MovementFact, TurnMovement};
+use crate::movement::{
+    build_mover, stop, within_range, write_mirror, Measure, MovementFact, TurnMovement,
+};
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
 use crate::world::{EntityMeta, World};
@@ -453,6 +455,9 @@ pub struct AbilityDefinition {
     /// Skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub damage_dice: Vec<(Outcome, DiceExpr)>,
+    /// Largest measured distance to the target, raw; `None` is unlimited (ADR-0036 X1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<Fx16_16>,
 }
 
 /// The immutable, symbolically-serialized combat definition.
@@ -521,6 +526,7 @@ fn ability_is_legacy(entry: &AbilityDefinition, primary: Ulid) -> bool {
         && !entry.repeats_in_real_time
         && entry.bonus_stats.is_empty()
         && entry.damage_dice.is_empty()
+        && entry.range.is_none()
 }
 
 /// Reports whether the new vectors describe a legacy-equivalent shape.
@@ -731,6 +737,7 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 repeats_in_real_time: false,
                 bonus_stats: Vec::new(),
                 damage_dice: Vec::new(),
+                range: None,
             };
             let pools = vec![PoolTemplate {
                 id: repr.pool_id,
@@ -1171,6 +1178,8 @@ pub enum CombatError {
         /// The placement whose creature has the bad step.
         placement: Ulid,
     },
+    /// The target is beyond the ability's range, or either side has no mover (ADR-0036 X2).
+    OutOfRange,
 }
 
 impl std::fmt::Display for CombatError {
@@ -1223,6 +1232,7 @@ impl std::fmt::Display for CombatError {
             Self::InvalidPosition { .. } => write!(f, "InvalidPosition at spec/placements"),
             Self::InvalidSpeed { .. } => write!(f, "InvalidSpeed at spec/movement"),
             Self::InvalidStep { .. } => write!(f, "InvalidStep at spec/movement"),
+            Self::OutOfRange => write!(f, "OutOfRange at combat/target"),
         }
     }
 }
@@ -2019,6 +2029,7 @@ pub(crate) fn start_encounter_with_members_tracked(
                 && entry.authored.repeats_in_real_time.unwrap_or(false),
             bonus_stats: entry.authored.bonus_stats.clone().unwrap_or_default(),
             damage_dice: entry.damage_dice.clone(),
+            range: entry.authored.range,
         });
     }
     abilities.sort_by_key(|entry| entry.ability);
@@ -3420,7 +3431,9 @@ fn action_plan(
 /// `NoEncounter`; live nonparticipant actor; live nonparticipant target;
 /// `AbsentActor`; `AbsentTarget`; `DeadActor`; `DeadTarget`; `OutOfTurn`;
 /// `UnknownAbility`; `SelfTarget`; then per-pool affordability in template
-/// order (checked sums, `ValueOverflow`/`InsufficientAction`, T019).
+/// order (checked sums, `ValueOverflow`/`InsufficientAction`, T019); the
+/// derived-stat evaluation; then the range stage (`OutOfRange`, ADR-0036
+/// X2).
 /// `EndTurn`: `NoEncounter`; live nonparticipant actor; `AbsentActor`;
 /// `DeadActor`; `OutOfTurn`. Validation stops before interning, creating RNG
 /// streams, resolving, spending, or advancing. `Ok` is not a lease: state can
@@ -3600,8 +3613,34 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
             if !definition.derived.is_empty() {
                 action_plan(world, world.interners().clone(), entry, actor, target)?;
             }
-            Ok(())
+            range_stage(world, definition, entry, actor, target)
         }
+    }
+}
+
+/// X2, the last admission stage (ADR-0036): an ability with a range needs a
+/// mover on both sides and a measured distance within it. Reads only fixed
+/// positions, interns nothing, draws nothing and changes nothing.
+fn range_stage(
+    world: &World,
+    definition: &CombatDefinition,
+    entry: &AbilityDefinition,
+    actor: EntityId,
+    target: EntityId,
+) -> Result<(), CombatError> {
+    let Some(range) = entry.range else {
+        return Ok(());
+    };
+    let measure = definition
+        .movement
+        .map_or(Measure::Euclidean, |m| m.measure);
+    let (Some(from), Some(to)) = (world.movers().get(actor), world.movers().get(target)) else {
+        return Err(CombatError::OutOfRange);
+    };
+    if within_range(measure, range, from.position(), to.position()) {
+        Ok(())
+    } else {
+        Err(CombatError::OutOfRange)
     }
 }
 
@@ -3651,6 +3690,8 @@ impl std::error::Error for LegalActionsError {
 /// included, only excludes that candidate); `EndTurn` comes last. Every
 /// `UseAbility` names a live combatant target, whatever the ability's
 /// `requires_target` flag; `allow_self_target` alone governs self-targets.
+/// A target beyond the ability's range (or without a mover) fails the last
+/// admission stage, `OutOfRange`, and is therefore omitted (ADR-0036 X2).
 ///
 /// In a real-time encounter (T138, ADR-0029 T8) `Stop { actor }` takes the
 /// place of `EndTurn { actor }` at both ends: it is validated first and it
@@ -4474,7 +4515,9 @@ pub(crate) fn clock_stage(world: &mut World, facts: &mut TickFacts) {
 /// Snapshots every entry whose key is at or below the clock in ascending
 /// `(key, EntityId)` order before acting, then executes each stored order
 /// through [`validate_action`] and [`resolve_use`]. A due order that fails
-/// validation is cleared with no other effect. An actor that survives is
+/// validation is cleared with no other effect, except one that fails
+/// `OutOfRange`: it stays due, keeps its key and order, and is tried again on
+/// every later tick (ADR-0036 X3). An actor that survives is
 /// re-keyed at `min(elapsed + recovery, RT_CLOCK_MAX)`; a one-shot order
 /// clears. A combatant without an order keeps its key and waits.
 pub(crate) fn execution_stage(world: &mut World, facts: &mut TickFacts) {
@@ -4512,14 +4555,20 @@ pub(crate) fn execution_stage(world: &mut World, facts: &mut TickFacts) {
             ability: order.ability,
             target: order.target,
         };
-        if validate_action(world, &action).is_err() {
-            world
-                .combatants_mut()
-                .get_mut(actor)
-                .expect("the actor is a live combatant")
-                .order = None;
-            facts.events.push(TickEvent::OrderEnded { actor });
-            continue;
+        match validate_action(world, &action) {
+            Ok(()) => {}
+            // ADR-0036 X3: out of range, the order stays due and nothing else
+            // happens; it is tried again on every later tick.
+            Err(CombatError::OutOfRange) => continue,
+            Err(_) => {
+                world
+                    .combatants_mut()
+                    .get_mut(actor)
+                    .expect("the actor is a live combatant")
+                    .order = None;
+                facts.events.push(TickEvent::OrderEnded { actor });
+                continue;
+            }
         }
         let recovery = {
             let combat = world.combat().expect("the encounter is checked above");
@@ -4846,7 +4895,7 @@ mod surface_tests {
         let entry = base.abilities[0].clone();
         assert!(ability_is_legacy(&entry, primary), "the baseline");
         type Edit = fn(&mut AbilityDefinition);
-        let table: [(&str, Edit); 12] = [
+        let table: [(&str, Edit); 13] = [
             ("target stat", |e| {
                 e.defense = AbilityDefense::TargetStat { stat: "x".into() }
             }),
@@ -4870,6 +4919,7 @@ mod surface_tests {
             ("damage dice", |e| {
                 e.damage_dice.push((Outcome::Success, dice("1d4")))
             }),
+            ("range", |e| e.range = Some(Fx16_16::from_raw(65536))),
         ];
         for (name, edit) in table {
             let mut changed = entry.clone();
