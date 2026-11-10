@@ -25,6 +25,7 @@ use crate::protocol_v3::{
     EffectFact, EncounterFacts, EncounterMode, FactSet, HostFacts, NetId, OrderFact, PauseReason,
     PauseRights, PoolFact, SessionEpoch, StatFact, TimelineEntry, MAX_TIMELINE_ENTRIES,
 };
+use crate::transfer_v3::{SnapshotBodyV3, SnapshotEntityV3};
 
 /// Most fact ops one page holds: one `Encounter`, one `Timeline` and one
 /// `EntityFacts` per visible row.
@@ -414,5 +415,93 @@ pub fn host_facts_op(input: &HostInput, grants: HostGrants) -> DeltaOp {
         rights: input.rights,
         auto_pause: grants.auto_pause.then_some(input.auto_pause),
         turn_timer_ms: grants.turn_timer.then_some(input.turn_timer_ms),
+    })
+}
+
+/// One filtered v3 snapshot body plus the view position after the call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotProjectionV3 {
+    /// The `0x82` body: the view's entities and turn, each entity's row
+    /// image, and the encounter and timeline images. Host facts are never in
+    /// the body.
+    pub body: SnapshotBodyV3,
+    /// The interest view's position after the call.
+    pub cursor: ViewCursor,
+}
+
+/// Projects one v3 replacement snapshot: the interest view's snapshot, then
+/// the fact images.
+///
+/// Runs the [`project_page`] checks (epochs, bounds, duplicate keys), then
+/// `InterestView::project_snapshot` ([`FactError::Interest`]). Every `Err`
+/// leaves `view` and `facts` equal to their pre-call values. The `FactView`
+/// then remembers exactly the images in the body, so the next
+/// [`project_page`] emits only differences. The body always passes
+/// `transfer_v3::encode_body`.
+pub fn project_snapshot_v3(
+    view: &mut InterestView,
+    facts: &mut FactView,
+    state: &ViewerContext<'_>,
+    context: &FactContext<'_>,
+) -> Result<SnapshotProjectionV3, FactError> {
+    if state.epoch != facts.epoch || view.epoch() != facts.epoch {
+        return Err(FactError::WrongEpoch);
+    }
+    let timeline_len = context.encounter.map_or(0, |e| e.timeline.len());
+    if context.rows.len() > crate::protocol::MAX_VISIBLE_ENTITIES
+        || timeline_len > MAX_TIMELINE_ENTRIES
+    {
+        return Err(FactError::TooManyFacts);
+    }
+    let mut seen = BTreeSet::new();
+    for row in context.rows {
+        if !seen.insert(row.key) {
+            return Err(FactError::DuplicateFact);
+        }
+    }
+    if let Some(encounter) = &context.encounter {
+        let mut seen = BTreeSet::new();
+        for (_, key) in encounter.timeline {
+            if !seen.insert(*key) {
+                return Err(FactError::DuplicateFact);
+            }
+        }
+    }
+    let snapshot = view.project_snapshot(state).map_err(FactError::Interest)?;
+
+    // From here nothing can fail.
+    let encounter_image = encounter_image(state, context);
+    let timeline_image = timeline_image(view, state, context);
+    let rows: BTreeMap<EntityKey, &FactRow> = context.rows.iter().map(|r| (r.key, r)).collect();
+
+    let mut entities: Vec<SnapshotEntityV3> = Vec::with_capacity(snapshot.body.entities.len());
+    let mut remembered: BTreeMap<EntityKey, (NetId, FactSet)> = BTreeMap::new();
+    for entity in snapshot.body.entities {
+        let key = view.entity(entity.entity);
+        let image = key
+            .and_then(|key| rows.get(&key))
+            .map_or_else(FactSet::default, |row| row_image(view, row));
+        if let Some(key) = key {
+            remembered.insert(key, (entity.entity, image.clone()));
+        }
+        entities.push(SnapshotEntityV3 {
+            entity: entity.entity,
+            health: entity.health,
+            facts: image,
+        });
+    }
+
+    facts.encounter = encounter_image;
+    facts.timeline = timeline_image.clone();
+    facts.rows = remembered;
+
+    Ok(SnapshotProjectionV3 {
+        body: SnapshotBodyV3 {
+            entities,
+            turn: snapshot.body.turn,
+            encounter: encounter_image,
+            timeline: timeline_image,
+        },
+        cursor: snapshot.cursor,
     })
 }

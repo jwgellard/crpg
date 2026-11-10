@@ -762,6 +762,68 @@ and the grant, order, memory and bound cases).
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the Protocol v3 section for the version gate, intents, native tags 0..=10, codes 21..=30, the scalar ops and `Clock` as the only pause carrier; fact ops, filters and `0x82` follow in T140b–e.
 
+### T140d: `transfer_v3`, the `0x82` snapshot
+
+`0x82` is the `0x81` transfer subprotocol (T024) with a new first byte, a wider
+body and a larger envelope. Every frame layout is `0x81`'s and every check is
+T024's, in T024's order; exactly three bounds differ. The Begin `total_bytes`
+cap is `MAX_SNAPSHOT_BYTES_V3` = 4,194,304 (4 MiB), and the Begin `chunk_count`
+cap and the Chunk `index` bound (encode and decode) are
+`MAX_SNAPSHOT_CHUNKS_V3` = 128 (4 MiB / 32,768). Segments (4,096 bytes, at most
+8 per chunk), chunks (32,768 bytes), the tags, the 65,536/4,096-byte frame caps
+and the canonical cut are unchanged. Because `BeginTransfer::validate`, the
+`0x81` codec, `TransferAssembly` and `TransferLimits` hard-code the v1 caps
+(1 MiB, 32 chunks), `transfer_v3` encodes and decodes Begin and Chunk itself
+through `check_begin` and `chunk_len` (`validate` and `chunk_len` with the v3
+caps, in their order), and copies the `Cancel`, `Published` and `Resync`
+codecs. The v1/v2/`0x81` constants in `protocol` stay 1 MiB and 32 chunks;
+`BeginTransfer`'s fields already hold the wider values (`total_bytes: u32`,
+`chunk_count: u8`, 128 fits one raw byte), so no layout changes. The `0x81`
+decoders and `codec_v3` refuse `0x82` with `UnsupportedVersion`, and the v3
+transfer decoders refuse every other first byte, `0x81` included.
+
+**Body (D-2).** `entity_count` varint, then per entity `entity u64`,
+`health_present` and its three fields, and the fact set (the T140b layout:
+pools, effects, order, stats, tags); then `turn_present` (`active`, `round`),
+the encounter block (the tag 11 payload) and the timeline block (the tag 12
+payload). `SnapshotBodyV3 { entities, turn, encounter, timeline }` reuses the
+T140b `take_*`/`extend_*` helpers. Host facts are not in the body: they are per
+viewer and not state at the cursor, so the host sends them as ops after
+publication.
+
+**Decode order (D-3).** Body over 4,194,304 bytes (`LimitExceeded`); entity
+count over 1,024 (`LimitExceeded`, before growth); per entity the id (0 is
+`Malformed`), strict ascent (`Malformed`), health, then the fact set; then each
+order target must be an entity of the body; then the turn (`active` must be an
+entity); the encounter; the timeline (every entry's entity must be an entity);
+trailing bytes. `encode_body` checks in the same order and returns the same
+error (D-4), so it refuses exactly what `decode_body` refuses.
+
+**Size (Readings 14, 15).** The largest valid body is 2,847,788 bytes: 2
+(count) + 1,024 x 2,766 (entity 10, health 12, pools 2 + 16 x 37, effects
+2 + 16 x 37, order 40, stats 2 + 32 x 39, tags 2 + 8 x 33) + 22 (turn) + 17
+(encounter) + 15,363 (timeline). The smallest power-of-two-MiB cap that holds
+it is 4 MiB, which leaves 1,346,516 bytes of headroom; it needs 87 chunks at 8
+segments per chunk (the last holds 29,740 bytes), and its plan is 88 frames and
+2,851,124 bytes. That is over the 2 MiB per-peer egress bytes, so the host
+paces `0x82` frames (H-7); the egress caps do not grow.
+
+**`plan_transfer` (D-5).** Checks in order: `cursor` above `SEQ_LAST`
+(`Malformed`); `segments_per_chunk` 0 (`Malformed`) or above 8
+(`LimitExceeded`); the body (`encode_body`'s error); then a chunk count above
+128, computed in `usize` before any narrowing to `u8` (one segment gives 696).
+It builds the Begin, cuts the chunks canonically and returns `encode_down` of
+the Begin then of each Chunk. The cap binds only below 8 segments per chunk.
+
+**`project_snapshot_v3` (D-6).** It runs `project_page`'s checks (epochs,
+bounds, duplicate keys) and then `InterestView::project_snapshot`, so a refusal
+leaves both views unchanged. The body is the view body's entities in order,
+each with its health and its row image (`FactSet::default()` without a row),
+the view's turn, and the encounter and timeline images. The `FactView` then
+replaces its memory with exactly these images, so the next `project_page` emits
+only differences; a key the snapshot retired forgets its image. The body always
+passes `encode_body`. `tests/v3_snapshot.rs` carries the oracles (D1-D10).
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -777,3 +839,5 @@ and the grant, order, memory and bound cases).
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the "Protocol v3 (T140, ADR-0029 N1–N4)" section for the new `protocol_v3`/`codec_v3` pair; no earlier section changed.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Extended the Protocol v3 section with the fact ops, their limits, the timeline tie rule, `frame_spans` and `projection_v3`; no earlier section changed.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Extended the Protocol v3 section with `facts_v3` (`FactView`, `project_page`, the per-row, per-encounter and host-fact grants, the op-owner table and emission rules); no earlier section changed.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Extended the Protocol v3 section with `transfer_v3` (the `0x82` frames, the v3 caps and `check_begin`, the body and its 2,847,788-byte bound, `plan_transfer`) and `project_snapshot_v3`; no earlier section changed.
