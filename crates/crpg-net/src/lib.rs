@@ -38,6 +38,7 @@ pub mod codec_resume;
 pub mod codec_transfer;
 pub mod codec_v2;
 pub mod codec_v3;
+pub mod facts_v3;
 pub mod interest;
 pub mod projection_v2;
 pub mod projection_v3;

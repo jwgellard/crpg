@@ -689,6 +689,75 @@ oracles (B1-B9). `codec_v3` also exposes crate-private `extend_*`/`take_*`
 for the encounter block, the timeline block and the fact set, which T140d
 reuses for the `0x82` body.
 
+### T140c: `facts_v3`, the per-viewer fact filter
+
+`FactView` is the companion of the one `InterestView` of an epoch (it is not a
+field of it, so T027b's structs and tests stay as they are). It mints nothing:
+every `NetId` comes from `view.net_id`. It is driven only through
+`project_page(view, facts, state, context)`, which validates before either view
+mutates, so a call is all-or-nothing. `FactView` keeps the last encounter image,
+the last timeline image and, per visible key, the `(NetId, FactSet)` it told the
+viewer. It is not `Serialize` and has no restore constructor.
+
+**Op ownership (extends the D5 table above).**
+
+| Op | Owner |
+|---|---|
+| `EntityEnter`, `Health`, `Turn`, `EntityLeave`, `Despawned` | `InterestView` |
+| `Encounter`, `Timeline`, `EntityFacts` | `FactView` (`project_page`) |
+| `Spawned`, `Died`, `ActionResolved`, `TurnStarted`, `EncounterEnded`, `RoundStarted`, `ModeChanged`, `OrderEnded`, `Joined`, `Left` | `projection_v3::project_events` |
+| `Clock`, `HostFacts` | `clock_op` / `host_facts_op` with the host's per-viewer `HostGrants` |
+| `Receipt` | host |
+
+**Checks (C-1), before anything changes, first failure wins.** The state's or
+the interest view's epoch differs from the fact view's (`WrongEpoch`); more
+than 1,024 rows or 1,024 timeline entries (`TooManyFacts`, counted before
+duplicates); two rows, or two timeline entries, with one `EntityKey`
+(`DuplicateFact`, visible or not); then `project_delta`'s own error as
+`Interest(e)`. The timeline checks read the input whenever an encounter is
+supplied, whatever its area or timeline grant. After the interest projection
+nothing can fail.
+
+**Images.** The encounter image is `EncounterFacts::default()` unless the
+encounter is in the viewer's area; then each field is present only under its
+grant, and a clock that fails `ClockFact::check` is withheld, never refused. The
+timeline image is `Some` only for an in-area encounter with the timeline grant:
+the input sorted ascending by `(key, EntityKey)`, hidden entities dropped, so
+ties keep the authority's order, not the `NetId` order. A visible key renders
+a `FactSet`: a family needs its `FactMask` flag and its `check_*` (Reading 8:
+over-limit is withheld, never truncated or refused); the order is `None`
+without `fields.order`, `Some(None)` with no order, and withheld when its target
+has no `NetId` for this viewer. A visible key with no row renders
+`FactSet::default()`. Rows for keys that are not visible are ignored.
+
+**Memory and emission (C-5, C-6).** Before rendering, every remembered key whose
+current `net_id` is not the stored one is dropped (it left, was retired, or
+re-entered with a new id, including a retirement made by a snapshot applied
+straight to the view). Fact ops follow the view's ops: `Encounter`, then
+`Timeline`, then one `EntityFacts` per visible key in ascending `NetId`. Each is
+sent when its image differs from the remembered one (no remembered row is the
+default image), or under `resend` when the image is not withheld; then every
+image is remembered. A withheld image that changes is therefore still sent
+once, as the forget op (an all-`None` op), and never repeated. `PageV3.ops` is
+the view's ops converted with `From`, then the fact ops; `enters` and `cursor`
+are the view's, so fact ops alone do not advance the cursor. A page holds at
+most `MAX_PAGE_OPS_V3` = 4,099 ops and is not a frame: split it only with
+`codec_v3::frame_spans`.
+
+**Grants.** `FactMask`, `EncounterGrants` and `HostGrants` all default to deny.
+No input names an owner or controller: the host sets `fields.order` (and the
+`OrderEnded` candidate) only for the controlling peer.
+
+**Host facts (C-9, Reading 13).** `clock_op` and `host_facts_op` are stateless
+and pure. Two host facts are deliberately not granted: whether the session is
+paused (every client observes a pause) and the viewer's own pause rights (they
+describe only that viewer). The pause reason, the auto-pause toggles and the
+turn timer each have a `HostGrants` flag; withheld is `None`, never "no timer
+running" (`Some(None)`). `tests/v3_fact_view.rs` carries the oracles (C1-C15
+and the grant, order, memory and bound cases).
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Added the `facts_v3` section: the extended op-owner table, the C-1 check order, the images, memory and emission rules, and Reading 13's two ungranted host facts.
+
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Added the fact-op table, limits and Reading 8, the timeline tie rule, `frame_spans` with its 65,512-byte rule, and `projection_v3`; the T140a text that called tags 11..=13 unknown is superseded here.
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the Protocol v3 section for the version gate, intents, native tags 0..=10, codes 21..=30, the scalar ops and `Clock` as the only pause carrier; fact ops, filters and `0x82` follow in T140b–e.
@@ -707,3 +776,4 @@ reuses for the `0x82` body.
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Absorbed the moved Public surface, Invariants, and Allowed dependencies sections from AGENTS.md; no content lost.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the "Protocol v3 (T140, ADR-0029 N1–N4)" section for the new `protocol_v3`/`codec_v3` pair; no earlier section changed.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Extended the Protocol v3 section with the fact ops, their limits, the timeline tie rule, `frame_spans` and `projection_v3`; no earlier section changed.
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Extended the Protocol v3 section with `facts_v3` (`FactView`, `project_page`, the per-row, per-encounter and host-fact grants, the op-owner table and emission rules); no earlier section changed.

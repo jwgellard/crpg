@@ -138,6 +138,16 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   here. The encode checks are the public `check_*` functions; keep them and
   the decoder in the same order.
 
+- *2026-11-10 (UTC), T140c:* **Fact filter** (`facts_v3`; see architecture
+  §"T140c"). `FactView` never mints: it resolves every `NetId` through the one
+  `InterestView` of the epoch, and it is driven only through `project_page`
+  (never mutate it, or the view, around that call). No controller input exists;
+  the order grant is the host's (`fields.order` only for the controlling peer).
+  Withheld is `None`, never a disclosed nothing: `Some(None)` means "disclosed,
+  none", and an unchanged-looking image under a new `NetId` is still a new
+  subject, so remembered rows are keyed by `(EntityKey, NetId)`. Build the two
+  host ops only with `clock_op` / `host_facts_op`.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
@@ -173,3 +183,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-10 (UTC) · claude-code/opus-5.5 (manager) + T140a · Signed for the Sonnet implementer, who added the protocol v3 entry with its three traps (no tag reuse, no `Legacy` wrap of v2, `Clock` carries no tick), so agents extending v3 in T140b–e keep the wire stable.
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Added the fact-op entry with its two traps (never check timeline `NetId` order; a v3 page is not a frame, split with `frame_spans`), superseding the T140a note that tags 11..=13 are reserved.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Added the fact-filter entry with its three traps (`FactView` never mints and is driven only through `project_page`; no controller input, the order grant is the host's; withheld is `None`, never a disclosed nothing).
