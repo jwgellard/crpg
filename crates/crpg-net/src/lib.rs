@@ -28,18 +28,23 @@
 //! The T046 [`replica`] module applies decoded v2 deltas and published
 //! snapshots into the engine-neutral client copy. Real QUIC,
 //! movement wire, reconnect policy, prediction, and host auth/perception are
-//! named follow-ons, not here.
+//! named follow-ons, not here. The T140a [`protocol_v3`]/[`codec_v3`] pair
+//! adds the explicit v3 version (byte 3): the pause, mode and standing-order
+//! intents, native tags 0..=10 with rejection codes 1..=30, and the scalar
+//! encounter-event, `Clock` and host-fact ops.
 
 pub mod codec;
 pub mod codec_resume;
 pub mod codec_transfer;
 pub mod codec_v2;
+pub mod codec_v3;
 pub mod interest;
 pub mod projection_v2;
 pub mod protocol;
 pub mod protocol_resume;
 pub mod protocol_transfer;
 pub mod protocol_v2;
+pub mod protocol_v3;
 pub mod reassembly;
 pub mod replica;
 pub mod resume;

@@ -567,6 +567,73 @@ oracle and is not replaced by this type.
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T046 · Added the `replica` public-surface entry and section: the apply-only surface, op table, sequence law and no-reset rule, high-water reuse check, snapshot precedence, and the 2,048-row mid-page bound.
 
+## Protocol v3 (T140, ADR-0029 N1–N4)
+
+`protocol_v3` / `codec_v3` add wire version 3 beside frozen v1, v2, `0x81`
+and `0x91`. A wire version is a schema version: byte 3 is a new module pair,
+not a variant of v2. T140a fixes the version, the intents, native tags
+0..=10, the rejection codes, and the scalar ops 14..=20; T140b–e add the
+fact ops (tags 11..=13), the filters, and the `0x82` snapshot.
+
+**Version gate.** `encode_*` writes byte 3 first. `decode_*` checks the
+frame cap (4,096 intent, 65,536 delta bytes), then the version: empty input
+is `Malformed`, any first byte other than 3 (1, 2, `0x81`, `0x91`) is
+`UnsupportedVersion`. The v1 and v2 codecs refuse byte 3 the same way. There
+is no negotiation, autodetection or downgrade; the host picks a version per
+session.
+
+**Intents.** The v1 header (`epoch`, `lane` 0, `seq`, `observed_tick`,
+nonzero `actor`) then a body tag: 0 `DeclareAction` and 1 `EndTurn` keep
+their v1 payloads; 2 `Stop`, 3 `Pause`, 4 `Unpause` carry nothing; 5
+`RequestMode` carries one mode byte (0 `TurnBased`, 1 `RealTime`). For
+`Pause`, `Unpause` and `RequestMode` the `actor` names the requesting peer's
+bound character, and the host (T141) decides what that authorizes.
+
+**Native tags 0..=10.** Re-declared in `protocol_v3::DeltaOp`, not wrapped in
+v2's `Legacy`: a receipt's code must reach the new codes, and v1's
+`RejectionCode` is frozen at 1..=20. Payload bytes are identical to v2, so
+v3 bytes differ from v2 only in byte 0 (the test `a4` proves it for every
+v1 code), and `From` conversions from the v1 and v2 ops let existing
+projections feed v3 pages.
+
+**Codes 21..=30.** `ModeUnsupported`, `WrongMode`, `StatEvaluation`,
+`EncounterTerminal`, `RulesetMismatch`, `PlacementInUse`, `NotCreature`,
+`AlreadyParticipant`, `NoEntrants`, `NoPauseRight`. `RejectionCode::from_u8`
+is `Some` for exactly 1..=30. A paused host still runs commands, so there is
+no `Paused` code.
+
+**Scalar ops.** 14 `RoundStarted`, 15 `ModeChanged`, 16 `OrderEnded`, 17
+`Joined`, 18 `Left` (notices that mint or retire no id), 19 `Clock`, 20
+`HostFacts`. Round and the active combatant stay in the v1 `Turn` op.
+Tags 11..=13 are `UnknownMessage` until T140b.
+
+**`Clock` is the only pause carrier.** `Clock { paused }` is
+`Option<Option<PauseReason>>`: `None` is running (`00`), `Some(None)` is
+paused with the reason withheld (`01 00`), `Some(Some(r))` is paused for `r`
+(`01 01 <tag> [trigger]`; the trigger byte follows only the `Auto` tag).
+It carries no tick: the server tick is the header of every delta frame, and
+a heartbeat is an ordinary frame holding a `Clock` that consumes an
+`event_seq`. `POLICY_CLOCK_HEARTBEAT_TICKS = 100` is policy, never wire: half
+the 200-tick observed-tick window, so one lost heartbeat still leaves a
+fresh tick.
+
+**`HostFacts`.** The viewer's two pause rights (never withheld), the
+auto-pause toggles (`AutoPauseToggles`, five bits, `0x1F` mask) and the turn
+timer as remaining milliseconds. A withheld toggle set or timer is `None`
+(a `00` flag, no further bytes); a disclosed timer is
+`Option<Option<u32>>`, where `Some(None)` is "disclosed, no timer running"
+and never shares bytes with withheld.
+
+**Errors.** No new variant: `CodecError` covers every refusal. Unknown op,
+body, status, code, mode, reason and trigger bytes are `UnknownMessage`;
+ids of 0, flag bytes other than 0/1, toggle bits over `0x1F`, truncation and
+trailing bytes are `Malformed`; counts and strings over their bounds are
+`LimitExceeded`. Encode checks lane, count, then each op in order, then the
+frame cap, and never returns partial bytes. `tests/v3_wire.rs` carries the
+literal byte oracles (A1–A11).
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the Protocol v3 section for the version gate, intents, native tags 0..=10, codes 21..=30, the scalar ops and `Clock` as the only pause carrier; fact ops, filters and `0x82` follow in T140b–e.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -579,3 +646,4 @@ oracle and is not replaced by this type.
 - 2026-10-04 (UTC) · claude-code + T023 · Appended a dated Scope pointer to `crpg-net-quic` for real QUIC, so this crate's no-I/O boundary names where the transport went; doc-only, no source or manifest change.
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Absorbed the moved Public surface, Invariants, and Allowed dependencies sections from AGENTS.md; no content lost.
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the "Protocol v3 (T140, ADR-0029 N1–N4)" section for the new `protocol_v3`/`codec_v3` pair; no earlier section changed.
