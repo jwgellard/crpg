@@ -823,3 +823,68 @@ fn r9_every_raw_value_survives_a_round_trip() {
         assert_eq!(bytes_of(&loaded), bytes_of(&w));
     }
 }
+
+// ------------------------------------------- review survivors (fix round)
+
+#[test]
+fn r7_a_retained_order_does_not_stop_the_rest_of_the_pass() {
+    // A's order waits (B is out of A's range); B's self-order measures 0 and
+    // is due in the same pass, after A in timeline order.
+    let mut fx = ranged(move_rt(), 655_360);
+    edit_ability(&mut fx, |x| x.allow_self_target = true);
+    let (mut h, ids) = fx.start_history(7, EncounterMode::RealTime).unwrap();
+    let (a, b) = (ids[0], ids[1]);
+    h.perform_action(&use_ability(a, b)).unwrap();
+    h.perform_action(&use_ability(b, b)).unwrap();
+    h.place(b, rp(655_361, 0, 0)).unwrap();
+    let cursor = h.last_sequence();
+    h.tick().unwrap();
+    let events = events_after(&h, cursor);
+    assert_eq!(resolved(&events), 1, "{events:?}");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        HistoryEvent::ActionResolved { actor, target, .. } if *actor == b && *target == b
+    )));
+    assert!(ended(&events).is_empty());
+    assert_eq!(pool_of(h.world(), b), 0);
+    assert_eq!(order_of(h.world(), b), None);
+    assert_eq!(order_of(h.world(), a), Some(standing(b, false)));
+    assert_eq!(pool_of(h.world(), a), 1);
+}
+
+#[test]
+fn r7_a_retained_order_keeps_its_repeat_flag() {
+    let mut fx = ranged(move_rt(), 655_360);
+    edit_ability(&mut fx, |x| x.repeats_in_real_time = Some(true));
+    let (mut w, a, b) = rt(&fx);
+    perform_action(&mut w, &use_ability(a, b)).unwrap();
+    assert_eq!(order_of(&w, a), Some(standing(b, true)));
+    put(&mut w, b, rp(655_361, 0, 0));
+    for _ in 0..2 {
+        tick(&mut w);
+        assert_eq!(order_of(&w, a), Some(standing(b, true)));
+    }
+    put(&mut w, b, p(10, 0));
+    tick(&mut w);
+    // A repeating order survives its execution.
+    assert_eq!(pool_of(&w, a), 0);
+    assert!(order_of(&w, a).is_some_and(|o| o.repeat));
+}
+
+#[test]
+fn r9_any_some_range_makes_the_definition_non_legacy() {
+    for raw in [0, -1] {
+        let (w, _) = ranged(Fixture::standard(), raw).start(7);
+        let save = serde_json::to_value(&w).unwrap();
+        assert_eq!(
+            save["combat"]["definition"]["abilities"][0]["range"],
+            json!(raw)
+        );
+        let loaded = reload(save);
+        assert_eq!(
+            loaded.combat().unwrap().definition.abilities[0].range,
+            Some(Fx16_16::from_raw(raw))
+        );
+        assert_eq!(bytes_of(&loaded), bytes_of(&w));
+    }
+}
