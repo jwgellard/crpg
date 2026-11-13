@@ -777,17 +777,136 @@ fn p6_version_and_wire_refusals() {
 
 #[test]
 fn p7_v3_ops_pass_the_gate_unchanged() {
-    todo!("P7")
+    // Every fact op and notice, with ids that are live nowhere.
+    let f = DeltaFrame {
+        lane: 0,
+        server_tick: 100,
+        event_seq: 1,
+        ops: vec![
+            DeltaOp::Encounter(EncounterFacts {
+                mode: Some(EncounterMode::RealTime),
+                pending_mode: Some(None),
+                clock: Some(Some(ClockFact {
+                    round_ticks: 60,
+                    elapsed: 5,
+                })),
+            }),
+            DeltaOp::Timeline {
+                entries: Some(vec![TimelineEntry {
+                    key: -1,
+                    entity: id(1),
+                }]),
+            },
+            DeltaOp::EntityFacts {
+                entity: id(1),
+                facts: FactSet {
+                    pools: Some(vec![]),
+                    effects: None,
+                    order: Some(None),
+                    stats: Some(vec![StatFact {
+                        name: "might".into(),
+                        value: StatValue::Int(3),
+                    }]),
+                    tags: Some(vec!["elite".into()]),
+                },
+            },
+            DeltaOp::RoundStarted { round: 2 },
+            DeltaOp::ModeChanged {
+                mode: EncounterMode::TurnBased,
+                round: 2,
+            },
+            DeltaOp::OrderEnded { actor: id(1) },
+            DeltaOp::Joined { entity: id(1) },
+            DeltaOp::Left { entity: id(1) },
+            DeltaOp::Clock {
+                paused: Some(Some(PauseReason::Auto(AutoPauseTrigger::PartyMemberDied))),
+            },
+            DeltaOp::HostFacts(HostFacts {
+                rights: PauseRights {
+                    pause: true,
+                    unpause: false,
+                },
+                auto_pause: Some(AutoPauseToggles::from_bits(0x1F).expect("0x1F is the full mask")),
+                turn_timer_ms: Some(Some(30_000)),
+            }),
+        ],
+    };
+    let bytes = codec_v3::encode_delta(&f).expect("F encodes");
+    // To a Live receiver: released whole, in one update.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::Live);
+    assert_eq!(
+        p.offer_delta(a, &bytes, T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(p.held_delta_bytes(), bytes.len(), "the frame length while queued");
+    assert_eq!(p.pop_update(a), Some(ReplicaUpdateV3::Delta(f.clone())));
+    assert_eq!(p.held_delta_bytes(), 0, "the pop releases its bytes");
+    // To an AwaitSnapshot receiver: held with its encoded length.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    assert_eq!(p.offer_delta(a, &bytes, T0), Ok(DeltaOutcome::Buffered));
+    let st = p.status(a).expect("status");
+    assert_eq!(st.held_frames, 1);
+    assert_eq!(st.held_bytes, bytes.len());
+    assert_eq!(p.held_delta_bytes(), bytes.len());
+}
+
+#[test]
+fn p9_rebind_discards_in_flight_and_held() {
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::Live);
+    assert_eq!(p.offer_delta(a, &d(1), T0), Ok(DeltaOutcome::Released { count: 1 }));
+    // G(1) with cursor 1 (cursor 0 would be BehindReplica now).
+    assert_eq!(
+        p.offer_transfer(a, &g_begin(1, 1), T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(p.offer_delta(a, &d(2), T0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(p.offer_delta(a, &d(3), T0), Ok(DeltaOutcome::Buffered));
+    let st = p.status(a).expect("status");
+    let Some(InFlightStatus { transfer, .. }) = st.in_flight else {
+        panic!("transfer 1 is in flight");
+    };
+    assert_eq!(transfer, tid(1));
+    assert_eq!(p.staging_bytes(), 4_194_304);
+    assert_eq!(p.held_delta_bytes(), 15, "queued d(1) plus two held frames");
+    assert_eq!(
+        p.rebind_receiver(a, T0),
+        Ok(Rebound {
+            discarded: Some(tid(1)),
+            dropped_deltas: 2,
+        })
+    );
+    let st = p.status(a).expect("status");
+    assert!(st.in_flight.is_none());
+    assert_eq!(st.retired_through, 1);
+    assert_eq!(st.held_frames, 1, "the queued d(1)");
+    assert_eq!(st.next_event_seq, 2);
+    assert_eq!(st.mode, GateMode::AwaitSnapshot);
+    assert_eq!(st.resync, None);
+    assert_eq!(p.staging_bytes(), 0);
+    assert_eq!(p.held_delta_bytes(), 5);
+    match p.pop_update(a) {
+        Some(ReplicaUpdateV3::Delta(f)) => {
+            assert_eq!((f.server_tick, f.event_seq, f.ops.len()), (1, 1, 0));
+        }
+        other => panic!("expected d(1)'s frame, got {other:?}"),
+    }
+    // A removed id is unknown and changes nothing.
+    let gone = add(&mut p, GateMode::Live);
+    p.remove_receiver(gone);
+    let before = p.clone();
+    assert_eq!(
+        p.rebind_receiver(gone, T0),
+        Err(TransferError::UnknownReceiver)
+    );
+    assert_eq!(p, before, "an unknown rebind changed the pool");
 }
 
 #[test]
 fn p8_mirror_matches_the_v1_pool() {
     todo!("P8")
-}
-
-#[test]
-fn p9_rebind_discards_in_flight_and_held() {
-    todo!("P9")
 }
 
 #[test]
