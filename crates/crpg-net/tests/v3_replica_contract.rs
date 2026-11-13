@@ -1726,3 +1726,100 @@ fn r10_pool_to_replica_end_to_end() {
     apply_ok(&mut by_hand, frame4);
     assert_eq!(by_hand, r);
 }
+
+// ---------------------------------------------------------------------------
+// Review survivors: per-row snapshot checks, enter order, Health isolation.
+// ---------------------------------------------------------------------------
+
+/// R-10(c): the checks run row by row, so a retired id in an early row is
+/// reported as reuse even when a later row is out of order.
+#[test]
+fn r7_snapshot_order_and_reuse_are_checked_per_row() {
+    let mut r = rep();
+    // High-water 5, nothing live.
+    apply_ok(&mut r, fr(1, vec![enter(5), leave(5)]));
+    assert!(r.is_empty());
+    // Row 2 is the first row: not above the (absent) previous row, and a
+    // retired id. Reuse is reached first; row 1 is never examined.
+    refuse_snap(
+        &mut r,
+        p(1, 0, body(rows(&[2, 1]), None, None)),
+        ReplicaError::ReusedEntityId { entity: id(2) },
+    );
+    refuse_snap(
+        &mut r,
+        p(1, 0, body(rows(&[1, 2]), None, None)),
+        ReplicaError::ReusedEntityId { entity: id(1) },
+    );
+    // Controls that differ in one input: fresh ids in order pass; fresh ids
+    // out of order are an order fault at the second row.
+    let c = control_snap(&r, p(1, 0, body(rows(&[6, 7]), None, None)));
+    assert_eq!(c.entities(), &[dflt(6), dflt(7)]);
+    refuse_snap(
+        &mut r,
+        p(1, 0, body(rows(&[7, 6]), None, None)),
+        ReplicaError::SnapshotOrder { entity: id(6) },
+    );
+}
+
+/// R-5: EntityEnter checks duplicate, then reuse, then the row bound.
+#[test]
+fn r2_enter_checks_reuse_before_the_bound() {
+    let mut r = rep();
+    for seq in 1..=8u64 {
+        let first = (seq - 1) * 256 + 1;
+        apply_ok(&mut r, fr(seq, (first..first + 256).map(enter).collect()));
+    }
+    assert_eq!(r.len(), 2_048);
+    apply_ok(&mut r, fr(9, vec![leave(1), enter(2049)]));
+    assert_eq!(r.len(), 2_048);
+    // Full, and id 1 is retired: reuse wins over the bound.
+    refuse(
+        &mut r,
+        fr(10, vec![enter(1)]),
+        ReplicaError::ReusedEntityId { entity: id(1) },
+    );
+    // Duplicate wins over both.
+    refuse(
+        &mut r,
+        fr(10, vec![enter(2)]),
+        ReplicaError::DuplicateEntity { entity: id(2) },
+    );
+    // Control: a fresh id on the full replica meets the bound.
+    refuse(
+        &mut r,
+        fr(10, vec![enter(2050)]),
+        ReplicaError::TooManyEntities,
+    );
+}
+
+/// R-5, R-6: Health replaces the health whole and never touches the facts.
+#[test]
+fn r3_health_leaves_facts_alone() {
+    let mut r = rep();
+    apply_ok(
+        &mut r,
+        fr(
+            1,
+            vec![
+                enter(1),
+                enter(2),
+                health_op(1, 3, 10, false),
+                facts_op(1, fs_a()),
+            ],
+        ),
+    );
+    apply_ok(&mut r, fr(2, vec![health_op(1, 7, 12, true)]));
+    assert_eq!(facts_of(&r, 1), fs_a());
+    assert_eq!(health_of(&r, 1), Some(Some(hf(7, 12, true))));
+    assert_eq!(
+        r.entity(id(1)),
+        Some(&ent(1, Some(hf(7, 12, true)), fs_a()))
+    );
+    // Health on a row with default facts leaves them default, and a
+    // later fact image leaves the health alone.
+    apply_ok(&mut r, fr(3, vec![health_op(2, 1, 1, false)]));
+    assert_eq!(facts_of(&r, 2), FactSet::default());
+    apply_ok(&mut r, fr(4, vec![facts_op(2, fs_order(1))]));
+    assert_eq!(health_of(&r, 2), Some(Some(hf(1, 1, false))));
+}
