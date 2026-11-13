@@ -2014,3 +2014,765 @@ fn p8_mirror_matches_the_v1_pool() {
     assert_eq!(m.v3, before, "a refusal changed the v3 pool");
     m.check();
 }
+// ---------------------------------------------------------------------------
+// Review survivors: single-point faults the first two suites let through.
+// ---------------------------------------------------------------------------
+
+fn st(pool: &ReassemblyPoolV3, r: ReceiverIdV3) -> ReceiverStatusV3 {
+    pool.status(r).expect("receiver exists")
+}
+
+/// Offers `plan(t, base, cursor, 1, E0)` and asserts it publishes.
+fn publish_empty(pool: &mut ReassemblyPoolV3, r: ReceiverIdV3, t: u64, base: u64, cursor: u64) {
+    let frames = plan(t, base, cursor, 1, &e0());
+    assert_eq!(
+        pool.offer_transfer(r, &frames[0], 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_transfer(r, &frames[1], 1_000),
+        Ok(TransferOutcome::Published {
+            transfer: tid(t),
+            released: 0,
+        })
+    );
+}
+
+/// The in-flight status of a `G(t)` transfer with the given deadline.
+fn g_flight(t: u64, cursor: u64, deadline_ms: u64) -> Option<InFlightStatus> {
+    Some(InFlightStatus {
+        transfer: tid(t),
+        cursor,
+        base_tick: 0,
+        received: 0,
+        chunk_count: 128,
+        deadline_ms,
+        reserved_bytes: 4_194_304,
+    })
+}
+
+// Survivor 1 (P-3): remove_receiver frees held and queued delta bytes.
+#[test]
+fn s01_remove_receiver_frees_held_and_queued_bytes() {
+    let mut pool = pool_with(l3());
+    let a = awaiting(&mut pool);
+    let b = live(&mut pool);
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool.offer_delta(b, &d(1), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(pool.held_delta_bytes(), 10);
+    pool.remove_receiver(a);
+    assert_eq!(pool.held_delta_bytes(), 5);
+    pool.remove_receiver(b);
+    assert_eq!(pool.held_delta_bytes(), 0);
+}
+
+// Survivor 2 (P-8, P-12): Overflow frees held bytes only, not queued ones.
+#[test]
+fn s02_overflow_keeps_queued_bytes_in_the_pool_total() {
+    let mut pool = pool_with(TransferLimitsV3 {
+        delta_frames_per_receiver: 2,
+        ..l3()
+    });
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(3), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(pool.held_delta_bytes(), 10);
+    assert_eq!(
+        pool.offer_delta(a, &d(4), 1_000),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+    assert_eq!(pool.held_delta_bytes(), 5);
+    assert_eq!(pool.pop_update(a), Some(ReplicaUpdateV3::Delta(dframe(1))));
+    assert_eq!(pool.held_delta_bytes(), 0);
+}
+
+// Survivor 3 (P-4 items 4 and 5): the epoch check precedes Expired.
+#[test]
+fn s03_wrong_epoch_precedes_expired() {
+    let wrong = encode_down(&TransferDown::Chunk(TransferChunk {
+        epoch: [1; 16],
+        transfer: tid(1),
+        index: 0,
+        bytes: vec![0; CHUNK],
+    }))
+    .expect("chunk encodes");
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    let b = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &g(1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_transfer(b, &g(1), 5_000),
+        Ok(TransferOutcome::Begun)
+    );
+    // A's transfer 1 expires in this call, which names it with a wrong epoch.
+    assert_eq!(
+        pool.offer_transfer(a, &wrong, 21_000),
+        Err(TransferError::WrongEpoch)
+    );
+    assert_eq!(
+        st(&pool, a),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::AwaitSnapshot,
+            in_flight: None,
+            retired_through: 1,
+            published: None,
+            next_event_seq: 1,
+            held_frames: 0,
+            held_bytes: 0,
+            queued_updates: 0,
+            resync: Some(ResyncReason::Expired),
+        }
+    );
+    // Control: the same chunk with the right epoch names an expired transfer.
+    assert_eq!(
+        pool.offer_transfer(b, &g_chunk(1, 0), 25_000),
+        Err(TransferError::Failed(FailReason::Expired))
+    );
+}
+
+// Survivor 4 (P-4 item 5): Expired needs this receiver and this transfer id.
+#[test]
+fn s04_expired_is_for_this_receiver_and_this_transfer() {
+    // Another id in the same call is not Expired.
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &g(1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_transfer(a, &ob(2, 0, 0), 21_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        st(&pool, a),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::AwaitSnapshot,
+            in_flight: Some(InFlightStatus {
+                transfer: tid(2),
+                cursor: 0,
+                base_tick: 0,
+                received: 0,
+                chunk_count: 2,
+                deadline_ms: 41_000,
+                reserved_bytes: 8_192,
+            }),
+            retired_through: 1,
+            published: None,
+            next_event_seq: 1,
+            held_frames: 0,
+            held_bytes: 0,
+            queued_updates: 0,
+            resync: None,
+        }
+    );
+    // Control: the expired id itself is Expired.
+    let mut control = pool_with(l3());
+    let a = live(&mut control);
+    assert_eq!(
+        control.offer_transfer(a, &g(1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        control.offer_transfer(a, &g(1), 21_000),
+        Err(TransferError::Failed(FailReason::Expired))
+    );
+
+    // Another receiver's expiry does not touch this receiver's Begin.
+    let mut two = pool_with(l3());
+    let a = live(&mut two);
+    let b = live(&mut two);
+    assert_eq!(
+        two.offer_transfer(a, &g(1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        two.offer_transfer(b, &g(1), 21_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(st(&two, b).in_flight, g_flight(1, 0, 41_000));
+    assert_eq!(st(&two, a).in_flight, None);
+    assert_eq!(st(&two, a).resync, Some(ResyncReason::Expired));
+    assert_eq!(two.staging_bytes(), 4_194_304);
+}
+
+// Survivor 5 (P-5 items 2 and 3): Stale precedes InFlight.
+#[test]
+fn s05_stale_precedes_in_flight() {
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &ob(1, 0, 0), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_transfer(a, &cancel(1), 1_000),
+        Ok(TransferOutcome::Cancelled { discarded: true })
+    );
+    assert_eq!(
+        pool.offer_transfer(a, &ob(2, 0, 0), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    refused_transfer(
+        &mut pool,
+        a,
+        &ob(1, 0, 0),
+        1_000,
+        TransferError::StaleTransfer,
+    );
+    // Control: a fresh id while transfer 2 is in flight is InFlight.
+    refused_transfer(&mut pool, a, &ob(3, 0, 0), 1_000, TransferError::InFlight);
+}
+
+// Survivors 6 and 7 (P-5 items 4, 5 and 6): BehindReplica, then StagingFull,
+// then AggregateFull.
+#[test]
+fn s06_s07_begin_refusal_order() {
+    let min = 2_847_788usize;
+    let begin_with = |t: u64, cursor: u64, total: u32| {
+        begin_frame(BeginTransfer {
+            epoch: Z16,
+            transfer: tid(t),
+            base_tick: 0,
+            cursor,
+            total_bytes: total,
+            entity_count: 0,
+            segments_per_chunk: 8,
+            chunk_count: (total as usize).div_ceil(CHUNK) as u8,
+        })
+    };
+
+    // Survivor 6: the per-receiver cap is checked before the pool total.
+    let mut pool = pool_with(TransferLimitsV3 {
+        staging_bytes_per_receiver: min,
+        staging_bytes_total: min,
+        ..l3()
+    });
+    let a = live(&mut pool);
+    let b = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &b_frame(1, min as u32), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(pool.staging_bytes(), min);
+    refused_transfer(
+        &mut pool,
+        b,
+        &b_frame(1, min as u32 + 1),
+        1_000,
+        TransferError::StagingFull,
+    );
+    // Control: within the per-receiver cap, the exhausted total refuses.
+    refused_transfer(
+        &mut pool,
+        b,
+        &b_frame(1, min as u32),
+        1_000,
+        TransferError::AggregateFull,
+    );
+
+    // Survivor 7: a Begin behind the replica and over the cap is Behind.
+    let mut pool = pool_with(TransferLimitsV3 {
+        staging_bytes_per_receiver: min,
+        ..l3()
+    });
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    refused_transfer(
+        &mut pool,
+        a,
+        &begin_with(1, 0, min as u32 + 1),
+        1_000,
+        TransferError::BehindReplica,
+    );
+    // Control: caught up, the same size is StagingFull.
+    refused_transfer(
+        &mut pool,
+        a,
+        &begin_with(1, 1, min as u32 + 1),
+        1_000,
+        TransferError::StagingFull,
+    );
+}
+
+// Survivor 8 (P-10): a count mismatch on a Live receiver fails it closed.
+#[test]
+fn s08_count_mismatch_sets_await_snapshot() {
+    let one_entity: Vec<u8> = vec![
+        0x01, 0x01, 0x01, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    let begin = begin_frame(BeginTransfer {
+        epoch: Z16,
+        transfer: tid(3),
+        base_tick: 0,
+        cursor: 0,
+        total_bytes: 16,
+        entity_count: 0,
+        segments_per_chunk: 1,
+        chunk_count: 1,
+    });
+    let chunk = encode_down(&TransferDown::Chunk(TransferChunk {
+        epoch: Z16,
+        transfer: tid(3),
+        index: 0,
+        bytes: one_entity,
+    }))
+    .expect("chunk encodes");
+    assert_eq!(
+        pool.offer_transfer(a, &begin, 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_transfer(a, &chunk, 1_000),
+        Err(TransferError::Failed(FailReason::InvalidBody(
+            CodecError::Malformed
+        )))
+    );
+    assert_eq!(
+        st(&pool, a),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::AwaitSnapshot,
+            in_flight: None,
+            retired_through: 3,
+            published: None,
+            next_event_seq: 1,
+            held_frames: 0,
+            held_bytes: 0,
+            queued_updates: 0,
+            resync: Some(ResyncReason::Invalid),
+        }
+    );
+    assert_eq!(pool.staging_bytes(), 0);
+}
+
+// Survivors 9 and 10 (P-10 item 3): publishing over a queue clears its
+// bytes and its recorded lengths.
+#[test]
+fn s09_s10_publish_over_a_queue_clears_bytes_and_lengths() {
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    publish_empty(&mut pool, a, 1, 0, 0);
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    publish_empty(&mut pool, a, 2, 0, 1);
+    // Survivor 9: the status carries no stale queued bytes or frames.
+    assert_eq!(
+        st(&pool, a),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::Live,
+            in_flight: None,
+            retired_through: 2,
+            published: Some(PublishedBase {
+                transfer: tid(2),
+                base_tick: 0,
+                cursor: 1,
+            }),
+            next_event_seq: 2,
+            held_frames: 0,
+            held_bytes: 0,
+            queued_updates: 1,
+            resync: None,
+        }
+    );
+    assert_eq!(pool.held_delta_bytes(), 0);
+
+    // Survivor 10: a later frame of another length is released and popped
+    // with its own length.
+    let two = timeline_frame(2, 3);
+    assert_ne!(two.len(), d(1).len());
+    assert_eq!(
+        pool.offer_delta(a, &two, 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(pool.held_delta_bytes(), two.len());
+    assert_eq!(
+        pool.pop_update(a),
+        Some(ReplicaUpdateV3::Snapshot(PublicationV3 {
+            transfer: tid(2),
+            base_tick: 0,
+            cursor: 1,
+            body: e0(),
+        }))
+    );
+    assert_eq!(pool.held_delta_bytes(), two.len());
+    assert!(matches!(
+        pool.pop_update(a),
+        Some(ReplicaUpdateV3::Delta(_))
+    ));
+    assert_eq!(pool.held_delta_bytes(), 0);
+    assert_eq!(st(&pool, a).held_bytes, 0);
+    assert_eq!(pool.pop_update(a), None);
+}
+
+// Survivors 11, 12 and 13 (P-7): Cancel discards any transfer at or below
+// its id, sets AwaitSnapshot, and never withdraws a queued snapshot.
+#[test]
+fn s11_s12_s13_cancel_arms() {
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    publish_empty(&mut pool, a, 1, 0, 0);
+    assert_eq!(
+        pool.offer_transfer(a, &ob(2, 0, 0), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(pool.staging_bytes(), 8_192);
+    assert_eq!(
+        pool.offer_transfer(a, &cancel(5), 1_000),
+        Ok(TransferOutcome::Cancelled { discarded: true })
+    );
+    assert_eq!(
+        st(&pool, a),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::AwaitSnapshot,
+            in_flight: None,
+            retired_through: 5,
+            published: Some(PublishedBase {
+                transfer: tid(1),
+                base_tick: 0,
+                cursor: 0,
+            }),
+            next_event_seq: 1,
+            held_frames: 0,
+            held_bytes: 0,
+            queued_updates: 1,
+            resync: None,
+        }
+    );
+    assert_eq!(pool.staging_bytes(), 0);
+    assert_eq!(
+        pool.pop_update(a),
+        Some(ReplicaUpdateV3::Snapshot(PublicationV3 {
+            transfer: tid(1),
+            base_tick: 0,
+            cursor: 0,
+            body: e0(),
+        }))
+    );
+
+    // Control: a Cancel below the in-flight id discards nothing.
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &ob(4, 0, 0), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_transfer(a, &cancel(3), 1_000),
+        Ok(TransferOutcome::Cancelled { discarded: false })
+    );
+    let status = st(&pool, a);
+    assert_eq!(status.mode, GateMode::Live);
+    assert_eq!(status.retired_through, 3);
+    assert_eq!(pool.staging_bytes(), 8_192);
+}
+
+// Survivor 14 (P-9): offer_delta clamps the clock up, never backwards.
+#[test]
+fn s14_offer_delta_clamps_the_clock() {
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    assert_eq!(pool.poll(21_000), Vec::new());
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 10),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        pool.offer_transfer(a, &g_at(1, 1), 11),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(st(&pool, a).in_flight, g_flight(1, 1, 41_000));
+}
+
+// Survivor 15 (P-11 item 7): a queued snapshot is not a delta frame.
+#[test]
+fn s15_queued_snapshot_is_not_a_delta_frame() {
+    let mut pool = pool_with(TransferLimitsV3 {
+        delta_frames_per_receiver: 2,
+        ..l3()
+    });
+    let a = live(&mut pool);
+    publish_empty(&mut pool, a, 1, 0, 0);
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(2), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        st(&pool, a),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::Live,
+            in_flight: None,
+            retired_through: 1,
+            published: Some(PublishedBase {
+                transfer: tid(1),
+                base_tick: 0,
+                cursor: 0,
+            }),
+            next_event_seq: 3,
+            held_frames: 2,
+            held_bytes: 10,
+            queued_updates: 3,
+            resync: None,
+        }
+    );
+    // Control: a third delta frame is over the limit.
+    assert_eq!(
+        pool.offer_delta(a, &d(3), 1_000),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+}
+
+// Survivor 16 (P-11 item 7): the receiver byte budget counts queued bytes.
+#[test]
+fn s16_receiver_byte_budget_counts_queued_bytes() {
+    let mut pool = pool_with(TransferLimitsV3 {
+        delta_bytes_per_receiver: 65_536,
+        ..l3()
+    });
+    let a = live(&mut pool);
+    for n in 1..=22u64 {
+        assert_eq!(
+            pool.offer_delta(a, &timeline_frame(n, 1_024), 1_000),
+            Ok(DeltaOutcome::Released { count: 1 }),
+            "frame {n}"
+        );
+    }
+    // Exactly at the limit is within it.
+    assert_eq!(
+        pool.offer_delta(a, &timeline_frame(23, 222), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(st(&pool, a).held_bytes, 65_536);
+    assert_eq!(
+        pool.offer_delta(a, &d(24), 1_000),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+    let status = st(&pool, a);
+    assert_eq!(status.mode, GateMode::AwaitSnapshot);
+    assert_eq!(status.resync, Some(ResyncReason::Overflow));
+    assert_eq!(status.queued_updates, 23);
+    assert_eq!(status.held_bytes, 65_536);
+}
+
+// Survivor 17 (P-11 item 7): the pool budget is `delta_bytes_total`.
+#[test]
+fn s17_pool_byte_budget_is_the_total() {
+    let mut pool = pool_with(TransferLimitsV3 {
+        delta_bytes_per_receiver: 65_536,
+        delta_bytes_total: 131_072,
+        ..l3()
+    });
+    let a = awaiting(&mut pool);
+    let b = awaiting(&mut pool);
+    let c = awaiting(&mut pool);
+    for r in [a, b] {
+        for n in 1..=22u64 {
+            assert_eq!(
+                pool.offer_delta(r, &timeline_frame(n, 1_024), 1_000),
+                Ok(DeltaOutcome::Buffered)
+            );
+        }
+    }
+    assert_eq!(pool.held_delta_bytes(), 129_976);
+    assert_eq!(
+        pool.offer_delta(b, &timeline_frame(23, 222), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &timeline_frame(23, 222), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(pool.held_delta_bytes(), 131_072);
+    // Control: the pool total is now the limit.
+    assert_eq!(
+        pool.offer_delta(c, &d(1), 1_000),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+}
+
+// Survivor 18 (P-11 item 8): a frame at the in-flight cursor is releasable.
+#[test]
+fn s18_frame_at_the_in_flight_cursor_is_releasable() {
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    for n in 1..=2u64 {
+        assert_eq!(
+            pool.offer_delta(a, &d(n), 1_000),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+    assert_eq!(
+        pool.offer_transfer(a, &g_at(1, 3), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(3), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    // Control: one above the cursor is held.
+    assert_eq!(
+        pool.offer_delta(a, &d(4), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    let status = st(&pool, a);
+    assert_eq!(status.next_event_seq, 4);
+    assert_eq!(status.held_frames, 4);
+    assert_eq!(status.queued_updates, 3);
+}
+
+// Survivors 19 and 20 (P-11 item 8): the drain stops above the in-flight
+// cursor, and runs on when nothing is in flight.
+#[test]
+fn s19_s20_drain_follows_the_in_flight_cursor() {
+    // Survivor 19.
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    for n in 1..=2u64 {
+        assert_eq!(
+            pool.offer_delta(a, &d(n), 1_000),
+            Ok(DeltaOutcome::Released { count: 1 })
+        );
+    }
+    assert_eq!(
+        pool.offer_transfer(a, &g_at(1, 4), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(4), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(5), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(3), 1_000),
+        Ok(DeltaOutcome::Released { count: 2 })
+    );
+    let status = st(&pool, a);
+    assert_eq!(status.next_event_seq, 5);
+    assert_eq!(status.held_frames, 5);
+    assert_eq!(status.held_bytes, 25);
+    assert_eq!(status.queued_updates, 4);
+    assert_eq!(pool.held_delta_bytes(), 25);
+
+    // Survivor 20.
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_delta(a, &d(3), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(2), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 1_000),
+        Ok(DeltaOutcome::Released { count: 3 })
+    );
+    let status = st(&pool, a);
+    assert_eq!(status.next_event_seq, 4);
+    assert_eq!(status.queued_updates, 3);
+    assert_eq!(pool.pop_update(a), Some(ReplicaUpdateV3::Delta(dframe(1))));
+    assert_eq!(pool.pop_update(a), Some(ReplicaUpdateV3::Delta(dframe(2))));
+    assert_eq!(pool.pop_update(a), Some(ReplicaUpdateV3::Delta(dframe(3))));
+}
+
+// Survivor 21 (P-9, P-13): rebind sweeps every receiver first.
+#[test]
+fn s21_rebind_sweeps_the_pool() {
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    let b = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &g(1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.rebind_receiver(b, 21_000),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    assert_eq!(
+        st(&pool, a),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::AwaitSnapshot,
+            in_flight: None,
+            retired_through: 1,
+            published: None,
+            next_event_seq: 1,
+            held_frames: 0,
+            held_bytes: 0,
+            queued_updates: 0,
+            resync: Some(ResyncReason::Expired),
+        }
+    );
+    assert_eq!(pool.staging_bytes(), 0);
+
+    // Rebinding the overdue receiver itself finds nothing left to discard.
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &g(1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.rebind_receiver(a, 21_000),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 0,
+        })
+    );
+    assert_eq!(st(&pool, a).resync, None);
+    assert_eq!(st(&pool, a).retired_through, 1);
+    // Control: not yet overdue, it is discarded.
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+    assert_eq!(
+        pool.offer_transfer(a, &g(1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        pool.rebind_receiver(a, 20_999),
+        Ok(Rebound {
+            discarded: Some(tid(1)),
+            dropped_deltas: 0,
+        })
+    );
+}
