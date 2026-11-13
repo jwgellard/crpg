@@ -202,21 +202,287 @@ fn fresh_status(mode: GateMode) -> ReceiverStatusV3 {
     }
 }
 
+fn pool_of(id: u128, current: u32, max: u32) -> PoolFact {
+    PoolFact {
+        pool: Ulid::from_u128(id),
+        current,
+        max,
+    }
+}
+
+/// The D5 body (`tasks/T140.md`): 1,024 full entities, a turn, a full
+/// encounter, a timeline — 2,847,788 bytes encoded (copied from the T140e
+/// two-keys suite's builder, per the brief).
+fn largest_body() -> SnapshotBodyV3 {
+    let base: u64 = 1 << 63;
+    let entities = (0..1024u64)
+        .map(|i| SnapshotEntityV3 {
+            entity: id(base + i),
+            health: Some(HealthFact {
+                health: u32::MAX,
+                max_health: u32::MAX,
+                dead: true,
+            }),
+            facts: FactSet {
+                pools: Some((0..16).map(|j| pool_of(100 + j, u32::MAX, u32::MAX)).collect()),
+                effects: Some(
+                    (0..16)
+                        .map(|j| crpg_net::protocol_v3::EffectFact {
+                            effect: Ulid::from_u128(200 + j),
+                            expires_round: u64::MAX,
+                        })
+                        .collect(),
+                ),
+                order: Some(Some(crpg_net::protocol_v3::OrderFact {
+                    ability: Ulid::from_u128(300),
+                    target: id(base),
+                    repeat: true,
+                })),
+                stats: Some(
+                    (0..32)
+                        .map(|j| StatFact {
+                            name: format!("s{j:031}"),
+                            value: StatValue::Int(i32::MIN),
+                        })
+                        .collect(),
+                ),
+                tags: Some((0..8).map(|j| format!("t{j:031}")).collect()),
+            },
+        })
+        .collect();
+    SnapshotBodyV3 {
+        entities,
+        turn: Some(TurnFact {
+            active: Some(id(base)),
+            round: u64::MAX,
+        }),
+        encounter: EncounterFacts {
+            mode: Some(EncounterMode::RealTime),
+            pending_mode: Some(Some(EncounterMode::TurnBased)),
+            clock: Some(Some(ClockFact {
+                round_ticks: u32::MAX,
+                elapsed: 2_147_483_647,
+            })),
+        },
+        timeline: Some(
+            (0..1024u64)
+                .map(|i| TimelineEntry {
+                    key: i32::MIN,
+                    entity: id(base + i),
+                })
+                .collect(),
+        ),
+    }
+}
+
+
 // P1 / P-2, P-3, P-12, P-14: surface, receivers, queries, refusals.
 
 #[test]
 fn p1_pool_v3_surface_and_receivers() {
-    todo!("P1")
+    // P-2: `new` validates the limits unchanged and keeps them.
+    assert_eq!(pool(TransferLimitsV3::v3()).limits(), TransferLimitsV3::v3());
+    let bad_max = lim(|l| l.max_receivers = 0);
+    assert_eq!(
+        ReassemblyPoolV3::new(bad_max.clone()),
+        Err(bad_max.validate().expect_err("0 receivers are invalid")),
+        "new passes the limits' error through"
+    );
+    assert_eq!(
+        ReassemblyPoolV3::new(bad_max).err(),
+        Some(crpg_net::reassembly_v3::LimitsError::InvalidLimits {
+            field: "max_receivers"
+        })
+    );
+    let bad_deadline = lim(|l| l.deadline_ms = 20_001);
+    assert_eq!(
+        ReassemblyPoolV3::new(bad_deadline.clone()),
+        Err(bad_deadline.validate().expect_err("20,001 ms is invalid")),
+        "new passes the limits' error through"
+    );
+    assert_eq!(
+        ReassemblyPoolV3::new(bad_deadline).err(),
+        Some(crpg_net::reassembly_v3::LimitsError::LoosensPolicy {
+            field: "deadline_ms"
+        })
+    );
+    // A fresh pool has no receivers and both totals 0.
+    let mut p = pool(TransferLimitsV3::v3());
+    assert_eq!(p.staging_bytes(), 0);
+    assert_eq!(p.held_delta_bytes(), 0);
+
+    // P-3: ids 1..=8, the ninth is ReceiversFull, ids are never reused.
+    let mut ids = Vec::new();
+    for i in 1..=8u32 {
+        let r = add(&mut p, GateMode::Live);
+        assert_eq!(r.get(), i, "receiver {i}");
+        ids.push(r);
+    }
+    let before = p.clone();
+    assert_eq!(
+        p.add_receiver(Z, GateMode::Live),
+        Err(TransferError::ReceiversFull),
+        "the ninth receiver is refused"
+    );
+    assert_eq!(p, before, "ReceiversFull changed the pool");
+    p.remove_receiver(ids[2]);
+    let ninth = add(&mut p, GateMode::Live);
+    assert_eq!(ninth.get(), 9, "the counter never reuses an id");
+    assert_eq!(p.status(ninth), Ok(fresh_status(GateMode::Live)));
+
+    // The same literal with the other start mode.
+    p.remove_receiver(ids[0]);
+    let tenth = add(&mut p, GateMode::AwaitSnapshot);
+    assert_eq!(tenth.get(), 10);
+    assert_eq!(p.status(tenth), Ok(fresh_status(GateMode::AwaitSnapshot)));
+
+    // P-12 / P-14: a removed receiver is unknown, twice over.
+    assert_eq!(
+        p.status(ids[2]),
+        Err(TransferError::UnknownReceiver),
+        "status of a removed id"
+    );
+    assert_eq!(p.pop_update(ids[2]), None, "pop of a removed id");
+    let before = p.clone();
+    p.remove_receiver(ids[2]);
+    assert_eq!(p, before, "an unknown removal changed the pool");
 }
 
 #[test]
 fn p2_largest_body_publishes_through_the_pool() {
-    todo!("P2")
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    let body = largest_body();
+    let frames = plan(1, 0, 0, 8, &body);
+    assert_eq!(frames.len(), 88, "the D5 plan is Begin + 87 chunks");
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    // Chunks 86 down to 1, each above the 1 MiB / 32-chunk v1 envelope.
+    for c in (1..=86u8).rev() {
+        assert_eq!(
+            p.offer_transfer(a, &frames[usize::from(c) + 1], T0),
+            Ok(TransferOutcome::Stored {
+                received: 87 - c,
+                chunk_count: 87,
+            }),
+            "chunk {c}"
+        );
+    }
+    let st = p.status(a).expect("status");
+    let Some(InFlightStatus {
+        transfer,
+        cursor,
+        base_tick,
+        received,
+        chunk_count,
+        deadline_ms,
+        reserved_bytes,
+    }) = st.in_flight
+    else {
+        panic!("a transfer is in flight");
+    };
+    assert_eq!(transfer, tid(1));
+    assert_eq!(cursor, 0);
+    assert_eq!(base_tick, 0);
+    assert_eq!(received, 86);
+    assert_eq!(chunk_count, 87);
+    assert_eq!(deadline_ms, 21_000, "1,000 + 20,000");
+    assert_eq!(reserved_bytes, 2_847_788);
+    assert_eq!(p.staging_bytes(), 2_847_788);
+    assert_eq!(st.queued_updates, 0);
+    // Chunk 0 completes the assembly and publishes the D5 body whole.
+    assert_eq!(
+        p.offer_transfer(a, &frames[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    assert_eq!(
+        p.pop_update(a),
+        Some(ReplicaUpdateV3::Snapshot(PublicationV3 {
+            transfer: tid(1),
+            base_tick: 0,
+            cursor: 0,
+            body,
+        }))
+    );
+    assert_eq!(p.pop_update(a), None);
+    assert_eq!(p.staging_bytes(), 0);
+    let st = p.status(a).expect("status");
+    assert_eq!(st.retired_through, 1);
+    assert_eq!(
+        st.published,
+        Some(PublishedBase {
+            transfer: tid(1),
+            base_tick: 0,
+            cursor: 0,
+        })
+    );
+    assert_eq!(st.next_event_seq, 1);
+    assert_eq!(st.mode, GateMode::Live);
+    assert_eq!(st.resync, None);
 }
 
 #[test]
 fn p3_full_envelope_staging_and_aggregate() {
-    todo!("P3")
+    // (1) Eight 4 MiB Begins fill the aggregate exactly.
+    let mut p = pool(TransferLimitsV3::v3());
+    let mut rs = Vec::new();
+    for _ in 0..8 {
+        rs.push(add(&mut p, GateMode::Live));
+    }
+    for r in &rs {
+        assert_eq!(
+            p.offer_transfer(*r, &g_begin(1, 0), T0),
+            Ok(TransferOutcome::Begun),
+            "receiver {:?}",
+            r.get()
+        );
+    }
+    assert_eq!(p.staging_bytes(), 33_554_432);
+
+    // (2) The per-receiver bound: the floor is accepted, one past it is not.
+    let mut p = pool(lim(|l| l.staging_bytes_per_receiver = 2_847_788));
+    let a = add(&mut p, GateMode::Live);
+    assert_eq!(
+        p.offer_transfer(a, &b_begin(1, 2_847_788), T0),
+        Ok(TransferOutcome::Begun)
+    );
+    let b = add(&mut p, GateMode::Live);
+    assert_eq!(
+        refused_t(&mut p, b, &b_begin(1, 2_847_789), T0),
+        TransferError::StagingFull
+    );
+
+    // (3) The aggregate bound: exact fits accepted, one byte over refused,
+    // and the room comes back on Cancel and on removal.
+    let mut p = pool(lim(|l| l.staging_bytes_total = 7_042_092));
+    let a = add(&mut p, GateMode::Live);
+    let b = add(&mut p, GateMode::Live);
+    assert_eq!(
+        p.offer_transfer(a, &g_begin(1, 0), T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        refused_t(&mut p, b, &b_begin(1, 2_847_789), T0),
+        TransferError::AggregateFull
+    );
+    assert_eq!(
+        p.offer_transfer(b, &b_begin(1, 2_847_788), T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(p.staging_bytes(), 7_042_092);
+    assert_eq!(
+        p.offer_transfer(a, &cancel(1), T0),
+        Ok(TransferOutcome::Cancelled { discarded: true }),
+        "A's own transfer is discarded"
+    );
+    assert_eq!(p.staging_bytes(), 2_847_788);
+    p.remove_receiver(b);
+    assert_eq!(p.staging_bytes(), 0);
 }
 
 #[test]
