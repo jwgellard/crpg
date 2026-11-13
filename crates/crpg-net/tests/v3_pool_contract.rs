@@ -1051,5 +1051,141 @@ fn assert_failed_clean(p: &ReassemblyPoolV3, rid: ReceiverIdV3, retired: u64, qu
 
 #[test]
 fn p11_queue_clear_overflow_bytes_and_poll_order() {
-    todo!("P11")
+    /// `TL(n, k)` of the contract: one Timeline op with `k` entries.
+    fn tl(n: u64, k: u64) -> Vec<u8> {
+        codec_v3::encode_delta(&DeltaFrame {
+            lane: 0,
+            server_tick: n,
+            event_seq: n,
+            ops: vec![DeltaOp::Timeline {
+                entries: Some((1..=k).map(|i| TimelineEntry { key: 0, entity: id(i) }).collect()),
+            }],
+        })
+        .expect("TL encodes")
+    }
+
+    // (a) Queue clear: a publication over a queued snapshot clears the whole
+    // queue, its delta bytes included.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::Live);
+    let frames = plan(1, 0, 0, 1, &e0());
+    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    assert_eq!(p.offer_delta(a, &d(1), T0), Ok(DeltaOutcome::Released { count: 1 }));
+    let frames = plan(2, 0, 1, 1, &e0());
+    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(2),
+            released: 0,
+        })
+    );
+    let st = p.status(a).expect("status");
+    assert_eq!(st.queued_updates, 1, "only the new snapshot is queued");
+    assert_eq!(p.held_delta_bytes(), 0, "d(1) went with the queue");
+    match p.pop_update(a) {
+        Some(ReplicaUpdateV3::Snapshot(pub_)) => {
+            let PublicationV3 { transfer, base_tick, cursor, body } = pub_;
+            assert_eq!((transfer, base_tick, cursor), (tid(2), 0, 1));
+            assert_eq!(body, e0());
+        }
+        other => panic!("expected transfer 2's snapshot, got {other:?}"),
+    }
+    assert_eq!(p.pop_update(a), None);
+
+    // (b) Per-receiver bytes: held bytes exactly at the bound, one frame past
+    // it is Overflow, and Overflow drops every held delta.
+    let mut p = pool(lim(|l| l.delta_bytes_per_receiver = 65_536));
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    for n in 1..=22u64 {
+        assert_eq!(p.offer_delta(a, &tl(n, 1_024), T0), Ok(DeltaOutcome::Buffered), "TL({n})");
+    }
+    assert_eq!(codec_v3::encode_delta(&DeltaFrame {
+        lane: 0,
+        server_tick: 23,
+        event_seq: 23,
+        ops: vec![DeltaOp::Timeline {
+            entries: Some((1..=222).map(|i| TimelineEntry { key: 0, entity: id(i) }).collect()),
+        }],
+    })
+    .expect("TL(23, 222) encodes")
+    .len(), 548, "TL(n, 222) is 548 bytes");
+    assert_eq!(p.offer_delta(a, &tl(23, 222), T0), Ok(DeltaOutcome::Buffered));
+    let st = p.status(a).expect("status");
+    assert_eq!(st.held_bytes, 65_536, "exactly at the bound");
+    assert_eq!(st.held_frames, 23);
+    assert_eq!(p.held_delta_bytes(), 65_536);
+    assert_eq!(
+        p.offer_delta(a, &d(24), T0),
+        Err(TransferError::Failed(FailReason::Overflow)),
+        "one 5-byte frame past the bound"
+    );
+    let st = p.status(a).expect("status");
+    assert_eq!(st.held_frames, 0);
+    assert_eq!(st.held_bytes, 0);
+    assert_eq!(st.resync, Some(ResyncReason::Overflow));
+    assert_eq!(st.mode, GateMode::AwaitSnapshot);
+    assert_eq!(p.held_delta_bytes(), 0);
+
+    // (c) Pool bytes: the pool total is the third check, and B's Overflow
+    // leaves A untouched.
+    let mut p = pool(lim(|l| {
+        l.delta_bytes_per_receiver = 65_536;
+        l.delta_bytes_total = 65_536;
+    }));
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    let b = add(&mut p, GateMode::AwaitSnapshot);
+    for n in 1..=22u64 {
+        assert_eq!(p.offer_delta(a, &tl(n, 1_024), T0), Ok(DeltaOutcome::Buffered));
+    }
+    assert_eq!(p.offer_delta(b, &tl(1, 222), T0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(p.held_delta_bytes(), 65_536, "the pool is exactly full");
+    assert_eq!(
+        p.offer_delta(b, &d(2), T0),
+        Err(TransferError::Failed(FailReason::Overflow)),
+        "5 bytes past the pool total"
+    );
+    assert_eq!(p.held_delta_bytes(), 64_988, "B's held bytes came back");
+    let st = p.status(a).expect("A is untouched");
+    assert_eq!(st.held_bytes, 64_988);
+    assert_eq!(st.held_frames, 22);
+
+    // (d) Queued updates survive Overflow; only held deltas are dropped.
+    let mut p = pool(lim(|l| l.delta_frames_per_receiver = 2));
+    let a = add(&mut p, GateMode::Live);
+    assert_eq!(p.offer_delta(a, &d(1), T0), Ok(DeltaOutcome::Released { count: 1 }));
+    assert_eq!(p.offer_delta(a, &d(3), T0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(
+        p.offer_delta(a, &d(4), T0),
+        Err(TransferError::Failed(FailReason::Overflow)),
+        "a third frame past the two-frame bound"
+    );
+    let st = p.status(a).expect("status");
+    assert_eq!(st.queued_updates, 1, "the released d(1) survives");
+    assert_eq!(st.held_frames, 1, "held 0 plus queued 1");
+    assert_eq!(st.held_bytes, 5);
+    assert_eq!(st.mode, GateMode::AwaitSnapshot);
+    match p.pop_update(a) {
+        Some(ReplicaUpdateV3::Delta(f)) => {
+            assert_eq!((f.server_tick, f.event_seq, f.ops.len()), (1, 1, 0));
+        }
+        other => panic!("expected d(1)'s frame, got {other:?}"),
+    }
+
+    // (e) Poll order is ascending by id, whatever the begin order was.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::Live);
+    let b = add(&mut p, GateMode::Live);
+    assert_eq!(p.offer_transfer(b, &g_begin(1, 0), T0), Ok(TransferOutcome::Begun));
+    assert_eq!(p.offer_transfer(a, &g_begin(1, 0), T0), Ok(TransferOutcome::Begun));
+    assert!(p.poll(20_999).is_empty());
+    assert_eq!(p.poll(21_000), vec![a, b], "ascending by id");
+    assert_eq!(p.staging_bytes(), 0);
 }
