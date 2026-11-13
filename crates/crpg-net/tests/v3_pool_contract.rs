@@ -12,8 +12,8 @@ use crpg_net::codec::CodecError::Malformed;
 use crpg_net::codec_transfer as ct;
 use crpg_net::codec_v3;
 use crpg_net::pool_v3::{
-    DeltaOutcome, FailReason, GateMode, InFlightStatus, PublicationV3, PublishedBase, Rebound,
-    ReassemblyPoolV3, ReceiverIdV3, ReceiverStatusV3, ReplicaUpdateV3, ResyncReason,
+    DeltaOutcome, FailReason, GateMode, InFlightStatus, PublicationV3, PublishedBase,
+    ReassemblyPoolV3, Rebound, ReceiverIdV3, ReceiverStatusV3, ReplicaUpdateV3, ResyncReason,
     TransferError, TransferLimitsV3, TransferOutcome,
 };
 use crpg_net::protocol::SEQ_LAST;
@@ -22,11 +22,13 @@ use crpg_net::protocol_transfer::{
     TurnFact,
 };
 use crpg_net::protocol_v3::{
-    AutoPauseTrigger, AutoPauseToggles, ClockFact, DeltaFrame, DeltaOp, EncounterFacts,
+    AutoPauseToggles, AutoPauseTrigger, ClockFact, DeltaFrame, DeltaOp, EncounterFacts,
     EncounterMode, FactSet, HostFacts, NetId, PauseReason, PauseRights, PoolFact, StatFact,
     StatValue, TimelineEntry,
 };
-use crpg_net::reassembly::{DeltaWire, GatedDelta, ReassemblyPool, ReceiverId, ReplicaUpdate, TransferLimits};
+use crpg_net::reassembly::{
+    DeltaWire, GatedDelta, ReassemblyPool, ReceiverId, ReplicaUpdate, TransferLimits,
+};
 use crpg_net::transfer_v3::{self as t3, SnapshotBodyV3, SnapshotEntityV3};
 
 const Z: [u8; 16] = [0; 16];
@@ -164,12 +166,7 @@ fn settle(p: &mut ReassemblyPoolV3, now: u64) {
 }
 
 /// A refusal: the exact error comes back and the whole pool is unchanged.
-fn refused_t(
-    p: &mut ReassemblyPoolV3,
-    rid: ReceiverIdV3,
-    bytes: &[u8],
-    now: u64,
-) -> TransferError {
+fn refused_t(p: &mut ReassemblyPoolV3, rid: ReceiverIdV3, bytes: &[u8], now: u64) -> TransferError {
     settle(p, now);
     let before = p.clone();
     let err = p
@@ -179,12 +176,7 @@ fn refused_t(
     err
 }
 
-fn refused_d(
-    p: &mut ReassemblyPoolV3,
-    rid: ReceiverIdV3,
-    bytes: &[u8],
-    now: u64,
-) -> TransferError {
+fn refused_d(p: &mut ReassemblyPoolV3, rid: ReceiverIdV3, bytes: &[u8], now: u64) -> TransferError {
     settle(p, now);
     let before = p.clone();
     let err = p
@@ -232,7 +224,11 @@ fn largest_body() -> SnapshotBodyV3 {
                 dead: true,
             }),
             facts: FactSet {
-                pools: Some((0..16).map(|j| pool_of(100 + j, u32::MAX, u32::MAX)).collect()),
+                pools: Some(
+                    (0..16)
+                        .map(|j| pool_of(100 + j, u32::MAX, u32::MAX))
+                        .collect(),
+                ),
                 effects: Some(
                     (0..16)
                         .map(|j| crpg_net::protocol_v3::EffectFact {
@@ -283,13 +279,15 @@ fn largest_body() -> SnapshotBodyV3 {
     }
 }
 
-
 // P1 / P-2, P-3, P-12, P-14: surface, receivers, queries, refusals.
 
 #[test]
 fn p1_pool_v3_surface_and_receivers() {
     // P-2: `new` validates the limits unchanged and keeps them.
-    assert_eq!(pool(TransferLimitsV3::v3()).limits(), TransferLimitsV3::v3());
+    assert_eq!(
+        pool(TransferLimitsV3::v3()).limits(),
+        TransferLimitsV3::v3()
+    );
     let bad_max = lim(|l| l.max_receivers = 0);
     assert_eq!(
         ReassemblyPoolV3::new(bad_max.clone()),
@@ -499,7 +497,10 @@ fn p4_deadline_boundary_19999_20000() {
     // Pool 1: live through t + 19,999.
     let mut p = pool(TransferLimitsV3::v3());
     let a = add(&mut p, GateMode::AwaitSnapshot);
-    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
     for c in (1..=86u8).rev() {
         assert_eq!(
             p.offer_transfer(a, &frames[usize::from(c) + 1], T0),
@@ -521,7 +522,10 @@ fn p4_deadline_boundary_19999_20000() {
     // Pool 2: expired from t + 20,000.
     let mut p = pool(TransferLimitsV3::v3());
     let a = add(&mut p, GateMode::AwaitSnapshot);
-    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
     for c in (1..=86u8).rev() {
         assert_eq!(
             p.offer_transfer(a, &frames[usize::from(c) + 1], T0),
@@ -557,7 +561,10 @@ fn p4_deadline_boundary_19999_20000() {
     // Pool 3: `poll` reports the receiver it expired, at the exact boundary.
     let mut p = pool(TransferLimitsV3::v3());
     let a = add(&mut p, GateMode::AwaitSnapshot);
-    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
     assert!(p.poll(20_999).is_empty(), "nothing overdue at 20,999");
     assert_eq!(p.poll(21_000), vec![a], "exactly [a] at 21,000");
     // Pool 4: the deadline saturates.
@@ -575,13 +582,15 @@ fn p4_deadline_boundary_19999_20000() {
     assert_eq!(deadline_ms, u64::MAX, "u64::MAX - 10 + 20,000 saturates");
 }
 
-
 #[test]
 fn p5_invalid_bodies_never_publish() {
     let mut p = pool(TransferLimitsV3::v3());
     let a = add(&mut p, GateMode::AwaitSnapshot);
     let frames = plan(1, 0, 0, 1, &e0());
-    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
     assert_eq!(
         p.offer_transfer(a, &frames[1], T0),
         Ok(TransferOutcome::Published {
@@ -637,10 +646,7 @@ fn p5_invalid_bodies_never_publish() {
         bytes: body3.to_vec(),
     }))
     .expect("Chunk 3 encodes");
-    assert_eq!(
-        p.offer_transfer(a, &begin3, T0),
-        Ok(TransferOutcome::Begun)
-    );
+    assert_eq!(p.offer_transfer(a, &begin3, T0), Ok(TransferOutcome::Begun));
     assert_eq!(
         p.offer_transfer(a, &chunk3, T0),
         Err(TransferError::Failed(FailReason::InvalidBody(Malformed))),
@@ -667,10 +673,7 @@ fn p5_invalid_bodies_never_publish() {
         bytes: vec![0; 7],
     }))
     .expect("Chunk 4 encodes");
-    assert_eq!(
-        p.offer_transfer(a, &begin4, T0),
-        Ok(TransferOutcome::Begun)
-    );
+    assert_eq!(p.offer_transfer(a, &begin4, T0), Ok(TransferOutcome::Begun));
     assert_eq!(
         p.offer_transfer(a, &chunk4, T0),
         Err(TransferError::Failed(FailReason::InvalidBody(Malformed))),
@@ -690,7 +693,6 @@ fn p5_invalid_bodies_never_publish() {
     );
     assert_eq!(p.pop_update(a), None);
 }
-
 
 #[test]
 fn p6_version_and_wire_refusals() {
@@ -758,7 +760,10 @@ fn p6_version_and_wire_refusals() {
         "unknown receiver, before any decode"
     );
     // Positive control: event_seq SEQ_LAST is not refused, it is held.
-    assert_eq!(p.offer_delta(a, &d(SEQ_LAST), T0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(
+        p.offer_delta(a, &d(SEQ_LAST), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
     // P-15: the v1 pool is unchanged and refuses both v3 forms.
     let mut v1 = ReassemblyPool::new(TransferLimits::v1()).expect("v1 limits");
     let r = v1
@@ -766,14 +771,17 @@ fn p6_version_and_wire_refusals() {
         .expect("v1 receiver");
     assert_eq!(
         v1.offer_transfer(r, &begin82, T0),
-        Err(TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion))
+        Err(TransferError::Codec(
+            crpg_net::codec::CodecError::UnsupportedVersion
+        ))
     );
     assert_eq!(
         v1.offer_delta(r, &d(1), T0),
-        Err(TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion))
+        Err(TransferError::Codec(
+            crpg_net::codec::CodecError::UnsupportedVersion
+        ))
     );
 }
-
 
 #[test]
 fn p7_v3_ops_pass_the_gate_unchanged() {
@@ -839,7 +847,11 @@ fn p7_v3_ops_pass_the_gate_unchanged() {
         p.offer_delta(a, &bytes, T0),
         Ok(DeltaOutcome::Released { count: 1 })
     );
-    assert_eq!(p.held_delta_bytes(), bytes.len(), "the frame length while queued");
+    assert_eq!(
+        p.held_delta_bytes(),
+        bytes.len(),
+        "the frame length while queued"
+    );
     assert_eq!(p.pop_update(a), Some(ReplicaUpdateV3::Delta(f.clone())));
     assert_eq!(p.held_delta_bytes(), 0, "the pop releases its bytes");
     // To an AwaitSnapshot receiver: held with its encoded length.
@@ -856,7 +868,10 @@ fn p7_v3_ops_pass_the_gate_unchanged() {
 fn p9_rebind_discards_in_flight_and_held() {
     let mut p = pool(TransferLimitsV3::v3());
     let a = add(&mut p, GateMode::Live);
-    assert_eq!(p.offer_delta(a, &d(1), T0), Ok(DeltaOutcome::Released { count: 1 }));
+    assert_eq!(
+        p.offer_delta(a, &d(1), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
     // G(1) with cursor 1 (cursor 0 would be BehindReplica now).
     assert_eq!(
         p.offer_transfer(a, &g_begin(1, 1), T0),
@@ -904,9 +919,531 @@ fn p9_rebind_discards_in_flight_and_held() {
     assert_eq!(p, before, "an unknown rebind changed the pool");
 }
 
+// P8 / P-16, P-1: the same script on `ReassemblyPool` (V2 receivers) and
+// `ReassemblyPoolV3`; every result, status, total and popped update is
+// compared after every call.
+
+/// The v1 and v3 forms of one transfer frame: identical past byte 0.
+fn assert_same_but_version(v1: &[u8], v3: &[u8]) {
+    assert_eq!(v1.len(), v3.len(), "frame lengths");
+    assert_eq!(v1[0], 0x81, "the v1 version byte");
+    assert_eq!(v3[0], 0x82, "the v3 version byte");
+    assert_eq!(&v1[1..], &v3[1..], "the frames differ past byte 0");
+}
+
+/// `O(t, c)` of the contract, in both encodings.
+fn o_pair(t: u64, cursor: u64) -> (Vec<u8>, Vec<u8>) {
+    let begin = BeginTransfer {
+        epoch: Z,
+        transfer: tid(t),
+        base_tick: 10,
+        cursor,
+        total_bytes: 8_192,
+        entity_count: 0,
+        segments_per_chunk: 1,
+        chunk_count: 2,
+    };
+    let v1 = ct::encode_down(&TransferDown::Begin(begin.clone())).expect("O encodes for v1");
+    let v3 = t3::encode_down(&TransferDown::Begin(begin)).expect("O encodes for v3");
+    assert_same_but_version(&v1, &v3);
+    (v1, v3)
+}
+
+/// `O(t)#i` (and `O(t)#0'` with `fill = t + 1`), in both encodings.
+fn chunk_pair(t: u64, index: u8, fill: u8) -> (Vec<u8>, Vec<u8>) {
+    let chunk = TransferChunk {
+        epoch: Z,
+        transfer: tid(t),
+        index,
+        bytes: vec![fill; 4_096],
+    };
+    let v1 = ct::encode_down(&TransferDown::Chunk(chunk.clone())).expect("Chunk encodes for v1");
+    let v3 = t3::encode_down(&TransferDown::Chunk(chunk)).expect("Chunk encodes for v3");
+    assert_same_but_version(&v1, &v3);
+    (v1, v3)
+}
+
+/// `S(t, c)` of the contract: a planned six-byte body, both encodings.
+fn s_pair(t: u64, cursor: u64) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let v1 = ct::plan_transfer(
+        Z,
+        tid(t),
+        10,
+        cursor,
+        1,
+        &SnapshotBody {
+            entities: vec![],
+            turn: Some(TurnFact {
+                active: None,
+                round: 16_384,
+            }),
+        },
+    )
+    .expect("S plans for v1");
+    let v3 = t3::plan_transfer(Z, tid(t), 10, cursor, 1, &e0()).expect("S plans for v3");
+    assert_eq!(v1.len(), 2);
+    assert_eq!(v3.len(), 2);
+    // The two Begins carry the same fields, so they differ only in byte 0.
+    // The chunks deliberately carry different bodies (the v1 turn body and
+    // E0), so only their length is comparable.
+    assert_same_but_version(&v1[0], &v3[0]);
+    assert_eq!(v1[1].len(), v3[1].len());
+    (v1, v3)
+}
+
+/// `C(t)` of the contract, in both encodings.
+fn cancel_pair(t: u64) -> (Vec<u8>, Vec<u8>) {
+    let msg = TransferDown::Cancel {
+        epoch: Z,
+        transfer: tid(t),
+        reason: CancelReason::Superseded,
+    };
+    let v1 = ct::encode_down(&msg).expect("C encodes for v1");
+    let v3 = t3::encode_down(&msg).expect("C encodes for v3");
+    assert_same_but_version(&v1, &v3);
+    (v1, v3)
+}
+
+/// One mirror: every numbered script step runs on both pools.
+struct Mirror {
+    v1: ReassemblyPool,
+    v3: ReassemblyPoolV3,
+    ids: Vec<(ReceiverId, ReceiverIdV3)>,
+}
+
+impl Mirror {
+    fn new() -> Self {
+        let v1 = ReassemblyPool::new(TransferLimits {
+            delta_frames_per_receiver: 6,
+            ..TransferLimits::v1()
+        })
+        .expect("the v1 mirror limits are valid");
+        let v3 = ReassemblyPoolV3::new(TransferLimitsV3 {
+            deadline_ms: 5_000,
+            delta_frames_per_receiver: 6,
+            ..TransferLimitsV3::v3()
+        })
+        .expect("the v3 mirror limits are valid");
+        Self {
+            v1,
+            v3,
+            ids: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, mode: GateMode) -> u32 {
+        let a = self
+            .v1
+            .add_receiver(Z, DeltaWire::V2, mode)
+            .expect("v1 receiver");
+        let b = self.v3.add_receiver(Z, mode).expect("v3 receiver");
+        assert_eq!(a.get(), b.get(), "receiver ids diverge");
+        self.ids.push((a, b));
+        self.check();
+        a.get()
+    }
+
+    fn pair(&self, raw: u32) -> (ReceiverId, ReceiverIdV3) {
+        *self
+            .ids
+            .iter()
+            .find(|(a, _)| a.get() == raw)
+            .unwrap_or_else(|| panic!("receiver {raw} is not live"))
+    }
+
+    fn delta(
+        &mut self,
+        raw: u32,
+        tick: u64,
+        seq: u64,
+        now: u64,
+    ) -> Result<DeltaOutcome, TransferError> {
+        let (a, b) = self.pair(raw);
+        let v1b = hand_delta(0x02, tick, seq);
+        let v3b = hand_delta(0x03, tick, seq);
+        let r1 = self.v1.offer_delta(a, &v1b, now);
+        let r2 = self.v3.offer_delta(b, &v3b, now);
+        assert_eq!(r1, r2, "delta ({tick}, {seq}) outcomes diverge");
+        self.check();
+        r2
+    }
+
+    fn transfer(
+        &mut self,
+        raw: u32,
+        v1b: &[u8],
+        v3b: &[u8],
+        now: u64,
+    ) -> Result<TransferOutcome, TransferError> {
+        let (a, b) = self.pair(raw);
+        let r1 = self.v1.offer_transfer(a, v1b, now);
+        let r2 = self.v3.offer_transfer(b, v3b, now);
+        assert_eq!(r1, r2, "transfer outcomes diverge");
+        self.check();
+        r2
+    }
+
+    fn poll(&mut self, now: u64) {
+        let a: Vec<u32> = self.v1.poll(now).iter().map(|r| r.get()).collect();
+        let b: Vec<u32> = self.v3.poll(now).iter().map(|r| r.get()).collect();
+        assert_eq!(a, b, "poll diverged at {now}");
+        self.check();
+    }
+
+    /// Pops from both pools, compares the pair, and returns the v3 update.
+    fn pop(&mut self, raw: u32) -> Option<ReplicaUpdateV3> {
+        let (a, b) = self.pair(raw);
+        let u1 = self.v1.pop_update(a);
+        let u2 = self.v3.pop_update(b);
+        match (&u1, &u2) {
+            (None, None) => {}
+            (Some(ReplicaUpdate::Delta(GatedDelta::V2(f))), Some(ReplicaUpdateV3::Delta(g))) => {
+                assert_eq!(
+                    g,
+                    &DeltaFrame {
+                        lane: f.lane,
+                        server_tick: f.server_tick,
+                        event_seq: f.event_seq,
+                        ops: vec![],
+                    },
+                    "popped deltas diverge"
+                );
+            }
+            (Some(ReplicaUpdate::Snapshot(p)), Some(ReplicaUpdateV3::Snapshot(q))) => {
+                assert_eq!(p.transfer, q.transfer, "snapshot transfer");
+                assert_eq!(p.base_tick, q.base_tick, "snapshot base_tick");
+                assert_eq!(p.cursor, q.cursor, "snapshot cursor");
+                assert_eq!(q.body, e0(), "the v3 body of a mirror snapshot");
+            }
+            (u1, u2) => panic!("popped updates diverge: v1 {u1:?}, v3 {u2:?}"),
+        }
+        self.check();
+        u2
+    }
+
+    fn rebind(&mut self, raw: u32, now: u64) -> Result<Rebound, TransferError> {
+        let (a, b) = self.pair(raw);
+        let r1 = self.v1.rebind_receiver(a, now);
+        let r2 = self.v3.rebind_receiver(b, now);
+        assert_eq!(r1, r2, "rebind diverged");
+        self.check();
+        r2
+    }
+
+    fn remove(&mut self, raw: u32) -> (ReceiverId, ReceiverIdV3) {
+        let pair = self.pair(raw);
+        self.v1.remove_receiver(pair.0);
+        self.v3.remove_receiver(pair.1);
+        self.ids.retain(|(x, _)| x.get() != raw);
+        self.check();
+        pair
+    }
+
+    /// Every live receiver's status (v1's `wire` dropped) and both totals.
+    fn check(&self) {
+        for (a, b) in &self.ids {
+            let s1 = self.v1.status(*a).expect("v1 status");
+            let s2 = self.v3.status(*b).expect("v3 status");
+            assert_eq!(s1.epoch, s2.epoch, "epoch");
+            assert_eq!(s1.mode, s2.mode, "mode");
+            assert_eq!(s1.in_flight, s2.in_flight, "in_flight");
+            assert_eq!(s1.retired_through, s2.retired_through, "retired_through");
+            assert_eq!(s1.published, s2.published, "published");
+            assert_eq!(s1.next_event_seq, s2.next_event_seq, "next_event_seq");
+            assert_eq!(s1.held_frames, s2.held_frames, "held_frames");
+            assert_eq!(s1.held_bytes, s2.held_bytes, "held_bytes");
+            assert_eq!(s1.queued_updates, s2.queued_updates, "queued_updates");
+            assert_eq!(s1.resync, s2.resync, "resync");
+        }
+        assert_eq!(
+            self.v1.staging_bytes(),
+            self.v3.staging_bytes(),
+            "staging_bytes"
+        );
+        assert_eq!(
+            self.v1.held_delta_bytes(),
+            self.v3.held_delta_bytes(),
+            "held_delta_bytes"
+        );
+    }
+}
+
+/// The expected pop of a mirror delta `D(seq)`.
+fn popped_delta(m: &mut Mirror, raw: u32, seq: u64) {
+    match m.pop(raw) {
+        Some(ReplicaUpdateV3::Delta(f)) => {
+            assert_eq!(f.event_seq, seq);
+            assert_eq!(f.ops, vec![]);
+        }
+        other => panic!("expected Delta {seq}, got {other:?}"),
+    }
+}
+
+/// The expected pop of a mirror snapshot `S(t, base, cursor)`.
+fn popped_snapshot(m: &mut Mirror, raw: u32, t: u64, base: u64, cursor: u64) {
+    match m.pop(raw) {
+        Some(ReplicaUpdateV3::Snapshot(p)) => {
+            let PublicationV3 {
+                transfer,
+                base_tick,
+                cursor: got,
+                body,
+            } = p;
+            assert_eq!((transfer, base_tick, got), (tid(t), base, cursor));
+            assert_eq!(body, e0());
+        }
+        other => panic!("expected Snapshot {t}, got {other:?}"),
+    }
+}
+
 #[test]
 fn p8_mirror_matches_the_v1_pool() {
-    todo!("P8")
+    let mut m = Mirror::new();
+    // 1. add A (Live) -> id 1.
+    assert_eq!(m.add(GateMode::Live), 1);
+    // 2. D(1), then D(2): each Released { 1 }.
+    assert_eq!(
+        m.delta(1, 1, 1, T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        m.delta(1, 2, 2, T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    // 3. O(1, 4): Begun.
+    let (o1, o3) = o_pair(1, 4);
+    assert_eq!(m.transfer(1, &o1, &o3, T0), Ok(TransferOutcome::Begun));
+    // 4. D(4): Buffered (at the in-flight cursor).
+    assert_eq!(m.delta(1, 4, 4, T0), Ok(DeltaOutcome::Buffered));
+    // 5. D(3): Released { 2 } (D3 queued, D4 drains).
+    assert_eq!(
+        m.delta(1, 3, 3, T0),
+        Ok(DeltaOutcome::Released { count: 2 })
+    );
+    // 6. D(5): Buffered (above the in-flight cursor).
+    assert_eq!(m.delta(1, 5, 5, T0), Ok(DeltaOutcome::Buffered));
+    // 7. O(1, 4) again: Duplicate.
+    assert_eq!(m.transfer(1, &o1, &o3, T0), Ok(TransferOutcome::Duplicate));
+    // 8. O(1)#0, again: Stored { 1, 2 }, Duplicate.
+    let (c0, c3) = chunk_pair(1, 0, 1);
+    assert_eq!(
+        m.transfer(1, &c0, &c3, T0),
+        Ok(TransferOutcome::Stored {
+            received: 1,
+            chunk_count: 2,
+        })
+    );
+    assert_eq!(m.transfer(1, &c0, &c3, T0), Ok(TransferOutcome::Duplicate));
+    // 9. O(1)#0': Failed(Conflict), which discards the in-flight transfer.
+    let (c0x, c3x) = chunk_pair(1, 0, 2);
+    assert_eq!(
+        m.transfer(1, &c0x, &c3x, T0),
+        Err(TransferError::Failed(FailReason::Conflict))
+    );
+    // 10. O(1)#1: StaleTransfer (transfer 1 retired by the conflict).
+    let (c1, c31) = chunk_pair(1, 1, 1);
+    assert_eq!(
+        m.transfer(1, &c1, &c31, T0),
+        Err(TransferError::StaleTransfer)
+    );
+    // 11. O(2, 3): BehindReplica (cursor 3 + 1 < next_event_seq 5).
+    let (o2, o32) = o_pair(2, 3);
+    assert_eq!(
+        m.transfer(1, &o2, &o32, T0),
+        Err(TransferError::BehindReplica)
+    );
+    // 12. S(3, 5) Begin: Begun.
+    let (s3, s33) = s_pair(3, 5);
+    assert_eq!(
+        m.transfer(1, &s3[0], &s33[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
+    // 13. D(6): Buffered (above the new in-flight cursor 5).
+    assert_eq!(m.delta(1, 6, 6, T0), Ok(DeltaOutcome::Buffered));
+    // 14. S(3, 5) Chunk: Published { 3, 1 } (D5 dropped, D6 moves).
+    assert_eq!(
+        m.transfer(1, &s3[1], &s33[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(3),
+            released: 1,
+        })
+    );
+    // 15. D(5): Superseded (below the published cursor).
+    assert_eq!(m.delta(1, 5, 5, T0), Ok(DeltaOutcome::Superseded));
+    // 16. pop A x 7: D1, D2, D3, D4, Snapshot(3, 10, 5), D6, None.
+    popped_delta(&mut m, 1, 1);
+    popped_delta(&mut m, 1, 2);
+    popped_delta(&mut m, 1, 3);
+    popped_delta(&mut m, 1, 4);
+    popped_snapshot(&mut m, 1, 3, 10, 5);
+    popped_delta(&mut m, 1, 6);
+    assert_eq!(m.pop(1), None);
+    // 17. C(9): Cancelled { false }; S(9, 6) Begin: StaleTransfer.
+    let (c9, c93) = cancel_pair(9);
+    assert_eq!(
+        m.transfer(1, &c9, &c93, T0),
+        Ok(TransferOutcome::Cancelled { discarded: false })
+    );
+    let (s9, s93) = s_pair(9, 6);
+    assert_eq!(
+        m.transfer(1, &s9[0], &s93[0], T0),
+        Err(TransferError::StaleTransfer)
+    );
+    // 18. O(10, 6): Begun.
+    let (o10, o103) = o_pair(10, 6);
+    assert_eq!(
+        m.transfer(1, &o10, &o103, 2_000),
+        Ok(TransferOutcome::Begun)
+    );
+    // 19. add B (Live) -> id 2.
+    assert_eq!(m.add(GateMode::Live), 2);
+    // 20. B D(1) at 6,999: Released { 1 } (A's transfer is still live).
+    assert_eq!(
+        m.delta(2, 1, 1, 6_999),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    // 21. B D(2) at 7,000: Released { 1 }; A's transfer 10 expires in the sweep.
+    assert_eq!(
+        m.delta(2, 2, 2, 7_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    for (a, b) in &m.ids {
+        if a.get() == 1 {
+            let s1 = m.v1.status(*a).expect("v1 A");
+            let s2 = m.v3.status(*b).expect("v3 A");
+            assert_eq!(s1.resync, Some(ResyncReason::Expired));
+            assert_eq!(s2.resync, Some(ResyncReason::Expired));
+            assert_eq!(s1.mode, GateMode::AwaitSnapshot);
+            assert_eq!(s2.mode, GateMode::AwaitSnapshot);
+            assert_eq!(s1.retired_through, 10);
+            assert_eq!(s2.retired_through, 10);
+        }
+    }
+    // 22. A O(10)#0: StaleTransfer (the expiry already happened in step 21).
+    let (c100, c1003) = chunk_pair(10, 0, 10);
+    assert_eq!(
+        m.transfer(1, &c100, &c1003, 7_000),
+        Err(TransferError::StaleTransfer)
+    );
+    // 23. A O(11, 6): Begun at 8,000.
+    let (o11, o113) = o_pair(11, 6);
+    assert_eq!(
+        m.transfer(1, &o11, &o113, 8_000),
+        Ok(TransferOutcome::Begun)
+    );
+    // 24. A O(11)#0 at 13,000: the sweep expires transfer 11 and the frame
+    // names it, so Failed(Expired).
+    let (c110, c1103) = chunk_pair(11, 0, 11);
+    assert_eq!(
+        m.transfer(1, &c110, &c1103, 13_000),
+        Err(TransferError::Failed(FailReason::Expired))
+    );
+    // 25. A O(12, 6): Begun at 14,000.
+    let (o12, o123) = o_pair(12, 6);
+    assert_eq!(
+        m.transfer(1, &o12, &o123, 14_000),
+        Ok(TransferOutcome::Begun)
+    );
+    // 26. poll: [], [A], [].
+    m.poll(18_999);
+    m.poll(19_000);
+    m.poll(100);
+    // 27. O(13, 6): Begun; C(13): Cancelled { true }; C(13): Cancelled { false }.
+    let (o13, o133) = o_pair(13, 6);
+    assert_eq!(
+        m.transfer(1, &o13, &o133, 19_000),
+        Ok(TransferOutcome::Begun)
+    );
+    let (c13, c133) = cancel_pair(13);
+    assert_eq!(
+        m.transfer(1, &c13, &c133, 19_000),
+        Ok(TransferOutcome::Cancelled { discarded: true })
+    );
+    assert_eq!(
+        m.transfer(1, &c13, &c133, 19_000),
+        Ok(TransferOutcome::Cancelled { discarded: false })
+    );
+    // 28. D(8), D(8), D'(8): Buffered, Duplicate, Failed(Conflict).
+    assert_eq!(m.delta(1, 8, 8, 19_000), Ok(DeltaOutcome::Buffered));
+    assert_eq!(m.delta(1, 8, 8, 19_000), Ok(DeltaOutcome::Duplicate));
+    assert_eq!(
+        m.delta(1, 108, 8, 19_000),
+        Err(TransferError::Failed(FailReason::Conflict))
+    );
+    // 29. D(9)..=D(13): Buffered x 5; D(14): Failed(Overflow), held dropped.
+    for seq in 9..=13u64 {
+        assert_eq!(m.delta(1, seq, seq, 19_000), Ok(DeltaOutcome::Buffered));
+    }
+    assert_eq!(
+        m.delta(1, 14, 14, 19_000),
+        Err(TransferError::Failed(FailReason::Overflow))
+    );
+    // 30. D(8): Buffered; rebind: Rebound { None, 1 }.
+    assert_eq!(m.delta(1, 8, 8, 19_000), Ok(DeltaOutcome::Buffered));
+    assert_eq!(
+        m.rebind(1, 19_000),
+        Ok(Rebound {
+            discarded: None,
+            dropped_deltas: 1,
+        })
+    );
+    // 31. S(14, 7) Begin, Chunk: Begun, Published { 14, 0 }.
+    let (s14, s143) = s_pair(14, 7);
+    assert_eq!(
+        m.transfer(1, &s14[0], &s143[0], 19_000),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        m.transfer(1, &s14[1], &s143[1], 19_000),
+        Ok(TransferOutcome::Published {
+            transfer: tid(14),
+            released: 0,
+        })
+    );
+    // 32. D(8): Released { 1 }; pop A x 3: Snapshot(14, 10, 7), D8, None.
+    assert_eq!(
+        m.delta(1, 8, 8, 19_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    popped_snapshot(&mut m, 1, 14, 10, 7);
+    popped_delta(&mut m, 1, 8);
+    assert_eq!(m.pop(1), None);
+    // 33. S(15, 8) planned with epoch [1; 16]: WrongEpoch.
+    let begin15 = BeginTransfer {
+        epoch: [1; 16],
+        transfer: tid(15),
+        base_tick: 10,
+        cursor: 8,
+        total_bytes: 6,
+        entity_count: 0,
+        segments_per_chunk: 1,
+        chunk_count: 1,
+    };
+    let v1 = ct::encode_down(&TransferDown::Begin(begin15.clone())).expect("S(15) encodes for v1");
+    let v3 = t3::encode_down(&TransferDown::Begin(begin15)).expect("S(15) encodes for v3");
+    assert_eq!(
+        m.transfer(1, &v1, &v3, 19_000),
+        Err(TransferError::WrongEpoch)
+    );
+    // 34. D(0): DeltaSequence.
+    assert_eq!(m.delta(1, 0, 0, 19_000), Err(TransferError::DeltaSequence));
+    // 35. add C (AwaitSnapshot) -> id 3; C D(1): Buffered.
+    assert_eq!(m.add(GateMode::AwaitSnapshot), 3);
+    assert_eq!(m.delta(3, 1, 1, 19_000), Ok(DeltaOutcome::Buffered));
+    // 36. remove B; status(B): UnknownReceiver; B D(3): UnknownReceiver.
+    let (gone1, gone3) = m.remove(2);
+    assert_eq!(
+        m.v1.status(gone1).err(),
+        Some(TransferError::UnknownReceiver)
+    );
+    assert_eq!(
+        m.v3.status(gone3).err(),
+        Some(TransferError::UnknownReceiver)
+    );
+    let r1 = m.v1.offer_delta(gone1, &hand_delta(0x02, 3, 3), 19_000);
+    let r2 = m.v3.offer_delta(gone3, &hand_delta(0x03, 3, 3), 19_000);
+    assert_eq!(r1, r2, "a delta to a removed receiver");
+    assert_eq!(r2, Err(TransferError::UnknownReceiver));
 }
 
 #[test]
@@ -942,7 +1479,10 @@ fn p10_begin_chunk_and_cancel_arms() {
     let wrong_epoch: [u8; 16] = [1; 16];
     // 1. plan(1, 20, 0, 1, E0) publishes; its snapshot stays queued.
     let frames = plan(1, 20, 0, 1, &e0());
-    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
     assert_eq!(
         p.offer_transfer(a, &frames[1], T0),
         Ok(TransferOutcome::Published {
@@ -951,9 +1491,15 @@ fn p10_begin_chunk_and_cancel_arms() {
         })
     );
     // 2. A Begin with an equal base is accepted.
-    assert_eq!(p.offer_transfer(a, &ob(2, 20, 0), T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &ob(2, 20, 0), T0),
+        Ok(TransferOutcome::Begun)
+    );
     // 3. A second in-flight transfer is refused whole.
-    assert_eq!(refused_t(&mut p, a, &ob(3, 20, 0), T0), TransferError::InFlight);
+    assert_eq!(
+        refused_t(&mut p, a, &ob(3, 20, 0), T0),
+        TransferError::InFlight
+    );
     // 4. A chunk for a never-begun id above `retired_through`.
     assert_eq!(
         refused_t(&mut p, a, &oc(5, 0, 4_096), T0),
@@ -967,7 +1513,12 @@ fn p10_begin_chunk_and_cancel_arms() {
         bytes: vec![2; 4_096],
     };
     assert_eq!(
-        refused_t(&mut p, a, &t3::encode_down(&TransferDown::Chunk(chunk_wrong.clone())).expect("encodes"), T0),
+        refused_t(
+            &mut p,
+            a,
+            &t3::encode_down(&TransferDown::Chunk(chunk_wrong.clone())).expect("encodes"),
+            T0
+        ),
         TransferError::WrongEpoch
     );
     assert_eq!(
@@ -1003,28 +1554,34 @@ fn p10_begin_chunk_and_cancel_arms() {
         Err(TransferError::Failed(FailReason::Conflict)),
         "same id, cursor changed"
     );
-    assert_failed_clean(&mut p, a, 2, 1);
+    assert_failed_clean(&p, a, 2, 1);
     // 8. A base below the published one is BehindReplica; an equal one is not.
     assert_eq!(
         refused_t(&mut p, a, &ob(3, 19, 0), T0),
         TransferError::BehindReplica
     );
-    assert_eq!(p.offer_transfer(a, &ob(3, 20, 0), T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &ob(3, 20, 0), T0),
+        Ok(TransferOutcome::Begun)
+    );
     // 9. An index at the chunk count is out of range, so Failed(Conflict).
     assert_eq!(
         p.offer_transfer(a, &oc(3, 2, 4_096), T0),
         Err(TransferError::Failed(FailReason::Conflict)),
         "index == chunk_count"
     );
-    assert_failed_clean(&mut p, a, 3, 1);
+    assert_failed_clean(&p, a, 3, 1);
     // 10. A chunk one byte short is a WrongLength, so Failed(Conflict).
-    assert_eq!(p.offer_transfer(a, &ob(4, 20, 0), T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &ob(4, 20, 0), T0),
+        Ok(TransferOutcome::Begun)
+    );
     assert_eq!(
         p.offer_transfer(a, &oc(4, 0, 4_095), T0),
         Err(TransferError::Failed(FailReason::Conflict)),
         "4,095 != 4,096"
     );
-    assert_failed_clean(&mut p, a, 4, 1);
+    assert_failed_clean(&p, a, 4, 1);
     // The queued snapshot from step 1 survived every failure.
     assert_eq!(
         p.pop_update(a),
@@ -1058,7 +1615,14 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
             server_tick: n,
             event_seq: n,
             ops: vec![DeltaOp::Timeline {
-                entries: Some((1..=k).map(|i| TimelineEntry { key: 0, entity: id(i) }).collect()),
+                entries: Some(
+                    (1..=k)
+                        .map(|i| TimelineEntry {
+                            key: 0,
+                            entity: id(i),
+                        })
+                        .collect(),
+                ),
             }],
         })
         .expect("TL encodes")
@@ -1069,7 +1633,10 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
     let mut p = pool(TransferLimitsV3::v3());
     let a = add(&mut p, GateMode::Live);
     let frames = plan(1, 0, 0, 1, &e0());
-    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
     assert_eq!(
         p.offer_transfer(a, &frames[1], T0),
         Ok(TransferOutcome::Published {
@@ -1077,9 +1644,15 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
             released: 0,
         })
     );
-    assert_eq!(p.offer_delta(a, &d(1), T0), Ok(DeltaOutcome::Released { count: 1 }));
+    assert_eq!(
+        p.offer_delta(a, &d(1), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
     let frames = plan(2, 0, 1, 1, &e0());
-    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], T0),
+        Ok(TransferOutcome::Begun)
+    );
     assert_eq!(
         p.offer_transfer(a, &frames[1], T0),
         Ok(TransferOutcome::Published {
@@ -1092,7 +1665,12 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
     assert_eq!(p.held_delta_bytes(), 0, "d(1) went with the queue");
     match p.pop_update(a) {
         Some(ReplicaUpdateV3::Snapshot(pub_)) => {
-            let PublicationV3 { transfer, base_tick, cursor, body } = pub_;
+            let PublicationV3 {
+                transfer,
+                base_tick,
+                cursor,
+                body,
+            } = pub_;
             assert_eq!((transfer, base_tick, cursor), (tid(2), 0, 1));
             assert_eq!(body, e0());
         }
@@ -1105,19 +1683,37 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
     let mut p = pool(lim(|l| l.delta_bytes_per_receiver = 65_536));
     let a = add(&mut p, GateMode::AwaitSnapshot);
     for n in 1..=22u64 {
-        assert_eq!(p.offer_delta(a, &tl(n, 1_024), T0), Ok(DeltaOutcome::Buffered), "TL({n})");
+        assert_eq!(
+            p.offer_delta(a, &tl(n, 1_024), T0),
+            Ok(DeltaOutcome::Buffered),
+            "TL({n})"
+        );
     }
-    assert_eq!(codec_v3::encode_delta(&DeltaFrame {
-        lane: 0,
-        server_tick: 23,
-        event_seq: 23,
-        ops: vec![DeltaOp::Timeline {
-            entries: Some((1..=222).map(|i| TimelineEntry { key: 0, entity: id(i) }).collect()),
-        }],
-    })
-    .expect("TL(23, 222) encodes")
-    .len(), 548, "TL(n, 222) is 548 bytes");
-    assert_eq!(p.offer_delta(a, &tl(23, 222), T0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(
+        codec_v3::encode_delta(&DeltaFrame {
+            lane: 0,
+            server_tick: 23,
+            event_seq: 23,
+            ops: vec![DeltaOp::Timeline {
+                entries: Some(
+                    (1..=222)
+                        .map(|i| TimelineEntry {
+                            key: 0,
+                            entity: id(i)
+                        })
+                        .collect()
+                ),
+            }],
+        })
+        .expect("TL(23, 222) encodes")
+        .len(),
+        548,
+        "TL(n, 222) is 548 bytes"
+    );
+    assert_eq!(
+        p.offer_delta(a, &tl(23, 222), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
     let st = p.status(a).expect("status");
     assert_eq!(st.held_bytes, 65_536, "exactly at the bound");
     assert_eq!(st.held_frames, 23);
@@ -1143,9 +1739,15 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
     let a = add(&mut p, GateMode::AwaitSnapshot);
     let b = add(&mut p, GateMode::AwaitSnapshot);
     for n in 1..=22u64 {
-        assert_eq!(p.offer_delta(a, &tl(n, 1_024), T0), Ok(DeltaOutcome::Buffered));
+        assert_eq!(
+            p.offer_delta(a, &tl(n, 1_024), T0),
+            Ok(DeltaOutcome::Buffered)
+        );
     }
-    assert_eq!(p.offer_delta(b, &tl(1, 222), T0), Ok(DeltaOutcome::Buffered));
+    assert_eq!(
+        p.offer_delta(b, &tl(1, 222), T0),
+        Ok(DeltaOutcome::Buffered)
+    );
     assert_eq!(p.held_delta_bytes(), 65_536, "the pool is exactly full");
     assert_eq!(
         p.offer_delta(b, &d(2), T0),
@@ -1160,7 +1762,10 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
     // (d) Queued updates survive Overflow; only held deltas are dropped.
     let mut p = pool(lim(|l| l.delta_frames_per_receiver = 2));
     let a = add(&mut p, GateMode::Live);
-    assert_eq!(p.offer_delta(a, &d(1), T0), Ok(DeltaOutcome::Released { count: 1 }));
+    assert_eq!(
+        p.offer_delta(a, &d(1), T0),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
     assert_eq!(p.offer_delta(a, &d(3), T0), Ok(DeltaOutcome::Buffered));
     assert_eq!(
         p.offer_delta(a, &d(4), T0),
@@ -1183,8 +1788,14 @@ fn p11_queue_clear_overflow_bytes_and_poll_order() {
     let mut p = pool(TransferLimitsV3::v3());
     let a = add(&mut p, GateMode::Live);
     let b = add(&mut p, GateMode::Live);
-    assert_eq!(p.offer_transfer(b, &g_begin(1, 0), T0), Ok(TransferOutcome::Begun));
-    assert_eq!(p.offer_transfer(a, &g_begin(1, 0), T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(b, &g_begin(1, 0), T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        p.offer_transfer(a, &g_begin(1, 0), T0),
+        Ok(TransferOutcome::Begun)
+    );
     assert!(p.poll(20_999).is_empty());
     assert_eq!(p.poll(21_000), vec![a, b], "ascending by id");
     assert_eq!(p.staging_bytes(), 0);
