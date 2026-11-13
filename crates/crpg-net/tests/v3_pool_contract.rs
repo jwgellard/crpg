@@ -157,6 +157,12 @@ fn add(p: &mut ReassemblyPoolV3, mode: GateMode) -> ReceiverIdV3 {
     p.add_receiver(Z, mode).expect("receiver")
 }
 
+/// Runs the pool-wide sweep at `now` and checks that nothing expired, so that
+/// a following refusal is compared at an unchanged clock (P-9/P-14).
+fn settle(p: &mut ReassemblyPoolV3, now: u64) {
+    assert!(p.poll(now).is_empty(), "unexpected expiry at {now}");
+}
+
 /// A refusal: the exact error comes back and the whole pool is unchanged.
 fn refused_t(
     p: &mut ReassemblyPoolV3,
@@ -164,6 +170,7 @@ fn refused_t(
     bytes: &[u8],
     now: u64,
 ) -> TransferError {
+    settle(p, now);
     let before = p.clone();
     let err = p
         .offer_transfer(rid, bytes, now)
@@ -178,6 +185,7 @@ fn refused_d(
     bytes: &[u8],
     now: u64,
 ) -> TransferError {
+    settle(p, now);
     let before = p.clone();
     let err = p
         .offer_delta(rid, bytes, now)
@@ -487,18 +495,285 @@ fn p3_full_envelope_staging_and_aggregate() {
 
 #[test]
 fn p4_deadline_boundary_19999_20000() {
-    todo!("P4")
+    let frames = plan(1, 0, 0, 8, &largest_body());
+    // Pool 1: live through t + 19,999.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    for c in (1..=86u8).rev() {
+        assert_eq!(
+            p.offer_transfer(a, &frames[usize::from(c) + 1], T0),
+            Ok(TransferOutcome::Stored {
+                received: 87 - c,
+                chunk_count: 87,
+            }),
+            "chunk {c}"
+        );
+    }
+    assert_eq!(
+        p.offer_transfer(a, &frames[1], 20_999),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        }),
+        "20,999 is still live"
+    );
+    // Pool 2: expired from t + 20,000.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    for c in (1..=86u8).rev() {
+        assert_eq!(
+            p.offer_transfer(a, &frames[usize::from(c) + 1], T0),
+            Ok(TransferOutcome::Stored {
+                received: 87 - c,
+                chunk_count: 87,
+            }),
+            "chunk {c}"
+        );
+    }
+    assert_eq!(
+        p.offer_transfer(a, &frames[1], 21_000),
+        Err(TransferError::Failed(FailReason::Expired)),
+        "21,000 is expired"
+    );
+    let st = p.status(a).expect("status");
+    assert!(st.in_flight.is_none(), "the expired transfer is gone");
+    assert_eq!(p.staging_bytes(), 0);
+    assert_eq!(st.retired_through, 1);
+    assert_eq!(st.resync, Some(ResyncReason::Expired));
+    assert_eq!(st.mode, GateMode::AwaitSnapshot);
+    assert_eq!(st.queued_updates, 0);
+    assert_eq!(
+        refused_t(&mut p, a, &frames[1], 21_000),
+        TransferError::StaleTransfer,
+        "chunk 0 after expiry"
+    );
+    assert_eq!(
+        refused_t(&mut p, a, &frames[2], 10),
+        TransferError::StaleTransfer,
+        "chunk 1 at a clamped clock leaves the pool as it was"
+    );
+    // Pool 3: `poll` reports the receiver it expired, at the exact boundary.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert!(p.poll(20_999).is_empty(), "nothing overdue at 20,999");
+    assert_eq!(p.poll(21_000), vec![a], "exactly [a] at 21,000");
+    // Pool 4: the deadline saturates.
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    let frames = plan(1, 0, 0, 1, &e0());
+    assert_eq!(
+        p.offer_transfer(a, &frames[0], u64::MAX - 10),
+        Ok(TransferOutcome::Begun)
+    );
+    let st = p.status(a).expect("status");
+    let Some(InFlightStatus { deadline_ms, .. }) = st.in_flight else {
+        panic!("a transfer is in flight");
+    };
+    assert_eq!(deadline_ms, u64::MAX, "u64::MAX - 10 + 20,000 saturates");
 }
+
 
 #[test]
 fn p5_invalid_bodies_never_publish() {
-    todo!("P5")
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::AwaitSnapshot);
+    let frames = plan(1, 0, 0, 1, &e0());
+    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    // A 4 MiB assembly whose bytes are E0 followed by 4,194,298 trailing
+    // bytes fails the body decode on the completing chunk (127).
+    assert_eq!(
+        p.offer_transfer(a, &g_begin(2, 0), T0),
+        Ok(TransferOutcome::Begun)
+    );
+    for i in 0..=126u8 {
+        assert_eq!(
+            p.offer_transfer(a, &g_chunk(2, i), T0),
+            Ok(TransferOutcome::Stored {
+                received: i + 1,
+                chunk_count: 128,
+            }),
+            "chunk {i}"
+        );
+    }
+    assert_eq!(
+        p.offer_transfer(a, &g_chunk(2, 127), T0),
+        Err(TransferError::Failed(FailReason::InvalidBody(Malformed))),
+        "E0 plus 4,194,298 trailing bytes is Malformed"
+    );
+    assert_eq!(p.staging_bytes(), 0);
+    let st = p.status(a).expect("status");
+    assert_eq!(st.retired_through, 2);
+    assert_eq!(st.resync, Some(ResyncReason::Invalid));
+    assert_eq!(st.mode, GateMode::AwaitSnapshot);
+    assert_eq!(st.queued_updates, 1, "transfer 1's snapshot stays queued");
+    // Transfer 3: a one-entity body against `entity_count` 0.
+    let begin3 = t3::encode_down(&TransferDown::Begin(BeginTransfer {
+        epoch: Z,
+        transfer: tid(3),
+        base_tick: 0,
+        cursor: 0,
+        total_bytes: 16,
+        entity_count: 0,
+        segments_per_chunk: 1,
+        chunk_count: 1,
+    }))
+    .expect("Begin 3 encodes");
+    // T140 D3's 16-byte one-entity body.
+    let body3: [u8; 16] = [1, 1, 1, 10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let chunk3 = t3::encode_down(&TransferDown::Chunk(TransferChunk {
+        epoch: Z,
+        transfer: tid(3),
+        index: 0,
+        bytes: body3.to_vec(),
+    }))
+    .expect("Chunk 3 encodes");
+    assert_eq!(
+        p.offer_transfer(a, &begin3, T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        p.offer_transfer(a, &chunk3, T0),
+        Err(TransferError::Failed(FailReason::InvalidBody(Malformed))),
+        "entity count 1 != 0"
+    );
+    assert_eq!(p.staging_bytes(), 0);
+    assert_eq!(p.status(a).expect("status").retired_through, 3);
+    // Transfer 4: E0 plus one trailing byte.
+    let begin4 = t3::encode_down(&TransferDown::Begin(BeginTransfer {
+        epoch: Z,
+        transfer: tid(4),
+        base_tick: 0,
+        cursor: 0,
+        total_bytes: 7,
+        entity_count: 0,
+        segments_per_chunk: 1,
+        chunk_count: 1,
+    }))
+    .expect("Begin 4 encodes");
+    let chunk4 = t3::encode_down(&TransferDown::Chunk(TransferChunk {
+        epoch: Z,
+        transfer: tid(4),
+        index: 0,
+        bytes: vec![0; 7],
+    }))
+    .expect("Chunk 4 encodes");
+    assert_eq!(
+        p.offer_transfer(a, &begin4, T0),
+        Ok(TransferOutcome::Begun)
+    );
+    assert_eq!(
+        p.offer_transfer(a, &chunk4, T0),
+        Err(TransferError::Failed(FailReason::InvalidBody(Malformed))),
+        "one trailing byte is Malformed"
+    );
+    assert_eq!(p.staging_bytes(), 0);
+    assert_eq!(p.status(a).expect("status").retired_through, 4);
+    // Every invalid body left the queue untouched: transfer 1's snapshot.
+    assert_eq!(
+        p.pop_update(a),
+        Some(ReplicaUpdateV3::Snapshot(PublicationV3 {
+            transfer: tid(1),
+            base_tick: 0,
+            cursor: 0,
+            body: e0(),
+        }))
+    );
+    assert_eq!(p.pop_update(a), None);
 }
+
 
 #[test]
 fn p6_version_and_wire_refusals() {
-    todo!("P6")
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::Live);
+    let gone = add(&mut p, GateMode::Live);
+    p.remove_receiver(gone);
+    // T140 D1's `0x82` Begin, byte 0 set to `81` (a `0x81` frame).
+    let mut begin81 = vec![0x81, 0x02, 0x10];
+    begin81.extend(Z);
+    begin81.extend([0x01, 0x00, 0x00, 0x06, 0x00, 0x01, 0x01]);
+    // The same frame with the v3 version byte.
+    let mut begin82 = begin81.clone();
+    begin82[0] = 0x82;
+    assert_eq!(
+        refused_t(&mut p, a, &begin81, T0),
+        TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion),
+        "a `0x81` transfer frame to offer_transfer"
+    );
+    assert_eq!(
+        refused_d(&mut p, a, &[0x02, 0x00, 0x01, 0x01, 0x00], T0),
+        TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion),
+        "a v2 delta frame to offer_delta"
+    );
+    assert_eq!(
+        refused_d(&mut p, a, &[0x01, 0x00, 0x01, 0x01, 0x00], T0),
+        TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion),
+        "a v1 delta frame to offer_delta"
+    );
+    assert_eq!(
+        refused_t(&mut p, a, &d(1), T0),
+        TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion),
+        "a v3 delta frame to offer_transfer"
+    );
+    assert_eq!(
+        refused_d(&mut p, a, &begin82, T0),
+        TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion),
+        "a `0x82` Begin to offer_delta"
+    );
+    assert_eq!(
+        refused_d(&mut p, a, &[0x03, 0x00, 0x00, 0x00, 0x00], T0),
+        TransferError::DeltaSequence,
+        "event_seq 0"
+    );
+    let max_seq = codec_v3::encode_delta(&DeltaFrame {
+        lane: 0,
+        server_tick: 1,
+        event_seq: u64::MAX,
+        ops: vec![],
+    })
+    .expect("event_seq u64::MAX encodes");
+    assert_eq!(
+        refused_d(&mut p, a, &max_seq, T0),
+        TransferError::DeltaSequence,
+        "event_seq above SEQ_LAST"
+    );
+    assert_eq!(
+        refused_t(&mut p, gone, &[0xFF], T0),
+        TransferError::UnknownReceiver,
+        "unknown receiver, before any decode"
+    );
+    assert_eq!(
+        refused_d(&mut p, gone, &[0xFF], T0),
+        TransferError::UnknownReceiver,
+        "unknown receiver, before any decode"
+    );
+    // Positive control: event_seq SEQ_LAST is not refused, it is held.
+    assert_eq!(p.offer_delta(a, &d(SEQ_LAST), T0), Ok(DeltaOutcome::Buffered));
+    // P-15: the v1 pool is unchanged and refuses both v3 forms.
+    let mut v1 = ReassemblyPool::new(TransferLimits::v1()).expect("v1 limits");
+    let r = v1
+        .add_receiver(Z, DeltaWire::V2, GateMode::Live)
+        .expect("v1 receiver");
+    assert_eq!(
+        v1.offer_transfer(r, &begin82, T0),
+        Err(TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion))
+    );
+    assert_eq!(
+        v1.offer_delta(r, &d(1), T0),
+        Err(TransferError::Codec(crpg_net::codec::CodecError::UnsupportedVersion))
+    );
 }
+
 
 #[test]
 fn p7_v3_ops_pass_the_gate_unchanged() {
