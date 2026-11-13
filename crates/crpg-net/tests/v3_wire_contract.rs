@@ -852,8 +852,13 @@ fn v3_tag_table_closed() {
     assert_eq!(p3::AUTO_PAUSE_TOGGLE_MASK, 0x1F);
     assert_eq!(p3::POLICY_CLOCK_HEARTBEAT_TICKS, 100);
     const { assert!(p3::POLICY_CLOCK_HEARTBEAT_TICKS < p1::POLICY_OBSERVED_TICK_WINDOW) };
-    // Everything outside 0..=10 and 14..=20 is unknown in T140a, 11..=13 too.
-    for tag in (11..=13u8).chain(21..=255) {
+    // 11..=13 are the T140b fact ops: truncated or ill-formed here, never
+    // unknown. Everything from 21 up stays unknown.
+    for tag in 11..=13u8 {
+        op_err(&[tag], CodecError::Malformed);
+        op_err(&[tag, 1, 1, 1, 1, 1, 1], CodecError::Malformed);
+    }
+    for tag in 21..=255u8 {
         op_err(&[tag], CodecError::UnknownMessage);
         op_err(&[tag, 1, 1, 1, 1, 1, 1], CodecError::UnknownMessage);
     }

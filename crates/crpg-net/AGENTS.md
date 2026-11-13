@@ -127,6 +127,48 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   1..=20. `Clock` carries no tick; the frame header does, and `Clock` is the
   only carrier of pause state. A withheld value is `None` (a `00` flag),
   never a zero.
+- *2026-11-10 (UTC), T140b:* **Fact ops** (tags 11..=13, `Encounter`,
+  `Timeline`, `EntityFacts`; supersedes the T140a "reserved" note above).
+  Never check timeline `NetId` order: the authority orders ties by
+  `EntityId`, the client sees `NetId`s, so the codec checks only
+  non-decreasing keys and distinct entities. A v3 page is not a frame: split
+  with `codec_v3::frame_spans`, never by op count (1,024 full `EntityFacts`
+  are about 2.8 MB; ops-only chunking builds frames `encode_delta` refuses).
+  Over-limit families are withheld by the host, never truncated or refused
+  here. The encode checks are the public `check_*` functions; keep them and
+  the decoder in the same order.
+
+- *2026-11-10 (UTC), T140c:* **Fact filter** (`facts_v3`; see architecture
+  §"T140c"). `FactView` never mints: it resolves every `NetId` through the one
+  `InterestView` of the epoch, and it is driven only through `project_page`
+  (never mutate it, or the view, around that call). No controller input exists;
+  the order grant is the host's (`fields.order` only for the controlling peer).
+  Withheld is `None`, never a disclosed nothing: `Some(None)` means "disclosed,
+  none", and an unchanged-looking image under a new `NetId` is still a new
+  subject, so remembered rows are keyed by `(EntityKey, NetId)`. Build the two
+  host ops only with `clock_op` / `host_facts_op`.
+
+- *2026-11-10 (UTC), T140d:* **`0x82` snapshot** (`transfer_v3`; see
+  architecture §"T140d"). `0x82` frames are `0x81` layouts with the v3 caps
+  (4 MiB, 128 chunks): never fork the layout, and keep T024's checks in
+  T024's order. Never call the `0x81` codec or `BeginTransfer::validate` for a
+  v3 Begin or Chunk (they refuse the wider values): use `check_begin` and
+  `chunk_len`. Never raise the `protocol` v1 caps for v3; they are frozen
+  pins. Compute the chunk count in `usize` before narrowing to `u8` (a count
+  that wraps can look valid). `encode_body` and `decode_body` check in the
+  same order, so they agree on every refusal; keep them so, and never add a
+  host-fact field to the body.
+
+- *2026-11-10 (UTC), T140e:* **v3 receiver sizing** (`reassembly_v3`; see
+  architecture §"T140e"). A v3 transfer is never sized by `TransferLimits` or
+  assembled by `TransferAssembly`: both keep the v1 caps (1 MiB, 32 chunks,
+  a `u32` bitmap) and refuse a 4 MiB Begin; use `TransferLimitsV3` and
+  `TransferAssemblyV3`. The host paces `0x82` frames (H-7): the largest plan
+  is 88 frames and 2,851,124 bytes, above the 2 MiB per-peer egress bytes, so
+  the egress caps do not grow and a plan is never admitted whole. The v3
+  limits are read by path from `protocol` and `transfer_v3`; never copy a
+  number into them, and keep `validate` in field order, `InvalidLimits`
+  before `LoosensPolicy`.
 
 ## Agent log
 
@@ -161,3 +203,11 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T046 · Added the `replica` pointer and the apply-only/no-reset/no-grave/`Died`-is-a-notice traps, with the DoD count 226 (the base suites plus 17 `replica` unit tests).
 
 - 2026-11-10 (UTC) · claude-code/opus-5.5 (manager) + T140a · Signed for the Sonnet implementer, who added the protocol v3 entry with its three traps (no tag reuse, no `Legacy` wrap of v2, `Clock` carries no tick), so agents extending v3 in T140b–e keep the wire stable.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Added the fact-op entry with its two traps (never check timeline `NetId` order; a v3 page is not a frame, split with `frame_spans`), superseding the T140a note that tags 11..=13 are reserved.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Added the fact-filter entry with its three traps (`FactView` never mints and is driven only through `project_page`; no controller input, the order grant is the host's; withheld is `None`, never a disclosed nothing).
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Added the `0x82` snapshot entry with its traps (v3 Begin/Chunk go through `check_begin`, never the `0x81` codec or `validate`; the v1 caps stay frozen; the chunk count is computed in `usize`; encode and decode check in one order).
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140e · Added the v3 receiver-sizing entry with its two traps (a v3 transfer is never sized by `TransferLimits` or assembled by `TransferAssembly`; the host paces `0x82` frames and the egress caps do not grow).

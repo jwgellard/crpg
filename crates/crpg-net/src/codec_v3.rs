@@ -13,8 +13,10 @@
 //! nothing; tag 5: one mode byte). Delta frame: `version=3, lane,
 //! server_tick, event_seq, op_count`, then each op as its tag and fields.
 //! Tags 0..=10 are byte-identical to v2 except that a receipt's code byte is
-//! a v3 [`RejectionCode`]. Tags 11..=13 are reserved for T140b and are
-//! [`CodecError::UnknownMessage`] here.
+//! a v3 [`RejectionCode`]. Tags 11..=13 (T140b) are the fact ops
+//! `Encounter`, `Timeline` and `EntityFacts`; [`frame_spans`] is the one
+//! splitter that cuts a page of ops into frames that encode within the frame
+//! cap.
 //!
 //! Decode order is contract: whole-frame cap, version, header fields (lane,
 //! `seq` range, ...), op-count cap before any op is read (the vector grows by
@@ -25,6 +27,9 @@
 //! from serde failures.
 //!
 //! The codec checks shape, not entitlement, and never touches `World`.
+
+use core::ops::Range;
+use std::collections::BTreeSet;
 
 use crpg_core::Ulid;
 
@@ -38,12 +43,16 @@ use crate::protocol_v2::{
     DELTA_TAG_ACTION_RESOLVED, DELTA_TAG_ENCOUNTER_ENDED, DELTA_TAG_TURN_STARTED,
 };
 use crate::protocol_v3::{
-    AutoPauseToggles, AutoPauseTrigger, DeltaFrame, DeltaOp, EncounterMode, HostFacts, IntentBody,
-    IntentFrame, NetId, PauseReason, PauseRights, ReceiptStatus, RejectionCode, DELTA_TAG_CLOCK,
-    DELTA_TAG_HOST_FACTS, DELTA_TAG_JOINED, DELTA_TAG_LEFT, DELTA_TAG_MODE_CHANGED,
-    DELTA_TAG_ORDER_ENDED, DELTA_TAG_ROUND_STARTED, INTENT_TAG_DECLARE_ACTION, INTENT_TAG_END_TURN,
+    check_effects, check_name_len, check_pools, check_stats, check_tags, check_timeline,
+    AutoPauseToggles, AutoPauseTrigger, ClockFact, DeltaFrame, DeltaOp, EffectFact, EncounterFacts,
+    EncounterMode, FactSet, HostFacts, IntentBody, IntentFrame, NetId, OrderFact, PauseReason,
+    PauseRights, PoolFact, ReceiptStatus, RejectionCode, StatFact, StatValue, TimelineEntry,
+    DELTA_TAG_CLOCK, DELTA_TAG_ENCOUNTER, DELTA_TAG_ENTITY_FACTS, DELTA_TAG_HOST_FACTS,
+    DELTA_TAG_JOINED, DELTA_TAG_LEFT, DELTA_TAG_MODE_CHANGED, DELTA_TAG_ORDER_ENDED,
+    DELTA_TAG_ROUND_STARTED, DELTA_TAG_TIMELINE, INTENT_TAG_DECLARE_ACTION, INTENT_TAG_END_TURN,
     INTENT_TAG_PAUSE, INTENT_TAG_REQUEST_MODE, INTENT_TAG_STOP, INTENT_TAG_UNPAUSE,
-    PROTOCOL_VERSION,
+    MAX_FACT_EFFECTS, MAX_FACT_NAME_BYTES, MAX_FACT_POOLS, MAX_FACT_STATS, MAX_FACT_TAGS,
+    MAX_FRAME_OP_BYTES_V3, MAX_TIMELINE_ENTRIES, PROTOCOL_VERSION, STAT_KIND_FIXED, STAT_KIND_INT,
 };
 
 /// Shape failure of the explicit v3 wire: the same six variants as v1.
@@ -407,6 +416,375 @@ fn take_host_facts(rest: &mut &[u8]) -> Result<HostFacts, CodecError> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Fact ops (T140b): encounter, timeline, entity facts.
+// ---------------------------------------------------------------------------
+
+/// Encodes a ULID as its bounded canonical text.
+fn extend_ulid(out: Vec<u8>, id: &Ulid) -> Result<Vec<u8>, CodecError> {
+    let text = id.to_string();
+    check_ulid_text(&text)?;
+    extend(out, &text)
+}
+
+/// Decodes a bounded list count: over `cap` is `LimitExceeded`, before any
+/// element is read or allocated.
+fn take_count(rest: &mut &[u8], cap: usize) -> Result<usize, CodecError> {
+    let count = take_varint_len(rest)?;
+    if count > cap as u64 {
+        return Err(CodecError::LimitExceeded);
+    }
+    Ok(count as usize)
+}
+
+/// Decodes one stat name or tag: length varint (over 32 `LimitExceeded`, 0
+/// `Malformed`) before the body, then the body, then UTF-8.
+fn take_fact_name(rest: &mut &[u8]) -> Result<String, CodecError> {
+    let len = take_varint_len(rest)?;
+    if len > MAX_FACT_NAME_BYTES as u64 {
+        return Err(CodecError::LimitExceeded);
+    }
+    let len = len as usize;
+    check_name_len(len)?;
+    if rest.len() < len {
+        return Err(CodecError::Malformed);
+    }
+    let (body, remaining) = rest.split_at(len);
+    let text = core::str::from_utf8(body).map_err(|_| CodecError::Malformed)?;
+    *rest = remaining;
+    Ok(text.to_owned())
+}
+
+/// Encodes one mode byte.
+fn extend_mode_byte(out: Vec<u8>, mode: EncounterMode) -> Result<Vec<u8>, CodecError> {
+    extend(out, &mode.as_u8())
+}
+
+/// Encodes the `Encounter` fields after the tag (T140d reuses this for the
+/// snapshot body).
+pub(crate) fn extend_encounter(
+    mut out: Vec<u8>,
+    facts: &EncounterFacts,
+) -> Result<Vec<u8>, CodecError> {
+    match facts.mode {
+        None => out = extend(out, &false)?,
+        Some(mode) => {
+            out = extend(out, &true)?;
+            out = extend_mode_byte(out, mode)?;
+        }
+    }
+    match facts.pending_mode {
+        None => out = extend(out, &false)?,
+        Some(None) => {
+            out = extend(out, &true)?;
+            out = extend(out, &false)?;
+        }
+        Some(Some(mode)) => {
+            out = extend(out, &true)?;
+            out = extend(out, &true)?;
+            out = extend_mode_byte(out, mode)?;
+        }
+    }
+    match facts.clock {
+        None => out = extend(out, &false)?,
+        Some(None) => {
+            out = extend(out, &true)?;
+            out = extend(out, &false)?;
+        }
+        Some(Some(clock)) => {
+            clock.check()?;
+            out = extend(out, &true)?;
+            out = extend(out, &true)?;
+            out = extend(out, &clock.round_ticks)?;
+            out = extend(out, &clock.elapsed)?;
+        }
+    }
+    Ok(out)
+}
+
+/// Decodes the `Encounter` fields after the tag.
+pub(crate) fn take_encounter(rest: &mut &[u8]) -> Result<EncounterFacts, CodecError> {
+    let mode_disclosed: bool = take(rest)?;
+    let mode = if mode_disclosed {
+        Some(take_mode(rest)?)
+    } else {
+        None
+    };
+    let pending_disclosed: bool = take(rest)?;
+    let pending_mode = if pending_disclosed {
+        let some: bool = take(rest)?;
+        if some {
+            Some(Some(take_mode(rest)?))
+        } else {
+            Some(None)
+        }
+    } else {
+        None
+    };
+    let clock_disclosed: bool = take(rest)?;
+    let clock = if clock_disclosed {
+        let some: bool = take(rest)?;
+        if some {
+            let round_ticks: u32 = take(rest)?;
+            let elapsed: u64 = take(rest)?;
+            let clock = ClockFact {
+                round_ticks,
+                elapsed,
+            };
+            clock.check()?;
+            Some(Some(clock))
+        } else {
+            Some(None)
+        }
+    } else {
+        None
+    };
+    Ok(EncounterFacts {
+        mode,
+        pending_mode,
+        clock,
+    })
+}
+
+/// Encodes the `Timeline` fields after the tag.
+pub(crate) fn extend_timeline(
+    mut out: Vec<u8>,
+    entries: &Option<Vec<TimelineEntry>>,
+) -> Result<Vec<u8>, CodecError> {
+    let Some(entries) = entries else {
+        return extend(out, &false);
+    };
+    check_timeline(entries)?;
+    out = extend(out, &true)?;
+    out = extend(out, &(entries.len() as u64))?;
+    for entry in entries {
+        out = extend(out, &entry.key)?;
+        out = extend(out, &entry.entity.get())?;
+    }
+    Ok(out)
+}
+
+/// Decodes the `Timeline` fields after the tag. Keys must not decrease and
+/// entities must be distinct; `NetId` order is never checked.
+pub(crate) fn take_timeline(rest: &mut &[u8]) -> Result<Option<Vec<TimelineEntry>>, CodecError> {
+    let disclosed: bool = take(rest)?;
+    if !disclosed {
+        return Ok(None);
+    }
+    let count = take_count(rest, MAX_TIMELINE_ENTRIES)?;
+    // Grows by push: no reservation from the untrusted count.
+    let mut entries: Vec<TimelineEntry> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for _ in 0..count {
+        let key: i32 = take(rest)?;
+        let entity = take_net_id(rest)?;
+        if entries.last().is_some_and(|previous| key < previous.key) {
+            return Err(CodecError::Malformed);
+        }
+        if !seen.insert(entity) {
+            return Err(CodecError::Malformed);
+        }
+        entries.push(TimelineEntry { key, entity });
+    }
+    Ok(Some(entries))
+}
+
+/// Encodes the fact set after the entity (also the `0x82` body's per-entity
+/// set). Families go in order pools, effects, order, stats, tags; each is
+/// checked by its public `check_*` function before its bytes are written.
+pub(crate) fn extend_fact_set(mut out: Vec<u8>, facts: &FactSet) -> Result<Vec<u8>, CodecError> {
+    match &facts.pools {
+        None => out = extend(out, &false)?,
+        Some(pools) => {
+            check_pools(pools)?;
+            out = extend(out, &true)?;
+            out = extend(out, &(pools.len() as u64))?;
+            for pool in pools {
+                out = extend_ulid(out, &pool.pool)?;
+                out = extend(out, &pool.current)?;
+                out = extend(out, &pool.max)?;
+            }
+        }
+    }
+    match &facts.effects {
+        None => out = extend(out, &false)?,
+        Some(effects) => {
+            check_effects(effects)?;
+            out = extend(out, &true)?;
+            out = extend(out, &(effects.len() as u64))?;
+            for effect in effects {
+                out = extend_ulid(out, &effect.effect)?;
+                out = extend(out, &effect.expires_round)?;
+            }
+        }
+    }
+    match &facts.order {
+        None => out = extend(out, &false)?,
+        Some(None) => {
+            out = extend(out, &true)?;
+            out = extend(out, &false)?;
+        }
+        Some(Some(order)) => {
+            out = extend(out, &true)?;
+            out = extend(out, &true)?;
+            out = extend_ulid(out, &order.ability)?;
+            out = extend(out, &order.target.get())?;
+            out = extend(out, &order.repeat)?;
+        }
+    }
+    match &facts.stats {
+        None => out = extend(out, &false)?,
+        Some(stats) => {
+            check_stats(stats)?;
+            out = extend(out, &true)?;
+            out = extend(out, &(stats.len() as u64))?;
+            for stat in stats {
+                out = extend(out, stat.name.as_str())?;
+                match stat.value {
+                    StatValue::Int(value) => {
+                        out = extend(out, &STAT_KIND_INT)?;
+                        out = extend(out, &value)?;
+                    }
+                    StatValue::Fixed(value) => {
+                        out = extend(out, &STAT_KIND_FIXED)?;
+                        out = extend(out, &value)?;
+                    }
+                }
+            }
+        }
+    }
+    match &facts.tags {
+        None => out = extend(out, &false)?,
+        Some(tags) => {
+            check_tags(tags)?;
+            out = extend(out, &true)?;
+            out = extend(out, &(tags.len() as u64))?;
+            for tag in tags {
+                out = extend(out, tag.as_str())?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Decodes the fact set after the entity, left to right: each family is a
+/// disclosed flag, then a bounded count before any element, then elements
+/// each checked as read.
+pub(crate) fn take_fact_set(rest: &mut &[u8]) -> Result<FactSet, CodecError> {
+    let pools_disclosed: bool = take(rest)?;
+    let pools = if pools_disclosed {
+        let count = take_count(rest, MAX_FACT_POOLS)?;
+        let mut pools: Vec<PoolFact> = Vec::new();
+        for _ in 0..count {
+            let pool = take_ulid(rest)?;
+            let current: u32 = take(rest)?;
+            let max: u32 = take(rest)?;
+            if current > max {
+                return Err(CodecError::Malformed);
+            }
+            if pools.iter().any(|earlier| earlier.pool == pool) {
+                return Err(CodecError::Malformed);
+            }
+            pools.push(PoolFact { pool, current, max });
+        }
+        Some(pools)
+    } else {
+        None
+    };
+
+    let effects_disclosed: bool = take(rest)?;
+    let effects = if effects_disclosed {
+        let count = take_count(rest, MAX_FACT_EFFECTS)?;
+        let mut effects: Vec<EffectFact> = Vec::new();
+        for _ in 0..count {
+            let effect = take_ulid(rest)?;
+            let expires_round: u64 = take(rest)?;
+            if effects
+                .last()
+                .is_some_and(|previous| effect <= previous.effect)
+            {
+                return Err(CodecError::Malformed);
+            }
+            effects.push(EffectFact {
+                effect,
+                expires_round,
+            });
+        }
+        Some(effects)
+    } else {
+        None
+    };
+
+    let order_disclosed: bool = take(rest)?;
+    let order = if order_disclosed {
+        let some: bool = take(rest)?;
+        if some {
+            let ability = take_ulid(rest)?;
+            let target = take_net_id(rest)?;
+            let repeat: bool = take(rest)?;
+            Some(Some(OrderFact {
+                ability,
+                target,
+                repeat,
+            }))
+        } else {
+            Some(None)
+        }
+    } else {
+        None
+    };
+
+    let stats_disclosed: bool = take(rest)?;
+    let stats = if stats_disclosed {
+        let count = take_count(rest, MAX_FACT_STATS)?;
+        let mut stats: Vec<StatFact> = Vec::new();
+        for _ in 0..count {
+            let name = take_fact_name(rest)?;
+            let kind: u8 = take(rest)?;
+            if kind != STAT_KIND_INT && kind != STAT_KIND_FIXED {
+                return Err(CodecError::UnknownMessage);
+            }
+            let raw: i32 = take(rest)?;
+            let value = if kind == STAT_KIND_INT {
+                StatValue::Int(raw)
+            } else {
+                StatValue::Fixed(raw)
+            };
+            if stats.iter().any(|earlier| earlier.name == name) {
+                return Err(CodecError::Malformed);
+            }
+            stats.push(StatFact { name, value });
+        }
+        Some(stats)
+    } else {
+        None
+    };
+
+    let tags_disclosed: bool = take(rest)?;
+    let tags = if tags_disclosed {
+        let count = take_count(rest, MAX_FACT_TAGS)?;
+        let mut tags: Vec<String> = Vec::new();
+        for _ in 0..count {
+            let tag = take_fact_name(rest)?;
+            if tags.last().is_some_and(|previous| tag <= *previous) {
+                return Err(CodecError::Malformed);
+            }
+            tags.push(tag);
+        }
+        Some(tags)
+    } else {
+        None
+    };
+
+    Ok(FactSet {
+        pools,
+        effects,
+        order,
+        stats,
+        tags,
+    })
+}
+
 /// Encodes one v3 delta operation, including its tag byte.
 fn extend_op(mut out: Vec<u8>, op: &DeltaOp) -> Result<Vec<u8>, CodecError> {
     match op {
@@ -500,6 +878,19 @@ fn extend_op(mut out: Vec<u8>, op: &DeltaOp) -> Result<Vec<u8>, CodecError> {
             out = extend(out, &text)?;
             extend(out, round)
         }
+        DeltaOp::Encounter(facts) => {
+            out = extend(out, &DELTA_TAG_ENCOUNTER)?;
+            extend_encounter(out, facts)
+        }
+        DeltaOp::Timeline { entries } => {
+            out = extend(out, &DELTA_TAG_TIMELINE)?;
+            extend_timeline(out, entries)
+        }
+        DeltaOp::EntityFacts { entity, facts } => {
+            out = extend(out, &DELTA_TAG_ENTITY_FACTS)?;
+            out = extend(out, &entity.get())?;
+            extend_fact_set(out, facts)
+        }
         DeltaOp::RoundStarted { round } => {
             out = extend(out, &DELTA_TAG_ROUND_STARTED)?;
             extend(out, round)
@@ -534,8 +925,7 @@ fn extend_op(mut out: Vec<u8>, op: &DeltaOp) -> Result<Vec<u8>, CodecError> {
 
 /// Decodes one v3 delta operation, tag byte first.
 ///
-/// Any tag outside the implemented set (including the reserved 11..=13) is
-/// [`CodecError::UnknownMessage`].
+/// Any tag outside 0..=20 is [`CodecError::UnknownMessage`].
 fn take_op(rest: &mut &[u8]) -> Result<DeltaOp, CodecError> {
     let tag: u8 = take(rest)?;
     match tag {
@@ -612,6 +1002,15 @@ fn take_op(rest: &mut &[u8]) -> Result<DeltaOp, CodecError> {
             let round: u64 = take(rest)?;
             Ok(DeltaOp::EncounterEnded { encounter, round })
         }
+        DELTA_TAG_ENCOUNTER => Ok(DeltaOp::Encounter(take_encounter(rest)?)),
+        DELTA_TAG_TIMELINE => Ok(DeltaOp::Timeline {
+            entries: take_timeline(rest)?,
+        }),
+        DELTA_TAG_ENTITY_FACTS => {
+            let entity = take_net_id(rest)?;
+            let facts = take_fact_set(rest)?;
+            Ok(DeltaOp::EntityFacts { entity, facts })
+        }
         DELTA_TAG_ROUND_STARTED => Ok(DeltaOp::RoundStarted { round: take(rest)? }),
         DELTA_TAG_MODE_CHANGED => {
             let mode = take_mode(rest)?;
@@ -635,10 +1034,45 @@ fn take_op(rest: &mut &[u8]) -> Result<DeltaOp, CodecError> {
     }
 }
 
+/// Greedy split of `ops`, in order, into frame-sized index ranges.
+///
+/// First runs the per-op encode checks of [`encode_delta`] (receipt lane and
+/// `seq`, ULID text bound, outcome bound then vocabulary, and the fact checks
+/// of the T140b ops) over every op in order; the first failure is returned
+/// and no spans are. Otherwise the returned ranges are contiguous, cover
+/// `0..ops.len()` in order, and a frame closes exactly when adding the next op
+/// would make it hold more than [`MAX_DELTA_OPS`] ops or more than
+/// [`MAX_FRAME_OP_BYTES_V3`] bytes of encoded ops (tags included). Empty input
+/// gives no spans. A lane-0 frame holding one span encodes within
+/// [`MAX_DELTA_FRAME_BYTES`] for every `server_tick` and `event_seq`, because
+/// the byte budget leaves room for the largest header.
+pub fn frame_spans(ops: &[DeltaOp]) -> Result<Vec<Range<usize>>, CodecError> {
+    let mut sizes = Vec::with_capacity(ops.len());
+    for op in ops {
+        sizes.push(extend_op(Vec::new(), op)?.len());
+    }
+    let mut spans = Vec::new();
+    let mut start = 0usize;
+    let mut bytes = 0usize;
+    for (index, size) in sizes.iter().enumerate() {
+        let held = index - start;
+        if held > 0 && (held + 1 > MAX_DELTA_OPS || bytes + size > MAX_FRAME_OP_BYTES_V3) {
+            spans.push(start..index);
+            start = index;
+            bytes = 0;
+        }
+        bytes += size;
+    }
+    if start < ops.len() {
+        spans.push(start..ops.len());
+    }
+    Ok(spans)
+}
+
 /// Encodes one v3 delta frame to its canonical bytes.
 ///
 /// Checks lane, op count, then each op in order (receipt lane and `seq`,
-/// ULID text bound, outcome bound then vocabulary), then
+/// ULID text bound, outcome bound then vocabulary, the fact checks), then
 /// [`MAX_DELTA_FRAME_BYTES`]. No partial bytes are returned on failure.
 pub fn encode_delta(frame: &DeltaFrame) -> Result<Vec<u8>, CodecError> {
     if frame.lane != LANE_COMBAT {

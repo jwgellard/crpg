@@ -13,7 +13,9 @@
 //! `Legacy` variant: the receipt's code byte must reach the new codes
 //! 21..=30, and the v1 [`crate::protocol::RejectionCode`] is frozen at
 //! 1..=20. Payload bytes of tags 0..=10 are identical to v2. Tags 11..=13
-//! (the fact ops) are reserved for T140b and are `UnknownMessage` until then.
+//! (T140b) are the fact ops: [`DeltaOp::Encounter`], [`DeltaOp::Timeline`]
+//! and [`DeltaOp::EntityFacts`], each carrying the viewer's complete image of
+//! its subject, with the wire bounds and shape checks defined below.
 //!
 //! A withheld value is `None` on the wire (a `0` flag with no further bytes),
 //! never a zero. A disclosed nullable value is a nested `Option`. `Clock` is
@@ -22,7 +24,11 @@
 //!
 //! Nothing here reads `World`, mints replica ids, or authorises anything.
 
+use std::collections::BTreeSet;
+
 use crpg_core::Ulid;
+
+use crate::codec::CodecError;
 
 pub use crate::protocol::{NetId, SessionEpoch};
 
@@ -49,11 +55,11 @@ pub const INTENT_TAG_REQUEST_MODE: u8 = 5;
 // Delta tags 0..=7 are `crate::protocol::DELTA_TAG_*` and 8..=10 are
 // `crate::protocol_v2::DELTA_TAG_*`; they are used by path, never copied.
 
-/// Reserved for the encounter fact op (T140b); `UnknownMessage` in T140a.
+/// [`DeltaOp::Encounter`] tag.
 pub const DELTA_TAG_ENCOUNTER: u8 = 11;
-/// Reserved for the timeline fact op (T140b); `UnknownMessage` in T140a.
+/// [`DeltaOp::Timeline`] tag.
 pub const DELTA_TAG_TIMELINE: u8 = 12;
-/// Reserved for the entity fact op (T140b); `UnknownMessage` in T140a.
+/// [`DeltaOp::EntityFacts`] tag.
 pub const DELTA_TAG_ENTITY_FACTS: u8 = 13;
 /// [`DeltaOp::RoundStarted`] tag.
 pub const DELTA_TAG_ROUND_STARTED: u8 = 14;
@@ -81,6 +87,37 @@ pub const AUTO_PAUSE_TOGGLE_MASK: u8 = 0x1F;
 pub const POLICY_CLOCK_HEARTBEAT_TICKS: u64 = 100;
 
 const _: () = assert!(POLICY_CLOCK_HEARTBEAT_TICKS < crate::protocol::POLICY_OBSERVED_TICK_WINDOW);
+
+// ---------------------------------------------------------------------------
+// Fact bounds (T140b).
+// ---------------------------------------------------------------------------
+
+/// Most pools one [`FactSet`] may carry.
+pub const MAX_FACT_POOLS: usize = 16;
+/// Most attached effects one [`FactSet`] may carry.
+pub const MAX_FACT_EFFECTS: usize = 16;
+/// Most stat values one [`FactSet`] may carry.
+pub const MAX_FACT_STATS: usize = 32;
+/// Most record tags one [`FactSet`] may carry.
+pub const MAX_FACT_TAGS: usize = 8;
+/// Longest stat name or tag, in bytes (the shortest is 1).
+pub const MAX_FACT_NAME_BYTES: usize = 32;
+/// Most timeline entries one [`DeltaOp::Timeline`] may carry.
+pub const MAX_TIMELINE_ENTRIES: usize = crate::protocol::MAX_VISIBLE_ENTITIES;
+/// Largest legal clock `elapsed`: `i32::MAX`, the sim's `RT_CLOCK_MAX`.
+pub const MAX_CLOCK_ELAPSED: u64 = 2_147_483_647;
+/// Wire `kind` byte of [`StatValue::Int`].
+pub const STAT_KIND_INT: u8 = 0;
+/// Wire `kind` byte of [`StatValue::Fixed`].
+pub const STAT_KIND_FIXED: u8 = 1;
+/// Largest delta-frame header: version 1 + lane 1 + `server_tick` 10 +
+/// `event_seq` 10 + op count 2 (at most 256).
+pub const MAX_DELTA_HEADER_BYTES_V3: usize = 24;
+/// Op bytes one frame may carry so that it fits
+/// [`MAX_DELTA_FRAME_BYTES`](crate::protocol::MAX_DELTA_FRAME_BYTES) under any
+/// header.
+pub const MAX_FRAME_OP_BYTES_V3: usize =
+    crate::protocol::MAX_DELTA_FRAME_BYTES - MAX_DELTA_HEADER_BYTES_V3;
 
 // ---------------------------------------------------------------------------
 // Modes, triggers, pause reasons, host facts.
@@ -236,6 +273,246 @@ pub struct HostFacts {
     /// `Some(None)` is disclosed with no timer running, `Some(Some(ms))` is
     /// the remaining time.
     pub turn_timer_ms: Option<Option<u32>>,
+}
+
+// ---------------------------------------------------------------------------
+// Fact types (T140b).
+// ---------------------------------------------------------------------------
+
+/// The encounter's round clock: ticks per round and ticks elapsed in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockFact {
+    /// Ticks in one round; never 0.
+    pub round_ticks: u32,
+    /// Ticks elapsed in the current round, at most [`MAX_CLOCK_ELAPSED`].
+    pub elapsed: u64,
+}
+
+impl ClockFact {
+    /// Checks the wire shape: `round_ticks` nonzero and `elapsed` within
+    /// [`MAX_CLOCK_ELAPSED`], both [`CodecError::Malformed`].
+    pub fn check(&self) -> Result<(), CodecError> {
+        if self.round_ticks == 0 || self.elapsed > MAX_CLOCK_ELAPSED {
+            return Err(CodecError::Malformed);
+        }
+        Ok(())
+    }
+}
+
+/// Encounter facts for one viewer (tag [`DELTA_TAG_ENCOUNTER`]). A [`None`]
+/// field is withheld, never zero; a disclosed nullable value is a nested
+/// `Option`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EncounterFacts {
+    /// The time mode; [`None`] is withheld.
+    pub mode: Option<EncounterMode>,
+    /// The pending mode: [`None`] is withheld, `Some(None)` is disclosed with
+    /// no pending mode.
+    pub pending_mode: Option<Option<EncounterMode>>,
+    /// The round clock: [`None`] is withheld, `Some(None)` is disclosed with
+    /// no clock.
+    pub clock: Option<Option<ClockFact>>,
+}
+
+impl EncounterFacts {
+    /// Reports whether all three fields are withheld.
+    pub fn is_withheld(&self) -> bool {
+        self.mode.is_none() && self.pending_mode.is_none() && self.clock.is_none()
+    }
+}
+
+/// One timeline entry: the ordering key and the entity it orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineEntry {
+    /// Ordering key; keys never decrease along a timeline.
+    pub key: i32,
+    /// The replica entity. Order among equal keys is the authority's, and
+    /// the codec never checks it.
+    pub entity: NetId,
+}
+
+/// One resource pool of an entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolFact {
+    /// Authored pool identity.
+    pub pool: Ulid,
+    /// Current amount, at most `max`.
+    pub current: u32,
+    /// Maximum amount.
+    pub max: u32,
+}
+
+/// One effect attached to an entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectFact {
+    /// Authored effect identity.
+    pub effect: Ulid,
+    /// The round the effect expires at.
+    pub expires_round: u64,
+}
+
+/// An entity's standing order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderFact {
+    /// Authored ability identity.
+    pub ability: Ulid,
+    /// The replica entity the order targets.
+    pub target: NetId,
+    /// Whether the order repeats.
+    pub repeat: bool,
+}
+
+/// A stat value: the `Int` attribute or `Fixed` stat kinds only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatValue {
+    /// An integer attribute (wire kind [`STAT_KIND_INT`]).
+    Int(i32),
+    /// A `Fixed` stat as raw `Fx16_16` bits (wire kind [`STAT_KIND_FIXED`]).
+    Fixed(i32),
+}
+
+/// One named stat of an entity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatFact {
+    /// Stat name, 1..=[`MAX_FACT_NAME_BYTES`] bytes.
+    pub name: String,
+    /// The value.
+    pub value: StatValue,
+}
+
+/// An entity's fact set (tag [`DELTA_TAG_ENTITY_FACTS`] after the entity).
+/// Each family is withheld when [`None`]; an empty disclosed list is distinct
+/// from withheld.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FactSet {
+    /// Pools, at most [`MAX_FACT_POOLS`], pairwise distinct.
+    pub pools: Option<Vec<PoolFact>>,
+    /// Effects, at most [`MAX_FACT_EFFECTS`], strictly ascending by id.
+    pub effects: Option<Vec<EffectFact>>,
+    /// The standing order: [`None`] is withheld, `Some(None)` is disclosed
+    /// with no order.
+    pub order: Option<Option<OrderFact>>,
+    /// Stats, at most [`MAX_FACT_STATS`], names pairwise distinct.
+    pub stats: Option<Vec<StatFact>>,
+    /// Record tags, at most [`MAX_FACT_TAGS`], strictly ascending bytewise.
+    pub tags: Option<Vec<String>>,
+}
+
+impl FactSet {
+    /// Reports whether all five families are withheld.
+    pub fn is_withheld(&self) -> bool {
+        self.pools.is_none()
+            && self.effects.is_none()
+            && self.order.is_none()
+            && self.stats.is_none()
+            && self.tags.is_none()
+    }
+}
+
+/// Checks a pool list: count over [`MAX_FACT_POOLS`] is
+/// [`CodecError::LimitExceeded`]; then per pool in order, `current > max` and
+/// a repeated pool id are [`CodecError::Malformed`].
+pub fn check_pools(pools: &[PoolFact]) -> Result<(), CodecError> {
+    if pools.len() > MAX_FACT_POOLS {
+        return Err(CodecError::LimitExceeded);
+    }
+    for (index, pool) in pools.iter().enumerate() {
+        if pool.current > pool.max {
+            return Err(CodecError::Malformed);
+        }
+        if pools[..index]
+            .iter()
+            .any(|earlier| earlier.pool == pool.pool)
+        {
+            return Err(CodecError::Malformed);
+        }
+    }
+    Ok(())
+}
+
+/// Checks an effect list: count over [`MAX_FACT_EFFECTS`] is
+/// [`CodecError::LimitExceeded`]; then each effect id must be strictly
+/// greater than the previous one ([`CodecError::Malformed`]).
+pub fn check_effects(effects: &[EffectFact]) -> Result<(), CodecError> {
+    if effects.len() > MAX_FACT_EFFECTS {
+        return Err(CodecError::LimitExceeded);
+    }
+    for pair in effects.windows(2) {
+        if pair[1].effect <= pair[0].effect {
+            return Err(CodecError::Malformed);
+        }
+    }
+    Ok(())
+}
+
+/// Checks one stat name or tag length: over [`MAX_FACT_NAME_BYTES`] is
+/// [`CodecError::LimitExceeded`], empty is [`CodecError::Malformed`].
+pub(crate) fn check_name_len(len: usize) -> Result<(), CodecError> {
+    if len > MAX_FACT_NAME_BYTES {
+        return Err(CodecError::LimitExceeded);
+    }
+    if len == 0 {
+        return Err(CodecError::Malformed);
+    }
+    Ok(())
+}
+
+/// Checks a stat list: count over [`MAX_FACT_STATS`] is
+/// [`CodecError::LimitExceeded`]; then per stat in order, a name over
+/// [`MAX_FACT_NAME_BYTES`] bytes is [`CodecError::LimitExceeded`], an empty
+/// name or a name equal to an earlier stat's is [`CodecError::Malformed`].
+pub fn check_stats(stats: &[StatFact]) -> Result<(), CodecError> {
+    if stats.len() > MAX_FACT_STATS {
+        return Err(CodecError::LimitExceeded);
+    }
+    for (index, stat) in stats.iter().enumerate() {
+        check_name_len(stat.name.len())?;
+        if stats[..index]
+            .iter()
+            .any(|earlier| earlier.name == stat.name)
+        {
+            return Err(CodecError::Malformed);
+        }
+    }
+    Ok(())
+}
+
+/// Checks a tag list: count over [`MAX_FACT_TAGS`] is
+/// [`CodecError::LimitExceeded`]; then per tag in order, a tag over
+/// [`MAX_FACT_NAME_BYTES`] bytes is [`CodecError::LimitExceeded`], an empty
+/// tag or one not strictly greater (byte order) than the previous is
+/// [`CodecError::Malformed`].
+pub fn check_tags(tags: &[String]) -> Result<(), CodecError> {
+    if tags.len() > MAX_FACT_TAGS {
+        return Err(CodecError::LimitExceeded);
+    }
+    for (index, tag) in tags.iter().enumerate() {
+        check_name_len(tag.len())?;
+        if index > 0 && tag.as_bytes() <= tags[index - 1].as_bytes() {
+            return Err(CodecError::Malformed);
+        }
+    }
+    Ok(())
+}
+
+/// Checks a timeline: count over [`MAX_TIMELINE_ENTRIES`] is
+/// [`CodecError::LimitExceeded`]; then per entry in order, a key below the
+/// previous key and an entity seen earlier are [`CodecError::Malformed`].
+/// `NetId` order among equal keys is never checked.
+pub fn check_timeline(entries: &[TimelineEntry]) -> Result<(), CodecError> {
+    if entries.len() > MAX_TIMELINE_ENTRIES {
+        return Err(CodecError::LimitExceeded);
+    }
+    let mut seen = BTreeSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 && entry.key < entries[index - 1].key {
+            return Err(CodecError::Malformed);
+        }
+        if !seen.insert(entry.entity) {
+            return Err(CodecError::Malformed);
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -472,9 +749,6 @@ pub struct DeltaFrame {
 }
 
 /// Closed v3 delta vocabulary.
-///
-/// Tags 11..=13 (the fact ops) are added by T140b between
-/// [`DeltaOp::EncounterEnded`] and [`DeltaOp::RoundStarted`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeltaOp {
     /// A permitted entity becomes visible (tag 0).
@@ -560,6 +834,23 @@ pub enum DeltaOp {
         encounter: Ulid,
         /// The closing combat round.
         round: u64,
+    },
+    /// The viewer's encounter facts (tag 11).
+    Encounter(EncounterFacts),
+    /// The viewer's timeline image (tag 12): [`None`] is withheld, which
+    /// tells the client to forget the timeline.
+    Timeline {
+        /// Entries in authority order, keys non-decreasing, entities
+        /// distinct; hidden entities have no entry.
+        entries: Option<Vec<TimelineEntry>>,
+    },
+    /// The viewer's fact image of one entity (tag 13); an all-withheld set
+    /// tells the client to forget the facts.
+    EntityFacts {
+        /// The replica entity described.
+        entity: NetId,
+        /// The viewer's complete current image.
+        facts: FactSet,
     },
     /// A round started (tag 14).
     RoundStarted {

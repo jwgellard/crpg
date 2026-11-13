@@ -605,7 +605,7 @@ no `Paused` code.
 **Scalar ops.** 14 `RoundStarted`, 15 `ModeChanged`, 16 `OrderEnded`, 17
 `Joined`, 18 `Left` (notices that mint or retire no id), 19 `Clock`, 20
 `HostFacts`. Round and the active combatant stay in the v1 `Turn` op.
-Tags 11..=13 are `UnknownMessage` until T140b.
+Tags 11..=13 are the T140b fact ops (below).
 
 **`Clock` is the only pause carrier.** `Clock { paused }` is
 `Option<Option<PauseReason>>`: `None` is running (`00`), `Some(None)` is
@@ -632,7 +632,239 @@ trailing bytes are `Malformed`; counts and strings over their bounds are
 frame cap, and never returns partial bytes. `tests/v3_wire.rs` carries the
 literal byte oracles (A1–A11).
 
+### T140b: fact ops, bounds and `frame_spans`
+
+Three ops carry the viewer's complete image of one subject, so a `None` is
+"not disclosed", never zero, and a disclosed nullable value is a nested
+`Option`. An op whose fields are all withheld tells the client to forget its
+subject. Every flag is a raw `bool`; a byte other than 0/1 is `Malformed`.
+
+| Tag | Op | Fields after the tag |
+|---|---|---|
+| 11 | `Encounter(EncounterFacts)` | `mode_disclosed` [`mode`]; `pending_disclosed` [`pending_some` [`pending`]]; `clock_disclosed` [`clock_some` [`round_ticks` u32, `elapsed` u64]] |
+| 12 | `Timeline { entries }` | `disclosed` [`count` varint, then per entry `key` i32 zigzag, `entity` u64] |
+| 13 | `EntityFacts { entity, facts }` | `entity` u64, then the fact set: pools, effects, order, stats, tags, each a `disclosed` flag then its body |
+
+**Limits, and Reading 8.** At most 16 pools, 16 effects, 32 stats, 8 tags,
+1,024 timeline entries; stat names and tags are 1..=32 bytes; `round_ticks`
+is nonzero and `elapsed` is at most `i32::MAX`. A count over its cap is
+`LimitExceeded`, read before any element (a ten-byte hostile count
+included). Shape faults are `Malformed`: `current > max`, a repeated pool or
+stat name, effects not strictly ascending by id, tags not strictly ascending
+by bytes, an empty name, a descending timeline key, a repeated timeline
+entity, target 0. A stat `kind` byte over 1 is `UnknownMessage`. The public
+`check_pools`, `check_effects`, `check_stats`, `check_tags`, `check_timeline`
+and `ClockFact::check` are the encode-side checks and return exactly the
+error `encode_delta` returns. The wire never truncates or refuses an
+over-limit subject: the host (T140c) renders an over-limit family as
+withheld, which fails closed and keeps the session going.
+
+**Timeline tie rule.** Entries are in the authority's `(key, EntityId)`
+order, but the client sees `NetId`s, whose order can differ inside a tie. The
+codec therefore checks only non-decreasing keys and distinct entities, and
+never `NetId` order. Hidden entities have no entry.
+
+**`frame_spans`.** `codec_v3::frame_spans(ops)` is the one frame splitter. It
+runs the per-op encode checks first (the first failure is returned, no
+spans), then closes a frame exactly when the next op would make it hold more
+than 256 ops or more than `MAX_FRAME_OP_BYTES_V3` = 65,512 bytes of encoded
+ops (tags included). 65,512 is the 65,536-byte frame cap less the 24-byte
+largest header (version 1, lane 1, two 10-byte varints, a 2-byte count), so a
+lane-0 frame holding one span encodes for every tick and `event_seq`. No valid
+op is larger than 15,364 bytes (`Timeline` of 1,024; an `EntityFacts` is at
+most 2,755), so the split never fails on size. A page of v3 ops is not a
+frame: counting ops alone (as the v1/v2 host does) would build frames that
+`encode_delta` refuses with `FrameTooLarge`.
+
+**`projection_v3`.** `project_events` is `projection_v2::project_events` for
+v3: more than 256 candidates is `TooManyEvents`; candidates are visited in
+input order and each fully disclosed one yields one op; nothing is sorted or
+deduplicated. `V2(c)` yields exactly the v2 ops for `c`, converted with
+`From`, and its `StringLimit`/`InvalidOutcome` fail the whole call.
+`RoundStarted` needs `round`, `ModeChanged` needs `mode` and `round`,
+`OrderEnded` needs `actor`, `Joined`/`Left` need `entity` and
+`disclose == true`; a candidate missing any of these is omitted without
+looking at its other fields. `tests/v3_facts_wire.rs` carries the literal
+oracles (B1-B9). `codec_v3` also exposes crate-private `extend_*`/`take_*`
+for the encounter block, the timeline block and the fact set, which T140d
+reuses for the `0x82` body.
+
+### T140c: `facts_v3`, the per-viewer fact filter
+
+`FactView` is the companion of the one `InterestView` of an epoch (it is not a
+field of it, so T027b's structs and tests stay as they are). It mints nothing:
+every `NetId` comes from `view.net_id`. It is driven only through
+`project_page(view, facts, state, context)`, which validates before either view
+mutates, so a call is all-or-nothing. `FactView` keeps the last encounter image,
+the last timeline image and, per visible key, the `(NetId, FactSet)` it told the
+viewer. It is not `Serialize` and has no restore constructor.
+
+**Op ownership (extends the D5 table above).**
+
+| Op | Owner |
+|---|---|
+| `EntityEnter`, `Health`, `Turn`, `EntityLeave`, `Despawned` | `InterestView` |
+| `Encounter`, `Timeline`, `EntityFacts` | `FactView` (`project_page`) |
+| `Spawned`, `Died`, `ActionResolved`, `TurnStarted`, `EncounterEnded`, `RoundStarted`, `ModeChanged`, `OrderEnded`, `Joined`, `Left` | `projection_v3::project_events` |
+| `Clock`, `HostFacts` | `clock_op` / `host_facts_op` with the host's per-viewer `HostGrants` |
+| `Receipt` | host |
+
+**Checks (C-1), before anything changes, first failure wins.** The state's or
+the interest view's epoch differs from the fact view's (`WrongEpoch`); more
+than 1,024 rows or 1,024 timeline entries (`TooManyFacts`, counted before
+duplicates); two rows, or two timeline entries, with one `EntityKey`
+(`DuplicateFact`, visible or not); then `project_delta`'s own error as
+`Interest(e)`. The timeline checks read the input whenever an encounter is
+supplied, whatever its area or timeline grant. After the interest projection
+nothing can fail.
+
+**Images.** The encounter image is `EncounterFacts::default()` unless the
+encounter is in the viewer's area; then each field is present only under its
+grant, and a clock that fails `ClockFact::check` is withheld, never refused. The
+timeline image is `Some` only for an in-area encounter with the timeline grant:
+the input sorted ascending by `(key, EntityKey)`, hidden entities dropped, so
+ties keep the authority's order, not the `NetId` order. A visible key renders
+a `FactSet`: a family needs its `FactMask` flag and its `check_*` (Reading 8:
+over-limit is withheld, never truncated or refused); the order is `None`
+without `fields.order`, `Some(None)` with no order, and withheld when its target
+has no `NetId` for this viewer. A visible key with no row renders
+`FactSet::default()`. Rows for keys that are not visible are ignored.
+
+**Memory and emission (C-5, C-6).** Before rendering, every remembered key whose
+current `net_id` is not the stored one is dropped (it left, was retired, or
+re-entered with a new id, including a retirement made by a snapshot applied
+straight to the view). Fact ops follow the view's ops: `Encounter`, then
+`Timeline`, then one `EntityFacts` per visible key in ascending `NetId`. Each is
+sent when its image differs from the remembered one (no remembered row is the
+default image), or under `resend` when the image is not withheld; then every
+image is remembered. A withheld image that changes is therefore still sent
+once, as the forget op (an all-`None` op), and never repeated. `PageV3.ops` is
+the view's ops converted with `From`, then the fact ops; `enters` and `cursor`
+are the view's, so fact ops alone do not advance the cursor. A page holds at
+most `MAX_PAGE_OPS_V3` = 4,099 ops and is not a frame: split it only with
+`codec_v3::frame_spans`.
+
+**Grants.** `FactMask`, `EncounterGrants` and `HostGrants` all default to deny.
+No input names an owner or controller: the host sets `fields.order` (and the
+`OrderEnded` candidate) only for the controlling peer.
+
+**Host facts (C-9, Reading 13).** `clock_op` and `host_facts_op` are stateless
+and pure. Two host facts are deliberately not granted: whether the session is
+paused (every client observes a pause) and the viewer's own pause rights (they
+describe only that viewer). The pause reason, the auto-pause toggles and the
+turn timer each have a `HostGrants` flag; withheld is `None`, never "no timer
+running" (`Some(None)`). `tests/v3_fact_view.rs` carries the oracles (C1-C15
+and the grant, order, memory and bound cases).
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Added the `facts_v3` section: the extended op-owner table, the C-1 check order, the images, memory and emission rules, and Reading 13's two ungranted host facts.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Added the fact-op table, limits and Reading 8, the timeline tie rule, `frame_spans` with its 65,512-byte rule, and `projection_v3`; the T140a text that called tags 11..=13 unknown is superseded here.
+
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the Protocol v3 section for the version gate, intents, native tags 0..=10, codes 21..=30, the scalar ops and `Clock` as the only pause carrier; fact ops, filters and `0x82` follow in T140b–e.
+
+### T140d: `transfer_v3`, the `0x82` snapshot
+
+`0x82` is the `0x81` transfer subprotocol (T024) with a new first byte, a wider
+body and a larger envelope. Every frame layout is `0x81`'s and every check is
+T024's, in T024's order; exactly three bounds differ. The Begin `total_bytes`
+cap is `MAX_SNAPSHOT_BYTES_V3` = 4,194,304 (4 MiB), and the Begin `chunk_count`
+cap and the Chunk `index` bound (encode and decode) are
+`MAX_SNAPSHOT_CHUNKS_V3` = 128 (4 MiB / 32,768). Segments (4,096 bytes, at most
+8 per chunk), chunks (32,768 bytes), the tags, the 65,536/4,096-byte frame caps
+and the canonical cut are unchanged. Because `BeginTransfer::validate`, the
+`0x81` codec, `TransferAssembly` and `TransferLimits` hard-code the v1 caps
+(1 MiB, 32 chunks), `transfer_v3` encodes and decodes Begin and Chunk itself
+through `check_begin` and `chunk_len` (`validate` and `chunk_len` with the v3
+caps, in their order), and copies the `Cancel`, `Published` and `Resync`
+codecs. The v1/v2/`0x81` constants in `protocol` stay 1 MiB and 32 chunks;
+`BeginTransfer`'s fields already hold the wider values (`total_bytes: u32`,
+`chunk_count: u8`, 128 fits one raw byte), so no layout changes. The `0x81`
+decoders and `codec_v3` refuse `0x82` with `UnsupportedVersion`, and the v3
+transfer decoders refuse every other first byte, `0x81` included.
+
+**Body (D-2).** `entity_count` varint, then per entity `entity u64`,
+`health_present` and its three fields, and the fact set (the T140b layout:
+pools, effects, order, stats, tags); then `turn_present` (`active`, `round`),
+the encounter block (the tag 11 payload) and the timeline block (the tag 12
+payload). `SnapshotBodyV3 { entities, turn, encounter, timeline }` reuses the
+T140b `take_*`/`extend_*` helpers. Host facts are not in the body: they are per
+viewer and not state at the cursor, so the host sends them as ops after
+publication.
+
+**Decode order (D-3).** Body over 4,194,304 bytes (`LimitExceeded`); entity
+count over 1,024 (`LimitExceeded`, before growth); per entity the id (0 is
+`Malformed`), strict ascent (`Malformed`), health, then the fact set; then each
+order target must be an entity of the body; then the turn (`active` must be an
+entity); the encounter; the timeline (every entry's entity must be an entity);
+trailing bytes. `encode_body` checks in the same order and returns the same
+error (D-4), so it refuses exactly what `decode_body` refuses.
+
+**Size (Readings 14, 15).** The largest valid body is 2,847,788 bytes: 2
+(count) + 1,024 x 2,766 (entity 10, health 12, pools 2 + 16 x 37, effects
+2 + 16 x 37, order 40, stats 2 + 32 x 39, tags 2 + 8 x 33) + 22 (turn) + 17
+(encounter) + 15,363 (timeline). The smallest power-of-two-MiB cap that holds
+it is 4 MiB, which leaves 1,346,516 bytes of headroom; it needs 87 chunks at 8
+segments per chunk (the last holds 29,740 bytes), and its plan is 88 frames and
+2,851,124 bytes. That is over the 2 MiB per-peer egress bytes, so the host
+paces `0x82` frames (H-7); the egress caps do not grow.
+
+**`plan_transfer` (D-5).** Checks in order: `cursor` above `SEQ_LAST`
+(`Malformed`); `segments_per_chunk` 0 (`Malformed`) or above 8
+(`LimitExceeded`); the body (`encode_body`'s error); then a chunk count above
+128, computed in `usize` before any narrowing to `u8` (one segment gives 696).
+It builds the Begin, cuts the chunks canonically and returns `encode_down` of
+the Begin then of each Chunk. The cap binds only below 8 segments per chunk.
+
+**`project_snapshot_v3` (D-6).** It runs `project_page`'s checks (epochs,
+bounds, duplicate keys) and then `InterestView::project_snapshot`, so a refusal
+leaves both views unchanged. The body is the view body's entities in order,
+each with its health and its row image (`FactSet::default()` without a row),
+the view's turn, and the encounter and timeline images. The `FactView` then
+replaces its memory with exactly these images, so the next `project_page` emits
+only differences; a key the snapshot retired forgets its image. The body always
+passes `encode_body`. `tests/v3_snapshot.rs` carries the oracles (D1-D10).
+
+### T140e: `reassembly_v3`, v3 receiver sizing
+
+`reassembly_v3` re-sizes T024's receiver for the 4 MiB `0x82` envelope. It
+fixes no byte: every number is policy. It reuses `AssemblyError`,
+`ChunkOutcome` and `LimitsError` from `reassembly` by path and edits no
+existing module. `TransferAssembly` and `TransferLimits` keep the v1 caps (1
+MiB, 32 chunks, a `u32` bitmap) and stay byte- and test-identical.
+
+**`TransferAssemblyV3`.** `TransferAssembly`'s behaviour with a `u128` chunk
+bitmap and the v3 Begin rules: `new` is `transfer_v3::check_begin` and then a
+zeroed `total_bytes` buffer; `accept` checks the transfer (`WrongTransfer`),
+the index against `chunk_count` (`OutOfRange`), the length against
+`transfer_v3::chunk_len` (`WrongLength`), then a set bit (`Duplicate` for equal
+bytes, `Conflict` otherwise); an `Err` or `Duplicate` changes nothing. Inside
+the v1 envelope it equals `TransferAssembly` call by call (E3).
+
+**`TransferLimitsV3` (Reading 18).** Same seven fields in the same order as
+`TransferLimits`, with `v3()` at the upper bound of every range:
+`{ 8, 20_000, 4_194_304, 33_554_432, 128, 2_097_152, 16_777_216 }`. Staging
+per receiver is the whole envelope (4,194,304), floored at the largest valid
+body (2,847,788, as v1's floor is its largest body); pool staging is 8 x 4 MiB,
+so eight maximal transfers still fit at once. The deadline is 20,000 ms: T024's
+5 s per 1 MiB at four times the bytes. The held-delta budgets stay 128 frames,
+2 MiB per receiver and 16 MiB per pool, because T024 tied them to the egress
+caps (`POLICY_EGRESS_*`), which do not change; a receiver whose held deltas
+overflow during a slow transfer resyncs by T024's existing overflow rule.
+Worst-case pool memory goes from 24 MiB to 48 MiB (32 MiB staging + 16 MiB held
+deltas), plus decoded bodies. `validate` checks the fields in declaration order,
+first failure wins; per field, zero or under the floor is `InvalidLimits`
+before an over-bound `LoosensPolicy`. The bounds are read by path from
+`protocol` and `transfer_v3` rather than repeated.
+
+**Transport (Reading 19).** The `crpg-net-quic` windows are flow control, not
+size caps, so a larger transfer needs no change there. What bounds a `0x82`
+plan is the egress queue: the largest plan is 88 frames and 2,851,124 bytes,
+above the 2 MiB per-peer egress bytes, so the host paces the frames (H-7, T141)
+and the egress caps do not grow.
+
+The client receiver (`ReassemblyPool` gating of v3 deltas, publication of
+`0x82` bodies, a v3 `ReplicaWorld`) is a later `crpg-net` task built on these
+two types. `tests/v3_reassembly.rs` carries the oracles (E1-E6).
 
 ## Agent log
 
@@ -647,3 +879,9 @@ literal byte oracles (A1–A11).
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + A0-8 · Absorbed the moved Public surface, Invariants, and Allowed dependencies sections from AGENTS.md; no content lost.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140a · Added the "Protocol v3 (T140, ADR-0029 N1–N4)" section for the new `protocol_v3`/`codec_v3` pair; no earlier section changed.
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140b · Extended the Protocol v3 section with the fact ops, their limits, the timeline tie rule, `frame_spans` and `projection_v3`; no earlier section changed.
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140c · Extended the Protocol v3 section with `facts_v3` (`FactView`, `project_page`, the per-row, per-encounter and host-fact grants, the op-owner table and emission rules); no earlier section changed.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Extended the Protocol v3 section with `transfer_v3` (the `0x82` frames, the v3 caps and `check_begin`, the body and its 2,847,788-byte bound, `plan_transfer`) and `project_snapshot_v3`; no earlier section changed.
+
+- 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140e · Extended the Protocol v3 section with `reassembly_v3` (the 128-chunk assembly, the re-sized limits, the worst-case memory and the transport note); no earlier section changed.
