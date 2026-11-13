@@ -5,7 +5,7 @@
 #[allow(dead_code)]
 mod support;
 
-use crpg_core::{EntityId, Ulid};
+use crpg_core::EntityId;
 use crpg_sim::{
     perform_action, request_mode, state_hash, CombatAction, CombatError, EncounterMode, World,
     COMBAT_ROLL_STREAM,
@@ -42,8 +42,8 @@ fn rolled_keys(
     init_b: i32,
 ) -> (i32, i32) {
     let mut rng = draws::oracle(seed);
-    let a_roll = draws::draw(&mut rng, dice).total as i32;
-    let b_roll = draws::draw(&mut rng, dice).total as i32;
+    let a_roll = draws::draw(&mut rng, dice).total;
+    let b_roll = draws::draw(&mut rng, dice).total;
     (
         a_roll.saturating_add(alpha_a).saturating_add(init_a),
         b_roll.saturating_add(alpha_b).saturating_add(init_b),
@@ -186,6 +186,113 @@ fn natural_rule_does_not_fire_on_opposing_roll() {
 }
 
 // ---------------------------------------------------------------------------
+// B14: Opposed bonus stats
+// ---------------------------------------------------------------------------
+
+/// Stat values of the standard fixture: A is (alpha 8, beta 6), B is
+/// (alpha 6, beta 7).
+fn stat_of(ids: &[EntityId], who: EntityId, stat: &str) -> i64 {
+    match (who == ids[0], stat) {
+        (true, "alpha") => 8,
+        (true, "beta") => 6,
+        (false, "alpha") => 6,
+        (false, "beta") => 7,
+        _ => panic!("unknown stat"),
+    }
+}
+
+fn bonus_fixture(actor_bonus: &[&str], opposed_bonus: &[&str], self_target: bool) -> Fixture {
+    let mut fixture = Fixture::standard();
+    draws::defend_opposed(&mut fixture, "1d6", opposed_bonus);
+    surface::always_success(&mut fixture);
+    let names: Vec<String> = actor_bonus.iter().map(|n| (*n).to_owned()).collect();
+    surface::edit_ability(&mut fixture, |ability| {
+        ability.bonus_stats = if names.is_empty() { None } else { Some(names) };
+        if self_target {
+            ability.allow_self_target = true;
+            ability.ends_turn = false;
+            ability.cost = 1;
+            ability.extra_costs = vec![];
+        }
+    });
+    fixture.ruleset.pools[0].max = 10;
+    fixture
+}
+
+/// The raw dice difference (actor dice minus opposing dice) and the margin
+/// of one action from the first active combatant.
+fn bonus_margin(fixture: &Fixture, seed: u64, self_target: bool) -> (i64, i64, EntityId, EntityId) {
+    let (mut world, ids) = start(fixture, seed);
+    let actor = world.combat().expect("encounter").active.expect("active");
+    let target = if self_target {
+        actor
+    } else if actor == ids[0] {
+        ids[1]
+    } else {
+        ids[0]
+    };
+    let mut rng = world.rng_mut().clone();
+    let actor_roll = draws::draw(&mut rng, "2d6").total;
+    let opposing_roll = draws::draw(&mut rng, "1d6").total;
+    let margin = surface::act(&mut world, actor, fixture.ability, target).margin;
+    (
+        i64::from(actor_roll) - i64::from(opposing_roll),
+        margin,
+        actor,
+        target,
+    )
+}
+
+#[test]
+fn opposed_bonus_stats_fold_into_their_own_side() {
+    let fixture = bonus_fixture(&["alpha"], &["beta"], false);
+    let ids = start(&fixture, 13).1;
+    let (diff, margin, actor, target) = bonus_margin(&fixture, 13, false);
+    assert_eq!(
+        margin,
+        diff + stat_of(&ids, actor, "alpha") - stat_of(&ids, target, "beta"),
+        "the actor's list lifts its roll; the Opposed list lifts the target's"
+    );
+    // Controls: each list alone, and neither.
+    let (diff, margin, actor, target) =
+        bonus_margin(&bonus_fixture(&["alpha"], &[], false), 13, false);
+    assert_eq!(margin, diff + stat_of(&ids, actor, "alpha"));
+    let _ = target;
+    let (diff, margin, _, target) = bonus_margin(&bonus_fixture(&[], &["beta"], false), 13, false);
+    assert_eq!(margin, diff - stat_of(&ids, target, "beta"));
+    let (diff, margin, _, _) = bonus_margin(&bonus_fixture(&[], &[], false), 13, false);
+    assert_eq!(margin, diff);
+}
+
+#[test]
+fn self_targeted_opposed_folds_both_lists_into_both_rolls() {
+    // Both lists share one view, so both rolls fold both: the margin is the
+    // raw dice difference whatever the lists hold.
+    for (actor_list, opposed_list) in [
+        (vec!["alpha"], vec!["beta"]),
+        (vec!["alpha", "beta"], vec![]),
+        (vec![], vec!["alpha", "beta"]),
+        (vec!["alpha", "beta"], vec!["alpha", "beta"]),
+    ] {
+        let fixture = bonus_fixture(&actor_list, &opposed_list, true);
+        let (diff, margin, actor, target) = bonus_margin(&fixture, 13, true);
+        assert_eq!(actor, target);
+        assert_eq!(
+            margin, diff,
+            "self-targeted Opposed with {actor_list:?} / {opposed_list:?}"
+        );
+    }
+    // Control: against another target the same lists do not cancel.
+    let fixture = bonus_fixture(&["alpha", "beta"], &[], false);
+    let ids = start(&fixture, 13).1;
+    let (diff, margin, actor, _) = bonus_margin(&fixture, 13, false);
+    assert_eq!(
+        margin,
+        diff + stat_of(&ids, actor, "alpha") + stat_of(&ids, actor, "beta")
+    );
+}
+
+// ---------------------------------------------------------------------------
 // B16: damage dice
 // ---------------------------------------------------------------------------
 
@@ -294,7 +401,7 @@ fn damage_report_matches_health_delta() {
     let before = world.combatants().get(target).expect("target").health();
     let outcome = surface::act(&mut world, actor, ability, target);
     let after = world.combatants().get(target).expect("target").health();
-    assert_eq!((before - after) as u32, outcome.damage);
+    assert_eq!(before - after, outcome.damage);
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +555,7 @@ fn invalid_initiative_dice_rejects_start() {
     let mut world = World::new(3);
     let before = world.clone();
     let err = draws::start_into(&fixture, &mut world);
-    assert!(matches!(err, Err(CombatError::InvalidDice { .. })));
+    assert_eq!(err, Err(CombatError::InvalidDice));
     assert_eq!(world, before);
 }
 
@@ -460,7 +567,7 @@ fn opposed_invalid_dice_rejects_start() {
     let mut world = World::new(3);
     let before = world.clone();
     let err = draws::start_into(&fixture, &mut world);
-    assert!(matches!(err, Err(CombatError::InvalidDice { .. })));
+    assert_eq!(err, Err(CombatError::InvalidDice));
     assert_eq!(world, before);
 }
 
@@ -475,7 +582,7 @@ fn damage_dice_invalid_rejects_start() {
     let mut world = World::new(3);
     let before = world.clone();
     let err = draws::start_into(&fixture, &mut world);
-    assert!(matches!(err, Err(CombatError::InvalidDice { .. })));
+    assert_eq!(err, Err(CombatError::InvalidDice));
     assert_eq!(world, before);
 }
 
@@ -483,13 +590,26 @@ fn damage_dice_invalid_rejects_start() {
 // B19/B20: tags
 // ---------------------------------------------------------------------------
 
+// T139 D5 removed B19's carriage gate: every combatant carries its creature's
+// tags, sorted and deduplicated, with or without a granting effect. The
+// grants on `EffectDefinition` are carried only as authored.
 #[test]
-fn tags_carried_only_with_a_granting_effect() {
+fn tags_projection_sorted_distinct_and_grants_carried() {
     let mut fixture = Fixture::standard();
     let creature_id = fixture.creature_a;
     draws::set_tags(&mut fixture, creature_id, &["pc", "hero", "hero"]);
     let (world, ids) = start(&fixture, 3);
-    assert!(world.combatants().get(ids[0]).expect("A").tags().is_empty());
+    assert_eq!(
+        world.combatants().get(ids[0]).expect("A").tags(),
+        ["hero", "pc"]
+    );
+    assert!(world
+        .combat()
+        .expect("encounter")
+        .definition
+        .effects
+        .iter()
+        .all(|effect| effect.grants.is_empty()));
 
     let mut fixture = Fixture::standard();
     let creature_id = fixture.creature_a;
@@ -563,6 +683,60 @@ fn tag_union_accepted_at_bound_and_rejected_over() {
     assert_eq!(*world.rng_mut(), before);
 }
 
+fn tags_fixture(count: usize, grant: Option<&[&str]>) -> Fixture {
+    let mut fixture = Fixture::standard();
+    let tags: Vec<String> = (0..count).map(|i| format!("tag-{i:04}")).collect();
+    fixture
+        .creatures
+        .get_mut(&fixture.creature_a)
+        .expect("c")
+        .tags = tags;
+    if let Some(grant) = grant {
+        let effect = surface::effect_doc(
+            141,
+            "target",
+            "probe-type",
+            "stack_all",
+            vec![surface::modifier(142, json!({"type": "roll"}), "add", 0)],
+            3,
+        );
+        surface::attach_to_ability(&mut fixture, draws::grant(effect, grant));
+    }
+    fixture
+}
+
+// T139 D5: the bound runs at every start, with an empty grant set when
+// nothing grants (B20 as amended).
+#[test]
+fn tag_bound_runs_without_a_granting_effect() {
+    let (world, _) = start(&tags_fixture(1024, None), 3);
+    assert!(world.combat().is_some(), "1024 distinct tags are accepted");
+
+    let fixture = tags_fixture(1025, None);
+    let mut world = World::new(3);
+    let before = world.clone();
+    let err = draws::start_into(&fixture, &mut world);
+    assert_eq!(err, Err(CombatError::TooManyTags));
+    assert_eq!(world, before, "a rejected start leaves the world unchanged");
+}
+
+#[test]
+fn tag_bound_counts_distinct_union_of_tags_and_grants() {
+    // The grant repeats an existing tag: the union stays at 1024.
+    let (world, _) = start(&tags_fixture(1024, Some(&["tag-0000"])), 3);
+    assert!(world.combat().is_some());
+    // Two distinct new grants over 1023 tags reach 1025.
+    let fixture = tags_fixture(1023, Some(&["new-a", "new-b"]));
+    let mut world = World::new(3);
+    assert_eq!(
+        draws::start_into(&fixture, &mut world),
+        Err(CombatError::TooManyTags)
+    );
+    // One new grant over 1023 tags reaches exactly 1024.
+    let (world, _) = start(&tags_fixture(1023, Some(&["new-a"])), 3);
+    assert!(world.combat().is_some());
+}
+
 // ---------------------------------------------------------------------------
 // B23 L6: load coherence
 // ---------------------------------------------------------------------------
@@ -608,12 +782,19 @@ fn load_rejects_combatant_over_tag_bound() {
 // B24: replay and save/load continuity
 // ---------------------------------------------------------------------------
 
-fn run_script(seed: u64, reload_at: Option<usize>) -> Vec<[u8; 32]> {
+const SCRIPT_STEPS: usize = 6;
+
+/// Runs a fixed script of up to `SCRIPT_STEPS` actions (the active
+/// combatant uses the ability on the other one), recording the state hash
+/// and the action report after each step. When `reload_at` is `Some(k)` the
+/// world is saved and loaded again after step `k`. Returns the trace and the
+/// final world.
+fn run_script(seed: u64, reload_at: Option<usize>) -> (Vec<(String, [u8; 32])>, World) {
     let mut fixture = Fixture::standard();
     draws::defend_opposed(&mut fixture, "1d6", &["beta"]);
     draws::set_damage(
         &mut fixture,
-        json!([{"outcome": {"type": "success"}, "amount": 2, "dice": "1d4"}]),
+        json!([{"outcome": {"type": "success"}, "amount": 1, "dice": "1d4"}]),
     );
     draws::set_initiative_rule(&mut fixture, "1d20", &["alpha"]);
     let effect = surface::effect_doc(
@@ -628,50 +809,59 @@ fn run_script(seed: u64, reload_at: Option<usize>) -> Vec<[u8; 32]> {
     surface::attach_to_ability(&mut fixture, effect);
     let creature_id = fixture.creature_a;
     draws::set_tags(&mut fixture, creature_id, &["hero"]);
+    fixture.ruleset.pools[0].max = 20;
+    surface::edit_ability(&mut fixture, |ability| ability.cost = 1);
 
     let (mut world, ids) = start(&fixture, seed);
     let ability = fixture.ability;
-    let mut hashes = vec![state_hash(&world)];
-
-    let actor = world.combat().expect("encounter").active.expect("active");
-    let target = if actor == ids[0] { ids[1] } else { ids[0] };
-    surface::act(&mut world, actor, ability, target);
-    if reload_at == Some(1) {
+    let mut trace = vec![("start".to_owned(), state_hash(&world))];
+    if reload_at == Some(0) {
         world = reload(world);
     }
-    hashes.push(state_hash(&world));
-
-    let next_actor = world.combat().expect("encounter").active;
-    if let Some(next) = next_actor {
-        let next_target = if next == ids[0] { ids[1] } else { ids[0] };
-        perform_action_raw(&mut world, next, ability, next_target);
+    for step in 1..=SCRIPT_STEPS {
+        let Some(actor) = world.combat().and_then(|combat| combat.active) else {
+            break;
+        };
+        let target = if actor == ids[0] { ids[1] } else { ids[0] };
+        let report = perform_action(
+            &mut world,
+            &CombatAction::UseAbility {
+                actor,
+                ability,
+                target,
+            },
+        );
+        let report = format!("{report:?}");
+        trace.push((report, state_hash(&world)));
+        if reload_at == Some(step) {
+            world = reload(world);
+        }
     }
-    if reload_at == Some(2) {
-        world = reload(world);
-    }
-    hashes.push(state_hash(&world));
-
-    hashes
-}
-
-fn perform_action_raw(world: &mut World, actor: EntityId, ability: Ulid, target: EntityId) {
-    let _ = perform_action(
-        world,
-        &CombatAction::UseAbility {
-            actor,
-            ability,
-            target,
-        },
-    );
+    (trace, world)
 }
 
 #[test]
-fn same_seed_replay_and_save_load_continuity() {
-    let a = run_script(9, None);
-    let b = run_script(9, None);
-    assert!(a.len() >= 3);
+fn same_seed_replay_is_identical_and_other_seed_differs() {
+    let (a, wa) = run_script(9, None);
+    let (b, wb) = run_script(9, None);
+    assert!(a.len() >= 4, "the script performs several actions");
+    assert!(
+        a[1..]
+            .iter()
+            .all(|(report, _)| report.starts_with("Ok(Some(")),
+        "every scripted action is accepted: {a:?}"
+    );
     assert_eq!(a, b);
-    assert_ne!(a, run_script(10, None));
-    let c = run_script(9, Some(1));
-    assert_eq!(a, c);
+    assert_eq!(wa, wb);
+    assert_ne!(a, run_script(10, None).0);
+}
+
+#[test]
+fn save_and_load_mid_run_continues_identically() {
+    let (straight, world) = run_script(9, None);
+    for k in 0..straight.len() {
+        let (resumed, resumed_world) = run_script(9, Some(k));
+        assert_eq!(straight, resumed, "reloaded after step {k}");
+        assert_eq!(world, resumed_world, "final world after reload at {k}");
+    }
 }
