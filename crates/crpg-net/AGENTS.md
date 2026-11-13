@@ -170,6 +170,15 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   number into them, and keep `validate` in field order, `InvalidLimits`
   before `LoosensPolicy`.
 
+- *2026-11-13 (UTC), T140r1:* **v3 receiver gate** (`pool_v3`; see
+  architecture §"T140r1"). `pool_v3` is a transliteration of
+  `reassembly.rs`'s pool: a fix to one is a fix to both, in one task. Never
+  add a V3 arm to `DeltaWire`, `GatedDelta` or `ReplicaUpdate`: the
+  `crpg-server` tests match them exhaustively, and `Publication.body` is the
+  `0x81` body. A v3 receiver never touches `codec_transfer`,
+  `TransferAssembly` or `TransferLimits` (they refuse v3 sizes): use
+  `transfer_v3`, `TransferAssemblyV3` and `TransferLimitsV3`.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
@@ -211,3 +220,5 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Added the `0x82` snapshot entry with its traps (v3 Begin/Chunk go through `check_begin`, never the `0x81` codec or `validate`; the v1 caps stay frozen; the chunk count is computed in `usize`; encode and decode check in one order).
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140e · Added the v3 receiver-sizing entry with its two traps (a v3 transfer is never sized by `TransferLimits` or assembled by `TransferAssembly`; the host paces `0x82` frames and the egress caps do not grow).
+
+- 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the v3 receiver-gate entry with its three traps (one transliteration fixed in both pools in one task; no V3 arm on the frozen v1/v2 types; a v3 receiver uses only the v3 codecs, assembly and limits). P9 remains unwritten because the contract's `G(1)` expectation contradicts P-5 step 4; reported to the manager.

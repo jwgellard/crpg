@@ -866,6 +866,55 @@ The client receiver (`ReassemblyPool` gating of v3 deltas, publication of
 `0x82` bodies, a v3 `ReplicaWorld`) is a later `crpg-net` task built on these
 two types. `tests/v3_reassembly.rs` carries the oracles (E1-E6).
 
+### T140r1: `pool_v3`, the v3 receiver gate
+
+`pool_v3` is T024's reassembly and cutover gate for one v3 session. It
+reuses T024's vocabulary by path and adds a v3 type only where the v1 type
+cannot serve: `TransferOutcome`, `DeltaOutcome`, `TransferError`,
+`FailReason`, `GateMode`, `InFlightStatus`, `PublishedBase`, `Rebound` and
+`ResyncReason` are re-exported unchanged, and `TransferLimitsV3` /
+`LimitsError` come from T140e. New are `PublicationV3` (the `0x82`
+transfer, its base tick and cursor, and the decoded `SnapshotBodyV3`),
+`ReplicaUpdateV3` (`Snapshot(PublicationV3)` or `Delta(DeltaFrame)`, in FIFO
+order), `ReceiverIdV3` (a separate id type, so a v1 receiver cannot be
+passed to a v3 pool) and `ReceiverStatusV3` (T024's status without the
+`wire` field). `ReceiverIdV3`'s field is private, so only the pool mints one.
+
+**Transliteration rule (P-1).** `ReassemblyPoolV3`'s private types and every
+method body are `reassembly.rs:438–1105` with exactly these substitutions,
+and nothing else:
+
+| In `reassembly.rs` | In `pool_v3.rs` |
+|---|---|
+| `TransferLimits` | `TransferLimitsV3` |
+| `TransferAssembly` (type, `::new`, `accept`, `into_bytes`) | `TransferAssemblyV3` |
+| `codec_transfer::decode_down` | `transfer_v3::decode_down` |
+| `codec_transfer::decode_body` | `transfer_v3::decode_body` |
+| the `match wire { V1 => …, V2 => … }` decode | `codec_v3::decode_delta(bytes)` |
+| `GatedDelta` / `gated.event_seq()` | `DeltaFrame` / `frame.event_seq` |
+| `Publication`, `ReplicaUpdate`, `ReceiverId`, `ReceiverStatus` | `PublicationV3`, `ReplicaUpdateV3`, `ReceiverIdV3`, `ReceiverStatusV3` |
+| `Receiver.wire`, `add_receiver`'s `wire` parameter, `ReceiverStatus.wire` | removed |
+
+Check order, saturating arithmetic, the clamp-then-sweep prologue, the
+`BTreeMap` iteration order and FIFO queue handling stay T024's. The
+substitution is proved two ways: the P8 mirror runs the same script on a
+`ReassemblyPool` (V2 receivers) and on `ReassemblyPoolV3` and compares every
+result, status, total and popped update after each step, and a reviewer diffs
+the two ranges hunk by hunk. A fix to one pool is therefore a fix to both,
+in one task.
+
+**Sizing is T140e's.** The pool takes `TransferLimitsV3` and calls
+`validate()` unchanged; it re-sizes nothing. The client receiver that
+T140e's section calls "a later task" is this module for the gate half: `0x82`
+bodies are decoded and published, v3 deltas are gated by `event_seq`, and
+the queued `ReplicaUpdateV3`s feed T140r2's `ReplicaWorldV3`.
+
+**Version isolation.** One pool holds one wire. `ReassemblyPoolV3` accepts
+only `0x82` transfer frames and v3 delta frames; v1, v2 and `0x81` bytes are
+`Codec(UnsupportedVersion)`. `ReassemblyPool` is unchanged and still refuses
+both v3 forms the same way. The host (T141) picks the pool per session; there
+is no fallback or negotiation.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -885,3 +934,5 @@ two types. `tests/v3_reassembly.rs` carries the oracles (E1-E6).
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Extended the Protocol v3 section with `transfer_v3` (the `0x82` frames, the v3 caps and `check_begin`, the body and its 2,847,788-byte bound, `plan_transfer`) and `project_snapshot_v3`; no earlier section changed.
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140e · Extended the Protocol v3 section with `reassembly_v3` (the 128-chunk assembly, the re-sized limits, the worst-case memory and the transport note); no earlier section changed.
+
+- 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the `pool_v3` section (the reused and new types, the P-1 substitution table, the P8 mirror, version isolation and T140e's sizing), superseding T140e's "later task" sentence without editing it; no earlier section changed.
