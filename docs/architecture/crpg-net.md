@@ -866,6 +866,133 @@ The client receiver (`ReassemblyPool` gating of v3 deltas, publication of
 `0x82` bodies, a v3 `ReplicaWorld`) is a later `crpg-net` task built on these
 two types. `tests/v3_reassembly.rs` carries the oracles (E1-E6).
 
+### T140r1: `pool_v3`, the v3 receiver gate
+
+`pool_v3` is T024's reassembly and cutover gate for one v3 session. It
+reuses T024's vocabulary by path and adds a v3 type only where the v1 type
+cannot serve: `TransferOutcome`, `DeltaOutcome`, `TransferError`,
+`FailReason`, `GateMode`, `InFlightStatus`, `PublishedBase`, `Rebound` and
+`ResyncReason` are re-exported unchanged, and `TransferLimitsV3` /
+`LimitsError` come from T140e. New are `PublicationV3` (the `0x82`
+transfer, its base tick and cursor, and the decoded `SnapshotBodyV3`),
+`ReplicaUpdateV3` (`Snapshot(PublicationV3)` or `Delta(DeltaFrame)`, in FIFO
+order), `ReceiverIdV3` (a separate id type, so a v1 receiver cannot be
+passed to a v3 pool) and `ReceiverStatusV3` (T024's status without the
+`wire` field). `ReceiverIdV3`'s field is private, so only the pool mints one.
+
+**Transliteration rule (P-1).** `ReassemblyPoolV3`'s private types and every
+method body are `reassembly.rs:438–1105` with exactly these substitutions,
+and nothing else:
+
+| In `reassembly.rs` | In `pool_v3.rs` |
+|---|---|
+| `TransferLimits` | `TransferLimitsV3` |
+| `TransferAssembly` (type, `::new`, `accept`, `into_bytes`) | `TransferAssemblyV3` |
+| `codec_transfer::decode_down` | `transfer_v3::decode_down` |
+| `codec_transfer::decode_body` | `transfer_v3::decode_body` |
+| the `match wire { V1 => …, V2 => … }` decode | `codec_v3::decode_delta(bytes)` |
+| `GatedDelta` / `gated.event_seq()` | `DeltaFrame` / `frame.event_seq` |
+| `Publication`, `ReplicaUpdate`, `ReceiverId`, `ReceiverStatus` | `PublicationV3`, `ReplicaUpdateV3`, `ReceiverIdV3`, `ReceiverStatusV3` |
+| `Receiver.wire`, `add_receiver`'s `wire` parameter, `ReceiverStatus.wire` | removed |
+
+Check order, saturating arithmetic, the clamp-then-sweep prologue, the
+`BTreeMap` iteration order and FIFO queue handling stay T024's. The
+substitution is proved two ways: the P8 mirror runs the same script on a
+`ReassemblyPool` (V2 receivers) and on `ReassemblyPoolV3` and compares every
+result, status, total and popped update after each step, and a reviewer diffs
+the two ranges hunk by hunk. A fix to one pool is therefore a fix to both,
+in one task.
+
+**Sizing is T140e's.** The pool takes `TransferLimitsV3` and calls
+`validate()` unchanged; it re-sizes nothing. The client receiver that
+T140e's section calls "a later task" is this module for the gate half: `0x82`
+bodies are decoded and published, v3 deltas are gated by `event_seq`, and
+the queued `ReplicaUpdateV3`s feed T140r2's `ReplicaWorldV3`.
+
+**Version isolation.** One pool holds one wire. `ReassemblyPoolV3` accepts
+only `0x82` transfer frames and v3 delta frames; v1, v2 and `0x81` bytes are
+`Codec(UnsupportedVersion)`. `ReassemblyPool` is unchanged and still refuses
+both v3 forms the same way. The host (T141) picks the pool per session; there
+is no fallback or negotiation.
+
+### T140r2: `replica_v3`, the v3 client replica
+
+`replica_v3` is T046's client replica for one filtered v3 session. It reuses
+`ReplicaError` and `MAX_REPLICA_ENTITIES` from `replica` by path — no new
+error type and no new variant, so the bridge's fatal-53 mapping and T046's
+`Display` strings are unchanged — and holds `ReplicaEntityV3` (the row's
+`net_id`, its optional `HealthFact` and its complete `FactSet`). New types are
+`PauseState` (`Running`, or `Paused { reason }` with a withheld reason `None`)
+and `ReplicaWorldV3`.
+
+**State.** The v2 replica's rows, turn, `next_event_seq`, `server_tick` and
+`high_water`, plus the v3 additions: per entity the `FactSet`, the encounter
+image (`EncounterFacts::default()` is every family withheld), the timeline
+image (`Option<Vec<TimelineEntry>>`, `None` is withheld/forget), the pause
+state (`None` before the first `Clock` op) and the viewer's host facts (`None`
+before the first `HostFacts` op). The epoch is fixed at `new`. The only
+`&mut self` methods are `apply_delta` and `apply_snapshot`; every query reads
+committed state.
+
+**The op table (R-5..R-8).** Tags 0..=10 behave exactly as T046 item 6 on the
+v3 variants of the same name: `EntityEnter` refuses a live id
+(`DuplicateEntity`), an id at or below `high_water` (`ReusedEntityId`) then a
+full row set (`TooManyEntities`); `EntityLeave`/`Despawned` require a live id
+and remove the row with its health and facts; `Spawned`/`Died` require a live
+id and change nothing; `Health` replaces the health whole; `Turn` checks a
+`Some` active and replaces the turn whole; `Receipt` checks the epoch;
+`ActionResolved` checks actor then target; `TurnStarted` checks the actor;
+`EncounterEnded` clears nothing. `Encounter(e)` stores `e` whole. `Timeline {
+entries }` checks every entry's `entity` is live, then stores the image in
+input order (`None` included). `EntityFacts { entity, facts }` checks the row
+is live, then, when `facts.order == Some(Some(o))`, that `o.target` is live,
+then stores the fact set whole. `RoundStarted`, `ModeChanged`, `OrderEnded`,
+`Joined` and `Left` (tags 14..=18) are accepted and dropped: their ids are
+host-supplied mappings and no recorded rule places them, so checking them
+would make an unrecorded host choice fatal; a presenter pairs a notice's id
+with `entity()` and treats a miss as "not visible". `Clock { paused }` sets
+`Running` for `None` and `Paused { reason }` for `Some(reason)`;
+`HostFacts(h)` stores `h`.
+
+**The liveness rule and why it holds (Reading 7).** Every id a v3 op names
+must be live when that op applies, checked against the working state the ops
+before it left. Legal pages satisfy this because T140c emits the fact ops
+after the whole interest page (enters and removals included) and resolves
+every `NetId` against the ids live after that page; the host splits pages with
+`frame_spans` at one `event_seq` per span. So the checked ids are T046's for
+tags 0..=10 plus `EntityFacts.entity`, its order's `target`, and every
+`Timeline` entry's `entity`. T046's checks on `ActionResolved`/`TurnStarted`
+keep resting on the recorded history slot, after the enters and before the
+removals (T027b D6); `T140 H-4` fixes only journal order, so no new T141 rule
+is assumed.
+
+**Stale references (Reading 8).** References are checked once, when the op
+applies; stored ones may go stale. A later removal edits no stored order
+target, timeline entry or `turn.active`. A new op naming such an id is refused
+by the same liveness rule. **Images (Reading 9).** `Encounter`, `Timeline` and
+`EntityFacts` each replace their subject's image whole; an all-withheld image
+is stored as such (forget). The replica re-runs no codec value check (counts,
+`current ≤ max`, ordering, duplicates): those belong to the decoder, exactly
+as T046 stores health verbatim.
+
+**Delta precedence and atomicity.** `apply_delta` checks lane
+(`WrongLane`), op count (`TooManyOps`), then sequence (`event_seq` not the next
+expected one, or above `SEQ_LAST`, is `EventSeq`), then applies the ops to a
+working clone and commits only on `Ok` (T046 D9), setting
+`next_event_seq = event_seq + 1` and `server_tick`. **Snapshot precedence.**
+`apply_snapshot` checks in `transfer_v3`'s body decode order: cursor
+(`SnapshotCursor` with `min = next_event_seq − 1` saturating), the visible
+bound (`TooManyEntities`), row order (`SnapshotOrder`) and id reuse
+(`ReusedEntityId`), then order targets, then the turn's active, then the
+timeline entities (`UnknownEntity`). On success it replaces the rows, turn,
+encounter and timeline whole, sets `next_event_seq = cursor + 1` (saturating)
+and `server_tick = base_tick`, and raises `high_water` to the last row's id.
+
+**Host state across a snapshot (Reading 11).** `Clock` and `HostFacts` are not
+in the `0x82` body; the host re-sends both after every publication (T140
+H-2). `apply_snapshot` therefore leaves `pause` and `host_facts` as they are,
+and both are `None` until their first op.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -885,3 +1012,6 @@ two types. `tests/v3_reassembly.rs` carries the oracles (E1-E6).
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140d · Extended the Protocol v3 section with `transfer_v3` (the `0x82` frames, the v3 caps and `check_begin`, the body and its 2,847,788-byte bound, `plan_transfer`) and `project_snapshot_v3`; no earlier section changed.
 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 + T140e · Extended the Protocol v3 section with `reassembly_v3` (the 128-chunk assembly, the re-sized limits, the worst-case memory and the transport note); no earlier section changed.
+
+- 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the `pool_v3` section (the reused and new types, the P-1 substitution table, the P8 mirror, version isolation and T140e's sizing), superseding T140e's "later task" sentence without editing it; no earlier section changed.
+- 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the `replica_v3` section (state, the R-5..R-8 op table, the liveness rule and its T140c emission-order/T027b history-slot justification, stale references, images, delta/snapshot precedence and host state kept across a snapshot); no earlier section changed.

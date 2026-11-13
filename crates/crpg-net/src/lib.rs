@@ -31,7 +31,10 @@
 //! named follow-ons, not here. The T140a [`protocol_v3`]/[`codec_v3`] pair
 //! adds the explicit v3 version (byte 3): the pause, mode and standing-order
 //! intents, native tags 0..=10 with rejection codes 1..=30, and the scalar
-//! encounter-event, `Clock` and host-fact ops.
+//! encounter-event, `Clock` and host-fact ops. The T140r1 [`pool_v3`] module
+//! gates `0x82` transfers and v3 deltas into the v3 receiver's FIFO queue.
+//! The T140r2 [`replica_v3`] module applies those updates to the client copy,
+//! holding the v3 fact, encounter, timeline, pause and host-fact state.
 
 pub mod codec;
 pub mod codec_resume;
@@ -40,6 +43,7 @@ pub mod codec_v2;
 pub mod codec_v3;
 pub mod facts_v3;
 pub mod interest;
+pub mod pool_v3;
 pub mod projection_v2;
 pub mod projection_v3;
 pub mod protocol;
@@ -50,6 +54,7 @@ pub mod protocol_v3;
 pub mod reassembly;
 pub mod reassembly_v3;
 pub mod replica;
+pub mod replica_v3;
 pub mod resume;
 pub mod sim;
 pub mod transfer_v3;
