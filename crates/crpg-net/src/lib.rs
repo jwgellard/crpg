@@ -33,6 +33,8 @@
 //! intents, native tags 0..=10 with rejection codes 1..=30, and the scalar
 //! encounter-event, `Clock` and host-fact ops. The T140r1 [`pool_v3`] module
 //! gates `0x82` transfers and v3 deltas into the v3 receiver's FIFO queue.
+//! The T140r2 [`replica_v3`] module applies those updates to the client copy,
+//! holding the v3 fact, encounter, timeline, pause and host-fact state.
 
 pub mod codec;
 pub mod codec_resume;
@@ -52,6 +54,7 @@ pub mod protocol_v3;
 pub mod reassembly;
 pub mod reassembly_v3;
 pub mod replica;
+pub mod replica_v3;
 pub mod resume;
 pub mod sim;
 pub mod transfer_v3;
