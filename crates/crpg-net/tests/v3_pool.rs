@@ -986,6 +986,91 @@ fn p7_v3_ops_pass_the_gate_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
+// P9: rebind discards the in-flight transfer and the held deltas.
+// ---------------------------------------------------------------------------
+
+/// The contract's `G(t)` with `cursor` in place of 0: a 4 MiB Begin.
+fn g_at(t: u64, cursor: u64) -> Vec<u8> {
+    begin_frame(BeginTransfer {
+        epoch: Z16,
+        transfer: tid(t),
+        base_tick: 0,
+        cursor,
+        total_bytes: 4_194_304,
+        entity_count: 0,
+        segments_per_chunk: 8,
+        chunk_count: 128,
+    })
+}
+
+#[test]
+fn p9_rebind_discards_in_flight_and_held() {
+    let mut pool = pool_with(l3());
+    let a = live(&mut pool);
+
+    // d(1) releases, so next_event_seq is 2 and the Begin needs cursor 1
+    // (cursor 0 would be BehindReplica by P-5 step 4).
+    assert_eq!(
+        pool.offer_delta(a, &d(1), 1_000),
+        Ok(DeltaOutcome::Released { count: 1 })
+    );
+    assert_eq!(
+        pool.offer_transfer(a, &g_at(1, 1), 1_000),
+        Ok(TransferOutcome::Begun)
+    );
+    // Each is above the in-flight cursor 1, so each is held.
+    assert_eq!(
+        pool.offer_delta(a, &d(2), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(
+        pool.offer_delta(a, &d(3), 1_000),
+        Ok(DeltaOutcome::Buffered)
+    );
+    assert_eq!(pool.staging_bytes(), 4_194_304);
+    // Held plus queued: d(2) and d(3) held, d(1) still queued.
+    assert_eq!(pool.held_delta_bytes(), 15);
+
+    // Rebind discards G(1) and both held deltas, keeping the queued d(1).
+    assert_eq!(
+        pool.rebind_receiver(a, 1_000),
+        Ok(Rebound {
+            discarded: Some(tid(1)),
+            dropped_deltas: 2,
+        })
+    );
+    assert_eq!(
+        pool.status(a).expect("receiver exists"),
+        ReceiverStatusV3 {
+            epoch: Z16,
+            mode: GateMode::AwaitSnapshot,
+            in_flight: None,
+            retired_through: 1,
+            published: None,
+            next_event_seq: 2,
+            held_frames: 1,
+            held_bytes: 5,
+            queued_updates: 1,
+            resync: None,
+        }
+    );
+    assert_eq!(pool.staging_bytes(), 0);
+    assert_eq!(pool.held_delta_bytes(), 5);
+    assert_eq!(pool.pop_update(a), Some(ReplicaUpdateV3::Delta(dframe(1))));
+    assert_eq!(pool.held_delta_bytes(), 0);
+    assert_eq!(pool.pop_update(a), None);
+
+    // A removed id is unknown, and the refusal changes nothing.
+    pool.remove_receiver(a);
+    let before = pool.clone();
+    assert_eq!(
+        pool.rebind_receiver(a, 1_000),
+        Err(TransferError::UnknownReceiver)
+    );
+    assert_eq!(pool, before, "a refusal changed the pool");
+}
+
+// ---------------------------------------------------------------------------
 // P10: every Begin, Chunk and Cancel arm.
 // ---------------------------------------------------------------------------
 
