@@ -911,7 +911,142 @@ fn p8_mirror_matches_the_v1_pool() {
 
 #[test]
 fn p10_begin_chunk_and_cancel_arms() {
-    todo!("P10")
+    /// `Ob(t, base, c)`: the 8,192-byte, two-chunk Begin of the contract.
+    fn ob(t: u64, base: u64, c: u64) -> Vec<u8> {
+        t3::encode_down(&TransferDown::Begin(BeginTransfer {
+            epoch: Z,
+            transfer: tid(t),
+            base_tick: base,
+            cursor: c,
+            total_bytes: 8_192,
+            entity_count: 0,
+            segments_per_chunk: 1,
+            chunk_count: 2,
+        }))
+        .expect("Ob encodes")
+    }
+
+    /// `oc(t, i, n)`: Chunk `i` with `n` bytes of `t as u8`.
+    fn oc(t: u64, i: u8, n: usize) -> Vec<u8> {
+        t3::encode_down(&TransferDown::Chunk(TransferChunk {
+            epoch: Z,
+            transfer: tid(t),
+            index: i,
+            bytes: vec![t as u8; n],
+        }))
+        .expect("oc encodes")
+    }
+
+    let mut p = pool(TransferLimitsV3::v3());
+    let a = add(&mut p, GateMode::Live);
+    let wrong_epoch: [u8; 16] = [1; 16];
+    // 1. plan(1, 20, 0, 1, E0) publishes; its snapshot stays queued.
+    let frames = plan(1, 20, 0, 1, &e0());
+    assert_eq!(p.offer_transfer(a, &frames[0], T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &frames[1], T0),
+        Ok(TransferOutcome::Published {
+            transfer: tid(1),
+            released: 0,
+        })
+    );
+    // 2. A Begin with an equal base is accepted.
+    assert_eq!(p.offer_transfer(a, &ob(2, 20, 0), T0), Ok(TransferOutcome::Begun));
+    // 3. A second in-flight transfer is refused whole.
+    assert_eq!(refused_t(&mut p, a, &ob(3, 20, 0), T0), TransferError::InFlight);
+    // 4. A chunk for a never-begun id above `retired_through`.
+    assert_eq!(
+        refused_t(&mut p, a, &oc(5, 0, 4_096), T0),
+        TransferError::UnknownTransfer
+    );
+    // 5. The wrong epoch is checked before the message, for every kind.
+    let mut chunk_wrong = TransferChunk {
+        epoch: wrong_epoch,
+        transfer: tid(2),
+        index: 0,
+        bytes: vec![2; 4_096],
+    };
+    assert_eq!(
+        refused_t(&mut p, a, &t3::encode_down(&TransferDown::Chunk(chunk_wrong.clone())).expect("encodes"), T0),
+        TransferError::WrongEpoch
+    );
+    assert_eq!(
+        refused_t(
+            &mut p,
+            a,
+            &t3::encode_down(&TransferDown::Cancel {
+                epoch: wrong_epoch,
+                transfer: tid(2),
+                reason: CancelReason::Superseded,
+            })
+            .expect("encodes"),
+            T0
+        ),
+        TransferError::WrongEpoch
+    );
+    chunk_wrong.epoch = Z;
+    // 6. Cancelling an already-published id touches neither the in-flight
+    // transfer nor the queue.
+    assert_eq!(
+        p.offer_transfer(a, &cancel(1), T0),
+        Ok(TransferOutcome::Cancelled { discarded: false })
+    );
+    let st = p.status(a).expect("status");
+    assert_eq!(st.retired_through, 1, "id 1 was already retired");
+    let Some(InFlightStatus { transfer, .. }) = st.in_flight else {
+        panic!("transfer 2 is still in flight");
+    };
+    assert_eq!(transfer, tid(2));
+    // 7. The same id with a different field is a Conflict failure.
+    assert_eq!(
+        p.offer_transfer(a, &ob(2, 20, 1), T0),
+        Err(TransferError::Failed(FailReason::Conflict)),
+        "same id, cursor changed"
+    );
+    assert_failed_clean(&mut p, a, 2, 1);
+    // 8. A base below the published one is BehindReplica; an equal one is not.
+    assert_eq!(
+        refused_t(&mut p, a, &ob(3, 19, 0), T0),
+        TransferError::BehindReplica
+    );
+    assert_eq!(p.offer_transfer(a, &ob(3, 20, 0), T0), Ok(TransferOutcome::Begun));
+    // 9. An index at the chunk count is out of range, so Failed(Conflict).
+    assert_eq!(
+        p.offer_transfer(a, &oc(3, 2, 4_096), T0),
+        Err(TransferError::Failed(FailReason::Conflict)),
+        "index == chunk_count"
+    );
+    assert_failed_clean(&mut p, a, 3, 1);
+    // 10. A chunk one byte short is a WrongLength, so Failed(Conflict).
+    assert_eq!(p.offer_transfer(a, &ob(4, 20, 0), T0), Ok(TransferOutcome::Begun));
+    assert_eq!(
+        p.offer_transfer(a, &oc(4, 0, 4_095), T0),
+        Err(TransferError::Failed(FailReason::Conflict)),
+        "4,095 != 4,096"
+    );
+    assert_failed_clean(&mut p, a, 4, 1);
+    // The queued snapshot from step 1 survived every failure.
+    assert_eq!(
+        p.pop_update(a),
+        Some(ReplicaUpdateV3::Snapshot(PublicationV3 {
+            transfer: tid(1),
+            base_tick: 20,
+            cursor: 0,
+            body: e0(),
+        }))
+    );
+    assert_eq!(p.pop_update(a), None);
+}
+
+/// The post-failure state the contract names after P10's steps 7, 9 and 10.
+fn assert_failed_clean(p: &ReassemblyPoolV3, rid: ReceiverIdV3, retired: u64, queued: usize) {
+    let st = p.status(rid).expect("status");
+    assert!(st.in_flight.is_none(), "no transfer in flight");
+    assert_eq!(p.staging_bytes(), 0);
+    assert_eq!(st.retired_through, retired);
+    assert_eq!(st.resync, Some(ResyncReason::Invalid));
+    assert_eq!(st.mode, GateMode::AwaitSnapshot);
+    assert_eq!(st.queued_updates, queued);
 }
 
 #[test]
