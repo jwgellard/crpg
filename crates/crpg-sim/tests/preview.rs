@@ -1661,107 +1661,107 @@ impl Sweep {
             .find(|(kind, _)| *kind == outcome)
             .map_or(0, |(_, amount)| *amount)
     }
+}
 
-    /// Runs the sweep and compares `preview_action` with it and with `want`.
-    fn run(&self, want: Odds) {
-        let got = preview_action(&self.world, self.actor, a103(), self.target, &ACT);
-        assert_eq!(got, want, "the preview equals the named literal");
-        let preview = got.expect("an accepted candidate");
+/// Runs the sweep and compares `preview_action` with it and with `want`.
+fn assert_agrees(sweep: &Sweep, want: Odds) {
+    let got = preview_action(&sweep.world, sweep.actor, a103(), sweep.target, &ACT);
+    assert_eq!(got, want, "the preview equals the named literal");
+    let preview = got.expect("an accepted candidate");
 
-        let mut attack_sides = sides_of(self.actor_dice);
-        if let Some(opposing) = self.opposing_dice {
-            attack_sides.extend(sides_of(opposing));
+    let mut attack_sides = sides_of(sweep.actor_dice);
+    if let Some(opposing) = sweep.opposing_dice {
+        attack_sides.extend(sides_of(opposing));
+    }
+    let attack_total = product(&attack_sides).len();
+    let mut damage_total = 0;
+    for row in &preview.outcomes {
+        if let (false, Some(dice)) = (row.count.is_zero(), sweep.dice_of(row.outcome)) {
+            damage_total += product(&sides_of(dice)).len();
         }
-        let attack_total = product(&attack_sides).len();
-        let mut damage_total = 0;
-        for row in &preview.outcomes {
-            if let (false, Some(dice)) = (row.count.is_zero(), self.dice_of(row.outcome)) {
-                damage_total += product(&sides_of(dice)).len();
-            }
-        }
+    }
 
-        let mut attack: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
-        let mut damage: BTreeMap<(usize, Vec<u32>), u32> = BTreeMap::new();
-        let mut done = false;
-        for seed in 0..20_000_u64 {
-            let mut world = self.world.clone();
-            *world.rng_mut() = DeterministicRng::from_seed(seed);
-            let mut peek = DeterministicRng::from_seed(seed);
-            let mut tuple = faces_of(self.actor_dice, &mut peek);
-            if let Some(opposing) = self.opposing_dice {
-                tuple.extend(faces_of(opposing, &mut peek));
+    let mut attack: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
+    let mut damage: BTreeMap<(usize, Vec<u32>), u32> = BTreeMap::new();
+    let mut done = false;
+    for seed in 0..20_000_u64 {
+        let mut world = sweep.world.clone();
+        *world.rng_mut() = DeterministicRng::from_seed(seed);
+        let mut peek = DeterministicRng::from_seed(seed);
+        let mut tuple = faces_of(sweep.actor_dice, &mut peek);
+        if let Some(opposing) = sweep.opposing_dice {
+            tuple.extend(faces_of(opposing, &mut peek));
+        }
+        let outcome = perform_action(
+            &mut world,
+            &CombatAction::UseAbility {
+                actor: sweep.actor,
+                ability: a103(),
+                target: sweep.target,
+            },
+        )
+        .expect("the sweep's action is accepted")
+        .expect("an ability use reports its outcome");
+        let row = preview
+            .outcomes
+            .iter()
+            .position(|odds| odds.outcome == outcome.outcome)
+            .expect("the executed outcome has a row");
+        if let Some(before) = attack.insert(tuple.clone(), row) {
+            assert_eq!(before, row, "a repeated tuple {tuple:?} decides alike");
+        }
+        if let Some(dice) = sweep.dice_of(outcome.outcome) {
+            let faces = faces_of(dice, &mut peek);
+            if let Some(before) = damage.insert((row, faces.clone()), outcome.damage) {
+                assert_eq!(before, outcome.damage, "damage tuple {faces:?} repeats");
             }
-            let outcome = perform_action(
-                &mut world,
-                &CombatAction::UseAbility {
-                    actor: self.actor,
-                    ability: a103(),
-                    target: self.target,
-                },
-            )
-            .expect("the sweep's action is accepted")
-            .expect("an ability use reports its outcome");
-            let row = preview
-                .outcomes
+        } else {
+            assert_eq!(outcome.damage, sweep.flat_of(outcome.outcome));
+        }
+        if attack.len() == attack_total && damage.len() == damage_total {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "every tuple was seen within 20,000 seeds");
+    assert_eq!(attack.len(), attack_total);
+
+    for (index, row) in preview.outcomes.iter().enumerate() {
+        let mine: Vec<&Vec<u32>> = attack
+            .iter()
+            .filter(|(_, owner)| **owner == index)
+            .map(|(tuple, _)| tuple)
+            .collect();
+        assert_eq!(row.count, c(mine.len() as u64), "{:?} count", row.outcome);
+        let natural = match sweep.natural_die {
+            Some(die) => mine
                 .iter()
-                .position(|odds| odds.outcome == outcome.outcome)
-                .expect("the executed outcome has a row");
-            if let Some(before) = attack.insert(tuple.clone(), row) {
-                assert_eq!(before, row, "a repeated tuple {tuple:?} decides alike");
-            }
-            if let Some(dice) = self.dice_of(outcome.outcome) {
-                let faces = faces_of(dice, &mut peek);
-                if let Some(before) = damage.insert((row, faces.clone()), outcome.damage) {
-                    assert_eq!(before, outcome.damage, "damage tuple {faces:?} repeats");
-                }
-            } else {
-                assert_eq!(outcome.damage, self.flat_of(outcome.outcome));
-            }
-            if attack.len() == attack_total && damage.len() == damage_total {
-                done = true;
-                break;
-            }
+                .filter(|tuple| sweep.rule_faces.contains(&tuple[die]))
+                .count(),
+            None => 0,
+        };
+        assert_eq!(row.natural, c(natural as u64), "{:?} natural", row.outcome);
+        if row.count.is_zero() {
+            continue;
         }
-        assert!(done, "every tuple was seen within 20,000 seeds");
-        assert_eq!(attack.len(), attack_total);
-
-        for (index, row) in preview.outcomes.iter().enumerate() {
-            let mine: Vec<&Vec<u32>> = attack
-                .iter()
-                .filter(|(_, owner)| **owner == index)
-                .map(|(tuple, _)| tuple)
-                .collect();
-            assert_eq!(row.count, c(mine.len() as u64), "{:?} count", row.outcome);
-            let natural = match self.natural_die {
-                Some(die) => mine
-                    .iter()
-                    .filter(|tuple| self.rule_faces.contains(&tuple[die]))
-                    .count(),
-                None => 0,
-            };
-            assert_eq!(row.natural, c(natural as u64), "{:?} natural", row.outcome);
-            if row.count.is_zero() {
-                continue;
-            }
-            match self.dice_of(row.outcome) {
-                Some(_) => {
-                    let mut histogram: BTreeMap<u32, u64> = BTreeMap::new();
-                    let mut space = 0_u64;
-                    for ((owner, _), value) in &damage {
-                        if *owner == index {
-                            *histogram.entry(*value).or_default() += 1;
-                            space += 1;
-                        }
+        match sweep.dice_of(row.outcome) {
+            Some(_) => {
+                let mut histogram: BTreeMap<u32, u64> = BTreeMap::new();
+                let mut space = 0_u64;
+                for ((owner, _), value) in &damage {
+                    if *owner == index {
+                        *histogram.entry(*value).or_default() += 1;
+                        space += 1;
                     }
-                    assert_eq!(row.damage_space, c(space), "{:?} space", row.outcome);
-                    let listed: Vec<(u32, PreviewCount)> =
-                        histogram.into_iter().map(|(v, n)| (v, c(n))).collect();
-                    assert_eq!(row.damage, listed, "{:?} damage", row.outcome);
                 }
-                None => {
-                    assert_eq!(row.damage_space, c(1));
-                    assert_eq!(row.damage, vec![(self.flat_of(row.outcome), c(1))]);
-                }
+                assert_eq!(row.damage_space, c(space), "{:?} space", row.outcome);
+                let listed: Vec<(u32, PreviewCount)> =
+                    histogram.into_iter().map(|(v, n)| (v, c(n))).collect();
+                assert_eq!(row.damage, listed, "{:?} damage", row.outcome);
+            }
+            None => {
+                assert_eq!(row.damage_space, c(1));
+                assert_eq!(row.damage, vec![(sweep.flat_of(row.outcome), c(1))]);
             }
         }
     }
@@ -1775,147 +1775,163 @@ fn flat_f0() -> Vec<(Outcome, u32)> {
 #[test]
 fn g1_agrees_standard() {
     let (world, [a, b]) = f0_world();
-    Sweep {
-        world,
-        actor: b,
-        target: a,
-        actor_dice: "2d6",
-        natural_die: None,
-        opposing_dice: None,
-        rule_faces: vec![],
-        damage_dice: vec![],
-        flat: flat_f0(),
-    }
-    .run(ok(36, t1_rows()));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: b,
+            target: a,
+            actor_dice: "2d6",
+            natural_die: None,
+            opposing_dice: None,
+            rule_faces: vec![],
+            damage_dice: vec![],
+            flat: flat_f0(),
+        },
+        ok(36, t1_rows()),
+    );
 }
 
 /// G2: T3.
 #[test]
 fn g2_agrees_natural_rules_and_damage_dice() {
     let (world, ids) = start(&t3_fixture(), 1);
-    Sweep {
-        world,
-        actor: ids[1],
-        target: ids[0],
-        actor_dice: "1d20",
-        natural_die: Some(0),
-        opposing_dice: None,
-        rule_faces: vec![20, 1, 2],
-        damage_dice: vec![(S, "1d4"), (CS, "2d4")],
-        flat: vec![(S, 3), (CS, 3), (F, 0)],
-    }
-    .run(ok(20, t3_rows()));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: ids[1],
+            target: ids[0],
+            actor_dice: "1d20",
+            natural_die: Some(0),
+            opposing_dice: None,
+            rule_faces: vec![20, 1, 2],
+            damage_dice: vec![(S, "1d4"), (CS, "2d4")],
+            flat: vec![(S, 3), (CS, 3), (F, 0)],
+        },
+        ok(20, t3_rows()),
+    );
 }
 
 /// G3: T6(d).
 #[test]
 fn g3_agrees_opposed() {
     let (world, [a, b]) = t6_world(true, true);
-    Sweep {
-        world,
-        actor: b,
-        target: a,
-        actor_dice: "1d6",
-        natural_die: Some(0),
-        opposing_dice: Some("1d6"),
-        rule_faces: vec![1],
-        damage_dice: vec![(S, "1d6")],
-        flat: vec![(S, 1), (F, 0)],
-    }
-    .run(ok(36, t6_rows(20, 10, Some(6))));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: b,
+            target: a,
+            actor_dice: "1d6",
+            natural_die: Some(0),
+            opposing_dice: Some("1d6"),
+            rule_faces: vec![1],
+            damage_dice: vec![(S, "1d6")],
+            flat: vec![(S, 1), (F, 0)],
+        },
+        ok(36, t6_rows(20, 10, Some(6))),
+    );
 }
 
 /// G4: T5.
 #[test]
 fn g4_agrees_dropped_natural_die() {
     let (world, ids) = start(&t5_fixture(), 1);
-    Sweep {
-        world,
-        actor: ids[1],
-        target: ids[0],
-        actor_dice: "2d4kh1",
-        natural_die: Some(1),
-        opposing_dice: None,
-        rule_faces: vec![4],
-        damage_dice: vec![],
-        flat: flat_f0(),
-    }
-    .run(ok(16, t5_rows()));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: ids[1],
+            target: ids[0],
+            actor_dice: "2d4kh1",
+            natural_die: Some(1),
+            opposing_dice: None,
+            rule_faces: vec![4],
+            damage_dice: vec![],
+            flat: flat_f0(),
+        },
+        ok(16, t5_rows()),
+    );
 }
 
 /// G5: T7(a) after its script, and T2's `TargetStat gamma` on a fresh world.
 #[test]
 fn g5_agrees_effects_and_target_stat() {
     let (world, [a, b]) = t7_world(None, dc_plus_two("target"), 6);
-    Sweep {
-        world,
-        actor: b,
-        target: a,
-        actor_dice: "2d6",
-        natural_die: None,
-        opposing_dice: None,
-        rule_faces: vec![],
-        damage_dice: vec![],
-        flat: flat_f0(),
-    }
-    .run(ok(
-        36,
-        vec![r(S, 26, 0, 1, &[(2, 1)]), r(F, 10, 0, 1, &[(0, 1)])],
-    ));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: b,
+            target: a,
+            actor_dice: "2d6",
+            natural_die: None,
+            opposing_dice: None,
+            rule_faces: vec![],
+            damage_dice: vec![],
+            flat: flat_f0(),
+        },
+        ok(
+            36,
+            vec![r(S, 26, 0, 1, &[(2, 1)]), r(F, 10, 0, 1, &[(0, 1)])],
+        ),
+    );
     let (world, [a, b]) = t2_world(DefenseWire::TargetStat {
         stat: "gamma".to_owned(),
     });
-    Sweep {
-        world,
-        actor: b,
-        target: a,
-        actor_dice: "2d6",
-        natural_die: None,
-        opposing_dice: None,
-        rule_faces: vec![],
-        damage_dice: vec![],
-        flat: flat_f0(),
-    }
-    .run(ok(
-        36,
-        vec![r(S, 21, 0, 1, &[(2, 1)]), r(F, 15, 0, 1, &[(0, 1)])],
-    ));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: b,
+            target: a,
+            actor_dice: "2d6",
+            natural_die: None,
+            opposing_dice: None,
+            rule_faces: vec![],
+            damage_dice: vec![],
+            flat: flat_f0(),
+        },
+        ok(
+            36,
+            vec![r(S, 21, 0, 1, &[(2, 1)]), r(F, 15, 0, 1, &[(0, 1)])],
+        ),
+    );
 }
 
 /// G6: `F0` with `allow_self_target`, `P(w, B, B)`.
 #[test]
 fn g6_agrees_self_target() {
     let (world, [_, b]) = f0_with(|f| edit_ability(f, |ability| ability.allow_self_target = true));
-    Sweep {
-        world,
-        actor: b,
-        target: b,
-        actor_dice: "2d6",
-        natural_die: None,
-        opposing_dice: None,
-        rule_faces: vec![],
-        damage_dice: vec![],
-        flat: flat_f0(),
-    }
-    .run(ok(36, t1_rows()));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: b,
+            target: b,
+            actor_dice: "2d6",
+            natural_die: None,
+            opposing_dice: None,
+            rule_faces: vec![],
+            damage_dice: vec![],
+            flat: flat_f0(),
+        },
+        ok(36, t1_rows()),
+    );
 }
 
 /// G7: T4's `3d3dl1` and its `3d3` with the natural rule.
 #[test]
 fn g7_agrees_selections_and_tags() {
     let (world, ids) = start(&t4_fixture("3d3dl1", None, json!([])), 1);
-    Sweep {
-        world,
-        actor: ids[1],
-        target: ids[0],
-        actor_dice: "3d3dl1",
-        natural_die: None,
-        opposing_dice: None,
-        rule_faces: vec![],
-        damage_dice: vec![],
-        flat: vec![],
-    }
-    .run(t4_expect(27, [0, 0, 1, 3, 7, 9, 7, 0, 0, 0], [0; 10]));
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: ids[1],
+            target: ids[0],
+            actor_dice: "3d3dl1",
+            natural_die: None,
+            opposing_dice: None,
+            rule_faces: vec![],
+            damage_dice: vec![],
+            flat: vec![],
+        },
+        t4_expect(27, [0, 0, 1, 3, 7, 9, 7, 0, 0, 0], [0; 10]),
+    );
     let (world, ids) = start(
         &t4_fixture(
             "3d3",
@@ -1924,20 +1940,168 @@ fn g7_agrees_selections_and_tags() {
         ),
         1,
     );
-    Sweep {
-        world,
-        actor: ids[1],
-        target: ids[0],
-        actor_dice: "3d3",
-        natural_die: Some(2),
-        opposing_dice: None,
-        rule_faces: vec![3],
-        damage_dice: vec![],
-        flat: vec![],
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: ids[1],
+            target: ids[0],
+            actor_dice: "3d3",
+            natural_die: Some(2),
+            opposing_dice: None,
+            rule_faces: vec![3],
+            damage_dice: vec![],
+            flat: vec![],
+        },
+        t4_expect(
+            27,
+            [0, 0, 0, 1, 3, 6, 7, 6, 3, 1],
+            [0, 0, 0, 0, 0, 1, 2, 3, 2, 1],
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Review fixes: self-targeted modifiers, Opposed bounds with a natural die,
+// and the opposing limb width
+// ---------------------------------------------------------------------------
+
+/// T6(a)'s opposed `1d6`, self-targeted, with B carrying a `Roll set 7`
+/// effect from an earlier self-hit: one view serves both rolls, so both
+/// totals are 7. Damage is flat (a self-hit must not kill B).
+fn opposed_self_world() -> (World, [EntityId; 2]) {
+    let mut f = t6_fixture(false, false);
+    edit_ability(&mut f, |ability| ability.allow_self_target = true);
+    set_damage(
+        &mut f,
+        json!([
+            damage_json("success", 1, None),
+            damage_json("failure", 0, None)
+        ]),
+    );
+    attach_to_ability(
+        &mut f,
+        effect_doc(
+            141,
+            "slf",
+            "probe-type",
+            "stack_all",
+            vec![modifier(142, json!({"type": "roll"}), "set", 7)],
+            3,
+        ),
+    );
+    let seed = (0..1000_u64)
+        .find(|seed| {
+            let mut rng = oracle(*seed);
+            let actor = draw(&mut rng, "1d6").total;
+            let opposing = draw(&mut rng, "1d6").total;
+            actor > opposing
+        })
+        .expect("a seed whose first hit succeeds");
+    let (mut world, ids) = start(&f, seed);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        act(&mut world, b, a103(), b).outcome,
+        S,
+        "the self-hit succeeds"
+    );
+    end(&mut world, a);
+    (world, [a, b])
+}
+
+fn opposed_self_rows() -> Vec<OutcomeOdds> {
+    vec![r(F, 36, 0, 1, &[(0, 1)]), r(S, 0, 0, 1, &[(1, 1)])]
+}
+
+/// A self-targeted action reads the actor's modifiers on both rolls
+/// (B7: the one view serves both sides).
+#[test]
+fn t15_self_target_folds_the_actors_modifiers() {
+    let (world, [_, b]) = opposed_self_world();
+    assert_eq!(p(&world, b, b), ok(36, opposed_self_rows()));
+
+    // A self `Dc` through the actor's own view: the defence is B's alpha 6
+    // plus the effect's 2, so a total of 8 or less succeeds.
+    let mut f = Fixture::standard();
+    edit_ability(&mut f, |ability| ability.allow_self_target = true);
+    attach_to_ability(&mut f, dc_plus_two("target"));
+    let (mut world, ids) = start(&f, smallest_seed(6));
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(act(&mut world, b, a103(), b).outcome, S);
+    end(&mut world, a);
+    assert_eq!(p(&world, b, b), ok(36, a_rows()));
+}
+
+/// G8: the self-targeted opposed world against execution.
+#[test]
+fn g8_agrees_self_target_opposed_modifier() {
+    let (world, [_, b]) = opposed_self_world();
+    assert_agrees(
+        &Sweep {
+            world,
+            actor: b,
+            target: b,
+            actor_dice: "1d6",
+            natural_die: None,
+            opposing_dice: Some("1d6"),
+            rule_faces: vec![],
+            damage_dice: vec![],
+            flat: vec![(S, 1), (F, 0)],
+        },
+        ok(36, opposed_self_rows()),
+    );
+}
+
+/// T10 (d2): Opposed with a natural rule (T6(c), T6(d)). The actor's `1d6`
+/// with one rule face costs 8 and has 7 rows; the opposing `1d6` is never read
+/// with a natural face, so it costs 6 and has 6 rows. Attack is 7 * 6 = 42,
+/// damage 6: 8 + 6 + 42 + 6 = 62.
+#[test]
+fn t10_bounds_opposed_with_a_natural_die() {
+    let dmg = PreviewPart::Damage { outcome: S };
+    for (bonus, rows) in [
+        (false, t6_rows(15, 15, Some(6))),
+        (true, t6_rows(20, 10, Some(6))),
+    ] {
+        let (world, [a, b]) = t6_world(bonus, true);
+        let cases = [
+            (62, ok(36, rows)),
+            (61, tl(dmg, 62, 61)),
+            (56, tl(dmg, 62, 56)),
+            (55, tl(PreviewPart::Attack, 62, 55)),
+            (14, tl(PreviewPart::Attack, 62, 14)),
+            (13, tl(PreviewPart::Opposing, 62, 13)),
+            (8, tl(PreviewPart::Opposing, 62, 8)),
+            (7, tl(PreviewPart::Actor, 62, 7)),
+        ];
+        for (limit, want) in cases {
+            assert_eq!(
+                pv(&world, b, a, &lim(limit)),
+                want,
+                "bonus {bonus}, limit {limit}"
+            );
+        }
     }
-    .run(t4_expect(
-        27,
-        [0, 0, 0, 1, 3, 6, 7, 6, 3, 1],
-        [0, 0, 0, 0, 0, 1, 2, 3, 2, 1],
-    ));
+}
+
+/// T10 (k): an opposing roll wider than one limb. `2d6` (17, 11 rows, 1
+/// limb) against `33d2` (1188, 34 rows, 2 limbs): attack is 11 * 34 * 1 * 2
+/// = 748, so the cost is 17 + 1188 + 748 = 1953.
+#[test]
+fn t10_bounds_opposing_limbs() {
+    let (world, [a, b]) = f0_with(|f| defend_opposed(f, "33d2", &[]));
+    let full = pv(&world, b, a, &lim(1953)).expect("accepted at the cost");
+    assert_eq!(full.attack_space.to_string(), "309237645312", "36 * 2^33");
+    assert_eq!(
+        pv(&world, b, a, &lim(1952)),
+        tl(PreviewPart::Attack, 1953, 1952)
+    );
+    assert_eq!(
+        pv(&world, b, a, &lim(1205)),
+        tl(PreviewPart::Attack, 1953, 1205)
+    );
+    assert_eq!(
+        pv(&world, b, a, &lim(1204)),
+        tl(PreviewPart::Opposing, 1953, 1204)
+    );
+    assert_eq!(pv(&world, b, a, &lim(16)), tl(PreviewPart::Actor, 1953, 16));
 }
