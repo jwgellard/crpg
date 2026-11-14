@@ -622,6 +622,16 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - Trap: a range needs a mover on both sides. A ruleset without `movement` creates no movers, so a ranged ability can never be used there; a mover missing from a save is `OutOfRange`, never "unlimited".
 - Tests: `tests/ability_range.rs` (the implementer suite; `ability_range_contract.rs` is the two-keys writer's).
 
+## Action preview (T143, ADR-0029 U9)
+
+Design: [`docs/architecture/crpg-sim.md`](../../docs/architecture/crpg-sim.md), "Action preview"; contract: [`tasks/T143.md`](../../tasks/T143.md). T143b is the counting layer only; `preview_action` is T143c.
+
+- Public addition: `PreviewCount` (`src/preview/count.rs`, re-exported at the crate root), an exact unsigned integer of any size with `zero`, `is_zero`, `to_u64`, `to_u128`, `From<u64>`, numeric `Ord` and decimal `Display`. Its arithmetic is crate-private. `src/preview/dist.rs` (distributions and the cost formulas) is crate-private. No dependency, no float, no `HashMap`.
+- Trap: costs are a contract: change an algorithm and its formula (`limbs`, `rows`, `cost`) together. T143c charges `cost` before doing any work, so a formula that undercounts lets a ruleset stall the host and one that overcounts refuses a preview the budget allows. The `costs` test in `src/preview/dist.rs` pins each term.
+- Trap: never enumerate face tuples. `sides^count` overflows every fixed-width integer long before the dice limits (`1024d1000000`); the sliding window, the keep/drop program over face values and the held-die natural face are polynomial, and the test enumeration in `dist.rs` is the only enumerator, bounded to a few dozen tuples.
+- Trap: the natural tag follows the die at `natural_die` even when that die is dropped, and only a face in `rule_faces` tags; `distribution` subtracts each tagged count from the full distribution, so an untagged entry with count zero must be omitted, not stored.
+- Trap: the two `#[allow(dead_code)]` attributes in `src/preview/` (on `mod dist;` and on `PreviewCount`'s crate-private `impl`) are T143b's only, and T143c deletes both when it uses the code; add no other.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -658,3 +668,4 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036b · Added the stage-4 section: the facts reader, the tick order, the three `stop` call sites and the traps (id order, carry-over, new TB entry must call `stop`, dead corpses).
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036c · Added the turn-based move section: the public additions, the single `validate_move` judgement, the `is_v3` and persistence traps (including the `movement_v1` hash move), and updated the history version statement to 3.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T149b · Added the ability-range section: the new public items, the last-admission-stage invariant, the legacy-form invariant and the X3 and missing-mover traps.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143b · Added the action-preview section with its public addition and the traps (costs are a contract, never enumerate tuples, natural tag and zero entries, the two scoped dead-code allows), so a later change to a counting algorithm keeps its cost formula.
