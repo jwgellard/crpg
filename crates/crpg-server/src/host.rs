@@ -7082,4 +7082,536 @@ mod tests {
         }
         assert_eq!(small_pages, 128);
     }
+    // -- T141e fix round: review survivors --------------------------------------
+
+    /// The decoded ops of every frame `peer` has pending, acknowledged.
+    fn take_ops(host: &mut Host, peer: PeerHandle) -> Vec<DeltaOpV3> {
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        if let Some(last) = entries.last() {
+            host.acknowledge_delivery(peer, last.ordinal).expect("acks");
+        }
+        entries
+            .iter()
+            .flat_map(|entry| {
+                codec_v3::decode_delta(&entry.bytes)
+                    .expect("a v3 delta")
+                    .ops
+            })
+            .collect()
+    }
+
+    fn clock_count(ops: &[DeltaOpV3]) -> usize {
+        ops.iter()
+            .filter(|op| matches!(op, DeltaOpV3::Clock { .. }))
+            .count()
+    }
+
+    fn make_heartbeat_due(host: &mut Host, peer: PeerHandle) {
+        let v3 = host
+            .sessions
+            .get_mut(&peer)
+            .expect("bound")
+            .v3
+            .as_mut()
+            .expect("v3");
+        v3.last_clock_tick = 0;
+    }
+
+    fn last_clock_tick(host: &Host, peer: PeerHandle) -> u64 {
+        host.sessions
+            .get(&peer)
+            .expect("bound")
+            .v3
+            .as_ref()
+            .expect("v3")
+            .last_clock_tick
+    }
+
+    /// E-1: with a heartbeat due, no publication but a running host's `tick`
+    /// carries a `Clock`: not a host action, a turn-timer expiry, a peer
+    /// command, a setter, nor a no-op pause or unpause. The control is the next
+    /// tick, which sends exactly the heartbeat.
+    #[test]
+    fn t141e_only_a_running_tick_sends_the_heartbeat() {
+        let (mut host, p) = drained_v3_host();
+        host.sessions.get_mut(&p).expect("bound").in_flight = None;
+        for _ in 0..150 {
+            host.tick().expect("ticks");
+        }
+        assert_eq!(host.server_tick(), 150);
+        assert_eq!(last_clock_tick(&host, p), 100);
+        take_ops(&mut host, p);
+
+        // A no-op unpause of a running host.
+        make_heartbeat_due(&mut host, p);
+        host.unpause(1).expect("no-op");
+        assert_eq!(clock_count(&take_ops(&mut host, p)), 0);
+        // Setters: settings (arms a timer), rights, fact grants.
+        make_heartbeat_due(&mut host, p);
+        host.set_settings(timer_settings(Some(1000)), 2)
+            .expect("sets");
+        assert_eq!(clock_count(&take_ops(&mut host, p)), 0);
+        make_heartbeat_due(&mut host, p);
+        host.set_pause_rights(
+            p,
+            PauseRights {
+                pause: false,
+                unpause: true,
+            },
+        )
+        .expect("sets");
+        assert_eq!(clock_count(&take_ops(&mut host, p)), 0);
+        make_heartbeat_due(&mut host, p);
+        host.set_fact_grants(p, v3_facts()).expect("sets");
+        assert_eq!(clock_count(&take_ops(&mut host, p)), 0);
+        // A peer command (A ends its turn).
+        make_heartbeat_due(&mut host, p);
+        let bytes = v3_intent(&host, p, 1, 1, IntentBodyV3::EndTurn);
+        assert_eq!(host.ingest(p, &bytes, 3), Ok(IngestDisposition::Staged));
+        assert_eq!(host.pump(3).expect("pump").applied, 1);
+        let ops = take_ops(&mut host, p);
+        assert!(!ops.is_empty());
+        assert_eq!(clock_count(&ops), 0);
+        // A host action.
+        make_heartbeat_due(&mut host, p);
+        let head = host.awaiting_orders()[0];
+        host.host_action(&CombatAction::EndTurn { actor: head })
+            .expect("acts");
+        let ops = take_ops(&mut host, p);
+        assert!(!ops.is_empty());
+        assert_eq!(clock_count(&ops), 0);
+        // A turn-timer expiry.
+        make_heartbeat_due(&mut host, p);
+        let head = host.awaiting_orders()[0];
+        assert_eq!(host.expire_timer(u64::MAX), Some(head));
+        let ops = take_ops(&mut host, p);
+        assert!(!ops.is_empty());
+        assert_eq!(clock_count(&ops), 0);
+        assert_eq!(last_clock_tick(&host, p), 0, "no Clock was logged");
+
+        // Control: the next tick of the running host sends the heartbeat last.
+        host.tick().expect("ticks");
+        let ops = take_ops(&mut host, p);
+        assert_eq!(ops.last(), Some(&DeltaOpV3::Clock { paused: None }));
+        assert_eq!(clock_count(&ops), 1);
+        assert_eq!(last_clock_tick(&host, p), host.server_tick());
+
+        // A pause changes `Clock` (not a heartbeat); a second, no-op pause
+        // sends none even when due.
+        host.pause(4).expect("pauses");
+        assert_eq!(clock_count(&take_ops(&mut host, p)), 1);
+        make_heartbeat_due(&mut host, p);
+        host.pause(5).expect("no-op");
+        assert_eq!(clock_count(&take_ops(&mut host, p)), 0);
+    }
+
+    /// Which frame-producing path a throttle test exercises.
+    #[derive(Debug, Clone, Copy)]
+    enum Gated {
+        /// An operator pause: a `Clock` page to every session.
+        Page,
+        /// A fresh rejected intent: one receipt frame.
+        Receipt,
+        /// The retry of a rejected intent whose receipt was held at first.
+        CacheHit,
+    }
+
+    /// Two v3 sessions, both with their transfer in flight from tick 0 and
+    /// their first deliveries acknowledged.
+    fn two_in_flight() -> (Host, PeerHandle, PeerHandle) {
+        let mut host = v2_host(false);
+        let bind = |host: &mut Host| {
+            let peer = host
+                .bind_v3_peer(
+                    ControlGrant {
+                        actors: vec![eid(0)],
+                    },
+                    full_grants(),
+                    v3_facts(),
+                    PauseRights {
+                        pause: true,
+                        unpause: true,
+                    },
+                    0,
+                )
+                .expect("binds");
+            ack_all(host, peer);
+            peer
+        };
+        let p = bind(&mut host);
+        let q = bind(&mut host);
+        (host, p, q)
+    }
+
+    fn throttle_of(host: &Host, peer: PeerHandle) -> Throttle {
+        host.sessions
+            .get(&peer)
+            .expect("bound")
+            .v3
+            .as_ref()
+            .expect("v3")
+            .throttle
+            .clone()
+            .expect("in flight")
+    }
+
+    fn set_throttle(host: &mut Host, peer: PeerHandle, throttle: Throttle) {
+        host.sessions
+            .get_mut(&peer)
+            .expect("bound")
+            .v3
+            .as_mut()
+            .expect("v3")
+            .throttle = Some(throttle);
+    }
+
+    fn rejected_bytes(host: &Host, peer: PeerHandle) -> Vec<u8> {
+        // Actor `n(2)` is not controlled by the session: `NotAuthorized`.
+        v3_intent(host, peer, 1, 2, IntentBodyV3::EndTurn)
+    }
+
+    /// Runs `op` at server tick 10 on session `P` of [`two_in_flight`] after
+    /// replacing its throttle (staging tick 0) by `frames` and `bytes` already
+    /// spent. `P`'s and `Q`'s logs are acknowledged empty beforehand.
+    fn gated(op: Gated, frames: usize, bytes: usize) -> (Host, PeerHandle, PeerHandle) {
+        let (mut host, p, q) = two_in_flight();
+        let held = rejected_bytes(&host, p);
+        if let Gated::CacheHit = op {
+            // At tick 0 the receipt is held, but the status is cached.
+            assert_eq!(host.ingest(p, &held, 1), Ok(IngestDisposition::Staged));
+            assert_eq!(host.pump(1).expect("pump").rejected, 1);
+            assert!(host.take_delivery_entries(p).expect("bound").is_empty());
+        }
+        for _ in 0..10 {
+            host.tick().expect("ticks");
+        }
+        assert_eq!(host.server_tick(), 10);
+        set_throttle(&mut host, p, Throttle::new(0, frames, bytes));
+        match op {
+            Gated::Page => host.pause(2).expect("pauses"),
+            Gated::Receipt => {
+                let bytes = rejected_bytes(&host, p);
+                assert_eq!(host.ingest(p, &bytes, 2), Ok(IngestDisposition::Staged));
+                assert_eq!(host.pump(2).expect("pump").rejected, 1);
+            }
+            Gated::CacheHit => {
+                assert_eq!(host.ingest(p, &held, 2), Ok(IngestDisposition::Staged));
+                let summary = host.pump(2).expect("pump");
+                assert!(summary.results[0].cached);
+            }
+        }
+        (host, p, q)
+    }
+
+    fn log_of(host: &Host, peer: PeerHandle) -> (usize, usize) {
+        let session = host.sessions.get(&peer).expect("bound");
+        (session.log.len(), session.log_bytes)
+    }
+
+    const GATED: [Gated; 3] = [Gated::Page, Gated::Receipt, Gated::CacheHit];
+
+    /// E-2, D-6: a page, a rejected receipt and a cache-hit receipt each pass
+    /// the gate at its exact byte cap and are refused one byte over, and the
+    /// host records the logged bytes.
+    #[test]
+    fn t141e_host_byte_budget_at_the_cap_and_one_over() {
+        const CAP: usize = POLICY_V3_IN_FLIGHT_BYTES;
+        for op in GATED {
+            let (probe, p, _) = gated(op, 1, 0);
+            let (frames, len) = log_of(&probe, p);
+            assert_eq!(frames, 1, "{op:?}");
+            assert!(len > 0 && len < 200, "{op:?}: {len}");
+
+            // At the cap: logged and counted exactly.
+            let (host, p, _) = gated(op, 1, CAP - len);
+            assert_eq!(log_of(&host, p), (1, len), "{op:?}");
+            assert_eq!(throttle_of(&host, p), Throttle::new(10, 2, CAP), "{op:?}");
+
+            // One byte over: nothing logged and the deltas end.
+            let (host, p, _) = gated(op, 1, CAP - len + 1);
+            assert_eq!(log_of(&host, p), (0, 0), "{op:?}");
+            let mut closed = Throttle::new(0, 1, CAP - len + 1);
+            closed.close();
+            assert_eq!(throttle_of(&host, p), closed, "{op:?}");
+        }
+    }
+
+    /// E-2, D-6: the frame budget's 127 to 128 boundary for a page, a receipt
+    /// and a cache hit: the 128th frame is logged, the 129th is refused.
+    #[test]
+    fn t141e_host_frame_budget_boundary() {
+        for op in GATED {
+            let (host, p, _) = gated(op, 127, 0);
+            let (frames, len) = log_of(&host, p);
+            assert_eq!(frames, 1, "{op:?}");
+            assert_eq!(throttle_of(&host, p), Throttle::new(10, 128, len), "{op:?}");
+
+            let (host, p, _) = gated(op, 128, 0);
+            assert_eq!(log_of(&host, p), (0, 0), "{op:?}");
+            let mut closed = Throttle::new(0, 128, 0);
+            closed.close();
+            assert_eq!(throttle_of(&host, p), closed, "{op:?}");
+        }
+    }
+
+    /// E-2, D-6: a budget refusal closes that session's throttle for good (a
+    /// small page that would fit is still held, long after the spacing) and
+    /// leaves the other session's throttle open.
+    #[test]
+    fn t141e_budget_refusal_closes_only_that_session() {
+        for op in GATED {
+            let (mut host, p, q) = gated(op, 128, 0);
+            assert_eq!(log_of(&host, p), (0, 0), "{op:?}");
+            let q_after = throttle_of(&host, q);
+            for _ in 0..30 {
+                host.tick().expect("ticks");
+            }
+            // A page that fits, at a tick far past the spacing: still held.
+            host.pause(3).expect("pauses");
+            host.unpause(4).expect("unpauses");
+            assert_eq!(log_of(&host, p), (0, 0), "{op:?}");
+            // The other session was never closed: it logs those pages.
+            let q_log = log_of(&host, q);
+            assert!(q_log.0 >= 1, "{op:?}");
+            let after = throttle_of(&host, q);
+            assert_ne!(after, q_after, "{op:?}");
+            assert_eq!(after.gate(10_000, 0, 0), crate::host_v3::Gate::Open);
+        }
+        // Control: with room the same page, 30 ticks on, is logged.
+        let (mut host, p, _) = gated(Gated::Receipt, 1, 0);
+        for _ in 0..30 {
+            host.tick().expect("ticks");
+        }
+        take_ops(&mut host, p);
+        host.pause(3).expect("pauses");
+        assert_eq!(clock_count(&take_ops(&mut host, p)), 1);
+    }
+
+    /// E-2: a logged receipt spends the allowance, so a delta at the same tick
+    /// and every tick up to the ninth after it is held (folded into the page
+    /// at the tenth), for a fresh receipt and for a cache hit.
+    #[test]
+    fn t141e_a_logged_receipt_spends_the_allowance() {
+        for op in [Gated::Receipt, Gated::CacheHit] {
+            let (mut host, p, _) = gated(op, 1, 0);
+            let ops = take_ops(&mut host, p);
+            assert_eq!(ops.len(), 1, "{op:?}");
+            assert!(matches!(ops[0], DeltaOpV3::Receipt { .. }), "{op:?}");
+            // Tick 10, just after the receipt: held.
+            host.pause(3).expect("pauses");
+            assert_eq!(take_ops(&mut host, p), vec![], "{op:?}");
+            for _ in 11..=19 {
+                host.tick().expect("ticks");
+                assert_eq!(take_ops(&mut host, p), vec![], "{op:?}");
+            }
+            // Tick 20: the folded change arrives.
+            host.tick().expect("ticks");
+            assert_eq!(
+                take_ops(&mut host, p),
+                vec![DeltaOpV3::Clock {
+                    paused: Some(Some(PauseReason::Operator)),
+                }],
+                "{op:?}"
+            );
+        }
+    }
+
+    /// C-5, E-2: a staging, whether the bind's, a `Resync`'s or a narrowing's,
+    /// installs a throttle at the staging tick that already counts C-6's one
+    /// frame and its bytes.
+    #[test]
+    fn t141e_staging_counts_its_delta_in_the_throttle() {
+        let mut host = v2_host(false);
+        let p = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds");
+        let delta_len = |host: &Host| {
+            let session = host.sessions.get(&p).expect("bound");
+            let last = session.log.back().expect("the delta is logged last");
+            assert_eq!(last.event_seq, Some(session.next_event_seq - 1));
+            last.bytes.len()
+        };
+        let len = delta_len(&host);
+        assert_eq!(throttle_of(&host, p), Throttle::new(0, 1, len));
+        ack_all(&mut host, p);
+        for _ in 0..5 {
+            host.tick().expect("ticks");
+        }
+        let resync = transfer_v3::encode_up(&TransferUp::Resync {
+            epoch: host.epoch(p).expect("bound"),
+            after: TransferId::new(1),
+            reason: crpg_net::protocol_transfer::ResyncReason::Expired,
+        })
+        .expect("encodes");
+        assert_eq!(
+            host.ingest_transfer(p, &resync, 1),
+            Ok(TransferDisposition::Resynced)
+        );
+        let len = delta_len(&host);
+        assert_eq!(throttle_of(&host, p), Throttle::new(5, 1, len));
+        ack_all(&mut host, p);
+        for _ in 0..2 {
+            host.tick().expect("ticks");
+        }
+        // A narrowing restages too.
+        let narrowed = hide_b(full_grants());
+        assert_eq!(
+            host.set_grants(p, narrowed),
+            Ok(GrantUpdate::SnapshotStaged)
+        );
+        let len = delta_len(&host);
+        assert_eq!(throttle_of(&host, p), Throttle::new(7, 1, len));
+    }
+
+    /// E-2: a `Published` for an older transfer is `Stale` and leaves the
+    /// throttle in place; the current id clears it.
+    #[test]
+    fn t141e_stale_published_keeps_the_throttle() {
+        let mut host = v2_host(false);
+        let p = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds");
+        ack_all(&mut host, p);
+        let epoch = host.epoch(p).expect("bound");
+        let up = |message: TransferUp| transfer_v3::encode_up(&message).expect("encodes");
+        let resync = up(TransferUp::Resync {
+            epoch,
+            after: TransferId::new(1),
+            reason: crpg_net::protocol_transfer::ResyncReason::Expired,
+        });
+        assert_eq!(
+            host.ingest_transfer(p, &resync, 1),
+            Ok(TransferDisposition::Resynced)
+        );
+        ack_all(&mut host, p);
+        let staged = throttle_of(&host, p);
+        // Transfer 1 is older than the in-flight transfer 2.
+        let stale = up(TransferUp::Published {
+            epoch,
+            transfer: TransferId::new(1).expect("nonzero"),
+        });
+        assert_eq!(
+            host.ingest_transfer(p, &stale, 1),
+            Ok(TransferDisposition::Stale)
+        );
+        assert_eq!(throttle_of(&host, p), staged);
+        assert_eq!(
+            host.transfer_state(p)
+                .expect("bound")
+                .expect("snapshot")
+                .in_flight,
+            Some(2)
+        );
+        // Still throttled: a held page at tick 0.
+        host.pause(1).expect("pauses");
+        assert_eq!(take_ops(&mut host, p), vec![]);
+        // The current id clears the throttle.
+        let current = up(TransferUp::Published {
+            epoch,
+            transfer: TransferId::new(2).expect("nonzero"),
+        });
+        assert_eq!(
+            host.ingest_transfer(p, &current, 1),
+            Ok(TransferDisposition::Published)
+        );
+        assert!(host
+            .sessions
+            .get(&p)
+            .expect("bound")
+            .v3
+            .as_ref()
+            .expect("v3")
+            .throttle
+            .is_none());
+        // The held pause folds into the first free page.
+        host.pause(2).expect("no-op");
+        assert_eq!(
+            take_ops(&mut host, p),
+            vec![DeltaOpV3::Clock {
+                paused: Some(Some(PauseReason::Operator)),
+            }]
+        );
+    }
+
+    /// E-2: a page of N frames counts N toward the frame budget, in the
+    /// host's check and in what it records. 300 newly granted entities enter
+    /// as 300 ops, which `frame_spans` cuts into two frames.
+    #[test]
+    fn t141e_a_multi_frame_page_counts_every_frame() {
+        let wide = |host: &mut Host| {
+            let mut grants = full_grants();
+            for _ in 0..300 {
+                let entity = host
+                    .history
+                    .spawn(crpg_sim::EntityMeta::default())
+                    .expect("spawns");
+                grants.entities.push(EntityDisclosure {
+                    entity,
+                    present: true,
+                    health: false,
+                    spawn: false,
+                    despawn: false,
+                    died: false,
+                    action_actor: false,
+                    action_target: false,
+                    action_outcome: false,
+                    action_damage: false,
+                    turn_start: false,
+                });
+            }
+            let last = host.history.last_sequence();
+            host.history.acknowledge(last).expect("acknowledges");
+            grants
+        };
+        let run = |frames: usize| {
+            let mut host = v2_host(false);
+            let grants = wide(&mut host);
+            let p = host
+                .bind_v3_peer(
+                    ControlGrant {
+                        actors: vec![eid(0)],
+                    },
+                    full_grants(),
+                    v3_facts(),
+                    PauseRights::default(),
+                    0,
+                )
+                .expect("binds");
+            ack_all(&mut host, p);
+            for _ in 0..10 {
+                host.tick().expect("ticks");
+            }
+            set_throttle(&mut host, p, Throttle::new(0, frames, 0));
+            assert_eq!(host.set_grants(p, grants), Ok(GrantUpdate::Unchanged));
+            (host, p)
+        };
+        // 126 spent: two frames fit exactly and are both counted.
+        let (host, p) = run(126);
+        let (count, bytes) = log_of(&host, p);
+        assert_eq!(count, 2);
+        assert_eq!(throttle_of(&host, p), Throttle::new(10, 128, bytes));
+        // 127 spent: the same two frames pass the budget by one and none is
+        // logged.
+        let (host, p) = run(127);
+        assert_eq!(log_of(&host, p), (0, 0));
+        let mut closed = Throttle::new(0, 127, 0);
+        closed.close();
+        assert_eq!(throttle_of(&host, p), closed);
+    }
 }
