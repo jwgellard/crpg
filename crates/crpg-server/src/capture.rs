@@ -9,7 +9,13 @@
 //! peer that received content for the command. Records are trusted capture
 //! evidence: they never enter wire bytes.
 //!
-//! Records are numbered by a monotonic `capture_seq` from 1 and retire only
+//! Host-made events (real-time ticks, host actions, the turn timer) have no
+//! originating command, so each such operation that journals at least one
+//! event gets one [`HostRecord`] (T141s; ADR-0022). The journal is a
+//! sequence of [`CaptureEntry`]s, each a command record or a host record,
+//! numbered by the one `capture_seq`.
+//!
+//! Entries are numbered by a monotonic `capture_seq` from 1 and retire only
 //! through the trusted consumer's `Host::acknowledge_captures`; the bounds
 //! below are enforced by reservation before execution (§6) and again when a
 //! checkpoint is loaded (§7).
@@ -36,8 +42,21 @@ pub const MAX_CAPTURE_RECORD_BYTES: usize = 16 * 1024;
 /// Maximum records returned by one `Host::read_captures` page.
 pub const MAX_CAPTURE_PAGE: usize = 256;
 /// Maximum history envelopes one command produces:
-/// `ActionResolved` + `Died` + `TurnStarted` | `EncounterEnded`.
+/// `ActionResolved` + `Died` + `TurnStarted` | `EncounterEnded`. This is the
+/// turn-based worst case; bound checks use
+/// [`MAX_NEW_EVENTS_PER_COMMAND_RT`].
 pub const MAX_NEW_EVENTS_PER_COMMAND: usize = 3;
+/// Maximum history envelopes one peer command journals once an encounter is
+/// real-time capable: ActionResolved + Died + ModeChanged + RoundStarted.
+pub const MAX_NEW_EVENTS_PER_COMMAND_RT: usize = 4;
+/// Maximum envelopes in one host record: one sim journal's worth.
+pub const MAX_HOST_RECORD_EVENTS: usize = crpg_sim::MAX_HISTORY_EVENTS;
+/// Maximum compact `serde_json` length of one host record: one sim journal's
+/// canonical bytes plus 64 KiB for brackets, commas and the record's fields.
+pub const MAX_HOST_RECORD_BYTES: usize = crpg_sim::MAX_HISTORY_BYTES + 65_536;
+const _: () = assert!(
+    MAX_HOST_RECORD_BYTES >= crpg_sim::MAX_HISTORY_BYTES + 2 * crpg_sim::MAX_HISTORY_EVENTS + 1_024
+);
 /// Maximum delivery ops per command per peer: receipt + events + state ops.
 pub const MAX_DELIVERY_OPS_PER_COMMAND: usize = 8;
 /// Maximum encoded delivery frame bytes per command per peer; the
@@ -140,10 +159,76 @@ pub struct CapturedRecord {
     pub views: Vec<CapturedView>,
 }
 
+/// What made a host record (serde `snake_case`: "tick", "action",
+/// "turn_timer").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostOp {
+    /// `Host::tick` or `Host::advance`'s tick.
+    Tick,
+    /// `Host::host_action` (T141a).
+    Action,
+    /// The turn timer's `EndTurn` (T141b).
+    TurnTimer,
+}
+
+/// One host operation's captured evidence. Field order is the JSON order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostRecord {
+    /// Shares the journal's numbering with [`CapturedRecord`].
+    pub capture_seq: u64,
+    /// What made the record.
+    pub op: HostOp,
+    /// Exclusive start of the history range: events are
+    /// `(history_start, history_end]`, never empty.
+    pub history_start: u64,
+    /// Inclusive end of the history range.
+    pub history_end: u64,
+    /// `server_tick()` after the operation.
+    pub processed_tick: u64,
+    /// The operation's envelopes, `1..=MAX_HOST_RECORD_EVENTS`.
+    pub events: Vec<HistoryEnvelope>,
+}
+
+/// One capture-journal entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureEntry {
+    /// An accepted peer command.
+    Command(CapturedRecord),
+    /// A host operation that journaled at least one event.
+    Host(HostRecord),
+}
+
+impl CaptureEntry {
+    /// The entry's `capture_seq`.
+    pub fn capture_seq(&self) -> u64 {
+        match self {
+            Self::Command(record) => record.capture_seq,
+            Self::Host(record) => record.capture_seq,
+        }
+    }
+
+    /// The compact `serde_json` length: the capture ledger unit.
+    pub(crate) fn json_len(&self) -> usize {
+        match self {
+            Self::Command(record) => record_len(record),
+            Self::Host(record) => host_record_len(record),
+        }
+    }
+}
+
 /// The compact `serde_json` length of one record: the capture ledger unit.
 pub(crate) fn record_len(record: &CapturedRecord) -> usize {
     serde_json::to_vec(record)
         .expect("capture records serialize")
+        .len()
+}
+
+/// The compact `serde_json` length of one host record.
+pub(crate) fn host_record_len(record: &HostRecord) -> usize {
+    serde_json::to_vec(record)
+        .expect("host records serialize")
         .len()
 }
 
@@ -328,5 +413,79 @@ mod tests {
         ] {
             assert!(!valid_outcome(bad), "{bad}");
         }
+    }
+
+    // -- T141s host records ---------------------------------------------------
+
+    fn sample_host_record() -> HostRecord {
+        HostRecord {
+            capture_seq: 2,
+            op: HostOp::TurnTimer,
+            history_start: 4,
+            history_end: 5,
+            processed_tick: 1,
+            events: vec![serde_json::from_value(serde_json::json!({
+                "tick": 1,
+                "seq": 5,
+                "payload": {"type": "round_started", "value": {"round": 1}}
+            }))
+            .expect("envelope parses")],
+        }
+    }
+
+    #[test]
+    fn host_record_round_trips_in_declaration_order() {
+        let record = sample_host_record();
+        let text = serde_json::to_string(&record).expect("encodes");
+        assert!(text.starts_with(
+            "{\"capture_seq\":2,\"op\":\"turn_timer\",\"history_start\":4,\"history_end\":5,\"processed_tick\":1,\"events\":["
+        ));
+        let back: HostRecord = serde_json::from_str(&text).expect("decodes");
+        assert_eq!(back, record);
+        assert_eq!(host_record_len(&record), text.len());
+        let entry = CaptureEntry::Host(record);
+        assert_eq!(entry.capture_seq(), 2);
+        assert_eq!(entry.json_len(), text.len());
+        let command = CaptureEntry::Command(sample());
+        assert_eq!(command.capture_seq(), 1);
+        assert_eq!(command.json_len(), record_len(&sample()));
+    }
+
+    #[test]
+    fn host_op_names_are_snake_case() {
+        for (op, name) in [
+            (HostOp::Tick, "\"tick\""),
+            (HostOp::Action, "\"action\""),
+            (HostOp::TurnTimer, "\"turn_timer\""),
+        ] {
+            assert_eq!(serde_json::to_string(&op).expect("encodes"), name);
+            assert_eq!(serde_json::from_str::<HostOp>(name).expect("decodes"), op);
+        }
+        assert!(serde_json::from_str::<HostOp>("\"bogus\"").is_err());
+        assert!(serde_json::from_str::<HostOp>("\"Tick\"").is_err());
+    }
+
+    #[test]
+    fn host_record_decode_rejects_missing_unknown_and_duplicate() {
+        let text = serde_json::to_string(&sample_host_record()).expect("encodes");
+        let missing = text.replace("\"processed_tick\":1,", "");
+        assert_ne!(missing, text);
+        assert!(serde_json::from_str::<HostRecord>(&missing).is_err());
+        let unknown = text.replacen("{\"capture_seq\":2,", "{\"capture_seq\":2,\"x\":0,", 1);
+        assert!(serde_json::from_str::<HostRecord>(&unknown).is_err());
+        let duplicate = text.replacen(
+            "{\"capture_seq\":2,",
+            "{\"capture_seq\":2,\"capture_seq\":2,",
+            1,
+        );
+        assert!(serde_json::from_str::<HostRecord>(&duplicate).is_err());
+    }
+
+    #[test]
+    fn host_record_bounds() {
+        assert_eq!(MAX_NEW_EVENTS_PER_COMMAND, 3);
+        assert_eq!(MAX_NEW_EVENTS_PER_COMMAND_RT, 4);
+        assert_eq!(MAX_HOST_RECORD_EVENTS, 4096);
+        assert_eq!(MAX_HOST_RECORD_BYTES, 1_114_112);
     }
 }

@@ -45,17 +45,19 @@ use crpg_net::protocol_transfer::{
 use crpg_net::protocol_v2;
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_sim::{
-    history_hash, legal_actions, validate_action, CombatAction, CombatError, HistoryEnvelope,
-    HistoryError, HistoryEvent, HistoryWorld, LegalActionsError, World, MAX_HISTORY_EVENTS,
-    MAX_HISTORY_PAGE,
+    history_hash, legal_actions, validate_action, CombatAction, CombatError, EncounterMode,
+    HistoryEnvelope, HistoryError, HistoryEvent, HistoryWorld, LegalActionsError, World,
+    MAX_HISTORY_EVENTS, MAX_HISTORY_PAGE,
 };
 
 use crate::capture::{
-    record_len, CapturedHealth, CapturedOutcome, CapturedRecord, CapturedTurn, CapturedView,
-    MAX_CAPTURE_BYTES, MAX_CAPTURE_PAGE, MAX_CAPTURE_RECORDS, MAX_CAPTURE_RECORD_BYTES,
-    MAX_DELIVERY_BYTES_PER_COMMAND_PEER, MAX_DELIVERY_OPS_PER_COMMAND, MAX_NEW_EVENTS_PER_COMMAND,
+    host_record_len, record_len, CaptureEntry, CapturedHealth, CapturedOutcome, CapturedRecord,
+    CapturedTurn, CapturedView, HostOp, HostRecord, MAX_CAPTURE_BYTES, MAX_CAPTURE_PAGE,
+    MAX_CAPTURE_RECORDS, MAX_CAPTURE_RECORD_BYTES, MAX_DELIVERY_BYTES_PER_COMMAND_PEER,
+    MAX_DELIVERY_OPS_PER_COMMAND, MAX_HOST_RECORD_BYTES, MAX_HOST_RECORD_EVENTS,
+    MAX_NEW_EVENTS_PER_COMMAND_RT,
 };
-use crate::checkpoint::CheckpointError;
+use crate::checkpoint::{check_host_record, CheckpointError};
 
 // ---------------------------------------------------------------------------
 // Constants (§2).
@@ -377,6 +379,9 @@ pub enum HostError {
     },
     /// An internal invariant failed (unreachable by construction).
     Invariant(&'static str),
+    /// The capture journal has no room for a host record; the trusted
+    /// consumer must `acknowledge_captures` first.
+    CaptureFull,
 }
 
 impl fmt::Display for HostError {
@@ -396,6 +401,7 @@ impl fmt::Display for HostError {
             Self::FutureCaptureCursor { .. } => "FutureCaptureCursor",
             Self::FutureDeliveryCursor { .. } => "FutureDeliveryCursor",
             Self::Invariant(_) => "Invariant",
+            Self::CaptureFull => "CaptureFull",
         };
         write!(f, "{name} at host/admission")
     }
@@ -543,7 +549,7 @@ pub struct Host {
     egress_bytes: usize,
     executions: u64,
     last_combat_error: Option<CombatError>,
-    captures: VecDeque<CapturedRecord>,
+    captures: VecDeque<CaptureEntry>,
     capture_lens: VecDeque<usize>,
     capture_bytes: usize,
     capture_acknowledged: u64,
@@ -602,16 +608,16 @@ impl Host {
     pub(crate) fn restore(
         config: HostConfig,
         history: HistoryWorld,
-        captures: Vec<CapturedRecord>,
+        captures: Vec<CaptureEntry>,
         capture_acknowledged: u64,
         now_ms: u64,
     ) -> Self {
         let mut host = Self::assemble(config, history, now_ms);
-        for record in captures {
-            let len = record_len(&record);
+        for entry in captures {
+            let len = entry.json_len();
             host.capture_bytes += len;
             host.capture_lens.push_back(len);
-            host.captures.push_back(record);
+            host.captures.push_back(entry);
         }
         host.capture_acknowledged = capture_acknowledged;
         host.last_capture = capture_acknowledged + host.captures.len() as u64;
@@ -744,7 +750,7 @@ impl Host {
         self.last_now_ms
     }
 
-    pub(crate) fn retained_captures(&self) -> &VecDeque<CapturedRecord> {
+    pub(crate) fn retained_captures(&self) -> &VecDeque<CaptureEntry> {
         &self.captures
     }
 
@@ -1399,6 +1405,11 @@ impl Host {
 
     /// Commits an accepted command: capture, cache, sequence, per-peer
     /// delivery, then the sim acknowledgement through the captured range.
+    ///
+    /// After the sim has committed nothing undoes it (T141 Reading 5): the
+    /// acknowledgement runs whether or not the capture steps succeeded, so a
+    /// failed record leaves no unacknowledged evidence behind; the capture
+    /// failure is then returned and the next checkpoint fails to load.
     fn commit_accepted(
         &mut self,
         peer: PeerHandle,
@@ -1409,8 +1420,28 @@ impl Host {
         before: u64,
     ) -> Result<(), HostError> {
         let after = self.history.last_sequence();
+        let result = self.capture_accepted(peer, frame, canonical, action, outcome, before, after);
+        let acknowledged = self
+            .history
+            .acknowledge(after)
+            .map_err(|_| HostError::Invariant("sim acknowledgement failed"));
+        result.and(acknowledged)
+    }
+
+    /// The fallible capture steps of [`commit_accepted`](Self::commit_accepted).
+    #[allow(clippy::too_many_arguments)]
+    fn capture_accepted(
+        &mut self,
+        peer: PeerHandle,
+        frame: &IntentFrame,
+        canonical: Vec<u8>,
+        action: &CombatAction,
+        outcome: Option<crpg_sim::ActionOutcome>,
+        before: u64,
+        after: u64,
+    ) -> Result<(), HostError> {
         let count = after - before;
-        if count as usize > MAX_NEW_EVENTS_PER_COMMAND {
+        if count as usize > MAX_NEW_EVENTS_PER_COMMAND_RT {
             return Err(HostError::Invariant("command produced too many events"));
         }
         let events: Vec<HistoryEnvelope> = if count == 0 {
@@ -1523,7 +1554,7 @@ impl Host {
         self.last_capture = record.capture_seq;
         self.capture_bytes += len;
         self.capture_lens.push_back(len);
-        self.captures.push_back(record);
+        self.captures.push_back(CaptureEntry::Command(record));
         for (handle, logged) in deliveries {
             let session = self.sessions.get_mut(&handle).expect("iterated above");
             push_frames(&mut self.egress_bytes, session, vec![logged])?;
@@ -1541,9 +1572,6 @@ impl Host {
                 receipt: receipt_ref,
             },
         );
-        self.history
-            .acknowledge(after)
-            .map_err(|_| HostError::Invariant("sim acknowledgement failed"))?;
         Ok(())
     }
 
@@ -1569,7 +1597,7 @@ impl Host {
         {
             return Ok(false);
         }
-        if self.history.pending_len() + MAX_NEW_EVENTS_PER_COMMAND > MAX_HISTORY_EVENTS {
+        if self.history.pending_len() + MAX_NEW_EVENTS_PER_COMMAND_RT > MAX_HISTORY_EVENTS {
             return Ok(false);
         }
         let caps = self.egress_caps;
@@ -1947,13 +1975,33 @@ impl Host {
 
     // -- captures ------------------------------------------------------------
 
-    /// Up to `limit` cloned records with `capture_seq > after`, in order.
-    /// Inert: advances nothing.
+    /// The `Command` entries of the page
+    /// [`read_capture_entries`](Self::read_capture_entries) returns for the
+    /// same arguments, in order (a page may hold fewer than `limit` records
+    /// when host records sit in it). Inert: advances nothing.
     pub fn read_captures(
         &self,
         after: u64,
         limit: usize,
     ) -> Result<Vec<CapturedRecord>, HostError> {
+        Ok(self
+            .read_capture_entries(after, limit)?
+            .into_iter()
+            .filter_map(|entry| match entry {
+                CaptureEntry::Command(record) => Some(record),
+                CaptureEntry::Host(_) => None,
+            })
+            .collect())
+    }
+
+    /// Up to `limit` cloned entries with `capture_seq > after`, in order: the
+    /// same cursor rules and errors as [`read_captures`](Self::read_captures).
+    /// Inert: advances nothing.
+    pub fn read_capture_entries(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<CaptureEntry>, HostError> {
         if limit == 0 || limit > MAX_CAPTURE_PAGE {
             return Err(HostError::InvalidPageLimit { limit });
         }
@@ -2018,14 +2066,123 @@ impl Host {
 
     // -- trusted ops and lifecycle -------------------------------------------
 
-    /// One trusted `HistoryWorld::tick`; journals nothing.
+    /// One trusted `HistoryWorld::tick`, the first host operation (T141s).
+    ///
+    /// A real-time tick journals its events, so it first reserves journal
+    /// room ([`HostError::CaptureFull`]) and then records them as a
+    /// [`HostRecord`] (`HostOp::Tick`) before the sim acknowledgement. A
+    /// turn-based, turn-based-only or no-encounter tick reserves nothing and
+    /// journals nothing. It is never a peer command: no sequence, no receipt,
+    /// `executions()` unmoved, and no frame for v1/v2 sessions.
     pub fn tick(&mut self) -> Result<(), HostError> {
         if self.closed {
             return Err(HostError::Closed);
         }
+        if self.is_real_time() {
+            self.reserve_host_record()?;
+        }
+        let before = self.history.last_sequence();
         self.history
             .tick()
-            .map_err(|_| HostError::Invariant("zero-event tick failed"))
+            .map_err(|_| HostError::Invariant("tick refused by the history caps"))?;
+        self.complete_host_op(HostOp::Tick, before)
+    }
+
+    /// Whether the encounter is in real-time mode, the only mode whose ticks
+    /// journal events.
+    fn is_real_time(&self) -> bool {
+        self.history
+            .world()
+            .combat()
+            .is_some_and(|combat| combat.mode == EncounterMode::RealTime)
+    }
+
+    /// Check-only worst-case room for one host record (S-4 step 2).
+    fn reserve_host_record(&self) -> Result<(), HostError> {
+        if self.last_capture >= u64::MAX - 1 {
+            return Err(HostError::CounterExhausted);
+        }
+        if self.captures.len() + 1 > MAX_CAPTURE_RECORDS
+            || self.capture_bytes + MAX_HOST_RECORD_BYTES > MAX_CAPTURE_BYTES
+        {
+            return Err(HostError::CaptureFull);
+        }
+        Ok(())
+    }
+
+    /// The tail of a host operation whose sim call committed at
+    /// `history.last_sequence()`, with `before` the sequence before the call
+    /// (S-3). A zero-event operation makes no record.
+    fn complete_host_op(&mut self, op: HostOp, before: u64) -> Result<(), HostError> {
+        let after = self.history.last_sequence();
+        if after == before {
+            return Ok(());
+        }
+        let record = self.read_host_record(op, before, after);
+        self.finish_host_op(op, before, record)
+    }
+
+    /// Step 2 of the tail: reads the operation's envelopes and builds its
+    /// record.
+    fn read_host_record(
+        &self,
+        op: HostOp,
+        before: u64,
+        after: u64,
+    ) -> Result<HostRecord, HostError> {
+        if after - before > MAX_HOST_RECORD_EVENTS as u64 {
+            return Err(HostError::Invariant("host record exceeds its bound"));
+        }
+        let mut events: Vec<HistoryEnvelope> = Vec::with_capacity((after - before) as usize);
+        let mut cursor = before;
+        while cursor < after {
+            let page = self
+                .history
+                .read_after(cursor, MAX_HISTORY_PAGE)
+                .map_err(|_| HostError::Invariant("captured range unreadable"))?;
+            if page.is_empty() {
+                return Err(HostError::Invariant("captured range incomplete"));
+            }
+            cursor += page.len() as u64;
+            events.extend(page);
+        }
+        build_host_record(
+            self.last_capture + 1,
+            op,
+            before,
+            after,
+            self.server_tick(),
+            events,
+        )
+    }
+
+    /// Steps 3 to 5 of the tail (S-3): publication (v3 sessions, later
+    /// parts), the append, then the sim acknowledgement, which always runs.
+    /// A `record` that could not be built is returned only after the
+    /// acknowledgement, with nothing appended: evidence is then missing, so
+    /// the next checkpoint fails to load, visibly.
+    fn finish_host_op(
+        &mut self,
+        op: HostOp,
+        before: u64,
+        record: Result<HostRecord, HostError>,
+    ) -> Result<(), HostError> {
+        let after = self.history.last_sequence();
+        let appended = record.map(|record| {
+            debug_assert_eq!(record.op, op);
+            debug_assert_eq!(record.history_start, before);
+            debug_assert_eq!(record.history_end, after);
+            let len = host_record_len(&record);
+            self.last_capture = record.capture_seq;
+            self.capture_bytes += len;
+            self.capture_lens.push_back(len);
+            self.captures.push_back(CaptureEntry::Host(record));
+        });
+        let acknowledged = self
+            .history
+            .acknowledge(after)
+            .map_err(|_| HostError::Invariant("sim acknowledgement failed"));
+        appended.and(acknowledged)
     }
 
     /// Encodes the checkpoint (§7); fails with `PendingIngress` unless
@@ -2370,6 +2527,36 @@ fn involved_entities(world: &World, action: &CombatAction) -> BTreeSet<EntityId>
 /// T020's own translation of the same operation (the `ActionResolved`
 /// envelope it journaled), cross-checked field by field against the
 /// returned `ActionOutcome`; nothing is re-inferred from later state.
+/// Step 2 of the host-operation tail (T141s S-3): the record for one host
+/// operation's envelopes, checked against the production bounds. A record
+/// over a bound is `Invariant("host record exceeds its bound")`.
+fn build_host_record(
+    capture_seq: u64,
+    op: HostOp,
+    history_start: u64,
+    history_end: u64,
+    processed_tick: u64,
+    events: Vec<HistoryEnvelope>,
+) -> Result<HostRecord, HostError> {
+    let record = HostRecord {
+        capture_seq,
+        op,
+        history_start,
+        history_end,
+        processed_tick,
+        events,
+    };
+    check_host_record(
+        &record,
+        processed_tick,
+        history_end,
+        MAX_HOST_RECORD_EVENTS,
+        MAX_HOST_RECORD_BYTES,
+    )
+    .map_err(|_| HostError::Invariant("host record exceeds its bound"))?;
+    Ok(record)
+}
+
 fn capture_outcome(
     outcome: Option<&crpg_sim::ActionOutcome>,
     events: &[HistoryEnvelope],
@@ -2951,5 +3138,360 @@ mod tests {
         host.shutdown();
         assert_eq!(host.legal_intents(peer), Err(HostError::Closed));
         assert_eq!(host.replica_id(peer, eid(0)), Err(HostError::Closed));
+    }
+
+    // -- T141s host records: the tail's private seams (S7) and bounds -------
+
+    /// `TB3` (`real_time: false`) or `RT3` saved-game JSON, as in
+    /// `tests/host_records.rs`.
+    fn host_fixture_value(real_time: bool) -> serde_json::Value {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/three_combatants.json"))
+                .expect("fixture parses");
+        if real_time {
+            value["version"] = serde_json::json!(2);
+            value["world"]["combat"]["clock"] = serde_json::json!({"round_ticks": 4, "elapsed": 0});
+            value["world"]["combat"]["mode"] = serde_json::json!("real_time");
+            value["world"]["combat"]["active"] = serde_json::Value::Null;
+            for entry in value["world"]["timeline"].as_array_mut().expect("timeline") {
+                entry[0] = serde_json::json!(0);
+            }
+        }
+        value
+    }
+
+    fn v2_host(real_time: bool) -> Host {
+        let mut history: HistoryWorld =
+            serde_json::from_value(host_fixture_value(real_time)).expect("fixture loads");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        Host::from_history(
+            history,
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 1,
+            },
+            0,
+        )
+        .expect("wraps an acknowledged authority")
+    }
+
+    fn all_actors() -> ControlGrant {
+        ControlGrant {
+            actors: vec![eid(0), eid(1), eid(2)],
+        }
+    }
+
+    fn intent(host: &Host, peer: PeerHandle, seq: u64, actor: u64, body: IntentBody) -> Vec<u8> {
+        codec_v2::encode_intent(&IntentFrame {
+            epoch: host.epoch(peer).expect("bound"),
+            lane: LANE_COMBAT,
+            seq,
+            observed_tick: host.server_tick(),
+            actor: net(actor),
+            body,
+        })
+        .expect("encodes")
+    }
+
+    /// `RT3` with `V` bound and A's standing order (A strikes B) set through
+    /// a real command: entry 1, history `(4, 4]`.
+    fn rt3_with_order() -> (Host, PeerHandle) {
+        let mut host = v2_host(true);
+        let peer = host
+            .bind_peer(all_actors(), full_grants(), 0)
+            .expect("binds");
+        let bytes = intent(
+            &host,
+            peer,
+            1,
+            1,
+            IntentBody::DeclareAction {
+                ability: Ulid::from_u128(603),
+                target: net(2),
+            },
+        );
+        assert_eq!(
+            host.ingest(peer, &bytes, 100),
+            Ok(IngestDisposition::Staged)
+        );
+        let summary = host.pump(100).expect("pumps");
+        assert_eq!(summary.results[0].status, ReceiptStatus::Applied);
+        assert_eq!(host.last_capture(), 1);
+        (host, peer)
+    }
+
+    fn round_started(seq: u64) -> HistoryEnvelope {
+        serde_json::from_value(serde_json::json!({
+            "tick": 0,
+            "seq": seq,
+            "payload": {"type": "round_started", "value": {"round": 1}}
+        }))
+        .expect("envelope parses")
+    }
+
+    const RECORD_BOUND: HostError = HostError::Invariant("host record exceeds its bound");
+
+    #[test]
+    fn tail_acknowledges_even_when_the_record_fails() {
+        let (mut host, _peer) = rt3_with_order();
+        host.history.tick().expect("the sim commits the tick");
+        assert_eq!(host.history.last_sequence(), 5);
+        assert_eq!(host.history.pending_len(), 1);
+        let bytes = host.capture_bytes;
+        assert_eq!(
+            host.finish_host_op(HostOp::Tick, 4, Err(RECORD_BOUND)),
+            Err(RECORD_BOUND)
+        );
+        assert_eq!(host.history.acknowledged(), 5);
+        assert_eq!(host.history.pending_len(), 0);
+        assert_eq!(host.last_capture(), 1);
+        assert_eq!(host.captures.len(), 1);
+        assert_eq!(host.capture_bytes, bytes);
+        assert_eq!(host.capture_lens.len(), 1);
+
+        // Control: the same state with a built record appends and acknowledges.
+        let (mut host, _peer) = rt3_with_order();
+        host.history.tick().expect("the sim commits the tick");
+        let record = host.read_host_record(HostOp::Tick, 4, 5);
+        let built = record.clone().expect("builds");
+        assert_eq!(host.finish_host_op(HostOp::Tick, 4, record), Ok(()));
+        assert_eq!(host.history.acknowledged(), 5);
+        assert_eq!(host.last_capture(), 2);
+        assert_eq!(
+            host.captures.back(),
+            Some(&CaptureEntry::Host(built.clone()))
+        );
+        assert_eq!(built.capture_seq, 2);
+        assert_eq!(built.processed_tick, 1);
+        assert_eq!((built.history_start, built.history_end), (4, 5));
+        assert_eq!(built.events.len(), 1);
+        assert_eq!(host.capture_bytes, host.capture_lens.iter().sum::<usize>());
+    }
+
+    #[test]
+    fn build_host_record_applies_the_production_bounds() {
+        let one = vec![round_started(5)];
+        let record = build_host_record(2, HostOp::Tick, 4, 5, 1, one.clone()).expect("builds");
+        assert_eq!(
+            record,
+            HostRecord {
+                capture_seq: 2,
+                op: HostOp::Tick,
+                history_start: 4,
+                history_end: 5,
+                processed_tick: 1,
+                events: one,
+            }
+        );
+        let many =
+            |count: u64| -> Vec<HistoryEnvelope> { (1..=count).map(round_started).collect() };
+        let at_bound = build_host_record(2, HostOp::Action, 0, 4096, 1, many(4096));
+        assert_eq!(at_bound.expect("4,096 events build").events.len(), 4096);
+        assert_eq!(
+            build_host_record(2, HostOp::Action, 0, 4097, 1, many(4097)),
+            Err(RECORD_BOUND)
+        );
+        // An empty range, a width that disagrees with the events, and a gap
+        // in the envelope sequences are each over the bound.
+        assert_eq!(
+            build_host_record(2, HostOp::Tick, 5, 5, 1, Vec::new()),
+            Err(RECORD_BOUND)
+        );
+        assert_eq!(
+            build_host_record(2, HostOp::Tick, 4, 6, 1, vec![round_started(5)]),
+            Err(RECORD_BOUND)
+        );
+        assert_eq!(
+            build_host_record(2, HostOp::Tick, 4, 5, 1, vec![round_started(6)]),
+            Err(RECORD_BOUND)
+        );
+    }
+
+    /// A peer command that journals more events than the real-time bound
+    /// (four) is `Invariant`, and the sim acknowledgement still runs; four is
+    /// the bound and is captured (A-1).
+    #[test]
+    fn command_tail_acknowledges_even_when_the_record_fails() {
+        for (turns, accepted) in [(5usize, false), (4, true)] {
+            let mut host = v2_host(false);
+            let peer = host
+                .bind_peer(all_actors(), full_grants(), 0)
+                .expect("binds");
+            for index in 0..turns {
+                host.history
+                    .perform_action(&CombatAction::EndTurn {
+                        actor: eid((index % 3) as u32),
+                    })
+                    .expect("the sim accepts the turn");
+            }
+            let after = host.history.last_sequence();
+            assert_eq!(after, 4 + turns as u64);
+            let frame = IntentFrame {
+                epoch: host.epoch(peer).expect("bound"),
+                lane: LANE_COMBAT,
+                seq: 1,
+                observed_tick: 0,
+                actor: net(1),
+                body: IntentBody::EndTurn,
+            };
+            let result = host.commit_accepted(
+                peer,
+                &frame,
+                Vec::new(),
+                &CombatAction::EndTurn { actor: eid(0) },
+                None,
+                4,
+            );
+            assert_eq!(host.history.acknowledged(), after, "{turns} events");
+            assert_eq!(host.history.pending_len(), 0);
+            if accepted {
+                assert_eq!(result, Ok(()));
+                assert_eq!(host.executions(), 1);
+                assert_eq!(host.last_capture(), 1);
+                let CaptureEntry::Command(record) = &host.captures[0] else {
+                    panic!("a command entry");
+                };
+                assert_eq!(record.events.len(), 4);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(HostError::Invariant("command produced too many events"))
+                );
+                assert_eq!(host.executions(), 0);
+                assert_eq!(host.last_capture(), 0);
+                assert!(host.captures.is_empty());
+                assert_eq!(host.capture_bytes, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn host_record_reservation_bounds() {
+        let mut host = v2_host(true);
+        // Bytes: room for exactly one worst-case host record is room.
+        host.capture_bytes = MAX_CAPTURE_BYTES - MAX_HOST_RECORD_BYTES;
+        assert_eq!(host.reserve_host_record(), Ok(()));
+        host.capture_bytes += 1;
+        assert_eq!(host.reserve_host_record(), Err(HostError::CaptureFull));
+        // A real-time tick is refused and changes nothing; a turn-based tick
+        // reserves nothing.
+        let hash = host.authority_hash();
+        assert_eq!(host.tick(), Err(HostError::CaptureFull));
+        assert_eq!(host.server_tick(), 0);
+        assert_eq!(host.authority_hash(), hash);
+        let mut tb = v2_host(false);
+        tb.capture_bytes = MAX_CAPTURE_BYTES;
+        assert_eq!(tb.tick(), Ok(()));
+        assert_eq!(tb.server_tick(), 1);
+        // Entries: the count at the bound is full, one below is room.
+        let mut host = v2_host(true);
+        let filler = CaptureEntry::Host(HostRecord {
+            capture_seq: 1,
+            op: HostOp::Tick,
+            history_start: 4,
+            history_end: 5,
+            processed_tick: 0,
+            events: vec![round_started(5)],
+        });
+        for _ in 0..MAX_CAPTURE_RECORDS - 1 {
+            host.captures.push_back(filler.clone());
+        }
+        assert_eq!(host.reserve_host_record(), Ok(()));
+        host.captures.push_back(filler);
+        assert_eq!(host.reserve_host_record(), Err(HostError::CaptureFull));
+        // The counter sentinel.
+        let mut host = v2_host(true);
+        host.last_capture = u64::MAX - 2;
+        assert_eq!(host.reserve_host_record(), Ok(()));
+        host.last_capture = u64::MAX - 1;
+        assert_eq!(host.reserve_host_record(), Err(HostError::CounterExhausted));
+    }
+
+    /// A tick the history caps refuse commits nothing and is `Invariant`.
+    #[test]
+    fn tick_refused_by_the_history_caps_changes_nothing() {
+        for (spawns, refused) in [(MAX_HISTORY_EVENTS, true), (MAX_HISTORY_EVENTS - 1, false)] {
+            let (mut host, _peer) = rt3_with_order();
+            for _ in 0..spawns {
+                host.history
+                    .spawn(crpg_sim::EntityMeta::default())
+                    .expect("fits the journal");
+            }
+            let hash = host.authority_hash();
+            let last = host.last_capture();
+            let result = host.tick();
+            if refused {
+                assert_eq!(
+                    result,
+                    Err(HostError::Invariant("tick refused by the history caps"))
+                );
+                assert_eq!(host.server_tick(), 0);
+                assert_eq!(host.authority_hash(), hash);
+                assert_eq!(host.last_capture(), last);
+                assert_eq!(host.history.pending_len(), spawns);
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(host.server_tick(), 1);
+                assert_eq!(host.last_capture(), last + 1);
+                assert_eq!(host.history.pending_len(), 0);
+            }
+        }
+    }
+
+    /// One ledger for both entry kinds: the byte total is the sum of the
+    /// entries' compact lengths, and acknowledging retires both kinds.
+    #[test]
+    fn capture_ledger_counts_both_entry_kinds() {
+        let (mut host, _peer) = rt3_with_order();
+        host.tick().expect("ticks");
+        assert_eq!(host.captures.len(), 2);
+        let lengths: Vec<usize> = host.captures.iter().map(CaptureEntry::json_len).collect();
+        assert_eq!(
+            host.capture_lens.iter().copied().collect::<Vec<_>>(),
+            lengths
+        );
+        assert_eq!(host.capture_bytes, lengths.iter().sum::<usize>());
+        let CaptureEntry::Host(record) = &host.captures[1] else {
+            panic!("the tick's record");
+        };
+        assert_eq!(
+            lengths[1],
+            serde_json::to_vec(record).expect("encodes").len()
+        );
+        host.acknowledge_captures(2).expect("acks");
+        assert_eq!(host.capture_bytes, 0);
+        assert!(host.captures.is_empty());
+        assert!(host.capture_lens.is_empty());
+        assert_eq!(host.capture_acknowledged(), 2);
+        assert_eq!(host.last_capture(), 2);
+    }
+
+    #[test]
+    fn capture_full_displays_and_has_no_source() {
+        assert_eq!(
+            HostError::CaptureFull.to_string(),
+            "CaptureFull at host/admission"
+        );
+        assert!(std::error::Error::source(&HostError::CaptureFull).is_none());
+    }
+
+    /// A peer command reserves history room for four events (S-7).
+    #[test]
+    fn accepted_room_reserves_four_history_events() {
+        let mut host = v2_host(false);
+        for _ in 0..MAX_HISTORY_EVENTS - MAX_NEW_EVENTS_PER_COMMAND_RT {
+            host.history
+                .spawn(crpg_sim::EntityMeta::default())
+                .expect("fits the journal");
+        }
+        assert_eq!(host.history.pending_len(), 4092);
+        assert_eq!(host.accepted_room(), Ok(true));
+        host.history
+            .spawn(crpg_sim::EntityMeta::default())
+            .expect("fits the journal");
+        assert_eq!(host.history.pending_len(), 4093);
+        assert_eq!(host.accepted_room(), Ok(false));
     }
 }

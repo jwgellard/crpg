@@ -47,7 +47,8 @@ options confer no authorization.
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
    accessor returns `&HistoryWorld`, `&World` or `&mut` anything. Gameplay
    after the wrap enters only through `ingest` → `pump`; `tick()` is the one
-   trusted extra op and journals nothing.
+   trusted extra op. Host operations journal and are recorded as
+   `HostRecord`s (T141s); they are never peer commands.
 2. **Determine, reserve, then commit.** Every pump step decides the outcome
    class (gameplay through `crpg_sim::validate_action`, never a host copy of
    legality), checks worst-case room without mutating, and only then
@@ -57,7 +58,8 @@ options confer no authorization.
 3. **Capture before anything else moves.** An accepted command's record
    (returned outcome, exact history range plus cloned envelopes, per-peer
    views) is built before the sim journal is acknowledged and before the
-   next staged command runs. Never re-infer an outcome from later state;
+   next staged command runs, and so is every host operation's events, before
+   the sim acknowledgement. Never re-infer an outcome from later state;
    never store `roll`, `margin` or `target_died`.
 4. **Disclosure is per entity, per field, deny by default.** Unknown
    entities and flags are denied; any missing field omits the whole event
@@ -148,6 +150,22 @@ git diff --check
 - **No replay-format, hash-exclusion or golden change.** `authority_hash` is
   `history_hash`; the host's acknowledgement schedule is part of the
   deterministic input.
+- **Never write version 2 when no host record is retained.** The writer
+  emits `"version":1` and today's exact bytes unless at least one
+  `HostRecord` is in the journal; the loader reads both. A turn-based host,
+  and any host whose host records are all acknowledged, must keep writing
+  version 1 (T141s).
+- **Never route a host operation through `commit_accepted`.** A tick (and
+  later a host action or the turn timer) has no originating peer, intent
+  sequence or receipt, never moves `executions()`, and ends in
+  `finish_host_op`: record, append, then the sim acknowledgement, which
+  always runs. A record that cannot be built is `Invariant` after the
+  acknowledgement, with nothing appended (the next checkpoint then refuses
+  to load, visibly).
+- **`MAX_NEW_EVENTS_PER_COMMAND` is the turn-based worst case (3); bound
+  checks use `MAX_NEW_EVENTS_PER_COMMAND_RT` (4).** A killing command that
+  ends the last turn of a round with a pending switch to real time journals
+  `ActionResolved`, `Died`, `ModeChanged`, `RoundStarted`.
 - **Save identity never goes into the checkpoint JSON** without a
   `CHECKPOINT_VERSION` bump (which reopens T022). It lives in the `save`
   header in front of the verbatim checkpoint.
@@ -242,3 +260,4 @@ git diff --check
 - 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session public surface and host traps (opt-in kind, ordinal acks, `DeliveryKind`, atomic staging) and replaced the old "narrowing fences" trap with the per-kind rule, so the crate contract matches ADR-0031.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Added the adapter surface and traps for the `/2` path (ordinal acks live/departed/shutdown, no legacy `try_send`/`try_recv`, `bind`/`bind_dual` only), so the crate contract matches the as-built QUIC adapter and the ADR-0026 addendum.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Recorded `LegalIntent`, `Host::legal_intents` and `Host::replica_id` in the surface, so the bridge read API is known to be trusted, read-only and non-authorizing rather than a client capability.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Amended invariants 1 and 3 (host operations journal as `HostRecord`s and are captured before the sim acknowledgement) and added the version-1-unless-a-host-record, no-`commit_accepted`-for-host-operations and four-event-bound traps, so the contract matches checkpoint version 2.

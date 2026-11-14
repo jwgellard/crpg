@@ -9,9 +9,16 @@
 //! journal unchanged while every peer rebinds under a new, strictly greater
 //! incarnation, so pre-restart command bytes fail as `SessionExpired`.
 //!
-//! The encoding is compact JSON in this exact field order:
+//! The encoding is compact JSON in this exact field order. Version 1 (written
+//! whenever no host record is retained, so every turn-based save is exactly
+//! what it always was):
 //! `{"version":1,"incarnation":u64,"protocol":1|2,"server_tick":u64,`
 //! `"history":{..},"captured":[..],"capture_acknowledged":u64}`.
+//! Version 2 (T141s, written when at least one [`HostRecord`] is retained)
+//! adds `"host_records":[..]` after `"captured"`: the retained command
+//! records and host records, each list ascending by `capture_seq`. The loader
+//! reads both: a version-1 checkpoint is a version-2 checkpoint with no host
+//! record, so nothing is migrated.
 //!
 //! Input is capped at [`MAX_CHECKPOINT_BYTES`] *before* any JSON parsing
 //! (the reader entry point reads at most cap + 1 bytes), so parser scratch is
@@ -35,14 +42,18 @@ use crpg_net::protocol::{LANE_COMBAT, SEQ_FIRST, SEQ_LAST};
 use crpg_sim::{HistoryEnvelope, HistoryEvent, HistoryWorld};
 
 use crate::capture::{
-    record_len, valid_outcome, CapturedRecord, MAX_CAPTURE_BYTES, MAX_CAPTURE_RECORDS,
-    MAX_CAPTURE_RECORD_BYTES, MAX_NEW_EVENTS_PER_COMMAND, MAX_OUTCOME_BYTES, MAX_RECORD_VIEWS,
+    host_record_len, record_len, valid_outcome, CaptureEntry, CapturedRecord, HostRecord,
+    MAX_CAPTURE_BYTES, MAX_CAPTURE_RECORDS, MAX_CAPTURE_RECORD_BYTES, MAX_HOST_RECORD_BYTES,
+    MAX_HOST_RECORD_EVENTS, MAX_NEW_EVENTS_PER_COMMAND_RT, MAX_OUTCOME_BYTES, MAX_RECORD_VIEWS,
     MAX_VIEW_HEALTH,
 };
 use crate::host::{Host, HostConfig, ProtocolSelection};
 
-/// The only checkpoint version this implementation reads and writes.
+/// The checkpoint version written when no host record is retained (the
+/// original shape, still read).
 pub const CHECKPOINT_VERSION: u32 = 1;
+/// The checkpoint version written when at least one host record is retained.
+pub const CHECKPOINT_VERSION_HOST_RECORDS: u32 = 2;
 /// Maximum checkpoint bytes, checked before parsing.
 pub const MAX_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -58,7 +69,8 @@ pub enum CheckpointError {
     /// Not a well-formed checkpoint, or the capture journal disagrees with
     /// the wrapped authority.
     Malformed,
-    /// A version other than [`CHECKPOINT_VERSION`].
+    /// A version other than [`CHECKPOINT_VERSION`] or
+    /// [`CHECKPOINT_VERSION_HOST_RECORDS`].
     UnsupportedVersion {
         /// The rejected version.
         version: u32,
@@ -90,7 +102,7 @@ impl fmt::Display for CheckpointError {
 
 impl std::error::Error for CheckpointError {}
 
-/// The canonical output shape, in field order.
+/// The canonical version-1 output shape, in field order.
 #[derive(Serialize)]
 struct CheckpointOut<'a> {
     version: u32,
@@ -98,7 +110,20 @@ struct CheckpointOut<'a> {
     protocol: u8,
     server_tick: u64,
     history: &'a HistoryWorld,
-    captured: &'a std::collections::VecDeque<CapturedRecord>,
+    captured: Vec<&'a CapturedRecord>,
+    capture_acknowledged: u64,
+}
+
+/// The canonical version-2 output shape, in field order.
+#[derive(Serialize)]
+struct CheckpointOutHostRecords<'a> {
+    version: u32,
+    incarnation: u64,
+    protocol: u8,
+    server_tick: u64,
+    history: &'a HistoryWorld,
+    captured: Vec<&'a CapturedRecord>,
+    host_records: Vec<&'a HostRecord>,
     capture_acknowledged: u64,
 }
 
@@ -107,16 +132,39 @@ pub(crate) fn encode(host: &Host) -> Result<Vec<u8>, CheckpointError> {
     if host.has_staged_ingress() {
         return Err(CheckpointError::PendingIngress);
     }
-    let out = CheckpointOut {
-        version: CHECKPOINT_VERSION,
-        incarnation: host.incarnation(),
-        protocol: host.protocol().as_u8(),
-        server_tick: host.server_tick(),
-        history: host.history(),
-        captured: host.retained_captures(),
-        capture_acknowledged: host.capture_acknowledged(),
-    };
-    let bytes = serde_json::to_vec(&out).map_err(|_| CheckpointError::Malformed)?;
+    let mut captured: Vec<&CapturedRecord> = Vec::new();
+    let mut host_records: Vec<&HostRecord> = Vec::new();
+    for entry in host.retained_captures() {
+        match entry {
+            CaptureEntry::Command(record) => captured.push(record),
+            CaptureEntry::Host(record) => host_records.push(record),
+        }
+    }
+    // Version 1 unless a host record is retained: a host that never made one
+    // writes today's bytes.
+    let bytes = if host_records.is_empty() {
+        serde_json::to_vec(&CheckpointOut {
+            version: CHECKPOINT_VERSION,
+            incarnation: host.incarnation(),
+            protocol: host.protocol().as_u8(),
+            server_tick: host.server_tick(),
+            history: host.history(),
+            captured,
+            capture_acknowledged: host.capture_acknowledged(),
+        })
+    } else {
+        serde_json::to_vec(&CheckpointOutHostRecords {
+            version: CHECKPOINT_VERSION_HOST_RECORDS,
+            incarnation: host.incarnation(),
+            protocol: host.protocol().as_u8(),
+            server_tick: host.server_tick(),
+            history: host.history(),
+            captured,
+            host_records,
+            capture_acknowledged: host.capture_acknowledged(),
+        })
+    }
+    .map_err(|_| CheckpointError::Malformed)?;
     if bytes.len() > MAX_CHECKPOINT_BYTES {
         return Err(CheckpointError::TooLarge { len: bytes.len() });
     }
@@ -160,7 +208,7 @@ pub fn load_checkpoint(
     if parsed.server_tick != parsed.history.world().tick().get() {
         return Err(CheckpointError::Malformed);
     }
-    validate_captures(&parsed)?;
+    let entries = validate_captures(&parsed)?;
     if new_incarnation <= parsed.incarnation {
         return Err(CheckpointError::EpochReused);
     }
@@ -170,7 +218,7 @@ pub fn load_checkpoint(
             incarnation: new_incarnation,
         },
         parsed.history,
-        parsed.captured,
+        entries,
         parsed.capture_acknowledged,
         now_ms,
     ))
@@ -199,85 +247,182 @@ pub fn load_checkpoint_from_reader<R: Read>(
 // Validation against the wrapped authority.
 // ---------------------------------------------------------------------------
 
-/// Checks the retained capture journal: contiguous `(acknowledged, last]`
-/// numbering, per-record bounds and vocabulary, and history ranges inside
-/// the wrapper's issued sequences that exactly match the retained events.
-/// Adjacent records' history ranges are contiguous: each starts where the
+/// Checks the retained capture journal and returns it merged by
+/// `capture_seq`: the two lists together are exactly `(acknowledged, last]`
+/// with no duplicate and no gap, each list ascending; per-record bounds and
+/// vocabulary; history ranges inside the wrapper's issued sequences that
+/// exactly match the retained events; and the entry count and byte total.
+/// Adjacent entries' history ranges are contiguous: each starts where the
 /// previous one ended, because after the wrap every history envelope comes
-/// from a captured command and a gap would mean omitted evidence.
-fn validate_captures(parsed: &Parsed) -> Result<(), CheckpointError> {
+/// from a captured command or a host record and a gap would mean omitted
+/// evidence.
+fn validate_captures(parsed: &Parsed) -> Result<Vec<CaptureEntry>, CheckpointError> {
     let malformed = Err(CheckpointError::Malformed);
     let last_history = parsed.history.last_sequence();
+    let total = parsed.captured.len() + parsed.host_records.len();
+    let mut commands = parsed.captured.iter().peekable();
+    let mut hosts = parsed.host_records.iter().peekable();
+    let mut entries: Vec<CaptureEntry> = Vec::with_capacity(total);
+    let mut bytes: usize = 0;
     let mut previous_end: Option<u64> = None;
-    for (index, record) in parsed.captured.iter().enumerate() {
+    for index in 0..total {
         let expected = parsed
             .capture_acknowledged
             .checked_add(index as u64 + 1)
             .ok_or(CheckpointError::Malformed)?;
-        if record.capture_seq != expected || record.capture_seq == u64::MAX {
+        if expected == u64::MAX {
             return malformed;
         }
-        if record.lane != LANE_COMBAT || !(SEQ_FIRST..=SEQ_LAST).contains(&record.seq) {
+        let command_next = commands.peek().is_some_and(|r| r.capture_seq == expected);
+        let host_next = hosts.peek().is_some_and(|r| r.capture_seq == expected);
+        // Neither list holds the expected number (a gap, or a list out of
+        // order), or both do (a duplicate).
+        if command_next == host_next {
             return malformed;
         }
-        if record.events.len() > MAX_NEW_EVENTS_PER_COMMAND
-            || record.views.len() > MAX_RECORD_VIEWS
-            || record
-                .views
-                .iter()
-                .any(|view| view.health.len() > MAX_VIEW_HEALTH)
-        {
+        let (start, end) = if command_next {
+            let record = commands.next().expect("peeked");
+            check_command_record(record, parsed.server_tick, last_history)?;
+            bytes = bytes.saturating_add(record_len(record));
+            entries.push(CaptureEntry::Command(record.clone()));
+            (record.history_start, record.history_end)
+        } else {
+            let record = hosts.next().expect("peeked");
+            check_host_record(
+                record,
+                parsed.server_tick,
+                last_history,
+                MAX_HOST_RECORD_EVENTS,
+                MAX_HOST_RECORD_BYTES,
+            )?;
+            bytes = bytes.saturating_add(host_record_len(record));
+            entries.push(CaptureEntry::Host(record.clone()));
+            (record.history_start, record.history_end)
+        };
+        if previous_end.is_some_and(|previous| start != previous) {
             return malformed;
         }
-        if record.history_start > record.history_end || record.history_end > last_history {
-            return malformed;
-        }
-        if record.history_end - record.history_start != record.events.len() as u64 {
-            return malformed;
-        }
-        let contiguous = record
-            .events
-            .iter()
-            .enumerate()
-            .all(|(offset, envelope)| envelope.seq == record.history_start + 1 + offset as u64);
-        if !contiguous {
-            return malformed;
-        }
-        if previous_end.is_some_and(|end| record.history_start != end) {
-            return malformed;
-        }
-        previous_end = Some(record.history_end);
-        if record.processed_tick > parsed.server_tick {
-            return malformed;
-        }
-        if !outcome_matches(record) {
-            return malformed;
-        }
-        let views_ascending = record
-            .views
-            .windows(2)
-            .all(|pair| pair[0].epoch < pair[1].epoch);
-        let health_ascending = record.views.iter().all(|view| {
-            view.health
-                .windows(2)
-                .all(|pair| pair[0].entity < pair[1].entity)
-        });
-        if !views_ascending || !health_ascending {
-            return malformed;
-        }
+        previous_end = Some(end);
     }
+    check_journal_totals(total, bytes, MAX_CAPTURE_RECORDS, MAX_CAPTURE_BYTES)?;
     // The restored host's `last_capture` is `capture_acknowledged +
-    // captured.len()`; bind it to the largest value a running host can reach
+    // entries.len()`; bind it to the largest value a running host can reach
     // (`u64::MAX - 1`, see `accepted_room`), so a checkpoint can never
     // install the reserved `u64::MAX` counter.
     let watermark = parsed
         .capture_acknowledged
-        .checked_add(parsed.captured.len() as u64)
+        .checked_add(total as u64)
         .ok_or(CheckpointError::Malformed)?;
     if watermark > u64::MAX - 1 {
         return Err(CheckpointError::Malformed);
     }
+    Ok(entries)
+}
+
+/// One command record's own bounds, vocabulary and range (numbering and
+/// adjacency are the caller's).
+fn check_command_record(
+    record: &CapturedRecord,
+    server_tick: u64,
+    last_history: u64,
+) -> Result<(), CheckpointError> {
+    let malformed = Err(CheckpointError::Malformed);
+    if record.lane != LANE_COMBAT || !(SEQ_FIRST..=SEQ_LAST).contains(&record.seq) {
+        return malformed;
+    }
+    if record.events.len() > MAX_NEW_EVENTS_PER_COMMAND_RT
+        || record.views.len() > MAX_RECORD_VIEWS
+        || record
+            .views
+            .iter()
+            .any(|view| view.health.len() > MAX_VIEW_HEALTH)
+    {
+        return malformed;
+    }
+    if record.history_start > record.history_end || record.history_end > last_history {
+        return malformed;
+    }
+    if record.history_end - record.history_start != record.events.len() as u64 {
+        return malformed;
+    }
+    if !contiguous(record.history_start, &record.events) {
+        return malformed;
+    }
+    if record.processed_tick > server_tick {
+        return malformed;
+    }
+    if !outcome_matches(record) {
+        return malformed;
+    }
+    let views_ascending = record
+        .views
+        .windows(2)
+        .all(|pair| pair[0].epoch < pair[1].epoch);
+    let health_ascending = record.views.iter().all(|view| {
+        view.health
+            .windows(2)
+            .all(|pair| pair[0].entity < pair[1].entity)
+    });
+    if !views_ascending || !health_ascending {
+        return malformed;
+    }
     Ok(())
+}
+
+/// Whether `events` carry sequences `start + 1`, `start + 2`, ….
+fn contiguous(start: u64, events: &[HistoryEnvelope]) -> bool {
+    events
+        .iter()
+        .enumerate()
+        .all(|(offset, envelope)| envelope.seq == start + 1 + offset as u64)
+}
+
+/// One host record's own bounds (T141s S-6(b)): a non-empty range inside the
+/// issued sequences whose width is exactly the event count, at most
+/// `max_events`; envelopes numbered contiguously from `history_start + 1`;
+/// `processed_tick` no later than `server_tick`; compact JSON length at most
+/// `max_bytes`. The limits are arguments so a unit test can reach each one.
+pub(crate) fn check_host_record(
+    record: &HostRecord,
+    server_tick: u64,
+    last_history: u64,
+    max_events: usize,
+    max_bytes: usize,
+) -> Result<(), CheckpointError> {
+    let malformed = Err(CheckpointError::Malformed);
+    if record.history_start >= record.history_end || record.history_end > last_history {
+        return malformed;
+    }
+    if record.events.len() > max_events
+        || record.history_end - record.history_start != record.events.len() as u64
+    {
+        return malformed;
+    }
+    if !contiguous(record.history_start, &record.events) {
+        return malformed;
+    }
+    if record.processed_tick > server_tick {
+        return malformed;
+    }
+    if host_record_len(record) > max_bytes {
+        return malformed;
+    }
+    Ok(())
+}
+
+/// The journal's entry count and byte total against the limits (T141s
+/// S-6(e)); the limits are arguments so a unit test can reach them.
+pub(crate) fn check_journal_totals(
+    entries: usize,
+    bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+) -> Result<(), CheckpointError> {
+    if entries > max_entries || bytes > max_bytes {
+        Err(CheckpointError::Malformed)
+    } else {
+        Ok(())
+    }
 }
 
 /// The captured outcome agrees with the retained resolution: `Some` needs a
@@ -330,6 +475,8 @@ struct Parsed {
     server_tick: u64,
     history: HistoryWorld,
     captured: Vec<CapturedRecord>,
+    /// Empty for version 1.
+    host_records: Vec<HostRecord>,
     capture_acknowledged: u64,
 }
 
@@ -371,13 +518,14 @@ impl<'de> Visitor<'de> for CheckpointVisitor<'_> {
         let mut server_tick: Option<u64> = None;
         let mut history: Option<HistoryWorld> = None;
         let mut captured: Option<Vec<CapturedRecord>> = None;
+        let mut host_records: Option<Vec<HostRecord>> = None;
         let mut capture_acknowledged: Option<u64> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "version" => {
                     let value: u32 = map.next_value()?;
                     once(&mut version, value, "version")?;
-                    if value != CHECKPOINT_VERSION {
+                    if value != CHECKPOINT_VERSION && value != CHECKPOINT_VERSION_HOST_RECORDS {
                         flags.version.set(Some(value));
                         return Err(A::Error::custom("unsupported checkpoint version"));
                     }
@@ -397,6 +545,14 @@ impl<'de> Visitor<'de> for CheckpointVisitor<'_> {
                     }
                     captured = Some(map.next_value_seed(CapturesSeed)?);
                 }
+                "host_records" => {
+                    if host_records.is_some() {
+                        return Err(A::Error::custom(
+                            "duplicate checkpoint field `host_records`",
+                        ));
+                    }
+                    host_records = Some(map.next_value_seed(HostRecordsSeed)?);
+                }
                 "capture_acknowledged" => once(
                     &mut capture_acknowledged,
                     map.next_value()?,
@@ -406,13 +562,24 @@ impl<'de> Visitor<'de> for CheckpointVisitor<'_> {
             }
         }
         let missing = |key: &'static str| A::Error::custom(format_args!("missing `{key}`"));
-        version.ok_or_else(|| missing("version"))?;
+        let version = version.ok_or_else(|| missing("version"))?;
+        // Version 1 has no `host_records` key and version 2 requires one (an
+        // empty list is fine): the existing unknown/missing-key rule.
+        let host_records = match (version, host_records) {
+            (CHECKPOINT_VERSION, None) => Vec::new(),
+            (CHECKPOINT_VERSION_HOST_RECORDS, Some(records)) => records,
+            (CHECKPOINT_VERSION, Some(_)) => {
+                return Err(A::Error::custom("unknown checkpoint field `host_records`"))
+            }
+            _ => return Err(missing("host_records")),
+        };
         Ok(Parsed {
             incarnation: incarnation.ok_or_else(|| missing("incarnation"))?,
             protocol: protocol.ok_or_else(|| missing("protocol"))?,
             server_tick: server_tick.ok_or_else(|| missing("server_tick"))?,
             history: history.ok_or_else(|| missing("history"))?,
             captured: captured.ok_or_else(|| missing("captured"))?,
+            host_records,
             capture_acknowledged: capture_acknowledged
                 .ok_or_else(|| missing("capture_acknowledged"))?,
         })
@@ -483,6 +650,53 @@ impl<'de> Visitor<'de> for CapturesVisitor {
     }
 }
 
+/// Decodes the host-record list with the count bound checked before
+/// decoding an excess element and the per-record byte bound checked as each
+/// record is retained; the journal's combined bounds are
+/// [`check_journal_totals`]'s.
+struct HostRecordsSeed;
+
+impl<'de> DeserializeSeed<'de> for HostRecordsSeed {
+    type Value = Vec<HostRecord>;
+
+    fn deserialize<D: Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Vec<HostRecord>, D::Error> {
+        deserializer.deserialize_seq(HostRecordsVisitor)
+    }
+}
+
+struct HostRecordsVisitor;
+
+impl<'de> Visitor<'de> for HostRecordsVisitor {
+    type Value = Vec<HostRecord>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a bounded host record list")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<HostRecord>, A::Error> {
+        let mut records = Vec::new();
+        loop {
+            if records.len() == MAX_CAPTURE_RECORDS {
+                if seq.next_element::<IgnoredAny>()?.is_some() {
+                    return Err(A::Error::custom("too many host records"));
+                }
+                break;
+            }
+            let Some(record) = seq.next_element::<HostRecord>()? else {
+                break;
+            };
+            if host_record_len(&record) > MAX_HOST_RECORD_BYTES {
+                return Err(A::Error::custom("host record exceeds its byte bound"));
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +713,109 @@ mod tests {
         );
         assert_eq!(CheckpointError::Io.to_string(), "Io at host/checkpoint");
         assert!(std::error::Error::source(&CheckpointError::Malformed).is_none());
+    }
+
+    // -- T141s loader bounds (S8) ---------------------------------------------
+
+    fn envelope(seq: u64) -> HistoryEnvelope {
+        serde_json::from_value(serde_json::json!({
+            "tick": 0,
+            "seq": seq,
+            "payload": {"type": "round_started", "value": {"round": 1}}
+        }))
+        .expect("envelope parses")
+    }
+
+    /// A host record over `(10, 10 + count]` at processed tick 5.
+    fn record(count: u64) -> HostRecord {
+        HostRecord {
+            capture_seq: 2,
+            op: crate::capture::HostOp::Tick,
+            history_start: 10,
+            history_end: 10 + count,
+            processed_tick: 5,
+            events: (11..=10 + count).map(envelope).collect(),
+        }
+    }
+
+    #[test]
+    fn loader_bounds() {
+        // Events: the limit is inclusive.
+        assert_eq!(check_host_record(&record(3), 5, 100, 3, usize::MAX), Ok(()));
+        assert_eq!(
+            check_host_record(&record(4), 5, 100, 3, usize::MAX),
+            Err(CheckpointError::Malformed)
+        );
+        // Bytes: the limit is inclusive.
+        let len = host_record_len(&record(3));
+        assert_eq!(check_host_record(&record(3), 5, 100, 3, len), Ok(()));
+        assert_eq!(
+            check_host_record(&record(3), 5, 100, 3, len - 1),
+            Err(CheckpointError::Malformed)
+        );
+        // Journal totals: both limits are inclusive.
+        let bytes = 123_456;
+        assert_eq!(check_journal_totals(4096, bytes, 4096, bytes), Ok(()));
+        assert_eq!(
+            check_journal_totals(4097, bytes, 4096, bytes),
+            Err(CheckpointError::Malformed)
+        );
+        assert_eq!(
+            check_journal_totals(4096, bytes + 1, 4096, bytes),
+            Err(CheckpointError::Malformed)
+        );
+    }
+
+    #[test]
+    fn host_record_shape_rules() {
+        let ok = record(2);
+        assert_eq!(
+            check_host_record(&ok, 5, 12, MAX_HOST_RECORD_EVENTS, MAX_HOST_RECORD_BYTES),
+            Ok(())
+        );
+        let check = |r: &HostRecord, tick: u64, last: u64| {
+            check_host_record(r, tick, last, MAX_HOST_RECORD_EVENTS, MAX_HOST_RECORD_BYTES)
+        };
+        // processed_tick: equal to the server tick is fine, past it is not.
+        assert_eq!(check(&ok, 4, 12), Err(CheckpointError::Malformed));
+        // history_end past the issued sequences.
+        assert_eq!(check(&ok, 5, 11), Err(CheckpointError::Malformed));
+        // An empty range, and a reversed one.
+        let mut empty = record(0);
+        assert_eq!(check(&empty, 5, 12), Err(CheckpointError::Malformed));
+        empty.history_start = 11;
+        empty.history_end = 10;
+        assert_eq!(check(&empty, 5, 12), Err(CheckpointError::Malformed));
+        // A width that disagrees with the event count, either way.
+        let mut wide = record(2);
+        wide.history_end = 13;
+        assert_eq!(check(&wide, 5, 13), Err(CheckpointError::Malformed));
+        let mut narrow = record(2);
+        narrow.history_end = 11;
+        assert_eq!(check(&narrow, 5, 13), Err(CheckpointError::Malformed));
+        // Envelope sequences not starting at history_start + 1, or gapped.
+        let mut shifted = record(2);
+        shifted.events = vec![envelope(10), envelope(11)];
+        assert_eq!(check(&shifted, 5, 12), Err(CheckpointError::Malformed));
+        let mut gapped = record(2);
+        gapped.events = vec![envelope(11), envelope(13)];
+        assert_eq!(check(&gapped, 5, 13), Err(CheckpointError::Malformed));
+    }
+
+    #[test]
+    fn host_record_list_count_is_bounded_before_decoding_the_excess() {
+        let element = serde_json::to_string(&record(1)).expect("encodes");
+        let list = |count: usize| format!("[{}]", vec![element.as_str(); count].join(","));
+        let decode =
+            |text: &str| HostRecordsSeed.deserialize(&mut serde_json::Deserializer::from_str(text));
+        assert_eq!(
+            decode(&list(MAX_CAPTURE_RECORDS))
+                .expect("at the bound")
+                .len(),
+            MAX_CAPTURE_RECORDS
+        );
+        assert!(decode(&list(MAX_CAPTURE_RECORDS + 1)).is_err());
+        // An empty list is fine.
+        assert_eq!(decode("[]").expect("empty").len(), 0);
     }
 }

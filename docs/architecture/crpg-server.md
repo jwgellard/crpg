@@ -78,12 +78,15 @@ retention and checkpoint policy lives here.
   before the sim acknowledgement, and the permitted post-state of every peer
   that received content (`CapturedView`). Records retire only through
   `acknowledge_captures`; reservation blocks new accepts when the journal is
-  full instead of dropping a result.
+  full instead of dropping a result. Events the host makes itself have their
+  own `HostRecord` (T141s, below).
 - `checkpoint` — `Host::save_checkpoint` and `load_checkpoint`/
   `load_checkpoint_from_reader`: compact JSON of the wrapper, the retained
-  capture journal plus watermark, protocol and incarnation; input capped
-  before parsing; loading validates everything into a temporary host and
-  restarts every session under a strictly greater incarnation.
+  capture journal plus watermark, protocol and incarnation, in version 1
+  (no host record retained, the original bytes) or version 2 (at least one
+  `HostRecord`, with a `host_records` list); the loader reads both. Input
+  capped before parsing; loading validates everything into a temporary host
+  and restarts every session under a strictly greater incarnation.
 - `save` — the persistence adapter (T039) and the crate's only filesystem
   I/O, all of it through `crpg_persist::save_file`/`load_file` under the
   payload kind `HOSTCKPT`. The payload is a fixed-order binary header —
@@ -138,6 +141,54 @@ bind, so the per-peer cap always refuses first. The grant-narrowing
 `QueueFull` ([T022](../../tasks/T022.md) §5) needs a resync state of more
 than about 2 MiB, because the other seven peers hold at most 14 MiB of the
 16 MiB egress host total.
+
+## Host records and checkpoint version 2 (T141s)
+
+Real-time ticks, host actions and the turn timer change the authority with
+no originating peer, so no command record can hold their events. Each such
+host operation that journals at least one event gets one `HostRecord`
+(`capture_seq`, `op` of `tick`/`action`/`turn_timer`, the exact
+`(history_start, history_end]` range, `processed_tick`, the cloned
+envelopes). Before T141s a real-time tick's events were acknowledged
+uncaptured, so the next checkpoint's evidence rule refused to load.
+
+- **One journal of entries.** The capture journal is a sequence of
+  `CaptureEntry` (`Command(CapturedRecord)` or `Host(HostRecord)`) numbered by
+  the one `capture_seq`, retired by the one `acknowledge_captures`, and
+  bounded by the one `MAX_CAPTURE_RECORDS` entry count and `MAX_CAPTURE_BYTES`
+  total of compact `serde_json` lengths. `read_capture_entries` reads both
+  kinds under `read_captures`' cursor rules; `read_captures` returns the
+  `Command` entries of the same page, so a page may hold fewer than `limit`
+  records.
+- **Dual read, conditional write.** `save_checkpoint` writes
+  `"version":1` and the original bytes when no `HostRecord` is retained, and
+  `"version":2` with `"captured"` (command records) and `"host_records"`
+  (each list ascending) otherwise. `load_checkpoint` reads both: version 1 is
+  version 2 with no host record, so nothing is migrated; version 1 with a
+  `host_records` key, or version 2 without one, is `Malformed`; an empty
+  version-2 list loads and is written again as version 1. The loader merges
+  the two lists by `capture_seq` (exactly `acknowledged + 1 ..= last`, no
+  gap, no duplicate), checks each host record
+  (`check_host_record`: non-empty range whose width is the event count, at
+  most `MAX_HOST_RECORD_EVENTS`, contiguous envelopes, `processed_tick` not
+  past the server tick, at most `MAX_HOST_RECORD_BYTES`), keeps the adjacency
+  rule over the merged order (each entry starts where the previous ended, so
+  every envelope after the wrap is evidenced) and applies the entry and byte
+  totals (`check_journal_totals`).
+- **Four events per peer command.** A killing command that ends the last turn
+  of a round with a pending real-time switch journals `ActionResolved`,
+  `Died`, `ModeChanged`, `RoundStarted`, so reservation, commit and the
+  loader use `MAX_NEW_EVENTS_PER_COMMAND_RT` (4); `MAX_NEW_EVENTS_PER_COMMAND`
+  keeps 3 and its turn-based meaning.
+- **The host-operation tail.** After the sim commits: build the record (an
+  over-bound record is `Invariant`), append it, then acknowledge the sim
+  journal, which always runs; a record that could not be built is returned as
+  `Invariant` only after the acknowledgement, with nothing appended.
+  `commit_accepted` ends the same way. `Host::tick` is the first host
+  operation: a real-time tick first reserves room for one host record
+  (`CaptureFull` when the journal is full) and a turn-based, turn-based-only
+  or no-encounter tick reserves nothing and journals nothing. Host operations
+  never move `executions()` and send nothing to v1/v2 sessions.
 
 ## Connections and bindings (T023b)
 
@@ -329,3 +380,4 @@ with T040/T041.
 - 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session section (session-kind table, ordinal ledger, staging steps, adapter routing), replaced the blanket narrowing reset with the per-kind rule, and removed snapshot transfer from the planned list, so the doc describes the sender T024h1 landed.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Updated the adapter routing to the as-built `/2` path (framing bind, channel reads and writes, ordinal acks, retiring drain, shutdown flush, `bind_dual` precondition), so the doc describes the adapter rather than calling it a future task.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Added the host read API section (prelude, active head, eligibility, one enumeration, the sim-action mapping table, replica-id snapshot semantics), so the bridge can rely on one described legality path with non-authorizing options.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Added the host-records and checkpoint-version-2 section (entry journal, dual read and conditional write, four-event bound, tail order) and named both versions in the `checkpoint` and `capture` module paragraphs, so the doc describes the journal and save the crate now has.

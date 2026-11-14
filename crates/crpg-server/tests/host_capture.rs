@@ -2648,8 +2648,8 @@ fn checkpoint_rejects_invalid_input() {
     );
     // Version.
     assert_eq!(
-        load(&text.replacen("{\"version\":1,", "{\"version\":2,", 1)),
-        Some(CheckpointError::UnsupportedVersion { version: 2 })
+        load(&text.replacen("{\"version\":1,", "{\"version\":3,", 1)),
+        Some(CheckpointError::UnsupportedVersion { version: 3 })
     );
     // The wrapped authority validates itself.
     assert_eq!(
