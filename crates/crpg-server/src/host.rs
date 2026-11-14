@@ -32,6 +32,10 @@ use crpg_core::{EntityId, Ulid};
 use crpg_net::codec::{self, CodecError};
 use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
+use crpg_net::codec_v3;
+use crpg_net::facts_v3::{
+    clock_op, host_facts_op, project_snapshot_v3, EncounterGrants, HostGrants, HostInput,
+};
 use crpg_net::projection_v2::{project_events, EventCandidate};
 use crpg_net::protocol::{
     self, IntentBody, IntentFrame, NetId, ReceiptStatus, RejectionCode, LANE_COMBAT, MAX_DELTA_OPS,
@@ -43,8 +47,11 @@ use crpg_net::protocol_transfer::{
     TurnFact,
 };
 use crpg_net::protocol_v2;
-use crpg_net::protocol_v3::{AutoPauseToggles, AutoPauseTrigger, PauseReason};
+use crpg_net::protocol_v3::{
+    AutoPauseToggles, AutoPauseTrigger, DeltaFrame as DeltaFrameV3, PauseReason, PauseRights,
+};
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
+use crpg_net::transfer_v3;
 use crpg_sim::{
     history_hash, legal_actions, validate_action, CombatAction, CombatError, EncounterMode,
     HistoryEnvelope, HistoryError, HistoryEvent, HistoryWorld, LegalActionsError, World,
@@ -59,6 +66,9 @@ use crate::capture::{
     MAX_NEW_EVENTS_PER_COMMAND_RT,
 };
 use crate::checkpoint::{check_host_record, CheckpointError};
+use crate::host_v3::{
+    host_facts_image, key_of, outbox_fits, read_world, OutboxEntry, V3Session, V3Stage,
+};
 
 // ---------------------------------------------------------------------------
 // Constants (§2).
@@ -183,13 +193,54 @@ pub struct DisclosureGrants {
     pub turn_state: bool,
 }
 
+/// `World::area()` for an unbound world in every v3 `EntityKey` (T141
+/// Reading 8).
+pub const HOST_UNBOUND_AREA: Ulid = Ulid::from_u128(0);
+
+/// The host-fact grants a v3 session gets unless the operator says otherwise:
+/// all three (D52, T140 Question 3).
+pub const DEFAULT_HOST_GRANTS: HostGrants = HostGrants {
+    pause_reason: true,
+    auto_pause: true,
+    turn_timer: true,
+};
+
+/// One entity's v3 fact grants. There is no `order` flag: the standing order
+/// follows control (T141 Reading 9, N2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntityFactGrant {
+    /// The whole entity id (generation included).
+    pub entity: EntityId,
+    /// The entity's pools may be disclosed.
+    pub pools: bool,
+    /// The entity's attached effects may be disclosed.
+    pub effects: bool,
+    /// The entity's stat values may be disclosed.
+    pub stats: bool,
+    /// The entity's record tags may be disclosed.
+    pub tags: bool,
+}
+
+/// A v3 session's fact grants. `Default` denies everything.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FactGrants {
+    /// At most [`MAX_GRANT_IDENTITIES`] entries, unique `entity`.
+    pub entities: Vec<EntityFactGrant>,
+    /// What the viewer may see of the encounter.
+    pub encounter: EncounterGrants,
+    /// What the viewer may see of the host's pause and timer.
+    pub host: HostGrants,
+}
+
 /// What a delivery entry carries, so an adapter picks the channel without
 /// reading bytes (T024 S§4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryKind {
-    /// A lane-0 delta frame (the host's `ProtocolSelection`).
+    /// A lane-0 delta frame (the host's `ProtocolSelection`, or v3 in a
+    /// session bound with `bind_v3_peer`).
     Delta,
-    /// A snapshot-transfer frame (`crpg_net::codec_transfer`, first byte 0x81).
+    /// A snapshot-transfer frame (`crpg_net::codec_transfer`, first byte 0x81,
+    /// or `0x82` in a v3 session).
     Transfer,
 }
 
@@ -443,6 +494,8 @@ pub enum HostError {
     Combat(CombatError),
     /// `HostSettings.turn_timer_ms` is `Some(0)`.
     InvalidSettings,
+    /// The call needs a session bound with `bind_v3_peer`.
+    NotV3Peer,
 }
 
 impl fmt::Display for HostError {
@@ -465,6 +518,7 @@ impl fmt::Display for HostError {
             Self::CaptureFull => "CaptureFull",
             Self::Combat(_) => "Combat",
             Self::InvalidSettings => "InvalidSettings",
+            Self::NotV3Peer => "NotV3Peer",
         };
         write!(f, "{name} at host/admission")
     }
@@ -558,6 +612,8 @@ struct Session {
     next_transfer: u64,
     /// The issued transfer not yet `Published` or cancelled.
     in_flight: Option<u64>,
+    /// The v3 state of a session bound with `bind_v3_peer` (T141c).
+    v3: Option<Box<V3Session>>,
 }
 
 impl Session {
@@ -780,7 +836,12 @@ impl Host {
         if session.control.binary_search(&active).is_err() {
             return Ok(Vec::new());
         }
-        let Some(actor_net) = session.map.get(&active).copied() else {
+        let world = self.history.world();
+        let net_of = |entity: EntityId| match &session.v3 {
+            Some(v3) => v3.view.net_id(key_of(world, entity)),
+            None => session.map.get(&entity).copied(),
+        };
+        let Some(actor_net) = net_of(active) else {
             return Ok(Vec::new());
         };
         let eligible = lookup(&session.grants, active)
@@ -792,7 +853,7 @@ impl Host {
             Ok(list) => Ok(list
                 .iter()
                 .filter_map(|action| {
-                    legal_body(session, action).map(|body| LegalIntent {
+                    legal_body(&session.grants, &net_of, action).map(|body| LegalIntent {
                         actor: actor_net,
                         body,
                     })
@@ -817,6 +878,9 @@ impl Host {
             return Err(HostError::Closed);
         }
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        if let Some(v3) = &session.v3 {
+            return Ok(v3.view.net_id(key_of(self.history.world(), entity)));
+        }
         Ok(session.map.get(&entity).copied())
     }
 
@@ -898,11 +962,38 @@ impl Host {
             return Err(HostError::CounterExhausted);
         }
         let handle = PeerHandle(self.next_handle);
+        let epoch = self.session_epoch(handle);
+        let (map, next_net) = plan_map(&BTreeMap::new(), 1, &grants, self.history.world())?;
+        let mut session = self.blank_session(epoch, control, grants, snapshot);
+        session.install_map(map, next_net);
+        let frames = self.state_frames(&session)?;
+        if !self.room(&session, &frames) {
+            return Err(HostError::QueueFull);
+        }
+        push_frames(&mut self.egress_bytes, &mut session, frames)?;
+        self.sessions.insert(handle, session);
+        self.next_handle += 1;
+        self.last_now_ms = now_ms;
+        Ok(handle)
+    }
+
+    /// The epoch of `handle`: `incarnation` LE bytes then handle LE bytes.
+    fn session_epoch(&self, handle: PeerHandle) -> [u8; 16] {
         let mut epoch = [0u8; 16];
         epoch[..8].copy_from_slice(&self.config.incarnation.to_le_bytes());
         epoch[8..].copy_from_slice(&handle.0.to_le_bytes());
-        let (map, next_net) = plan_map(&BTreeMap::new(), 1, &grants, self.history.world())?;
-        let mut session = Session {
+        epoch
+    }
+
+    /// A session with nothing mapped, nothing logged and full rate budgets.
+    fn blank_session(
+        &self,
+        epoch: [u8; 16],
+        control: Vec<EntityId>,
+        grants: DisclosureGrants,
+        snapshot: bool,
+    ) -> Session {
+        Session {
             epoch,
             control,
             grants,
@@ -940,17 +1031,113 @@ impl Host {
             next_ordinal: 1,
             next_transfer: 1,
             in_flight: None,
-        };
-        session.install_map(map, next_net);
-        let frames = self.state_frames(&session)?;
-        if !self.room(&session, &frames) {
-            return Err(HostError::QueueFull);
+            v3: None,
         }
-        push_frames(&mut self.egress_bytes, &mut session, frames)?;
+    }
+
+    /// Binds a protocol v3 session (T141c, C-1): always a snapshot session,
+    /// whatever `HostConfig.protocol` says, with its first delivery a `0x82`
+    /// transfer 1 at cursor 0 followed by one `[Clock, HostFacts]` delta.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed),
+    /// [`TimeRegression`](HostError::TimeRegression),
+    /// [`InvalidControl`](HostError::InvalidControl), then
+    /// [`InvalidGrants`](HostError::InvalidGrants) (the disclosure grants,
+    /// then the fact grants), [`ServerBusy`](HostError::ServerBusy) and
+    /// [`CounterExhausted`](HostError::CounterExhausted). It never returns
+    /// [`QueueFull`](HostError::QueueFull): the staged plan waits in a paced
+    /// outbox instead of needing egress room.
+    pub fn bind_v3_peer(
+        &mut self,
+        control: ControlGrant,
+        grants: DisclosureGrants,
+        facts: FactGrants,
+        rights: PauseRights,
+        now_ms: u64,
+    ) -> Result<PeerHandle, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        let control = normalize_control(control)?;
+        let grants = normalize_grants(grants)?;
+        let facts = normalize_fact_grants(facts)?;
+        if self.sessions.len() >= MAX_PEERS {
+            return Err(HostError::ServerBusy);
+        }
+        if self.next_handle == u64::MAX {
+            return Err(HostError::CounterExhausted);
+        }
+        let handle = PeerHandle(self.next_handle);
+        let epoch = self.session_epoch(handle);
+        let mut session = self.blank_session(epoch, control, grants, true);
+        session.v3 = Some(Box::new(V3Session::new(epoch, facts, rights)));
+        let stage = self.plan_v3_stage(&session, &session.grants, SnapshotCause::Resync)?;
+        commit_v3_stage(
+            &mut self.egress_bytes,
+            &self.egress_caps,
+            &mut session,
+            stage,
+            None,
+        );
         self.sessions.insert(handle, session);
         self.next_handle += 1;
         self.last_now_ms = now_ms;
         Ok(handle)
+    }
+
+    /// The wire version byte of `peer`'s session: `1`, `2` or `3`. Not checked
+    /// against shutdown: a closed host has no sessions, so it is
+    /// [`UnknownPeer`](HostError::UnknownPeer).
+    pub fn session_wire(&self, peer: PeerHandle) -> Result<u8, HostError> {
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        Ok(if session.v3.is_some() {
+            3
+        } else {
+            self.config.protocol.as_u8()
+        })
+    }
+
+    /// Replaces a v3 session's fact grants (C-4). T141c pushes no frame; the
+    /// next staging reads them. Precedence: [`Closed`](HostError::Closed),
+    /// [`UnknownPeer`](HostError::UnknownPeer),
+    /// [`NotV3Peer`](HostError::NotV3Peer), then
+    /// [`InvalidGrants`](HostError::InvalidGrants).
+    pub fn set_fact_grants(
+        &mut self,
+        peer: PeerHandle,
+        facts: FactGrants,
+    ) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let session = self.sessions.get_mut(&peer).ok_or(HostError::UnknownPeer)?;
+        let v3 = session.v3.as_mut().ok_or(HostError::NotV3Peer)?;
+        v3.fact_grants = normalize_fact_grants(facts)?;
+        Ok(())
+    }
+
+    /// Replaces a v3 session's own pause rights (C-4); same precedence as
+    /// [`set_fact_grants`](Self::set_fact_grants) minus the grant check.
+    pub fn set_pause_rights(
+        &mut self,
+        peer: PeerHandle,
+        rights: PauseRights,
+    ) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let session = self.sessions.get_mut(&peer).ok_or(HostError::UnknownPeer)?;
+        session.v3.as_mut().ok_or(HostError::NotV3Peer)?.rights = rights;
+        Ok(())
+    }
+
+    /// A v3 session's own pause rights. Not checked against shutdown (a
+    /// closed host has no sessions): [`UnknownPeer`](HostError::UnknownPeer),
+    /// then [`NotV3Peer`](HostError::NotV3Peer).
+    pub fn pause_rights(&self, peer: PeerHandle) -> Result<PauseRights, HostError> {
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        Ok(session.v3.as_ref().ok_or(HostError::NotV3Peer)?.rights)
     }
 
     /// Closes one binding (its handle and epoch retire forever) and discards
@@ -991,6 +1178,15 @@ impl Host {
     ) -> Result<GrantUpdate, HostError> {
         if self.closed {
             return Err(HostError::Closed);
+        }
+        if self
+            .sessions
+            .get(&peer)
+            .ok_or(HostError::UnknownPeer)?
+            .v3
+            .is_some()
+        {
+            return self.set_v3_grants(peer, grants);
         }
         let (grants, map, next_net, narrowing, snapshot) = {
             let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
@@ -1044,6 +1240,34 @@ impl Host {
         session.install_map(map, next_net);
         push_frames(&mut self.egress_bytes, session, frames)?;
         Ok(GrantUpdate::Unchanged)
+    }
+
+    /// [`set_grants`](Self::set_grants) on a v3 session (C-8): the same
+    /// precedence, minus the v2 id map, which a v3 session does not keep. A
+    /// narrowing stages a fresh `0x82` snapshot (`Aborted`) under the new
+    /// grants and changes nothing if the staging fails; anything else stores
+    /// the grants and returns `Unchanged` (T141d publishes the widening).
+    fn set_v3_grants(
+        &mut self,
+        peer: PeerHandle,
+        grants: DisclosureGrants,
+    ) -> Result<GrantUpdate, HostError> {
+        let grants = normalize_grants(grants)?;
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        if !is_narrowing(&session.grants, &grants) {
+            self.sessions.get_mut(&peer).expect("checked above").grants = grants;
+            return Ok(GrantUpdate::Unchanged);
+        }
+        let stage = self.plan_v3_stage(session, &grants, SnapshotCause::Narrowed)?;
+        let session = self.sessions.get_mut(&peer).expect("checked above");
+        commit_v3_stage(
+            &mut self.egress_bytes,
+            &self.egress_caps,
+            session,
+            stage,
+            Some(grants),
+        );
+        Ok(GrantUpdate::SnapshotStaged)
     }
 
     /// Replaces a peer's control grant; affects future admission only and
@@ -1227,6 +1451,16 @@ impl Host {
             return Ok(removed(
                 seq,
                 ReceiptStatus::Rejected(RejectionCode::SessionExpired),
+                false,
+            ));
+        }
+        // A v3 session's intents are v3 frames, which this v1/v2 pipeline
+        // cannot decode (the v3 intent pipeline is T141d): refuse as a decode
+        // failure would, with no ledger change and no frame.
+        if session.v3.is_some() {
+            return Ok(removed(
+                seq,
+                ReceiptStatus::Rejected(RejectionCode::UnsupportedVersion),
                 false,
             ));
         }
@@ -1556,7 +1790,8 @@ impl Host {
         let mut views: Vec<CapturedView> = Vec::new();
         let mut receipt_ref = None;
         for (handle, session) in &self.sessions {
-            if session.resync_pending {
+            // A v3 session never gets v2 frames; its pages are T141d's.
+            if session.resync_pending || session.v3.is_some() {
                 continue;
             }
             let view = session.view();
@@ -1695,7 +1930,7 @@ impl Host {
         let caps = self.egress_caps;
         let mut host = self.egress_bytes;
         for session in self.sessions.values() {
-            if session.resync_pending {
+            if session.resync_pending || session.v3.is_some() {
                 continue;
             }
             if session.log.len() + 1 > caps.per_peer_frames
@@ -1847,6 +2082,123 @@ impl Host {
         Ok(())
     }
 
+    /// The host's values for a viewer with `rights` (C-6): the remaining
+    /// timer clamped to a `u32`.
+    fn host_input(&self, rights: PauseRights) -> HostInput {
+        HostInput {
+            paused: self.paused,
+            rights,
+            auto_pause: self.settings.auto_pause,
+            turn_timer_ms: self
+                .turn_timer_remaining_ms()
+                .map(|ms| u32::try_from(ms).unwrap_or(u32::MAX)),
+        }
+    }
+
+    /// C-5 steps 1 to 4 for a v3 session: reads only, so a failure changes
+    /// nothing. `grants` are the disclosure grants the snapshot is cut under
+    /// (the session's own, or the narrower new ones).
+    fn plan_v3_stage(
+        &self,
+        session: &Session,
+        grants: &DisclosureGrants,
+        cause: SnapshotCause,
+    ) -> Result<V3Stage, HostError> {
+        let v3 = session.v3.as_ref().ok_or(HostError::NotV3Peer)?;
+        // 1. Transfer-id counter sentinel.
+        if session.next_transfer == u64::MAX {
+            return Err(HostError::CounterExhausted);
+        }
+        let transfer = session.next_transfer;
+        let epoch = session.epoch;
+        let tick = self.server_tick();
+        // 2. Cancel the in-flight transfer first, if any.
+        let cancel = match session.in_flight {
+            Some(old) => Some(
+                transfer_v3::encode_down(&TransferDown::Cancel {
+                    epoch,
+                    transfer: TransferId::new(old).expect("in-flight id is nonzero"),
+                    reason: cause.cancel_reason(),
+                })
+                .map_err(|_| HostError::Invariant(V3_ENCODE))?,
+            ),
+            None => None,
+        };
+        // 3. The snapshot, projected on clones of the two views.
+        let read = read_world(
+            self.history.world(),
+            tick,
+            grants,
+            &v3.fact_grants,
+            &session.control,
+        );
+        let mut view = v3.view.clone();
+        let mut facts = v3.facts.clone();
+        let projection = project_snapshot_v3(
+            &mut view,
+            &mut facts,
+            &read.viewer(epoch),
+            &read.fact_context(),
+        )
+        .map_err(|_| HostError::Invariant("v3 snapshot projection failed"))?;
+        // 4. The canonical plan, then C-6's host-facts delta.
+        let frames = transfer_v3::plan_transfer(
+            epoch,
+            TransferId::new(transfer).expect("nonzero by the step-1 check"),
+            tick,
+            session.last_event_seq(),
+            SNAPSHOT_SEGMENTS_PER_CHUNK,
+            &projection.body,
+        )
+        .map_err(|_| HostError::Invariant(V3_ENCODE))?;
+        let input = self.host_input(v3.rights);
+        let clock = clock_op(&input, v3.fact_grants.host);
+        let delta_seq = session.next_event_seq;
+        let delta = codec_v3::encode_delta(&DeltaFrameV3 {
+            lane: LANE_COMBAT,
+            server_tick: tick,
+            event_seq: delta_seq,
+            ops: vec![clock.clone(), host_facts_op(&input, v3.fact_grants.host)],
+        })
+        .map_err(|_| HostError::Invariant(V3_ENCODE))?;
+        let count = frames.len() + usize::from(cancel.is_some()) + 1;
+        let bytes = frames.iter().map(Vec::len).sum::<usize>()
+            + cancel.as_ref().map_or(0, Vec::len)
+            + delta.len();
+        let ordinal_room = (u64::MAX - 1).saturating_sub(session.next_ordinal);
+        if count as u64 > ordinal_room || delta_seq == u64::MAX {
+            return Err(HostError::CounterExhausted);
+        }
+        if !outbox_fits(count, bytes) {
+            return Err(HostError::Invariant("v3 plan exceeds the outbox bound"));
+        }
+        Ok(V3Stage {
+            view,
+            facts,
+            cancel,
+            frames,
+            delta,
+            delta_seq,
+            transfer,
+            tick,
+            clock,
+            image: host_facts_image(
+                v3.rights,
+                self.settings.auto_pause,
+                v3.fact_grants.host,
+                self.timer_epoch(),
+            ),
+        })
+    }
+
+    /// Moves `peer`'s outbox into its delivery log while the egress caps
+    /// allow (C-7).
+    fn pace(&mut self, peer: PeerHandle) {
+        if let Some(session) = self.sessions.get_mut(&peer) {
+            pace_session(&mut self.egress_bytes, &self.egress_caps, session);
+        }
+    }
+
     /// Stages a pending resync state if there is room.
     fn try_resync(&mut self, peer: PeerHandle) -> Result<(), HostError> {
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
@@ -1873,6 +2225,7 @@ impl Host {
     /// [`take_delivery_entries`](Self::take_delivery_entries).
     pub fn take_delivery(&mut self, peer: PeerHandle) -> Result<Vec<Vec<u8>>, HostError> {
         self.try_resync(peer)?;
+        self.pace(peer);
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
         Ok(session
             .log
@@ -1889,6 +2242,7 @@ impl Host {
         peer: PeerHandle,
     ) -> Result<Vec<DeliveryEntry>, HostError> {
         self.try_resync(peer)?;
+        self.pace(peer);
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
         Ok(session
             .log
@@ -1936,6 +2290,8 @@ impl Host {
             self.egress_bytes -= frame.bytes.len();
         }
         session.delivered = through;
+        // The freed room lets a v3 session's outbox move on (C-7).
+        pace_session(&mut self.egress_bytes, &self.egress_caps, session);
         Ok(())
     }
 
@@ -1975,6 +2331,7 @@ impl Host {
                 map: BTreeMap<EntityId, NetId>,
                 next_net: u64,
             },
+            ResyncV3,
         }
 
         let effect = {
@@ -1993,7 +2350,14 @@ impl Host {
             if !frames_ok || !bytes_ok {
                 return Ok(TransferDisposition::Refused(TransferRefusal::RateLimited));
             }
-            let message = match codec_transfer::decode_up(bytes) {
+            // A v3 session speaks `0x82` only (C-9); a `0x81` frame is
+            // malformed there, as a `0x82` frame is on a v2 snapshot session.
+            let decoded = if session.v3.is_some() {
+                transfer_v3::decode_up(bytes)
+            } else {
+                codec_transfer::decode_up(bytes)
+            };
+            let message = match decoded {
                 Ok(message) => message,
                 Err(_) => {
                     return Ok(TransferDisposition::Refused(TransferRefusal::Malformed));
@@ -2027,6 +2391,8 @@ impl Host {
                         Effect::Reply(TransferDisposition::Refused(
                             TransferRefusal::UnknownTransfer,
                         ))
+                    } else if session.v3.is_some() {
+                        Effect::ResyncV3
                     } else {
                         Effect::Resync {
                             grants: session.grants.clone(),
@@ -2046,6 +2412,19 @@ impl Host {
                 next_net,
             } => {
                 self.stage_snapshot(peer, grants, map, next_net, SnapshotCause::Resync)?;
+                Ok(TransferDisposition::Resynced)
+            }
+            Effect::ResyncV3 => {
+                let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+                let stage = self.plan_v3_stage(session, &session.grants, SnapshotCause::Resync)?;
+                let session = self.sessions.get_mut(&peer).expect("checked above");
+                commit_v3_stage(
+                    &mut self.egress_bytes,
+                    &self.egress_caps,
+                    session,
+                    stage,
+                    None,
+                );
                 Ok(TransferDisposition::Resynced)
             }
         }
@@ -2492,9 +2871,8 @@ impl Host {
     }
 
     /// Counts the armed timer's arm, disarm, freeze and resume events (B-9).
-    /// T141d's host-facts image reads it so that the countdown alone never
+    /// The host-facts image reads it (D-12), so that the countdown alone never
     /// re-sends `HostFacts`.
-    #[allow(dead_code)]
     pub(crate) fn timer_epoch(&self) -> u64 {
         self.timer_epoch
     }
@@ -2776,6 +3154,102 @@ fn push_frames(
     Ok(())
 }
 
+/// The `Invariant` text of a v3 frame that failed to encode.
+const V3_ENCODE: &str = "v3 frame failed to encode";
+
+/// C-5 step 5: installs a planned staging on a v3 session. It cannot fail.
+/// `grants`, when given, are a narrowing's new disclosure grants and are
+/// installed first. The log is discarded (and acknowledged, so the ordinals
+/// stay gapless), the outbox becomes `[Cancel?, Begin, Chunk..., Delta]`, and
+/// pacing (C-7) logs what the egress caps allow.
+fn commit_v3_stage(
+    egress_bytes: &mut usize,
+    caps: &QueueCaps,
+    session: &mut Session,
+    stage: V3Stage,
+    grants: Option<DisclosureGrants>,
+) {
+    if let Some(grants) = grants {
+        session.grants = grants;
+    }
+    *egress_bytes -= session.log_bytes;
+    session.log.clear();
+    session.log_bytes = 0;
+    session.delivered = session.next_ordinal - 1;
+    session.in_flight = Some(stage.transfer);
+    session.next_transfer += 1;
+    session.next_event_seq = stage.delta_seq + 1;
+    let v3 = session
+        .v3
+        .as_mut()
+        .expect("a v3 staging needs a v3 session");
+    v3.view = stage.view;
+    v3.facts = stage.facts;
+    v3.outbox.clear();
+    let transfer_frames = stage.cancel.into_iter().chain(stage.frames);
+    v3.outbox.extend(transfer_frames.map(|bytes| OutboxEntry {
+        event_seq: None,
+        bytes,
+    }));
+    v3.outbox.push_back(OutboxEntry {
+        event_seq: Some(stage.delta_seq),
+        bytes: stage.delta,
+    });
+    v3.sent_clock = Some(stage.clock);
+    v3.sent_host_facts = Some(stage.image);
+    v3.last_clock_tick = stage.tick;
+    pace_session(egress_bytes, caps, session);
+}
+
+/// C-7: moves a v3 session's outbox entries, front first, into its delivery
+/// log while each fits the egress caps, assigning ordinals in order. It stops
+/// at the first entry that does not fit. A delta's `event_seq` was taken when
+/// it was built, so nothing here advances `next_event_seq`.
+fn pace_session(egress_bytes: &mut usize, caps: &QueueCaps, session: &mut Session) {
+    let Some(v3) = session.v3.as_mut() else {
+        return;
+    };
+    while let Some(front) = v3.outbox.front() {
+        let len = front.bytes.len();
+        let fits = session.log.len() < caps.per_peer_frames
+            && session.log_bytes + len <= caps.per_peer_bytes
+            && *egress_bytes + len <= caps.host_bytes;
+        let Some(next) = session.next_ordinal.checked_add(1) else {
+            break;
+        };
+        if !fits {
+            break;
+        }
+        let entry = v3.outbox.pop_front().expect("checked front");
+        session.log.push_back(LoggedFrame {
+            ordinal: session.next_ordinal,
+            event_seq: entry.event_seq,
+            bytes: entry.bytes,
+        });
+        session.next_ordinal = next;
+        session.log_bytes += len;
+        *egress_bytes += len;
+    }
+}
+
+/// A fact-grant vector within its bound, sorted by entity, with no entity
+/// twice (C-1, C-4).
+fn normalize_fact_grants(facts: FactGrants) -> Result<FactGrants, HostError> {
+    if facts.entities.len() > MAX_GRANT_IDENTITIES {
+        return Err(HostError::InvalidGrants);
+    }
+    let mut facts = facts;
+    facts.entities.sort_by_key(|grant| grant.entity);
+    if facts
+        .entities
+        .windows(2)
+        .any(|pair| pair[0].entity == pair[1].entity)
+    {
+        return Err(HostError::InvalidGrants);
+    }
+    Ok(facts)
+}
+
 /// Spends one failure response (both budgets deduct per attempt).
 fn try_consume_failure(session: &mut Session, now_ms: u64, len: usize) -> bool {
     let frames_ok = session.fail_frames.consume(now_ms, 1);
@@ -2936,13 +3410,17 @@ fn resolve_action(session: &Session, frame: &IntentFrame) -> Option<CombatAction
 
 /// `resolve_action`'s mapping/ownership/disclosure test for one sim action;
 /// `None` drops it. The actor is the L3-eligible `active`.
-fn legal_body(session: &Session, action: &CombatAction) -> Option<IntentBody> {
+fn legal_body(
+    grants: &DisclosureGrants,
+    net_of: &dyn Fn(EntityId) -> Option<NetId>,
+    action: &CombatAction,
+) -> Option<IntentBody> {
     match *action {
         CombatAction::UseAbility {
             ability, target, ..
         } => {
-            let target_net = *session.map.get(&target)?;
-            let target_grant = lookup(&session.grants, target)?;
+            let target_net = net_of(target)?;
+            let target_grant = lookup(grants, target)?;
             if !(target_grant.present && target_grant.action_target) {
                 return None;
             }
@@ -4086,5 +4564,549 @@ mod tests {
         );
         assert_eq!(host.last_capture(), 1);
         assert_eq!(host.turn_timer_remaining_ms(), Some(1000));
+    }
+
+    // -- T141c: v3 outbox pacing and staging bounds (C9, C-5, C-11) ----------
+
+    fn v3_facts() -> FactGrants {
+        FactGrants {
+            entities: (0..3)
+                .map(|index| EntityFactGrant {
+                    entity: eid(index),
+                    pools: true,
+                    effects: true,
+                    stats: true,
+                    tags: true,
+                })
+                .collect(),
+            encounter: EncounterGrants {
+                mode: true,
+                pending_mode: true,
+                clock: true,
+                timeline: true,
+            },
+            host: DEFAULT_HOST_GRANTS,
+        }
+    }
+
+    /// A v3 session on a turn-based `V2` host, its first delivery drained and
+    /// acknowledged, so its log and egress are empty.
+    fn drained_v3_host() -> (Host, PeerHandle) {
+        let mut host = v2_host(false);
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+            .expect("binds");
+        ack_all(&mut host, peer);
+        assert_eq!(host.egress_bytes, 0);
+        (host, peer)
+    }
+
+    /// Replaces the outbox with `count` transfer-kind entries of `len` bytes,
+    /// each filled with its own index so order is checkable.
+    fn load_outbox(host: &mut Host, peer: PeerHandle, count: usize, len: usize) {
+        let session = host.sessions.get_mut(&peer).expect("bound");
+        let outbox = &mut session.v3.as_mut().expect("v3").outbox;
+        outbox.clear();
+        for index in 0..count {
+            outbox.push_back(OutboxEntry {
+                event_seq: None,
+                bytes: vec![index as u8; len],
+            });
+        }
+    }
+
+    fn logged(host: &Host, peer: PeerHandle) -> Vec<(u64, u8)> {
+        let session = host.sessions.get(&peer).expect("bound");
+        session
+            .log
+            .iter()
+            .map(|frame| (frame.ordinal, frame.bytes[0]))
+            .collect()
+    }
+
+    fn outbox_len(host: &Host, peer: PeerHandle) -> usize {
+        let session = host.sessions.get(&peer).expect("bound");
+        session.v3.as_ref().expect("v3").outbox.len()
+    }
+
+    /// C9, part 1: pacing moves entries in order, consecutive ordinals, while
+    /// the per-peer frame and byte caps and the host byte cap allow.
+    #[test]
+    fn pacing_respects_every_cap_in_order() {
+        // 200 entries of 20,000 bytes: 104 fit 2,097,152 (104 x 20,000 =
+        // 2,080,000; a 105th would make 2,100,000).
+        let (mut host, peer) = drained_v3_host();
+        let start = host.sessions.get(&peer).expect("bound").next_ordinal;
+        load_outbox(&mut host, peer, 200, 20_000);
+        host.pace(peer);
+        let log = logged(&host, peer);
+        assert_eq!(log.len(), 104);
+        assert_eq!(host.egress_bytes, 2_080_000);
+        for (position, (ordinal, first)) in log.iter().enumerate() {
+            assert_eq!(*ordinal, start + position as u64);
+            assert_eq!(*first, position as u8);
+        }
+        assert_eq!(outbox_len(&host, peer), 96);
+        // Acknowledging 10 frees 200,000 bytes: exactly 10 more move.
+        host.acknowledge_delivery(peer, start + 9).expect("acks");
+        let log = logged(&host, peer);
+        assert_eq!(log.len(), 104);
+        assert_eq!(log[0], (start + 10, 10));
+        assert_eq!(log[103], (start + 113, 113));
+        assert_eq!(outbox_len(&host, peer), 86);
+
+        // 130 entries of 100 bytes: the 128-frame cap stops at 128.
+        let (mut host, peer) = drained_v3_host();
+        let start = host.sessions.get(&peer).expect("bound").next_ordinal;
+        load_outbox(&mut host, peer, 130, 100);
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 128);
+        assert_eq!(outbox_len(&host, peer), 2);
+        host.acknowledge_delivery(peer, start).expect("acks one");
+        let log = logged(&host, peer);
+        assert_eq!(log.len(), 128);
+        assert_eq!(log[127], (start + 128, 128));
+        assert_eq!(outbox_len(&host, peer), 1);
+
+        // Host egress at 16,727,216: 50,000 bytes of host room, so 2 entries.
+        let (mut host, peer) = drained_v3_host();
+        load_outbox(&mut host, peer, 10, 20_000);
+        host.egress_bytes = 16_727_216;
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 2);
+        assert_eq!(host.egress_bytes, 16_727_216 + 40_000);
+        assert_eq!(outbox_len(&host, peer), 8);
+    }
+
+    /// The T140 D5 body: 1,024 fully disclosed entities, every bound at its
+    /// maximum (as in `crates/crpg-net/tests/v3_snapshot.rs`).
+    fn largest_body() -> crpg_net::transfer_v3::SnapshotBodyV3 {
+        use crpg_net::protocol_v3::{
+            ClockFact, EffectFact, EncounterFacts, FactSet, NetId as Net, OrderFact, PoolFact,
+            StatFact, StatValue, TimelineEntry,
+        };
+        use crpg_net::transfer_v3::{SnapshotBodyV3, SnapshotEntityV3};
+        let net = |raw: u64| Net::new(raw).expect("nonzero");
+        let base = 1u64 << 63;
+        let entities = (0..1024u64)
+            .map(|i| SnapshotEntityV3 {
+                entity: net(base + i),
+                health: Some(HealthFact {
+                    health: u32::MAX,
+                    max_health: u32::MAX,
+                    dead: true,
+                }),
+                facts: FactSet {
+                    pools: Some(
+                        (1..=16u128)
+                            .map(|n| PoolFact {
+                                pool: Ulid::from_u128(n),
+                                current: u32::MAX,
+                                max: u32::MAX,
+                            })
+                            .collect(),
+                    ),
+                    effects: Some(
+                        (1..=16u128)
+                            .map(|n| EffectFact {
+                                effect: Ulid::from_u128(n),
+                                expires_round: u64::MAX,
+                            })
+                            .collect(),
+                    ),
+                    order: Some(Some(OrderFact {
+                        ability: Ulid::from_u128(1),
+                        target: net(base),
+                        repeat: true,
+                    })),
+                    stats: Some(
+                        (0..32)
+                            .map(|n| StatFact {
+                                name: format!("{n:032}"),
+                                value: StatValue::Int(i32::MIN),
+                            })
+                            .collect(),
+                    ),
+                    tags: Some((0..8).map(|n| format!("{n:032}")).collect()),
+                },
+            })
+            .collect();
+        SnapshotBodyV3 {
+            entities,
+            turn: Some(TurnFact {
+                active: Some(net(base)),
+                round: u64::MAX,
+            }),
+            encounter: EncounterFacts {
+                mode: Some(crpg_net::protocol_v3::EncounterMode::RealTime),
+                pending_mode: Some(Some(crpg_net::protocol_v3::EncounterMode::TurnBased)),
+                clock: Some(Some(ClockFact {
+                    round_ticks: u32::MAX,
+                    elapsed: 2_147_483_647,
+                })),
+            },
+            timeline: Some(
+                (0..1024u64)
+                    .map(|i| TimelineEntry {
+                        key: i32::MIN,
+                        entity: net(base + i),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// C9, part 2: the D5 plan (88 frames, 2,851,124 bytes) exceeds the 2 MiB
+    /// per-peer egress, so pacing logs the longest prefix that fits and the
+    /// rest after acknowledgements, never skipping or reordering a frame.
+    #[test]
+    fn pacing_moves_the_d5_plan_in_order() {
+        let frames = transfer_v3::plan_transfer(
+            [1; 16],
+            TransferId::new(1).expect("nonzero"),
+            0,
+            0,
+            SNAPSHOT_SEGMENTS_PER_CHUNK,
+            &largest_body(),
+        )
+        .expect("plans");
+        assert_eq!(frames.len(), 88);
+        assert_eq!(frames.iter().map(Vec::len).sum::<usize>(), 2_851_124);
+
+        let (mut host, peer) = drained_v3_host();
+        let start = host.sessions.get(&peer).expect("bound").next_ordinal;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            let outbox = &mut session.v3.as_mut().expect("v3").outbox;
+            outbox.clear();
+            outbox.extend(frames.iter().map(|bytes| OutboxEntry {
+                event_seq: None,
+                bytes: bytes.clone(),
+            }));
+        }
+        host.pace(peer);
+        // The 30-byte Begin plus 63 chunks of 32,806 bytes: 2,066,808; a 64th
+        // chunk would make 2,099,614, over 2,097,152.
+        let session = host.sessions.get(&peer).expect("bound");
+        assert_eq!(session.log.len(), 64);
+        assert_eq!(session.log_bytes, 2_066_808);
+        assert_eq!(outbox_len(&host, peer), 24);
+        // Drain in rounds: every frame appears once, in plan order.
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        for _ in 0..4 {
+            let entries = host.take_delivery_entries(peer).expect("bound");
+            let Some(last) = entries.last().map(|entry| entry.ordinal) else {
+                break;
+            };
+            seen.extend(entries.into_iter().map(|entry| entry.bytes));
+            host.acknowledge_delivery(peer, last).expect("acks");
+        }
+        assert_eq!(seen, frames);
+        assert_eq!(outbox_len(&host, peer), 0);
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").next_ordinal,
+            start + 88
+        );
+    }
+
+    /// C-11: the outbox bound is exactly 90 entries and 2,852,148 bytes.
+    #[test]
+    fn outbox_bound_is_exact() {
+        assert!(outbox_fits(90, 2_852_148));
+        assert!(outbox_fits(0, 0));
+        assert!(outbox_fits(89, 2_852_148));
+        assert!(outbox_fits(90, 0));
+        assert!(!outbox_fits(91, 100));
+        assert!(!outbox_fits(10, 2_852_149));
+        assert!(!outbox_fits(91, 2_852_149));
+    }
+
+    /// C-1, C-7, C-11: a bind never needs egress room. With the host's egress
+    /// full the plan waits in the outbox (not counted as egress), and a later
+    /// take logs it once there is room; a narrowing replaces the outbox; an
+    /// unbind discards it.
+    #[test]
+    fn bind_never_blocks_on_egress_and_outbox_is_replaced() {
+        let mut host = v2_host(false);
+        let full = host.egress_caps.host_bytes;
+        host.egress_bytes = full;
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds without egress room");
+        assert_eq!(host.egress_bytes, full, "the outbox is not egress");
+        assert_eq!(outbox_len(&host, peer), 3);
+        assert_eq!(host.take_delivery_entries(peer), Ok(Vec::new()));
+        // A narrowing replaces the plan: Cancel (transfer 1 is in flight),
+        // Begin, Chunk and a delta that took event_seq 2.
+        let mut narrow = full_grants();
+        narrow.entities.pop();
+        assert_eq!(
+            host.set_grants(peer, narrow),
+            Ok(GrantUpdate::SnapshotStaged)
+        );
+        assert_eq!(outbox_len(&host, peer), 4);
+        let session = host.sessions.get(&peer).expect("bound");
+        let v3 = session.v3.as_ref().expect("v3");
+        assert!(matches!(
+            transfer_v3::decode_down(&v3.outbox[0].bytes),
+            Ok(TransferDown::Cancel { .. })
+        ));
+        assert_eq!(v3.outbox[3].event_seq, Some(2));
+        assert_eq!(session.next_event_seq, 3);
+        assert_eq!(host.take_delivery_entries(peer), Ok(Vec::new()));
+        // Room appears: the whole plan is logged, in order, from ordinal 1.
+        host.egress_bytes = 0;
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        let ordinals: Vec<u64> = entries.iter().map(|entry| entry.ordinal).collect();
+        assert_eq!(ordinals, vec![1, 2, 3, 4]);
+        assert_eq!(entries[3].kind, DeliveryKind::Delta);
+        assert_eq!(outbox_len(&host, peer), 0);
+
+        // Unbind discards the outbox without touching egress.
+        let mut host = v2_host(false);
+        host.egress_bytes = full;
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant { actors: vec![] },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds");
+        assert_eq!(outbox_len(&host, peer), 3);
+        host.unbind_peer(peer);
+        assert!(host.sessions.is_empty());
+        assert_eq!(host.egress_bytes, full);
+    }
+
+    /// The comparable state of one v3 session after a refused staging.
+    #[derive(Debug, PartialEq)]
+    struct StagingEvidence {
+        log: Vec<(u64, Option<u64>, Vec<u8>)>,
+        outbox: Vec<(Option<u64>, Vec<u8>)>,
+        next_ordinal: u64,
+        delivered: u64,
+        next_transfer: u64,
+        in_flight: Option<u64>,
+        next_event_seq: u64,
+        egress_bytes: usize,
+        views: (
+            crpg_net::interest::InterestView,
+            crpg_net::facts_v3::FactView,
+        ),
+    }
+
+    fn staging_evidence(host: &Host, peer: PeerHandle) -> StagingEvidence {
+        let session = host.sessions.get(&peer).expect("bound");
+        let v3 = session.v3.as_ref().expect("v3");
+        StagingEvidence {
+            log: session
+                .log
+                .iter()
+                .map(|frame| (frame.ordinal, frame.event_seq, frame.bytes.clone()))
+                .collect(),
+            outbox: v3
+                .outbox
+                .iter()
+                .map(|entry| (entry.event_seq, entry.bytes.clone()))
+                .collect(),
+            next_ordinal: session.next_ordinal,
+            delivered: session.delivered,
+            next_transfer: session.next_transfer,
+            in_flight: session.in_flight,
+            next_event_seq: session.next_event_seq,
+            egress_bytes: host.egress_bytes,
+            views: (v3.view.clone(), v3.facts.clone()),
+        }
+    }
+
+    /// C-5 steps 1 and 4: a staging at a counter sentinel, or without ordinal
+    /// room for its whole plan, is `CounterExhausted` and changes nothing; one
+    /// ordinal inside the bound it commits.
+    #[test]
+    fn v3_staging_counters_are_checked_before_anything_changes() {
+        let resync = |host: &Host, peer: PeerHandle| {
+            transfer_v3::encode_up(&TransferUp::Resync {
+                epoch: host.epoch(peer).expect("bound"),
+                after: None,
+                reason: crpg_net::protocol_transfer::ResyncReason::Overflow,
+            })
+            .expect("encodes")
+        };
+        // (a) the transfer-id sentinel.
+        let (mut host, peer) = drained_v3_host();
+        host.sessions.get_mut(&peer).expect("bound").next_transfer = u64::MAX;
+        let before = staging_evidence(&host, peer);
+        let bytes = resync(&host, peer);
+        assert_eq!(
+            host.ingest_transfer(peer, &bytes, 0),
+            Err(HostError::CounterExhausted)
+        );
+        let mut narrow = full_grants();
+        narrow.entities.pop();
+        assert_eq!(
+            host.set_grants(peer, narrow.clone()),
+            Err(HostError::CounterExhausted)
+        );
+        assert_eq!(staging_evidence(&host, peer), before);
+        host.sessions.get_mut(&peer).expect("bound").next_transfer = u64::MAX - 1;
+        assert_eq!(
+            host.set_grants(peer, narrow),
+            Ok(GrantUpdate::SnapshotStaged)
+        );
+        let session = host.sessions.get(&peer).expect("bound");
+        assert_eq!(session.next_transfer, u64::MAX);
+        assert_eq!(session.in_flight, Some(u64::MAX - 1));
+
+        // (b) ordinal room: transfer 1 is still in flight, so the plan is a
+        // Cancel, a Begin, a Chunk and the host-facts delta: 4 entries.
+        let (mut host, peer) = drained_v3_host();
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session.next_ordinal = u64::MAX - 4;
+            session.delivered = u64::MAX - 5;
+        }
+        let before = staging_evidence(&host, peer);
+        let bytes = resync(&host, peer);
+        assert_eq!(
+            host.ingest_transfer(peer, &bytes, 0),
+            Err(HostError::CounterExhausted)
+        );
+        assert_eq!(staging_evidence(&host, peer), before);
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session.next_ordinal = u64::MAX - 5;
+            session.delivered = u64::MAX - 6;
+        }
+        let bytes = resync(&host, peer);
+        assert_eq!(
+            host.ingest_transfer(peer, &bytes, 0),
+            Ok(TransferDisposition::Resynced)
+        );
+        let session = host.sessions.get(&peer).expect("bound");
+        assert_eq!(session.next_ordinal, u64::MAX - 1);
+        let ordinals: Vec<u64> = session.log.iter().map(|frame| frame.ordinal).collect();
+        assert_eq!(
+            ordinals,
+            vec![u64::MAX - 5, u64::MAX - 4, u64::MAX - 3, u64::MAX - 2]
+        );
+    }
+
+    /// C-5, C-6: a v3 staging's delta takes the next `event_seq` when it is
+    /// built, so the delivery sequence stays gapless across stagings.
+    #[test]
+    fn v3_staging_takes_one_event_seq_per_plan() {
+        let (mut host, peer) = drained_v3_host();
+        assert_eq!(host.sessions.get(&peer).expect("bound").next_event_seq, 2);
+        let mut narrow = full_grants();
+        narrow.entities.pop();
+        assert_eq!(
+            host.set_grants(peer, narrow),
+            Ok(GrantUpdate::SnapshotStaged)
+        );
+        assert_eq!(host.sessions.get(&peer).expect("bound").next_event_seq, 3);
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        let delta = entries.last().expect("a delta");
+        assert_eq!(delta.kind, DeliveryKind::Delta);
+        let frame = crpg_net::codec_v3::decode_delta(&delta.bytes).expect("decodes");
+        assert_eq!(frame.event_seq, 2);
+        assert_eq!(frame.server_tick, 0);
+    }
+
+    /// D-9 (kept from T141c): v3 sessions take no part in `accepted_room`, so a
+    /// full v3 log never blocks admission, while an equally full v2 log does.
+    #[test]
+    fn accepted_room_skips_v3_sessions() {
+        let fill = |host: &mut Host, peer: PeerHandle| {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            for index in 0..host.egress_caps.per_peer_frames {
+                session.log.push_back(LoggedFrame {
+                    ordinal: 1_000 + index as u64,
+                    event_seq: None,
+                    bytes: vec![0],
+                });
+            }
+        };
+        let (mut host, peer) = drained_v3_host();
+        fill(&mut host, peer);
+        assert_eq!(host.accepted_room(), Ok(true));
+        // Control: the same fill on a v2 session blocks.
+        let v2 = host
+            .bind_peer(all_actors(), full_grants(), 0)
+            .expect("binds");
+        assert_eq!(host.accepted_room(), Ok(true));
+        fill(&mut host, v2);
+        assert_eq!(host.accepted_room(), Ok(false));
+    }
+
+    /// Interim (T141d replaces it): until the v3 intent and page pipelines
+    /// exist, a v2 peer's command never writes v2 frames into a v3 session's
+    /// log, and a v2-format intent from a v3 session is refused as an
+    /// unsupported version with no frame, sequence or execution.
+    #[test]
+    fn v3_sessions_are_not_served_v2_bytes() {
+        let mut host = v2_host(false);
+        let v = host
+            .bind_peer(all_actors(), full_grants(), 0)
+            .expect("binds");
+        let p = host
+            .bind_v3_peer(
+                all_actors(),
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds");
+        ack_all(&mut host, v);
+        ack_all(&mut host, p);
+        let before = staging_evidence(&host, p);
+        let bytes = intent(&host, v, 1, 1, IntentBody::EndTurn);
+        assert_eq!(host.ingest(v, &bytes, 1), Ok(IngestDisposition::Staged));
+        let summary = host.pump(1).expect("pump");
+        assert_eq!(summary.applied, 1);
+        assert_eq!(host.executions(), 1);
+        assert!(!host.take_delivery(v).expect("bound").is_empty());
+        // V's own frames are in the host's egress total; P's session is
+        // untouched.
+        let mut after = staging_evidence(&host, p);
+        assert_eq!(after.egress_bytes, 43);
+        after.egress_bytes = before.egress_bytes;
+        assert_eq!(after, before);
+
+        // The v3 session's own v2-format intent.
+        let bytes = intent(&host, p, 1, 1, IntentBody::EndTurn);
+        assert_eq!(host.ingest(p, &bytes, 2), Ok(IngestDisposition::Staged));
+        let summary = host.pump(2).expect("pump");
+        assert_eq!(summary.rejected, 1);
+        assert_eq!(
+            summary.results[0].status,
+            ReceiptStatus::Rejected(RejectionCode::UnsupportedVersion)
+        );
+        assert_eq!(host.executions(), 1);
+        assert_eq!(host.cached_status(p, 1), Ok(None));
+        let mut after = staging_evidence(&host, p);
+        after.egress_bytes = before.egress_bytes;
+        assert_eq!(after, before);
     }
 }

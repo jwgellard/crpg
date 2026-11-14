@@ -289,6 +289,29 @@ from `new` or `from_history` starts running; a host from `load_checkpoint`
 `HostError::InvalidSettings` is the new variant; its `Display` is
 `InvalidSettings at host/admission`.
 
+## Protocol v3 sessions (T141c)
+
+`Host::bind_v3_peer` binds a v3 session: always a snapshot session, speaking v3
+whatever `HostConfig.protocol` says; `bind_peer` and `bind_snapshot_peer` keep
+the host-wide v1/v2. The session holds a private `V3Session` (`host_v3.rs`): the
+epoch's `InterestView` and `FactView`, the operator's `FactGrants`, the viewer's
+`PauseRights` and a paced outbox. Nothing of `World` is stored: every staging
+reads it afresh into the two views' contexts (`read_world`), and ids come from
+the `InterestView` (key = `World::area()` or `HOST_UNBOUND_AREA`, plus `EntityId`).
+The `order` fact follows the control list.
+
+Staging (bind, narrowing `set_grants`, upstream `Resync`) is atomic: plan on
+clones of the views (`Cancel` if a transfer is in flight, the `0x82` plan at
+cursor `next_event_seq - 1`, one `[Clock, HostFacts]` delta that takes its
+`event_seq` when built), check the ordinal room and the outbox bound (90 entries,
+2,852,148 bytes), then commit. The plan goes to the outbox, which is not egress;
+pacing moves entries into the delivery log, in order, while the per-peer (128
+frames, 2 MiB) and host caps allow, at the end of staging, in `take_delivery*`
+and after `acknowledge_delivery`. A bind therefore never returns `QueueFull`.
+Interim until T141d: v3 sessions are skipped by `accepted_room` and receive no
+v2 frames from peer commands, and a v2-format intent from a v3 session is refused
+as `UnsupportedVersion`; publication of pages and the v3 intent pipeline are T141d.
+
 ## Connections and bindings (T023b)
 
 A QUIC connection has no gameplay identity until the adapter binds it. The
@@ -482,3 +505,4 @@ with T040/T041.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Added the host-records and checkpoint-version-2 section (entry journal, dual read and conditional write, four-event bound, tail order) and named both versions in the `checkpoint` and `capture` module paragraphs, so the doc describes the journal and save the crate now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added the host-actions section (`host_action`, `request_mode`, `awaiting_orders`, the `Combat` error and their reservation and precedence order), so the doc describes the trusted calls the host now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the pause, settings and tick-driver section (`HostSettings`, pause state and its restore default, `advance`, auto-pause as tail step 1, the turn timer and its freezing), so the doc describes the host calls the crate now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the protocol v3 sessions section (per-session wire, views read from `World` each call, atomic `0x82` staging, the paced outbox and its interim guards), so the doc matches `bind_v3_peer` and `host_v3.rs`.

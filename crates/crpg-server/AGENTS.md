@@ -196,6 +196,14 @@ git diff --check
   caller that never passes time never expires a turn. Auto-pause and timer
   observation are step 1 of every post-commit tail (`commit_accepted` and
   `complete_host_op`): never move them behind a fallible step.
+- **v3 sessions read `World` each call and stage through an outbox (T141c).**
+  `bind_v3_peer` sessions keep no map: ids come from the `InterestView`, facts
+  from the `FactView`, both rebuilt from `World` per staging. Staging plans on
+  clones and commits only whole; its frames wait in a per-session outbox (not
+  egress) that `pace_session` drains in order under the egress caps, so a bind
+  never returns `QueueFull`. A delta takes its `event_seq` when built, not when
+  logged. Until T141d, v3 sessions are skipped by `accepted_room` and get no v2
+  frames, and their v2-format intents are refused `UnsupportedVersion`.
 - **Save identity never goes into the checkpoint JSON** without a
   `CHECKPOINT_VERSION` bump (which reopens T022). It lives in the `save`
   header in front of the verbatim checkpoint.
@@ -293,3 +301,4 @@ git diff --check
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Amended invariants 1 and 3 (host operations journal as `HostRecord`s and are captured before the sim acknowledgement) and added the version-1-unless-a-host-record, no-`commit_accepted`-for-host-operations and four-event-bound traps, so the contract matches checkpoint version 2.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added `host_action`, `request_mode` and `awaiting_orders` to invariant 1's trusted ops and a trap that AI control is the caller's fact and a host action is never a peer command.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the traps for `tick` versus `advance`, unpersisted pause and settings, and the caller-time timer, and amended invariant 1 to name the T141b pause calls, so the contract matches the pause and timer code.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the v3-session trap (no stored map, atomic staging into a paced outbox, interim v3 guards) and named the `bind_v3_peer` family in the surface, so the contract matches the v3 session code.
