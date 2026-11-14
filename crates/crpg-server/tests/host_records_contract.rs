@@ -1872,3 +1872,243 @@ fn s8_v1_and_snapshot_sessions_get_no_frame_from_a_host_operation() {
     assert_eq!(host.transfer_state(snap).unwrap(), snap_state);
     assert_eq!(host.executions(), 1);
 }
+// ---------------------------------------------------------------------------
+// Fix round: command-record bytes, the per-record byte bound, empty and
+// mismatched host-record ranges.
+// ---------------------------------------------------------------------------
+
+/// One real command record with eight views (eight bound peers).
+fn eight_view_command() -> CapturedRecord {
+    let mut rig = Rig::tb3();
+    for _ in 1..8 {
+        rig.host
+            .bind_peer(all_actors(), full_grants(), 0)
+            .expect("binds");
+    }
+    rig.declare(1, 1, strike(), 2);
+    let record = rig
+        .host
+        .read_captures(0, 1)
+        .expect("readable")
+        .pop()
+        .expect("one record");
+    assert_eq!(record.views.len(), 8);
+    record
+}
+
+/// Copies of `template` numbered from 1 over consecutive ranges, whose compact
+/// lengths sum to exactly `target`; only `seq` (strictly increasing, its
+/// digit count) differs, and every record stays in the legal range.
+fn command_records_with_total(template: &CapturedRecord, target: usize) -> Vec<CapturedRecord> {
+    let one = |i: usize, reduction: usize| -> CapturedRecord {
+        let digits = 18 - reduction;
+        let mut record = template.clone();
+        record.capture_seq = 1 + i as u64;
+        record.seq = 10u64.pow(digits as u32 - 1) + i as u64;
+        // Consecutive ranges: each record starts where the last ended.
+        let width = record.events.len() as u64;
+        record.history_start += i as u64 * width;
+        record.history_end += i as u64 * width;
+        for (k, event) in record.events.iter_mut().enumerate() {
+            event.seq = record.history_start + 1 + k as u64;
+        }
+        record
+    };
+    // Grow until the full-width records cover the target.
+    let mut sum = 0usize;
+    let mut count = 0usize;
+    while sum < target {
+        sum += json_len(&one(count, 0));
+        count += 1;
+    }
+    assert!(
+        count <= MAX_CAPTURE_RECORDS,
+        "{count} records fit the entry bound"
+    );
+    let mut deficit = sum - target;
+    let reductions: Vec<usize> = (0..count)
+        .map(|_| {
+            let take = deficit.min(12);
+            deficit -= take;
+            take
+        })
+        .collect();
+    assert_eq!(deficit, 0, "the deficit is spread over the records");
+    let records: Vec<CapturedRecord> = (0..count).map(|i| one(i, reductions[i])).collect();
+    assert_eq!(records.iter().map(json_len).sum::<usize>(), target);
+    records
+}
+
+/// A `TB3` version-1 checkpoint carrying exactly `records` as commands.
+fn crafted_commands(records: &[CapturedRecord]) -> Vec<u8> {
+    let mut value = parse(&Rig::tb3().saved());
+    let last = records.last().expect("records").history_end;
+    value["history"]["next_seq"] = json!(last + 1);
+    value["history"]["acknowledged"] = json!(last);
+    value["captured"] = serde_json::to_value(records).expect("records");
+    emit(&value)
+}
+
+#[test]
+fn s6e_command_record_bytes_count_toward_the_journal_bound() {
+    let template = eight_view_command();
+    let at_limit = command_records_with_total(&template, MAX_CAPTURE_BYTES);
+    let loaded = load(&crafted_commands(&at_limit)).expect("exactly 8 MiB of commands loads");
+    assert_eq!(loaded.last_capture(), at_limit.len() as u64);
+    assert_eq!(loaded.capture_acknowledged(), 0);
+
+    let past = command_records_with_total(&template, MAX_CAPTURE_BYTES + 1);
+    assert_eq!(
+        load_err(&crafted_commands(&past)),
+        Some(CheckpointError::Malformed),
+        "8 MiB + 1 byte of command records"
+    );
+    // One byte under is a control on the other side.
+    let under = command_records_with_total(&template, MAX_CAPTURE_BYTES - 1);
+    assert!(load(&crafted_commands(&under)).is_ok());
+}
+
+/// A `moved` envelope: 64 points, each coordinate adding `levels[k]` bytes
+/// (0 is `0`; `l >= 1` is `-10^(l-1)`, `l + 1` characters).
+fn moved_envelope(seq: u64, levels: &[usize]) -> HistoryEnvelope {
+    assert_eq!(levels.len(), 64 * 3);
+    let points: Vec<Value> = levels
+        .chunks(3)
+        .map(|chunk| {
+            Value::Array(
+                chunk
+                    .iter()
+                    .map(|&l| {
+                        json!(if l == 0 {
+                            0i64
+                        } else {
+                            -10i64.pow(l as u32 - 1)
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let text = format!(
+        "{{\"tick\":0,\"seq\":{seq},\"payload\":{{\"type\":\"moved\",\"value\":{{\"entity\":{{\"index\":0,\"generation\":1}},\"points\":{}}}}}}}",
+        Value::Array(points)
+    );
+    serde_json::from_str(&text).expect("a valid moved envelope")
+}
+
+fn moved_record(events: usize, levels: &[usize]) -> HostRecord {
+    HostRecord {
+        capture_seq: 1,
+        op: HostOp::Tick,
+        history_start: 4,
+        history_end: 4 + events as u64,
+        processed_tick: 0,
+        events: (0..events)
+            .map(|k| moved_envelope(5 + k as u64, &levels[k * 192..(k + 1) * 192]))
+            .collect(),
+    }
+}
+
+/// A record of 1,000 route envelopes whose compact length is `target`.
+fn moved_record_with_len(target: usize) -> HostRecord {
+    const EVENTS: usize = 1000;
+    let base = json_len(&moved_record(EVENTS, &vec![0; EVENTS * 192]));
+    assert!(base <= target);
+    let mut slack = target - base;
+    assert!(slack <= EVENTS * 192 * 10);
+    let levels: Vec<usize> = (0..EVENTS * 192)
+        .map(|_| {
+            let take = slack.min(10);
+            slack -= take;
+            take
+        })
+        .collect();
+    let record = moved_record(EVENTS, &levels);
+    assert_eq!(json_len(&record), target);
+    record
+}
+
+#[test]
+fn s6b_host_record_bytes_at_the_limit_and_one_past() {
+    // Route events are the one legal payload large enough to reach the
+    // per-record byte bound with fewer than 4,096 envelopes.
+    let at_limit = moved_record_with_len(MAX_HOST_RECORD_BYTES);
+    assert!(at_limit.events.len() <= MAX_HOST_RECORD_EVENTS);
+    let loaded = load(&crafted(&[at_limit])).expect("a record of exactly 1,114,112 bytes loads");
+    assert_eq!(loaded.last_capture(), 1);
+
+    let over = moved_record_with_len(MAX_HOST_RECORD_BYTES + 1);
+    assert_eq!(json_len(&over), MAX_HOST_RECORD_BYTES + 1);
+    assert_eq!(
+        load_err(&crafted(&[over])),
+        Some(CheckpointError::Malformed),
+        "one byte over, with every other bound met"
+    );
+}
+
+#[test]
+fn s6b_empty_range_and_width_mismatch_are_refused_on_their_own() {
+    let (rig, _) = s1_run();
+    let text = rig.saved();
+    assert_eq!(load_err(text.as_bytes()), None, "control: S1 loads");
+    let set_history = |v: &mut Value, last: u64| {
+        v["history"]["next_seq"] = json!(last + 1);
+        v["history"]["acknowledged"] = json!(last);
+    };
+    let extra = |start: u64, end: u64, events: Vec<Value>| {
+        json!({
+            "capture_seq": 3, "op": "tick", "history_start": start,
+            "history_end": end, "processed_tick": 1, "events": events,
+        })
+    };
+
+    // S1's journal is [Command (4, 4], Host (4, 5]]. A second host record
+    // that is the last entry, starting where the first ended; control: one
+    // event over (5, 6] loads.
+    let first_event = parse(&text)["host_records"][0]["events"][0].clone();
+    let mut sixth = first_event.clone();
+    sixth["seq"] = json!(6);
+    let mut control = parse(&text);
+    control["host_records"]
+        .as_array_mut()
+        .unwrap()
+        .push(extra(5, 6, vec![sixth]));
+    set_history(&mut control, 6);
+    assert_eq!(load_err(&emit(&control)), None, "control: (5, 6] loads");
+
+    // Empty range: start == end == the last entry's end, nothing after it.
+    let mut empty = parse(&text);
+    empty["host_records"]
+        .as_array_mut()
+        .unwrap()
+        .push(extra(5, 5, vec![]));
+    assert_eq!(
+        load_err(&emit(&empty)),
+        Some(CheckpointError::Malformed),
+        "an empty host-record range"
+    );
+
+    // Width mismatch, history made consistent, host record the last entry:
+    // two events over (4, 6] is the control, one event is refused.
+    let mut two = parse(&text);
+    let mut second = first_event;
+    second["seq"] = json!(6);
+    two["host_records"][0]["history_end"] = json!(6);
+    two["host_records"][0]["events"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+    two["captured"].as_array_mut().unwrap().truncate(1);
+    set_history(&mut two, 6);
+    assert_eq!(load_err(&emit(&two)), None, "control: width 2, two events");
+    let mut one = two.clone();
+    one["host_records"][0]["events"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert_eq!(
+        load_err(&emit(&one)),
+        Some(CheckpointError::Malformed),
+        "width 2 with one event"
+    );
+}
