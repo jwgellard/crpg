@@ -190,6 +190,21 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   existing `ReplicaError`: add no variant**, or the bridge's fatal-53 mapping
   and T046's `Display` strings change.
 
+- *2026-11-14 (UTC), T026p1:* **Protocol v4, lane 0** (`protocol_v4`,
+  `codec_v4`; see architecture §"Protocol v4"). **Supersedes the trap above
+  that says "Spatial replication waits for the lane-1 movement channel"**:
+  positions now travel as the lane-0 `Position` and `Moved` ops and, from
+  T026p2, lane-1 samples; there is still no open bag and no transform op, and
+  a position is a bounded `Point`, never a free float or an unchecked `i32`
+  triple. **v4 wraps v3 ops; never re-declare a v3 op in v4, and never move a
+  v3 tag** (tags 0..=20 are `DeltaOp::V3`; 21 and 22 are v4's). **A v4 tag
+  0..=20 is decoded only by `codec_v3::take_op` and encoded only by
+  `codec_v3::extend_op`**: never copy a v3 op body into `codec_v4`, or the
+  byte identity the W4 differential proves stops being true by construction.
+  **No new rejection code without a new version**: `RejectionCode` is v3's,
+  re-exported, so a movement refusal reuses an existing code. The v4 intent
+  bodies 0..=5 are re-declared, not wrapped; keep them equal to v3's bytes.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
@@ -234,3 +249,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the v3 receiver-gate entry with its three traps (one transliteration fixed in both pools in one task; no V3 arm on the frozen v1/v2 types; a v3 receiver uses only the v3 codecs, assembly and limits). P9 remains unwritten because the contract's `G(1)` expectation contradicts P-5 step 4; reported to the manager.
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the v3 client-replica entry with its four traps (fact references checked only when the op applies; `apply_snapshot` keeps `pause` and `host_facts`; no codec value check is re-run; every v3 refusal is an existing `ReplicaError`, add no variant).
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the protocol v4 lane-0 entry with its three traps (v4 wraps v3 ops and never moves a v3 tag; a v4 tag 0..=20 goes only through `codec_v3::take_op`/`extend_op`; no new rejection code without a new version) and superseded the "Spatial replication waits for the lane-1 movement channel" trap by that dated entry, leaving the old line unedited.

@@ -993,6 +993,86 @@ in the `0x82` body; the host re-sends both after every publication (T140
 H-2). `apply_snapshot` therefore leaves `pause` and `host_facts` as they are,
 and both are `None` until their first op.
 
+## Protocol v4 (T026p, ADR-0036 L1–L6)
+
+`protocol_v4` / `codec_v4` add lane-0 wire version 4 beside frozen v1, v2,
+v3, `0x81`, `0x82` and `0x91`. T026p1 (this section) fixes lane 0: every v3
+message by its v3 bytes, the turn-based `DeclareMove` intent, and the `Moved`
+and `Position` delta ops over the bounded `Point` type. Lane 1 (`0xA1`), the
+position filter, the v4 pool, the replica and the outbox are T026p2–p5 and
+extend this section as they land.
+
+**Lanes.** A v4 session is lane-0 version 4 plus the movement subprotocol
+version `0xA1` (T026p2). Each lane keeps its own first byte, so one can change
+without a lane-0 version and the reverse:
+
+| Lane | Carries | First byte | Module |
+|---|---|---|---|
+| 0 | combat and session (v1–v4) | 1, 2, 3, 4 | `protocol` … `protocol_v4` |
+| 1 | movement intents, receipts, position samples (T026p2) | `0xA1` | `movement_v4` (not yet built) |
+| 2 | snapshot transfer | `0x81`, `0x82` | `protocol_transfer`, `transfer_v3` |
+| 3 | session resume | `0x91` | `protocol_resume` |
+
+Every codec refuses another version's first byte with `UnsupportedVersion`
+and a foreign lane with `WrongDirection`; the v1, v2 and v3 codecs refuse
+byte 4 the same way. There is no negotiation: the host picks the versions per
+session.
+
+**v3 ops are wrapped, not re-declared.** `DeltaOp::V3(op)` carries every v3
+op (tags 0..=20) with exactly its v3 bytes, so byte identity holds by
+construction instead of by a second 21-variant copy to keep in step. The
+v4 decoder reads a tag of 0..=20 only through `codec_v3::take_op`, and the
+encoder writes it only through `codec_v3::extend_op`; those two functions
+became `pub(crate)` for this (the only edit to `codec_v3`). Intents have no
+per-body function to call, so v4 re-declares the six small v3 bodies (tags
+0..=5, `From<protocol_v3::IntentBody>` converts) and adds tag 6.
+`RejectionCode`, `ReceiptStatus` and `EncounterMode` are v3's types
+re-exported; **v4 adds no rejection code** (`DeclareMove` refusals reuse
+`NotAuthorized`, `WrongMode`, `IllegalAction` and the admission codes).
+
+**Intent.** `04`, `epoch`, `lane` 0, `seq`, `observed_tick`, `actor`, body
+tag, body. Tag 6 `DeclareMove` is one point, and the header's actor moves
+(ADR-0036 L6). Decode order is v3's with tag 6 added: cap, version, `epoch`,
+`lane`, `seq`, `observed_tick`, `actor`, tag (7..=255 `UnknownMessage`), body,
+trailing bytes.
+
+**Delta.** `04`, `lane` 0, `server_tick`, `event_seq`, op count (at most
+256, checked before any op is read), then ops. Tag 21 `Moved` is `entity`, a
+count varint (2..=64, both bounds checked before any point is read) and the
+points; a point equal to the previous one in `x` and `z` is `Malformed` (a
+zero horizontal segment, exactly sim's `ZeroSegment`; `y` may differ). Route
+length is not checked on the wire: it needs a square root, and sim validated
+it. Tag 22 `Position` is `entity`, a disclosed flag and, only when set, a
+point and a `moving` flag: `None` means "withheld from now on while the entity
+stays visible" (the forget image), and has no bytes after its `00` flag. Tags
+23..=255 are `UnknownMessage`. `check_points` is the encode check for
+`Moved`, in the decoder's order, and returns exactly the error `encode_delta`
+does.
+
+**`Point` and U3.** A position is raw `Fx16_16` metres `[x, y, z]`; `Point`'s
+field is private and `Point::new` refuses any component whose `unsigned_abs()`
+exceeds `COORD_LIMIT_RAW` (2^29, ADR-0036 U3), so a `Point` cannot be out of
+bounds and an encoded one is at most 15 bytes (a coordinate is a zigzag `i32`,
+at most 5 bytes). The decoder checks each coordinate when it is read: `x`
+before `y` before `z`. `COORD_LIMIT_RAW` and `MAX_MOVED_POINTS` (64) are
+declared here because net cannot use sim outside tests; test W11 asserts they
+equal `crpg_sim::COORD_LIMIT_RAW` and `MAX_ROUTE_POINTS`.
+
+**`frame_spans`.** T140 B-6's greedy split over v4 ops: every op's encode check
+runs first (first failure, no spans), then a frame closes when one more op
+would pass 256 ops or `MAX_FRAME_OP_BYTES_V3` (65,512) op bytes. The v4 header
+is at most 24 bytes, so one span always encodes within 65,536 bytes. For all
+`V3` ops it equals `codec_v3::frame_spans`. The largest `Moved` is 972 bytes
+and the largest `Position` 28.
+
+**Errors.** No new variant: `CodecError` covers every refusal (see T140a's
+list; the new ones are intent tag 7..=255 and op tag 23..=255 as
+`UnknownMessage`; a `Moved` count over 64 as `LimitExceeded`; a count under 2,
+a zero horizontal segment, a coordinate beyond U3 and a flag byte other than
+0/1 as `Malformed`). `tests/v4_wire.rs` carries the literal byte oracles
+(W1–W11) and a differential against the v3 codec over every v3 op and a
+mutation corpus.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -1015,3 +1095,4 @@ and both are `None` until their first op.
 
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the `pool_v3` section (the reused and new types, the P-1 substitution table, the P8 mirror, version isolation and T140e's sizing), superseding T140e's "later task" sentence without editing it; no earlier section changed.
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the `replica_v3` section (state, the R-5..R-8 op table, the liveness rule and its T140c emission-order/T027b history-slot justification, stale references, images, delta/snapshot precedence and host state kept across a snapshot); no earlier section changed.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the "Protocol v4 (T026p, ADR-0036 L1–L6)" section for the new `protocol_v4`/`codec_v4` pair (lane table, `V3` wrapping and why, `Moved`, `Position`, `Point` and U3, `frame_spans`); no earlier section changed.

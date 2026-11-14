@@ -786,7 +786,7 @@ pub(crate) fn take_fact_set(rest: &mut &[u8]) -> Result<FactSet, CodecError> {
 }
 
 /// Encodes one v3 delta operation, including its tag byte.
-fn extend_op(mut out: Vec<u8>, op: &DeltaOp) -> Result<Vec<u8>, CodecError> {
+pub(crate) fn extend_op(mut out: Vec<u8>, op: &DeltaOp) -> Result<Vec<u8>, CodecError> {
     match op {
         DeltaOp::EntityEnter { entity } => {
             out = extend(out, &DELTA_TAG_ENTITY_ENTER)?;
@@ -926,7 +926,7 @@ fn extend_op(mut out: Vec<u8>, op: &DeltaOp) -> Result<Vec<u8>, CodecError> {
 /// Decodes one v3 delta operation, tag byte first.
 ///
 /// Any tag outside 0..=20 is [`CodecError::UnknownMessage`].
-fn take_op(rest: &mut &[u8]) -> Result<DeltaOp, CodecError> {
+pub(crate) fn take_op(rest: &mut &[u8]) -> Result<DeltaOp, CodecError> {
     let tag: u8 = take(rest)?;
     match tag {
         DELTA_TAG_ENTITY_ENTER => Ok(DeltaOp::EntityEnter {
