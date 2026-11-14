@@ -229,6 +229,61 @@ fn max_cost_bounds() {
             );
         }
     }
+    // The check runs after the existing ones: with a kernel or movement fault
+    // and an out-of-range max_cost together, the earlier check's message wins.
+    // Each fault alone, and the bad limit alone, are controls.
+    let bad_limit = policy("actionable", Some(16_777_217));
+    let kernel_fault = {
+        let mut out = base.clone();
+        out["stats"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "kind": "fixed", "name": "pace" }));
+        out["health_stat"] = json!("pace");
+        out
+    };
+    let movement_fault = {
+        let mut out = base.clone();
+        out["movement"] = json!({
+            "speed": { "type": "constant", "value": 16384 },
+            "turn": {
+                "pool": base["pools"][0]["id"].clone(),
+                "step": { "type": "constant", "value": 98304 },
+                "step_cost": 0
+            }
+        });
+        out
+    };
+    for (fault, expected) in [
+        (
+            &kernel_fault,
+            "ruleset health_stat must name a non-derived int stat",
+        ),
+        (
+            &movement_fault,
+            "ruleset movement step_cost must be at least 1",
+        ),
+    ] {
+        assert_eq!(message(read(fault)), expected);
+        assert_eq!(
+            message(read(&with(
+                fault,
+                "preview",
+                policy("actionable", Some(16_777_216))
+            ))),
+            expected,
+            "in-range limit does not mask the earlier fault"
+        );
+        assert_eq!(
+            message(read(&with(fault, "preview", bad_limit.clone()))),
+            expected,
+            "earlier check wins over the preview bound"
+        );
+    }
+    assert_eq!(
+        message(read(&with(&base, "preview", bad_limit))),
+        "ruleset preview max_cost must be 1..=16777216"
+    );
     // A negative or fractional limit is not a u64 at all.
     for bad in [json!(-1), json!(1.5), json!("100")] {
         assert!(
