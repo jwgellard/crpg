@@ -47,6 +47,7 @@ pub mod codec_v3;
 pub mod codec_v4;
 pub mod facts_v3;
 pub mod interest;
+pub mod movement_v4;
 pub mod pool_v3;
 pub mod projection_v2;
 pub mod projection_v3;

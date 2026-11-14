@@ -996,10 +996,10 @@ and both are `None` until their first op.
 ## Protocol v4 (T026p, ADR-0036 L1–L6)
 
 `protocol_v4` / `codec_v4` add lane-0 wire version 4 beside frozen v1, v2,
-v3, `0x81`, `0x82` and `0x91`. T026p1 (this section) fixes lane 0: every v3
-message by its v3 bytes, the turn-based `DeclareMove` intent, and the `Moved`
-and `Position` delta ops over the bounded `Point` type. Lane 1 (`0xA1`), the
-position filter, the v4 pool, the replica and the outbox are T026p2–p5 and
+v3, `0x81`, `0x82` and `0x91`. T026p1 fixes lane 0: every v3 message by its
+v3 bytes, the turn-based `DeclareMove` intent, and the `Moved` and `Position`
+delta ops over the bounded `Point` type. T026p2 (below) fixes lane 1 (`0xA1`).
+The position filter, the v4 pool, the replica and the outbox are T026p3–p5 and
 extend this section as they land.
 
 **Lanes.** A v4 session is lane-0 version 4 plus the movement subprotocol
@@ -1009,7 +1009,7 @@ without a lane-0 version and the reverse:
 | Lane | Carries | First byte | Module |
 |---|---|---|---|
 | 0 | combat and session (v1–v4) | 1, 2, 3, 4 | `protocol` … `protocol_v4` |
-| 1 | movement intents, receipts, position samples (T026p2) | `0xA1` | `movement_v4` (not yet built) |
+| 1 | movement intents, receipts, position samples (T026p2) | `0xA1` | `movement_v4` |
 | 2 | snapshot transfer | `0x81`, `0x82` | `protocol_transfer`, `transfer_v3` |
 | 3 | session resume | `0x91` | `protocol_resume` |
 
@@ -1073,6 +1073,69 @@ a zero horizontal segment, a coordinate beyond U3 and a flag byte other than
 (W1–W11) and a differential against the v3 codec over every v3 op and a
 mutation corpus.
 
+### T026p2: `movement_v4`, lane 1
+
+Lane 1 is its own separately versioned subprotocol (D13): every message starts
+with `MOVEMENT_VERSION` (`0xA1`) and carries `lane` 1 as a second guard.
+Lane-0 v4 starts with byte 4, so `codec_v4::decode_intent` and `decode_delta`
+refuse lane-1 bytes, and `movement_v4` refuses a lane-0 v4 intent, with
+`UnsupportedVersion`; the v1, v2, v3, `0x81`/`0x82` and `0x91` codecs refuse
+`0xA1` the same way. A "v4 session" is lane-0 version 4 with movement version
+`0xA1`, picked by the host; there is no negotiation. The module reads no
+`World`, checks shape and not entitlement, and reuses v3's `RejectionCode`
+(gameplay refusals are receipts, never codec errors). It calls
+`codec_v4::{extend_point, take_point}` and duplicates only the five postcard
+helpers it uses.
+
+**Four messages.**
+
+| Message | Direction | Layout after `0xA1` |
+|---|---|---|
+| `MoveIntent` | up | `epoch[16]`, `lane` 1, `seq`, `actor`, tag: 0 `MoveTo` + one point, 1 `Halt` |
+| `MoveReceipt` | down, kind 0 | `lane` 1, `kind` 0, `epoch[16]`, `seq`, `actor`, `processed_tick`, outcome: 0 `Accepted` + `start_tick`, 1 `Superseded`, 2 `Rejected` + v3 code 1..=30 |
+| `MoveSample` | down, kind 1 | `lane` 1, `kind` 1, `server_tick`, `processed_seq` (0..=`SEQ_LAST`), count varint (at most 38), per entry `entity`, point, `moving` |
+| `MoveDown` | down | the sum of the receipt and the sample, which `decode_down` returns |
+
+A lane-1 intent has **no `observed_tick`** (ADR-0036 L2: "There are no other
+fields"). The largest intent is 54 bytes and the largest receipt 60. Intents
+are per input and reliable, each earning exactly one receipt in `seq` order
+(L2, L3); the host keeps the latest target per actor per tick and answers the
+earlier ones `Superseded` (H2). A receipt carries `epoch` and `processed_tick`
+beyond ADR's `{ seq, actor, outcome }` so it names the processed `seq` and a
+server tick without using the tick as identity.
+
+**Sample bounds (Reading 6).** A sample is one self-contained datagram of at
+most `MAX_MOVE_DOWN_BYTES` (1,024) bytes and `MAX_SAMPLE_ENTRIES` (38) entries.
+QUIC guarantees 1,200-byte UDP payloads and a 1-RTT packet spends at most about
+44 bytes on its header, tag and DATAGRAM framing, so 1,024 fits inside that.
+38 is the largest `n` with 24 + 26 `n` <= 1,024 (`MAX_SAMPLE_HEADER_BYTES`
+24, `MAX_SAMPLE_ENTRY_BYTES` 26), so a sample within the count cap always fits
+(1,012 bytes at most) and splitting is fixed chunking; two `const` assertions
+pin both sides of that, so 38 cannot move alone. Entries are in strictly
+ascending `NetId`, checked on decode and by `check_sample`, which `encode_down`
+returns the error of (order: `processed_seq` above `SEQ_LAST`, more than 38
+entries, then entity order). A sample has no epoch, because a datagram belongs
+to one connection; `processed_seq` is the highest lane-1 `seq` receipted to
+the receiving peer (0 before any). `sample_datagrams(tick, processed_seq,
+entries)` cuts one tick's entries into chunks of 38 and encodes each; empty
+input gives no datagrams, and it checks `processed_seq` and strict ascent over
+the whole input before any output, so a fault in a late chunk yields nothing.
+1,024 visible entities make 27 datagrams (26 of 38, one of 36).
+
+**Decode order** is contract in both directions: whole-message cap (4,096 for an
+intent, 1,024 downstream, `FrameTooLarge`), empty (`Malformed`), version,
+`lane`, then fields in wire order, each checked when read, then trailing
+bytes. A varint count that overflows `u64` is `Malformed`; a count over 38 is
+`LimitExceeded` before any entry is read.
+
+**Policies (Reading 14, U7).** `POLICY_MOVE_INTENTS_PER_SEC` 20,
+`POLICY_MOVE_INTENT_BURST` 40 and `POLICY_MOVE_IN_FLIGHT` 8 are host-enforced,
+tightening-only and never on the wire; a `const` assertion keeps the in-flight
+limit within the retry cache. Lane-1 traffic also counts toward every existing
+aggregate (`POLICY_INTENT_*`, the ingress and egress caps, the failure
+budgets). The interpolation delay is client policy. `tests/v4_movement.rs`
+carries the literal byte oracles (M1–M8).
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -1096,3 +1159,4 @@ mutation corpus.
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the `pool_v3` section (the reused and new types, the P-1 substitution table, the P8 mirror, version isolation and T140e's sizing), superseding T140e's "later task" sentence without editing it; no earlier section changed.
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the `replica_v3` section (state, the R-5..R-8 op table, the liveness rule and its T140c emission-order/T027b history-slot justification, stale references, images, delta/snapshot precedence and host state kept across a snapshot); no earlier section changed.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the "Protocol v4 (T026p, ADR-0036 L1–L6)" section for the new `protocol_v4`/`codec_v4` pair (lane table, `V3` wrapping and why, `Moved`, `Position`, `Point` and U3, `frame_spans`); no earlier section changed.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the lane-1 `movement_v4` subsection (the `0xA1` subprotocol, the four messages and their layouts, the 1,024-byte and 38-entry sample bounds and splitter, the decode order and the U7 policies) and marked lane 1 built in the lane table.
