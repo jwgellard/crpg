@@ -5974,6 +5974,8 @@ mod tests {
             .expect("binds");
         ack_all(&mut host, v);
         ack_all(&mut host, p);
+        // E-2 and the T141c/T141d test rules: end the transfer first, so the throttle does not hold the page.
+        host.sessions.get_mut(&p).expect("bound").in_flight = None;
         let bytes = intent(&host, v, 1, 1, IntentBody::EndTurn);
         assert_eq!(host.ingest(v, &bytes, 1), Ok(IngestDisposition::Staged));
         let summary = host.pump(1).expect("pump");
@@ -6659,6 +6661,8 @@ mod tests {
     #[test]
     fn a_large_page_is_cut_into_gapless_spans() {
         let (mut host, peer) = drained_v3_host();
+        // E-2 and the T141c/T141d test rules: end the transfer first, so the throttle does not hold the page.
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
         let mut events = Vec::new();
         for index in 0..300u64 {
             events.push(round_started(5 + index));
