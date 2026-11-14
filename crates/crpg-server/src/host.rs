@@ -43,6 +43,7 @@ use crpg_net::protocol_transfer::{
     TurnFact,
 };
 use crpg_net::protocol_v2;
+use crpg_net::protocol_v3::{AutoPauseToggles, AutoPauseTrigger, PauseReason};
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_sim::{
     history_hash, legal_actions, validate_action, CombatAction, CombatError, EncounterMode,
@@ -329,6 +330,62 @@ impl PumpSummary {
     }
 }
 
+/// The single-player auto-pause toggles (ADR-0029 P6): `EncounterStarted`,
+/// `OrderEnded` and `PartyMemberDied` (bits 0, 3 and 4).
+pub const SINGLE_PLAYER_AUTO_PAUSE_BITS: u8 = 0x19;
+
+/// Operator-owned session settings (ADR-0029 T11, P6, P8). Never in `World`,
+/// the journal or the checkpoint: a restored host starts with
+/// [`HostSettings::multiplayer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostSettings {
+    /// The mode T040's `start_encounter` will publish (T11); stored only.
+    pub initial_mode: EncounterMode,
+    /// Which auto-pause triggers are on (P6).
+    pub auto_pause: AutoPauseToggles,
+    /// Turn-timer length in milliseconds; `None` is off (P8). `Some(0)` is
+    /// refused by [`Host::set_settings`].
+    pub turn_timer_ms: Option<u32>,
+}
+
+impl HostSettings {
+    /// `{ TurnBased, SINGLE_PLAYER_AUTO_PAUSE_BITS, None }`.
+    pub fn single_player() -> Self {
+        Self {
+            initial_mode: EncounterMode::TurnBased,
+            auto_pause: AutoPauseToggles::from_bits(SINGLE_PLAYER_AUTO_PAUSE_BITS)
+                .expect("the single-player bits are defined toggles"),
+            turn_timer_ms: None,
+        }
+    }
+
+    /// `{ TurnBased, bits 0, None }`.
+    pub fn multiplayer() -> Self {
+        Self {
+            initial_mode: EncounterMode::TurnBased,
+            auto_pause: AutoPauseToggles::default(),
+            turn_timer_ms: None,
+        }
+    }
+}
+
+impl Default for HostSettings {
+    fn default() -> Self {
+        Self::multiplayer()
+    }
+}
+
+/// What one [`Host::advance`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdvanceReport {
+    /// A world tick ran.
+    pub ticked: bool,
+    /// The head whose turn the timer ended this call, if any.
+    pub timer_ended_turn: Option<EntityId>,
+    /// The pause state after the call.
+    pub paused: Option<PauseReason>,
+}
+
 /// Every trusted host API failure. `Display` is `<VariantName> at
 /// host/admission`; there is no source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,6 +441,8 @@ pub enum HostError {
     CaptureFull,
     /// The sim refused a host operation; nothing changed.
     Combat(CombatError),
+    /// `HostSettings.turn_timer_ms` is `Some(0)`.
+    InvalidSettings,
 }
 
 impl fmt::Display for HostError {
@@ -405,6 +464,7 @@ impl fmt::Display for HostError {
             Self::Invariant(_) => "Invariant",
             Self::CaptureFull => "CaptureFull",
             Self::Combat(_) => "Combat",
+            Self::InvalidSettings => "InvalidSettings",
         };
         write!(f, "{name} at host/admission")
     }
@@ -519,6 +579,23 @@ impl Session {
     }
 }
 
+/// How an armed turn timer counts (B-9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimerClock {
+    /// Running: expires when `now_ms >= deadline`.
+    Running { deadline: u64 },
+    /// Frozen by a pause: this many milliseconds remain.
+    Frozen { remaining: u64 },
+}
+
+/// The armed turn timer: the head and round it was armed for (B-7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TurnTimer {
+    head: EntityId,
+    round: u32,
+    clock: TimerClock,
+}
+
 /// One step of the §3 pipeline for the head command.
 enum Step {
     /// The command was removed from the queue with this result.
@@ -560,6 +637,10 @@ pub struct Host {
     ingress_caps: QueueCaps,
     egress_caps: QueueCaps,
     rates: RateCaps,
+    settings: HostSettings,
+    paused: Option<PauseReason>,
+    timer: Option<TurnTimer>,
+    timer_epoch: u64,
 }
 
 impl Host {
@@ -604,6 +685,10 @@ impl Host {
             ingress_caps: QueueCaps::v1(),
             egress_caps: QueueCaps::v1_egress(),
             rates: RateCaps::v1(),
+            settings: HostSettings::multiplayer(),
+            paused: None,
+            timer: None,
+            timer_epoch: 0,
         }
     }
 
@@ -616,6 +701,8 @@ impl Host {
         now_ms: u64,
     ) -> Self {
         let mut host = Self::assemble(config, history, now_ms);
+        // A restored host starts paused (P5): the operator unpauses it.
+        host.paused = Some(PauseReason::Restore);
         for entry in captures {
             let len = entry.json_len();
             host.capture_bytes += len;
@@ -1423,6 +1510,8 @@ impl Host {
         before: u64,
     ) -> Result<(), HostError> {
         let after = self.history.last_sequence();
+        // Step 1 of the tail (S-3, A-1): auto-pause, then the turn timer.
+        self.after_commit(before, after);
         let result = self.capture_accepted(peer, frame, canonical, action, outcome, before, after);
         let acknowledged = self
             .history
@@ -2222,6 +2311,9 @@ impl Host {
     /// (S-3). A zero-event operation makes no record.
     fn complete_host_op(&mut self, op: HostOp, before: u64) -> Result<(), HostError> {
         let after = self.history.last_sequence();
+        // Step 1 of the tail (S-3): auto-pause, then the turn timer, for
+        // every committed operation, recorded or not.
+        self.after_commit(before, after);
         if after == before {
             return Ok(());
         }
@@ -2290,6 +2382,259 @@ impl Host {
             .acknowledge(after)
             .map_err(|_| HostError::Invariant("sim acknowledgement failed"));
         appended.and(acknowledged)
+    }
+
+    // -- pause, settings and the turn timer (T141b) -------------------------
+
+    /// The operator's session settings.
+    pub fn settings(&self) -> HostSettings {
+        self.settings
+    }
+
+    /// Replaces the operator's settings and records `now_ms` (B-1).
+    ///
+    /// Precedence: [`Closed`](HostError::Closed),
+    /// [`TimeRegression`](HostError::TimeRegression), then
+    /// [`InvalidSettings`](HostError::InvalidSettings) for a zero timer
+    /// length. A changed timer length disarms the timer and observes the
+    /// encounter again, so the new length takes effect at once.
+    pub fn set_settings(&mut self, settings: HostSettings, now_ms: u64) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        if settings.turn_timer_ms == Some(0) {
+            return Err(HostError::InvalidSettings);
+        }
+        self.last_now_ms = now_ms;
+        let timer_changed = settings.turn_timer_ms != self.settings.turn_timer_ms;
+        self.settings = settings;
+        if timer_changed {
+            self.disarm_timer();
+            self.observe_timer();
+        }
+        Ok(())
+    }
+
+    /// The pause state: `None` when running (P1).
+    pub fn paused(&self) -> Option<PauseReason> {
+        self.paused
+    }
+
+    /// The operator's pause (reason `Operator`); a no-op when already paused,
+    /// and the reason stays (B-2).
+    pub fn pause(&mut self, now_ms: u64) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        self.last_now_ms = now_ms;
+        if self.paused.is_none() {
+            self.set_paused(PauseReason::Operator);
+        }
+        Ok(())
+    }
+
+    /// The operator's unpause, whatever the reason; a no-op when running
+    /// (B-2).
+    pub fn unpause(&mut self, now_ms: u64) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        self.last_now_ms = now_ms;
+        if self.paused.take().is_some() {
+            self.resume_timer();
+        }
+        Ok(())
+    }
+
+    /// The pause-aware tick driver (B-3): the turn timer, then one
+    /// [`tick`](Self::tick) unless the host is paused.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed),
+    /// [`TimeRegression`](HostError::TimeRegression); `now_ms` is then
+    /// recorded. A timer `EndTurn` stays committed even if the tick then
+    /// fails. One call ticks at most once and ends at most one turn.
+    pub fn advance(&mut self, now_ms: u64) -> Result<AdvanceReport, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        self.last_now_ms = now_ms;
+        let timer_ended_turn = if self.paused.is_none() {
+            self.expire_timer(now_ms)
+        } else {
+            None
+        };
+        if self.paused.is_some() {
+            return Ok(AdvanceReport {
+                ticked: false,
+                timer_ended_turn,
+                paused: self.paused,
+            });
+        }
+        self.tick()?;
+        Ok(AdvanceReport {
+            ticked: true,
+            timer_ended_turn,
+            paused: self.paused,
+        })
+    }
+
+    /// Remaining turn-timer milliseconds at the last accepted `now_ms`:
+    /// frozen while paused, `None` when no timer is armed (B-9).
+    pub fn turn_timer_remaining_ms(&self) -> Option<u64> {
+        self.timer.map(|timer| match timer.clock {
+            TimerClock::Running { deadline } => deadline.saturating_sub(self.last_now_ms),
+            TimerClock::Frozen { remaining } => remaining,
+        })
+    }
+
+    /// Counts the armed timer's arm, disarm, freeze and resume events (B-9).
+    /// T141d's host-facts image reads it so that the countdown alone never
+    /// re-sends `HostFacts`.
+    #[allow(dead_code)]
+    pub(crate) fn timer_epoch(&self) -> u64 {
+        self.timer_epoch
+    }
+
+    /// Pauses with `reason` and freezes the armed timer (B-9). The caller
+    /// checked that the host is running.
+    fn set_paused(&mut self, reason: PauseReason) {
+        self.paused = Some(reason);
+        let now = self.last_now_ms;
+        if let Some(timer) = &mut self.timer {
+            if let TimerClock::Running { deadline } = timer.clock {
+                timer.clock = TimerClock::Frozen {
+                    remaining: deadline.saturating_sub(now),
+                };
+                self.timer_epoch += 1;
+            }
+        }
+    }
+
+    /// Resumes a frozen timer from the last accepted `now_ms` (B-9).
+    fn resume_timer(&mut self) {
+        let now = self.last_now_ms;
+        if let Some(timer) = &mut self.timer {
+            if let TimerClock::Frozen { remaining } = timer.clock {
+                timer.clock = TimerClock::Running {
+                    deadline: now.saturating_add(remaining),
+                };
+                self.timer_epoch += 1;
+            }
+        }
+    }
+
+    fn disarm_timer(&mut self) {
+        if self.timer.take().is_some() {
+            self.timer_epoch += 1;
+        }
+    }
+
+    /// Step 1 of the post-commit tail for an operation whose sim call
+    /// committed `(before, after]` (S-3, A-1): auto-pause, then the timer.
+    /// Infallible, so nothing can fail between the sim commit and the record.
+    fn after_commit(&mut self, before: u64, after: u64) {
+        self.auto_pause(before, after);
+        self.observe_timer();
+    }
+
+    /// Auto-pause (B-5): the first journaled event, in order, that maps to a
+    /// trigger whose toggle is on pauses a running host. The party is the
+    /// union of every bound session's control list.
+    fn auto_pause(&mut self, before: u64, after: u64) {
+        if self.paused.is_some() || after <= before || self.settings.auto_pause.bits() == 0 {
+            return;
+        }
+        let party: BTreeSet<EntityId> = self
+            .sessions
+            .values()
+            .flat_map(|session| session.control.iter().copied())
+            .collect();
+        let mut cursor = before;
+        while cursor < after {
+            let Ok(page) = self.history.read_after(cursor, MAX_HISTORY_PAGE) else {
+                return;
+            };
+            if page.is_empty() {
+                return;
+            }
+            for envelope in &page {
+                let trigger = match &envelope.payload {
+                    HistoryEvent::RoundStarted { .. } => Some(AutoPauseTrigger::RoundStarted),
+                    HistoryEvent::ModeChanged { .. } => Some(AutoPauseTrigger::ModeChanged),
+                    HistoryEvent::OrderEnded { .. } => Some(AutoPauseTrigger::OrderEnded),
+                    HistoryEvent::Died { entity } if party.contains(entity) => {
+                        Some(AutoPauseTrigger::PartyMemberDied)
+                    }
+                    _ => None,
+                };
+                if let Some(trigger) = trigger {
+                    if self.settings.auto_pause.get(trigger) {
+                        self.set_paused(PauseReason::Auto(trigger));
+                        return;
+                    }
+                }
+            }
+            cursor += page.len() as u64;
+        }
+    }
+
+    /// Timer observation (B-7): disarms when the timer is off or no
+    /// turn-based head exists; arms with the full length when no timer is
+    /// armed or the armed head or round differs.
+    fn observe_timer(&mut self) {
+        let key = self.history.world().combat().and_then(|combat| {
+            if combat.mode == EncounterMode::TurnBased {
+                combat.active.map(|head| (head, combat.round))
+            } else {
+                None
+            }
+        });
+        let (Some(length), Some((head, round))) = (self.settings.turn_timer_ms, key) else {
+            self.disarm_timer();
+            return;
+        };
+        if self
+            .timer
+            .is_some_and(|timer| timer.head == head && timer.round == round)
+        {
+            return;
+        }
+        let length = u64::from(length);
+        let clock = if self.paused.is_some() {
+            TimerClock::Frozen { remaining: length }
+        } else {
+            TimerClock::Running {
+                deadline: self.last_now_ms.saturating_add(length),
+            }
+        };
+        self.timer = Some(TurnTimer { head, round, clock });
+        self.timer_epoch += 1;
+    }
+
+    /// Timer expiry (B-8), `advance` step 3: ends the armed head's turn as a
+    /// [`HostOp::TurnTimer`] host action. Returns the head whose turn ended.
+    fn expire_timer(&mut self, now_ms: u64) -> Option<EntityId> {
+        let timer = self.timer?;
+        let TimerClock::Running { deadline } = timer.clock else {
+            return None;
+        };
+        if now_ms < deadline {
+            return None;
+        }
+        let action = CombatAction::EndTurn { actor: timer.head };
+        match self.run_host_action(HostOp::TurnTimer, &action) {
+            Ok(_) => Some(timer.head),
+            // No journal room: stay armed and retry on the next call.
+            Err(HostError::CaptureFull) => None,
+            Err(_) => {
+                self.disarm_timer();
+                None
+            }
+        }
     }
 
     /// Encodes the checkpoint (§7); fails with `PendingIngress` unless
@@ -3634,5 +3979,112 @@ mod tests {
             .expect("fits the journal");
         assert_eq!(host.history.pending_len(), 4093);
         assert_eq!(host.accepted_room(), Ok(false));
+    }
+
+    fn timer_settings(ms: Option<u32>) -> HostSettings {
+        HostSettings {
+            turn_timer_ms: ms,
+            ..HostSettings::multiplayer()
+        }
+    }
+
+    /// The timer epoch counts arm, disarm, freeze and resume of an armed
+    /// timer only (B-9): pausing or unpausing with none armed, an unchanged
+    /// setting and a repeated pause or unpause change nothing.
+    #[test]
+    fn timer_epoch_counts_arm_disarm_freeze_and_resume() {
+        let mut host = v2_host(false);
+        assert_eq!(host.timer_epoch(), 0);
+        // No timer armed: pause and unpause leave the epoch alone.
+        host.pause(1).expect("pauses");
+        host.unpause(1).expect("unpauses");
+        assert_eq!(host.timer_epoch(), 0);
+        // Arm.
+        host.set_settings(timer_settings(Some(1000)), 2)
+            .expect("sets");
+        assert_eq!(host.timer_epoch(), 1);
+        // The same setting again: unchanged.
+        host.set_settings(timer_settings(Some(1000)), 3)
+            .expect("sets");
+        assert_eq!(host.timer_epoch(), 1);
+        // Freeze, a repeated pause (no-op), resume, a repeated unpause.
+        host.pause(4).expect("pauses");
+        assert_eq!(host.timer_epoch(), 2);
+        host.pause(5).expect("pauses");
+        assert_eq!(host.timer_epoch(), 2);
+        host.unpause(6).expect("unpauses");
+        assert_eq!(host.timer_epoch(), 3);
+        host.unpause(7).expect("unpauses");
+        assert_eq!(host.timer_epoch(), 3);
+        // A changed length disarms and re-arms: two events.
+        host.set_settings(timer_settings(Some(2000)), 8)
+            .expect("sets");
+        assert_eq!(host.timer_epoch(), 5);
+        // A new head re-arms: a host action ends A's turn (the old timer is
+        // replaced, one event).
+        host.host_action(&CombatAction::EndTurn { actor: eid(0) })
+            .expect("ends the turn");
+        assert_eq!(host.timer_epoch(), 6);
+        // Off disarms (one event); off again changes nothing.
+        host.set_settings(timer_settings(None), 9).expect("sets");
+        assert_eq!(host.timer_epoch(), 7);
+        host.set_settings(timer_settings(None), 10).expect("sets");
+        assert_eq!(host.timer_epoch(), 7);
+    }
+
+    /// B-8, "any other `Err` disarms": an expiry whose `EndTurn` the sim
+    /// refuses (here, a stale armed head, unreachable through the public API
+    /// because observation keeps the key current) disarms the timer, is not
+    /// returned, changes nothing else, and the tick still runs. The tick's
+    /// own tail then observes the real head and arms a fresh timer (B-7: no
+    /// timer armed), from this call's time. The control is the same expiry
+    /// with the right head.
+    #[test]
+    fn timer_expiry_with_a_refused_end_turn_disarms() {
+        let stale = |head: EntityId| {
+            let mut host = v2_host(false);
+            host.set_settings(timer_settings(Some(1000)), 0)
+                .expect("sets");
+            host.timer.as_mut().expect("armed").head = head;
+            host
+        };
+
+        let mut host = stale(eid(2));
+        let hash = host.authority_hash();
+        let epoch = host.timer_epoch();
+        assert_eq!(
+            host.advance(1000),
+            Ok(AdvanceReport {
+                ticked: true,
+                timer_ended_turn: None,
+                paused: None,
+            })
+        );
+        // Disarm, then the tick's observation arms for the real head (A).
+        assert_eq!(host.timer_epoch(), epoch + 2);
+        assert_eq!(host.timer.map(|timer| timer.head), Some(eid(0)));
+        assert_eq!(host.turn_timer_remaining_ms(), Some(1000));
+        assert_eq!(host.last_capture(), 0);
+        assert_eq!(host.history.last_sequence(), 4);
+        assert_eq!(host.server_tick(), 1);
+        assert_ne!(host.authority_hash(), hash, "the tick ran");
+        // The fresh timer is not due until 2000.
+        assert_eq!(host.advance(1999).map(|r| r.timer_ended_turn), Ok(None));
+        assert_eq!(
+            host.advance(2000).map(|r| r.timer_ended_turn),
+            Ok(Some(eid(0)))
+        );
+
+        let mut host = stale(eid(0));
+        assert_eq!(
+            host.advance(1000),
+            Ok(AdvanceReport {
+                ticked: true,
+                timer_ended_turn: Some(eid(0)),
+                paused: None,
+            })
+        );
+        assert_eq!(host.last_capture(), 1);
+        assert_eq!(host.turn_timer_remaining_ms(), Some(1000));
     }
 }

@@ -207,7 +207,7 @@ session.
   envelopes become one `HostRecord` before the sim acknowledgement. The sim's
   `Option<ActionOutcome>` is returned. A real-time order (`UseAbility`) and
   anything else that journals nothing makes no record. It is not stopped by
-  pause (ADR-0029 P2; pause itself arrives with T141b).
+  pause (ADR-0029 P2; pause is the T141b section below).
 - **`request_mode(EncounterMode)`** (the operator's mode request, ADR-0029
   T9): `Closed`, then `HistoryWorld::request_mode`; the sim's refusals
   (`NoEncounter`, `ModeUnsupported`) are `Combat(error)`. A request journals no
@@ -226,6 +226,68 @@ session.
 `Combat at host/admission` like the rest. Which combatants are AI-controlled
 is the caller's fact: `awaiting_orders` lists everyone with no order, and the
 caller decides whom to answer with `host_action`.
+
+## Pause, settings and the tick driver (T141b)
+
+Pause, the operator's settings and the turn timer are host state: never in
+`World`, the journal, a capture or the checkpoint (ADR-0029 P1, P7). A host
+from `new` or `from_history` starts running; a host from `load_checkpoint`
+(so `load_host_file`) starts `Some(Restore)`-paused, and both start with
+`HostSettings::multiplayer()`.
+
+- **`HostSettings`**: `initial_mode` (stored only; T040's `start_encounter`
+  reads it), `auto_pause` (the five ADR-0029 P6 toggles as
+  `AutoPauseToggles`) and `turn_timer_ms` (`None` is off, `Some(0)` is
+  `InvalidSettings`). `single_player()` is bits `0x19`
+  (`SINGLE_PLAYER_AUTO_PAUSE_BITS`: `EncounterStarted`, `OrderEnded`,
+  `PartyMemberDied`), `multiplayer()` and `Default` are bits `0x00`.
+  `set_settings(settings, now_ms)`: `Closed`, `TimeRegression`,
+  `InvalidSettings`, then record `now_ms` and store; a changed timer length
+  disarms the timer and observes it again.
+- **Pause**: `paused()` is `None` or the `PauseReason`. `pause(now_ms)` is
+  `Closed`, `TimeRegression`, then `Operator` when running and a no-op when
+  already paused (the reason stays). `unpause(now_ms)` clears any reason,
+  whatever it was. Both record `now_ms`. Only `advance` stops while paused:
+  `ingest`/`pump`, `host_action`, `request_mode` and the bare `tick()` run
+  unchanged (P2). `tick()` ignoring pause is deliberate: it is the operator's
+  primitive, and a `Restore`-paused host still ticks through it (gate 10).
+- **`advance(now_ms)`** is the cadence: `Closed`, `TimeRegression`, record
+  `now_ms`; if running, the timer step; if paused now, return
+  `{ ticked: false, timer_ended_turn, paused }`; otherwise `tick()` (its error
+  is returned as is, a timer `EndTurn` stays committed) and return
+  `{ ticked: true, .. }`. One call ticks at most once and ends at most one
+  turn.
+- **Auto-pause** is step 1 of the post-commit tail (S-3, A-1), so it runs for
+  every committed operation: peer command, `tick`, `host_action`, the timer's
+  `EndTurn`. Events are walked in journal order; `RoundStarted`,
+  `ModeChanged` and `OrderEnded` map to their trigger and `Died { entity }` to
+  `PartyMemberDied` when `entity` is in the party (the union of every bound
+  session's control list at that moment). The first trigger whose toggle is
+  on sets `Auto(trigger)` and freezes the timer; later events are not
+  inspected; an already-paused host is not touched. Zero-event operations
+  never pause. Nothing in T141 fires `EncounterStarted` (T040's
+  `start_encounter` will).
+- **The turn timer** (P8) is observed right after auto-pause, on every
+  committed operation and after a changed `turn_timer_ms`. The key is
+  `(head, round)` of a turn-based encounter with an active head; with the
+  timer off or no key it disarms, and when no timer is armed or the key
+  differs it arms with the full length (deadline `last_now_ms + length` when
+  running, a frozen remainder of the full length when paused). `advance`
+  expires it when running and `now_ms >= deadline`: `host_action(EndTurn {
+  head })` recorded as `HostOp::TurnTimer` (`timer_ended_turn = Some(head)`).
+  `CaptureFull` leaves the timer armed (the next call retries; the tick still
+  runs, a turn-based tick needs no room); any other error disarms it; neither
+  is returned. A disarmed timer is armed again by the next observation, which
+  the tick's own tail performs.
+- **Freezing** (B-9): pause stores `remaining = deadline - now` (saturating),
+  unpause sets `deadline = now + remaining`; `turn_timer_remaining_ms()` is
+  the frozen remainder when paused, else `deadline - last accepted now_ms`
+  (saturating), `None` when disarmed. A private timer epoch counts arm,
+  disarm, freeze and resume of an armed timer only, so a pause with no timer
+  changes nothing; T141d's host-facts image reads it.
+
+`HostError::InvalidSettings` is the new variant; its `Display` is
+`InvalidSettings at host/admission`.
 
 ## Connections and bindings (T023b)
 
@@ -419,3 +481,4 @@ with T040/T041.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Added the host read API section (prelude, active head, eligibility, one enumeration, the sim-action mapping table, replica-id snapshot semantics), so the bridge can rely on one described legality path with non-authorizing options.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Added the host-records and checkpoint-version-2 section (entry journal, dual read and conditional write, four-event bound, tail order) and named both versions in the `checkpoint` and `capture` module paragraphs, so the doc describes the journal and save the crate now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added the host-actions section (`host_action`, `request_mode`, `awaiting_orders`, the `Combat` error and their reservation and precedence order), so the doc describes the trusted calls the host now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the pause, settings and tick-driver section (`HostSettings`, pause state and its restore default, `advance`, auto-pause as tail step 1, the turn timer and its freezing), so the doc describes the host calls the crate now has.

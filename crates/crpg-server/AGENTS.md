@@ -42,12 +42,18 @@ T047a's `host` read API (ADR-0033 §7): `LegalIntent`, `Host::legal_intents`
 and `Host::replica_id`. They read the session map and grants only, and their
 options confer no authorization.
 
+T141b's additive `host` items: `HostSettings`, `AdvanceReport`,
+`SINGLE_PLAYER_AUTO_PAUSE_BITS`, `HostError::InvalidSettings`, and
+`Host::{settings, set_settings, paused, pause, unpause, advance,
+turn_timer_remaining_ms}`. Signatures of existing items do not change.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
    accessor returns `&HistoryWorld`, `&World` or `&mut` anything. Gameplay
    after the wrap enters only through `ingest` → `pump`; `tick()`,
-   `host_action()` and `request_mode()` are the trusted extra ops (T141a).
+   `host_action()` and `request_mode()` are the trusted extra ops (T141a), and
+   `advance()` is the pause-aware driver over `tick()` (T141b).
    Host operations journal and are recorded as
    `HostRecord`s (T141s); they are never peer commands.
 2. **Determine, reserve, then commit.** Every pump step decides the outcome
@@ -175,6 +181,21 @@ git diff --check
   sequence, receipt, `executions()` move or `last_combat_error`, and a
   refused one (`Combat(_)`, `CaptureFull`) changes nothing. `request_mode`
   journals nothing and records nothing.
+- **`tick` ignores pause; `advance` is the cadence (T141b).** `tick()` is the
+  operator's primitive and runs on a paused host, so a `Restore`-paused host
+  still ticks through it (gate 10). A driver that honours pause, the turn timer
+  and auto-pause calls `advance(now_ms)`; it ticks at most once and ends at
+  most one turn per call.
+- **Pause and settings are never persisted (T141b).** A restored host is
+  `Restore`-paused with `HostSettings::multiplayer()`; the operator calls
+  `unpause` and `set_settings` again. Pause, settings and the timer are never
+  in `World`, the journal, a capture or the checkpoint, and `save_checkpoint`
+  bytes do not change with them.
+- **The timer runs on the caller's `now_ms` only (T141b).** No clock exists in
+  the crate: the deadline is the last accepted `now_ms` plus the length, so a
+  caller that never passes time never expires a turn. Auto-pause and timer
+  observation are step 1 of every post-commit tail (`commit_accepted` and
+  `complete_host_op`): never move them behind a fallible step.
 - **Save identity never goes into the checkpoint JSON** without a
   `CHECKPOINT_VERSION` bump (which reopens T022). It lives in the `save`
   header in front of the verbatim checkpoint.
@@ -271,3 +292,4 @@ git diff --check
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Recorded `LegalIntent`, `Host::legal_intents` and `Host::replica_id` in the surface, so the bridge read API is known to be trusted, read-only and non-authorizing rather than a client capability.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Amended invariants 1 and 3 (host operations journal as `HostRecord`s and are captured before the sim acknowledgement) and added the version-1-unless-a-host-record, no-`commit_accepted`-for-host-operations and four-event-bound traps, so the contract matches checkpoint version 2.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added `host_action`, `request_mode` and `awaiting_orders` to invariant 1's trusted ops and a trap that AI control is the caller's fact and a host action is never a peer command.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the traps for `tick` versus `advance`, unpersisted pause and settings, and the caller-time timer, and amended invariant 1 to name the T141b pause calls, so the contract matches the pause and timer code.
