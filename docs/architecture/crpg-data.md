@@ -476,3 +476,24 @@ explicit `null` reads as absent and is never written back.
   `within_range` formula and X3's retained order belong to `crpg-sim` (T149b).
 
 - 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash (implementer) + T149a · Documented the optional ability range, its raw `i32` wire, the positive read-time rule, the current-tag addition under D32c and the movement-less warning.
+
+## Ruleset preview policy (T143a)
+`Ruleset.preview: Option<PreviewWire>` is the ruleset's odds-preview policy
+(ADR-0029 U9). `PreviewWire` holds `when` (`PreviewWhenWire`: `never`,
+`actionable` or `planning`, hand-written decoder, the same shape as
+`LateJoinWire`) and an optional `max_cost`. `MAX_PREVIEW_COST` = 16,777,216 is
+the engine's ceiling and the largest declarable `max_cost`; an absent
+`max_cost` means the ceiling. The one read-time rule, in
+`validate_combat_local`'s ruleset arm, rejects a declared `max_cost` outside
+`1..=16777216` with `ruleset preview max_cost must be 1..=16777216`. The schema
+states the bound itself (`minimum` 1, `maximum` 16777216) through a
+`schema_with` function, because the generator widens every `uint64` format to
+the full `u64` range and would overwrite a `range` attribute.
+
+Absence means `never`, not `actionable` (D3, the user's answer of 2026-11-14):
+it keeps the current-tag rule (absent field, old behaviour, no version bump),
+matches `show_odds` defaulting to false, and leaks nothing about hidden DCs
+from an existing ruleset. This crate only decodes the policy; no rule reads it
+here. The sim maps it (T143c).
+
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143a · Documented the optional ruleset `preview` policy, `MAX_PREVIEW_COST`, the read-time bound and why absence means `never` (D3).

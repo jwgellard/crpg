@@ -82,6 +82,11 @@ whole decoded values, so codec faults stay code 52 and replica faults code 53.
   `observed_tick`. `turn().active` may name a non-live id; a missing proxy is
   no highlighted actor, not an error.
 
+## Supersession and corrections
+
+- 2026-11-13: v3 clients use `ReplicaWorldV3` in `crates/crpg-net/src/replica_v3.rs` (T140r2, D55), a new type beside `ReplicaWorld`: the same storage, strict sequence, high-water and atomicity rules applied to protocol v3 deltas and `0x82` publications, plus each entity's fact set, the encounter, the timeline, the pause state and the host facts. `ReplicaWorld` is unchanged and still serves v1/v2.
+
 ## Agent log
 
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T046 · Filed ADR-0035 Accepted from the approved contract's D1–D12, recording the replica's storage, strict sequence and high-water rules, mid-page bound and atomicity.
+- 2026-11-13 (UTC) · claude-code/claude-opus-5-5 (architect) + T141 contract brief · Added a Supersession and corrections section with one dated note pointing v3 clients at `replica_v3` (T140r2), the manager edit `tasks/T140r.md` Routing and size names; no Decision text changed.

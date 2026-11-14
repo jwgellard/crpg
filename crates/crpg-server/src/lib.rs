@@ -35,5 +35,6 @@
 pub mod capture;
 pub mod checkpoint;
 pub mod host;
+mod host_v3;
 pub mod quic;
 pub mod save;

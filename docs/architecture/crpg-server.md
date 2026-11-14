@@ -78,12 +78,15 @@ retention and checkpoint policy lives here.
   before the sim acknowledgement, and the permitted post-state of every peer
   that received content (`CapturedView`). Records retire only through
   `acknowledge_captures`; reservation blocks new accepts when the journal is
-  full instead of dropping a result.
+  full instead of dropping a result. Events the host makes itself have their
+  own `HostRecord` (T141s, below).
 - `checkpoint` — `Host::save_checkpoint` and `load_checkpoint`/
   `load_checkpoint_from_reader`: compact JSON of the wrapper, the retained
-  capture journal plus watermark, protocol and incarnation; input capped
-  before parsing; loading validates everything into a temporary host and
-  restarts every session under a strictly greater incarnation.
+  capture journal plus watermark, protocol and incarnation, in version 1
+  (no host record retained, the original bytes) or version 2 (at least one
+  `HostRecord`, with a `host_records` list); the loader reads both. Input
+  capped before parsing; loading validates everything into a temporary host
+  and restarts every session under a strictly greater incarnation.
 - `save` — the persistence adapter (T039) and the crate's only filesystem
   I/O, all of it through `crpg_persist::save_file`/`load_file` under the
   payload kind `HOSTCKPT`. The payload is a fixed-order binary header —
@@ -138,6 +141,254 @@ bind, so the per-peer cap always refuses first. The grant-narrowing
 `QueueFull` ([T022](../../tasks/T022.md) §5) needs a resync state of more
 than about 2 MiB, because the other seven peers hold at most 14 MiB of the
 16 MiB egress host total.
+
+## Host records and checkpoint version 2 (T141s)
+
+Real-time ticks, host actions and the turn timer change the authority with
+no originating peer, so no command record can hold their events. Each such
+host operation that journals at least one event gets one `HostRecord`
+(`capture_seq`, `op` of `tick`/`action`/`turn_timer`, the exact
+`(history_start, history_end]` range, `processed_tick`, the cloned
+envelopes). Before T141s a real-time tick's events were acknowledged
+uncaptured, so the next checkpoint's evidence rule refused to load.
+
+- **One journal of entries.** The capture journal is a sequence of
+  `CaptureEntry` (`Command(CapturedRecord)` or `Host(HostRecord)`) numbered by
+  the one `capture_seq`, retired by the one `acknowledge_captures`, and
+  bounded by the one `MAX_CAPTURE_RECORDS` entry count and `MAX_CAPTURE_BYTES`
+  total of compact `serde_json` lengths. `read_capture_entries` reads both
+  kinds under `read_captures`' cursor rules; `read_captures` returns the
+  `Command` entries of the same page, so a page may hold fewer than `limit`
+  records.
+- **Dual read, conditional write.** `save_checkpoint` writes
+  `"version":1` and the original bytes when no `HostRecord` is retained, and
+  `"version":2` with `"captured"` (command records) and `"host_records"`
+  (each list ascending) otherwise. `load_checkpoint` reads both: version 1 is
+  version 2 with no host record, so nothing is migrated; version 1 with a
+  `host_records` key, or version 2 without one, is `Malformed`; an empty
+  version-2 list loads and is written again as version 1. The loader merges
+  the two lists by `capture_seq` (exactly `acknowledged + 1 ..= last`, no
+  gap, no duplicate), checks each host record
+  (`check_host_record`: non-empty range whose width is the event count, at
+  most `MAX_HOST_RECORD_EVENTS`, contiguous envelopes, `processed_tick` not
+  past the server tick, at most `MAX_HOST_RECORD_BYTES`), keeps the adjacency
+  rule over the merged order (each entry starts where the previous ended, so
+  every envelope after the wrap is evidenced) and applies the entry and byte
+  totals (`check_journal_totals`).
+- **Four events per peer command.** A killing command that ends the last turn
+  of a round with a pending real-time switch journals `ActionResolved`,
+  `Died`, `ModeChanged`, `RoundStarted`, so reservation, commit and the
+  loader use `MAX_NEW_EVENTS_PER_COMMAND_RT` (4); `MAX_NEW_EVENTS_PER_COMMAND`
+  keeps 3 and its turn-based meaning.
+- **The host-operation tail.** After the sim commits: build the record (an
+  over-bound record is `Invariant`), append it, then acknowledge the sim
+  journal, which always runs; a record that could not be built is returned as
+  `Invariant` only after the acknowledgement, with nothing appended.
+  `commit_accepted` ends the same way. `Host::tick` is the first host
+  operation: a real-time tick first reserves room for one host record
+  (`CaptureFull` when the journal is full) and a turn-based, turn-based-only
+  or no-encounter tick reserves nothing and journals nothing. Host operations
+  never move `executions()` and send nothing to v1/v2 sessions.
+
+## Host actions (T141a)
+
+Three trusted `Host` calls act on the encounter without a peer. All three
+return `Closed` after `shutdown`, and none moves `executions()`, consumes an
+intent sequence, sets `last_combat_error` or sends a frame to a v1/v2
+session.
+
+- **`host_action(&CombatAction)`** (the AI's decision, later the turn timer's
+  `EndTurn`): `Closed`, then the journal reservation of one host record
+  (`CaptureFull`, always: an action may journal), then
+  `crpg_sim::validate_action` (`Combat(error)`), then
+  `HistoryWorld::perform_action` (`Combat(error)`; any other refusal is
+  `Invariant("history refused a host operation")` and the sim committed
+  nothing), then the host-operation tail with `HostOp::Action`, so the
+  envelopes become one `HostRecord` before the sim acknowledgement. The sim's
+  `Option<ActionOutcome>` is returned. A real-time order (`UseAbility`) and
+  anything else that journals nothing makes no record. It is not stopped by
+  pause (ADR-0029 P2; pause is the T141b section below).
+- **`request_mode(EncounterMode)`** (the operator's mode request, ADR-0029
+  T9): `Closed`, then `HistoryWorld::request_mode`; the sim's refusals
+  (`NoEncounter`, `ModeUnsupported`) are `Combat(error)`. A request journals no
+  event, so it reserves nothing and records nothing; the switch itself happens
+  at the next round boundary and its `ModeChanged`/`RoundStarted` events are
+  recorded by whichever operation crosses the boundary.
+- **`awaiting_orders()`** reads the world only: nothing awaited with no
+  encounter or a closed host; turn-based, the active head; real-time (T15),
+  while at least two combatants are alive and the clock is below
+  `RT_CLOCK_MAX`, every timeline entry with `key <= elapsed` whose combatant
+  is alive and has no standing order, in ascending `(key, EntityId)` order. A
+  combatant the sim removed from the timeline (the dead) or rescheduled past
+  the clock (one that just acted) is not listed.
+
+`HostError::Combat(CombatError)` is the new variant; its `Display` is
+`Combat at host/admission` like the rest. Which combatants are AI-controlled
+is the caller's fact: `awaiting_orders` lists everyone with no order, and the
+caller decides whom to answer with `host_action`.
+
+## Pause, settings and the tick driver (T141b)
+
+Pause, the operator's settings and the turn timer are host state: never in
+`World`, the journal, a capture or the checkpoint (ADR-0029 P1, P7). A host
+from `new` or `from_history` starts running; a host from `load_checkpoint`
+(so `load_host_file`) starts `Some(Restore)`-paused, and both start with
+`HostSettings::multiplayer()`.
+
+- **`HostSettings`**: `initial_mode` (stored only; T040's `start_encounter`
+  reads it), `auto_pause` (the five ADR-0029 P6 toggles as
+  `AutoPauseToggles`) and `turn_timer_ms` (`None` is off, `Some(0)` is
+  `InvalidSettings`). `single_player()` is bits `0x19`
+  (`SINGLE_PLAYER_AUTO_PAUSE_BITS`: `EncounterStarted`, `OrderEnded`,
+  `PartyMemberDied`), `multiplayer()` and `Default` are bits `0x00`.
+  `set_settings(settings, now_ms)`: `Closed`, `TimeRegression`,
+  `InvalidSettings`, then record `now_ms` and store; a changed timer length
+  disarms the timer and observes it again.
+- **Pause**: `paused()` is `None` or the `PauseReason`. `pause(now_ms)` is
+  `Closed`, `TimeRegression`, then `Operator` when running and a no-op when
+  already paused (the reason stays). `unpause(now_ms)` clears any reason,
+  whatever it was. Both record `now_ms`. Only `advance` stops while paused:
+  `ingest`/`pump`, `host_action`, `request_mode` and the bare `tick()` run
+  unchanged (P2). `tick()` ignoring pause is deliberate: it is the operator's
+  primitive, and a `Restore`-paused host still ticks through it (gate 10).
+- **`advance(now_ms)`** is the cadence: `Closed`, `TimeRegression`, record
+  `now_ms`; if running, the timer step; if paused now, return
+  `{ ticked: false, timer_ended_turn, paused }`; otherwise `tick()` (its error
+  is returned as is, a timer `EndTurn` stays committed) and return
+  `{ ticked: true, .. }`. One call ticks at most once and ends at most one
+  turn.
+- **Auto-pause** is step 1 of the post-commit tail (S-3, A-1), so it runs for
+  every committed operation: peer command, `tick`, `host_action`, the timer's
+  `EndTurn`. Events are walked in journal order; `RoundStarted`,
+  `ModeChanged` and `OrderEnded` map to their trigger and `Died { entity }` to
+  `PartyMemberDied` when `entity` is in the party (the union of every bound
+  session's control list at that moment). The first trigger whose toggle is
+  on sets `Auto(trigger)` and freezes the timer; later events are not
+  inspected; an already-paused host is not touched. Zero-event operations
+  never pause. Nothing in T141 fires `EncounterStarted` (T040's
+  `start_encounter` will).
+- **The turn timer** (P8) is observed right after auto-pause, on every
+  committed operation and after a changed `turn_timer_ms`. The key is
+  `(head, round)` of a turn-based encounter with an active head; with the
+  timer off or no key it disarms, and when no timer is armed or the key
+  differs it arms with the full length (deadline `last_now_ms + length` when
+  running, a frozen remainder of the full length when paused). `advance`
+  expires it when running and `now_ms >= deadline`: `host_action(EndTurn {
+  head })` recorded as `HostOp::TurnTimer` (`timer_ended_turn = Some(head)`).
+  `CaptureFull` leaves the timer armed (the next call retries; the tick still
+  runs, a turn-based tick needs no room); any other error disarms it; neither
+  is returned. A disarmed timer is armed again by the next observation, which
+  the tick's own tail performs.
+- **Freezing** (B-9): pause stores `remaining = deadline - now` (saturating),
+  unpause sets `deadline = now + remaining`; `turn_timer_remaining_ms()` is
+  the frozen remainder when paused, else `deadline - last accepted now_ms`
+  (saturating), `None` when disarmed. A private timer epoch counts arm,
+  disarm, freeze and resume of an armed timer only, so a pause with no timer
+  changes nothing; T141d's host-facts image reads it.
+
+`HostError::InvalidSettings` is the new variant; its `Display` is
+`InvalidSettings at host/admission`.
+
+## Protocol v3 sessions (T141c)
+
+`Host::bind_v3_peer` binds a v3 session: always a snapshot session, speaking v3
+whatever `HostConfig.protocol` says; `bind_peer` and `bind_snapshot_peer` keep
+the host-wide v1/v2. The session holds a private `V3Session` (`host_v3.rs`): the
+epoch's `InterestView` and `FactView`, the operator's `FactGrants`, the viewer's
+`PauseRights` and a paced outbox. Nothing of `World` is stored: every staging
+reads it afresh into the two views' contexts (`read_world`), and ids come from
+the `InterestView` (key = `World::area()` or `HOST_UNBOUND_AREA`, plus `EntityId`).
+The `order` fact follows the control list.
+
+Staging (bind, narrowing `set_grants`, upstream `Resync`) is atomic: plan on
+clones of the views (`Cancel` if a transfer is in flight, the `0x82` plan at
+cursor `next_event_seq - 1`, one `[Clock, HostFacts]` delta that takes its
+`event_seq` when built), check the ordinal room and the outbox bound (90 entries,
+2,852,148 bytes), then commit. The plan goes to the outbox, which is not egress;
+pacing moves entries into the delivery log, in order, while the per-peer (128
+frames, 2 MiB) and host caps allow, at the end of staging, in `take_delivery*`
+and after `acknowledge_delivery`. A bind therefore never returns `QueueFull`.
+Until T141d, v3 sessions were skipped by `accepted_room` and received no v2 frames
+and no pages; publication and the v3 intent pipeline are the next section. v3
+sessions are still skipped by `accepted_room`.
+
+## v3 publication (T141d)
+
+**Intents.** A v3 session's staged bytes decode with `codec_v3::decode_intent` (the
+session's codec, also for the `Blocked` head's `seq`) into one common `Frame`; a
+v1/v2 verb maps into the v3 vocabulary, so one pipeline serves both. Steps 1 to 4
+of the T022 pipeline are unchanged. Step 5 resolves the actor through the session's
+`InterestView` (mapped, in the world's area, `present && action_actor`, controlled,
+else `NotAuthorized`), then the body: `DeclareAction` as T022 (target `present &&
+action_target`), `EndTurn`, `Stop`, `Pause` and `Unpause` (their right, else
+`NoPauseRight`), `RequestMode` (the `pause` right, else `NotAuthorized`). A sim
+action is judged by `validate_action`; `RequestMode` reserves the accepted class and
+runs `HistoryWorld::request_mode`, whose refusal commits a rejection under that
+reservation. `Pause` and `Unpause` change host state (reason `Player`, the timer
+frozen or resumed) and journal nothing. Every `Applied` intent goes through
+`commit_accepted`, so it makes a capture record and moves `executions()`.
+
+**Codes.** `code(CombatError)` maps `ModeUnsupported` 21, `WrongMode` 22,
+`StatEvaluation` 23, `EncounterTerminal` 24, `RulesetMismatch` 25, `PlacementInUse`
+26, `NotCreature` 27, `AlreadyParticipant` 28, `NoEntrants` 29, every other error
+`IllegalAction` 18; v1/v2 sessions keep 18 for all. The retry cache stores the exact
+`protocol_v3::ReceiptStatus` for every session (a v1/v2 status converts by `From`);
+a hit re-sends the exact code. `AdmissionResult.status` and `cached_status` keep the
+frozen v1 type and report 21 to 29 as `IllegalAction` and 30 as `NotAuthorized`;
+`cached_status_v3` returns the exact status (`UnknownPeer`, then `NotV3Peer`).
+
+**Pages.** After every operation one page per v3 session, ascending handle: an
+accepted peer command (its events, the receipt to the originator), every host
+operation (also a zero-event one: an RT order, a pending mode, a tick's clock),
+`pause`, `unpause`, `set_settings`, and to one session `set_fact_grants`,
+`set_pause_rights`, a widening `set_grants` and `set_control`. The page is built on
+clones of the session's two views after auto-pause and the timer, so its `Clock` and
+`HostFacts` are current: `[receipt?] ++ enters ++ events ++ rest of the page (health,
+turn, removals, then fact ops) ++ [Clock?] ++ [HostFacts?]`, cut only by
+`codec_v3::frame_spans`, one `event_seq` per span. `Clock` and `HostFacts` are added
+when they differ from what the session was last sent; the host-facts image holds the
+rights, the toggles if granted and the timer epoch if granted, so the countdown
+alone never re-sends it. Event candidates (`candidate_v3`) resolve ids against the
+view after the page, else before it: the six v2 events by the v2 predicates,
+`RoundStarted` and `ModeChanged` by `turn_round` and the mode grant, `OrderEnded`
+only for a controlled, present actor, `Joined` and `Left` by `present && spawn` and
+`present && despawn`, `Moved` withheld. Candidates are projected in chunks of 256.
+
+**Room, overflow and failure.** A page that fits the session's egress room is logged
+and its clones committed; otherwise the session is restaged (`Superseded`) and the
+page dropped, so v3 never blocks admission and a rejected v3 intent never returns
+`Blocked` (its receipt is logged if it fits and dropped if not, the client's retry
+recovers it). Every fallible step of every session is decided before any ledger
+moves: a page or restage that cannot be built fences that one session (as
+`unbind_peer`) and never fails the operation, which has already committed. A fenced
+originator is skipped by the cache and sequence update, and its record is appended
+without its view. A v3 session that gets at least one frame for an accepted command
+adds a capture view, named by its own ids.
+
+## v3 timing (T141e)
+
+**Heartbeat.** At every `tick` publication of a running host (`HostOp::Tick`, not
+paused), a session whose `server_tick - last_clock_tick` is at least
+`POLICY_CLOCK_HEARTBEAT_TICKS` (100) gets `Clock` at the end of that tick's page,
+even when the page is otherwise empty. `last_clock_tick` is the server tick of the
+last `Clock` the session was sent (a staging's delta, a changed `Clock`, a
+heartbeat), so a pause or unpause page restarts the count. A paused host does not
+tick through `advance`, and a direct `tick()` on a paused host sends no heartbeat.
+
+**Throttle.** A staging installs a `Throttle` on the session (`host_v3.rs`) that
+lasts until `Published` ends the transfer. While it is set a publication at server
+tick `t` is logged only if `t >= last_page + POLICY_V3_THROTTLE_TICKS` (10;
+`last_page` is the staging tick, then the tick of the last logged frames) and the
+frames keep the delta frames and bytes logged since the staging (C-6's frame
+included) within `POLICY_V3_IN_FLIGHT_FRAMES` (128) and `POLICY_V3_IN_FLIGHT_BYTES`
+(2 MiB), the receiver's held-delta budget. A publication that is not allowed logs
+nothing and leaves both views and the sent host facts as they were, so the next
+allowed page carries every change; a page the budget refuses also ends the deltas
+until the transfer ends. An allowed page carries no event ops and no receipt: a
+download window loses notices (Question 4 (a)), never state. A rejected-intent
+receipt and a cache-hit receipt are single delta frames under the same gate, so a
+dropped one is recovered by the client's retry at an allowed tick. A new staging
+(`Resync`, narrowing, overflow) restarts the throttle; other sessions are unaffected.
 
 ## Connections and bindings (T023b)
 
@@ -329,3 +580,9 @@ with T040/T041.
 - 2026-10-30 (UTC) · opencode/deepseek-v4.1-flash-free + T024h1 · Added the snapshot-session section (session-kind table, ordinal ledger, staging steps, adapter routing), replaced the blanket narrowing reset with the per-kind rule, and removed snapshot transfer from the planned list, so the doc describes the sender T024h1 landed.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Updated the adapter routing to the as-built `/2` path (framing bind, channel reads and writes, ordinal acks, retiring drain, shutdown flush, `bind_dual` precondition), so the doc describes the adapter rather than calling it a future task.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Added the host read API section (prelude, active head, eligibility, one enumeration, the sim-action mapping table, replica-id snapshot semantics), so the bridge can rely on one described legality path with non-authorizing options.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Added the host-records and checkpoint-version-2 section (entry journal, dual read and conditional write, four-event bound, tail order) and named both versions in the `checkpoint` and `capture` module paragraphs, so the doc describes the journal and save the crate now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added the host-actions section (`host_action`, `request_mode`, `awaiting_orders`, the `Combat` error and their reservation and precedence order), so the doc describes the trusted calls the host now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the pause, settings and tick-driver section (`HostSettings`, pause state and its restore default, `advance`, auto-pause as tail step 1, the turn timer and its freezing), so the doc describes the host calls the crate now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the protocol v3 sessions section (per-session wire, views read from `World` each call, atomic `0x82` staging, the paced outbox and its interim guards), so the doc matches `bind_v3_peer` and `host_v3.rs`.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Added the v3 publication section (intent pipeline and codes, the exact-status cache and its v1 projection, the page layout, candidates, room, overflow and per-session fencing) and replaced the T141c interim paragraph, so the doc matches the v3 intents and pages the host now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing section (the running-host `Clock` heartbeat and the in-flight throttle with its frame and byte budget, receipts and notices dropped during a download), so the doc matches the throttle and heartbeat the host now has.

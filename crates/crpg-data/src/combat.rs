@@ -410,6 +410,9 @@ pub struct Ruleset {
     /// Movement rules; absent means nothing moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub movement: Option<Box<MovementWire>>,
+    /// Odds-preview policy (T143); absent means no preview is answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewWire>,
 }
 
 /// Which placed creatures keep their state after an encounter.
@@ -487,6 +490,61 @@ impl<'de> Deserialize<'de> for EffectsOnExitWire {
             _ => Err(de::Error::custom("effects_on_exit must be a policy name")),
         }
     }
+}
+
+/// The largest preview cost a ruleset may declare; also the engine's
+/// ceiling on any preview (T143, ADR-0029 U9).
+pub const MAX_PREVIEW_COST: u64 = 16_777_216;
+
+/// When the server answers a player's odds preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewWhenWire {
+    /// Never.
+    Never,
+    /// Only for an action the actor may take now.
+    Actionable,
+    /// Also out of turn and regardless of costs, for planning.
+    Planning,
+}
+
+impl<'de> Deserialize<'de> for PreviewWhenWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["never", "actionable", "planning"];
+        match Value::deserialize(deserializer)? {
+            Value::String(name) => match name.as_str() {
+                "never" => Ok(Self::Never),
+                "actionable" => Ok(Self::Actionable),
+                "planning" => Ok(Self::Planning),
+                other => Err(de::Error::unknown_variant(other, VARIANTS)),
+            },
+            _ => Err(de::Error::custom("preview when must be a policy name")),
+        }
+    }
+}
+
+// The generator widens every `uint64` format to the full `u64` range, which would
+// overwrite a `range` attribute, so the bound is stated without the format.
+fn preview_max_cost_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::Schema::try_from(serde_json::json!({
+        "type": ["integer", "null"],
+        "minimum": 1,
+        "maximum": MAX_PREVIEW_COST,
+    }))
+    .expect("object schema")
+}
+
+/// A ruleset's odds-preview policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewWire {
+    /// When the server answers.
+    pub when: PreviewWhenWire,
+    /// The work one preview may take, `1..=MAX_PREVIEW_COST`; absent means
+    /// `MAX_PREVIEW_COST`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "preview_max_cost_schema")]
+    pub max_cost: Option<u64>,
 }
 
 /// How a ruleset moves creatures; absent means nothing moves.
@@ -1562,7 +1620,17 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
                 return Err(malformed("ruleset round_ticks must be nonzero"));
             }
             validate_ruleset_kernel(ruleset)?;
-            validate_ruleset_movement(ruleset)
+            validate_ruleset_movement(ruleset)?;
+            if let Some(PreviewWire {
+                max_cost: Some(cost),
+                ..
+            }) = ruleset.preview
+            {
+                if cost == 0 || cost > MAX_PREVIEW_COST {
+                    return Err(malformed("ruleset preview max_cost must be 1..=16777216"));
+                }
+            }
+            Ok(())
         }
         crate::Document::Ability(ability) => {
             if ability.slug.is_empty() || ability.name.is_empty() {

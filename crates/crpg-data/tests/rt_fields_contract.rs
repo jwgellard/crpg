@@ -402,6 +402,7 @@ fn t10_generated_schemas_carry_optional_rt_properties() {
             "name",
             "package",
             "pools",
+            "preview",
             "round_ticks",
             "schema",
             "slug",

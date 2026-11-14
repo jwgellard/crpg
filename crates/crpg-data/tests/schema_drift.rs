@@ -213,6 +213,7 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
                 "late_join",
                 "effects_on_exit",
                 "movement",
+                "preview",
             ],
             "effect" => &["_note", "grants"],
             "ui" => &[
