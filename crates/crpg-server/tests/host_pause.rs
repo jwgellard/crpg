@@ -1406,8 +1406,7 @@ fn timer_survives_a_full_journal() {
 /// First failure wins at every adjacent pair with both faults present, each
 /// beside the call that succeeds: Closed before TimeRegression, and
 /// TimeRegression before InvalidSettings. (`advance`'s remaining pair, its
-/// own tick failing after the timer, cannot be built through the public API:
-/// the sim accepts every tick the host reserves room for.)
+/// own tick failing after the timer, is `advance_returns_the_tick_error`.)
 #[test]
 fn precedence_pairs() {
     let build = || {
@@ -1469,4 +1468,218 @@ fn precedence_pairs() {
     assert_eq!(rig.host.unpause(100), Err(HostError::Closed));
     assert_eq!(rig.host.advance(100), Err(HostError::Closed));
     assert_eq!(rig.state(&[]), before);
+}
+
+// ---------------------------------------------------------------------------
+// Review survivors.
+// ---------------------------------------------------------------------------
+
+/// B-2: `pause` over any existing pause changes nothing, so the reason stays
+/// exactly (`Restore`, `Auto(trigger)`), beside the running host it pauses.
+#[test]
+fn pause_never_replaces_a_reason() {
+    // Control: a running host takes `Operator`.
+    let mut running = Rig::new(&tb3_value());
+    assert_eq!(running.host.pause(1), Ok(()));
+    assert_eq!(running.host.paused(), Some(PauseReason::Operator));
+
+    // Over `Restore`.
+    let saved = Rig::new(&tb3_value()).save();
+    let mut restored = load_checkpoint(saved.as_bytes(), 2, 0).expect("loads");
+    assert_eq!(restored.paused(), Some(PauseReason::Restore));
+    assert_eq!(restored.pause(1), Ok(()));
+    assert_eq!(restored.paused(), Some(PauseReason::Restore));
+
+    // Over `Auto(OrderEnded)`.
+    let (mut rig, _) = fight(0x19, None);
+    let (advanced, _, _) = rig.advance(1);
+    let auto = Some(PauseReason::Auto(AutoPauseTrigger::OrderEnded));
+    assert_eq!(advanced.paused, auto);
+    assert_eq!(rig.host.pause(2), Ok(()));
+    assert_eq!(rig.host.paused(), auto);
+    // Unpause clears whatever the reason was.
+    assert_eq!(rig.host.unpause(3), Ok(()));
+    assert_eq!(rig.host.paused(), None);
+}
+
+/// B-3 step 5: the tick's error is returned as is, and a timer `EndTurn` from
+/// the same call stays committed. A full journal, a pending switch to
+/// real-time and a timer on the last head of the round build it: the timer's
+/// `EndTurn` crosses the boundary (filling the journal), and the real-time
+/// tick then has no room for its host record.
+#[test]
+fn advance_returns_the_tick_error() {
+    let mut rig = Rig::new(&tb3c_value());
+    let v = rig.bind_v(0);
+    for seq in 1..=MAX_CAPTURE_RECORDS as u64 {
+        let actor = (seq - 1) % 3;
+        let result = rig.end_turn(v, seq, actor + 1, seq * 100);
+        assert_eq!(result.status, ReceiptStatus::Applied, "seq {seq}");
+        rig.mirror(end(eid(actor as u32)));
+        rig.drain(v);
+    }
+    // The head is B. Request real-time, make room for two entries, then B
+    // ends its turn (a command): the head is C, the journal has room for one.
+    assert_eq!(rig.host.request_mode(EncounterMode::RealTime), Ok(()));
+    rig.mirror_mode(EncounterMode::RealTime);
+    rig.host.acknowledge_captures(2).expect("acks");
+    let result = rig.end_turn(v, 4097, 2, 409_700);
+    assert_eq!(result.status, ReceiptStatus::Applied);
+    rig.mirror(end(b()));
+    rig.drain(v);
+    assert_eq!(rig.host.awaiting_orders(), vec![c()]);
+    assert_eq!(rig.host.last_capture(), 4097);
+    assert_eq!(
+        rig.host.set_settings(settings(0, Some(1000)), 409_800),
+        Ok(())
+    );
+    let ticks = rig.host.server_tick();
+
+    // The deadline: C's turn ends (boundary: the mode switches, the journal
+    // fills), then the real-time tick has no room: `CaptureFull`, returned.
+    assert_eq!(rig.host.advance(410_800), Err(HostError::CaptureFull));
+    let events = rig.mirror(end(c()));
+    assert_eq!(
+        payloads(&events),
+        vec![
+            HistoryEvent::ModeChanged {
+                mode: EncounterMode::RealTime,
+                round: 1366
+            },
+            HistoryEvent::RoundStarted { round: 1366 },
+        ]
+    );
+    rig.assert_authority();
+    assert_eq!(rig.host.server_tick(), ticks, "the tick did not run");
+    assert_eq!(
+        rig.host.last_capture(),
+        4098,
+        "the timer's EndTurn stayed committed"
+    );
+    let entries = rig.entries();
+    assert_eq!(entries.len(), MAX_CAPTURE_RECORDS);
+    let record = host_record(entries.last().expect("entries"));
+    assert_eq!(record.op, HostOp::TurnTimer);
+    assert_eq!(record.capture_seq, 4098);
+    assert_eq!(record.events, events);
+    assert_eq!(
+        rig.host.turn_timer_remaining_ms(),
+        None,
+        "real-time: no timer"
+    );
+
+    // Control: with room made, the same call succeeds and ticks.
+    rig.host.acknowledge_captures(4098).expect("acks");
+    let (advanced, _, tick) = rig.advance(410_801);
+    assert_eq!(advanced, report(true, None, None));
+    assert!(tick.is_empty());
+    assert_eq!(rig.host.server_tick(), ticks + 1);
+}
+
+/// B-9: the remainder saturates at zero. A deadline already passed (no
+/// `advance` ran) freezes at 0 on pause and reads 0 when running.
+#[test]
+fn timer_remainder_saturates() {
+    // Reading past the deadline while running: 0, not a wrapped value. The
+    // later calls are binds, which accept time without observing the timer.
+    let mut rig = Rig::new(&tb3_value());
+    assert_eq!(rig.host.set_settings(settings(0, Some(1000)), 0), Ok(()));
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(1000));
+    rig.bind(&[a()], 999);
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(1));
+    rig.bind(&[a()], 1000);
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(0));
+    rig.bind(&[a()], 5000);
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(0));
+
+    // Freezing past the deadline stores 0; the unpause counts from there and
+    // the expiry is then due at once.
+    assert_eq!(rig.host.pause(6000), Ok(()));
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(0));
+    assert_eq!(rig.host.unpause(7000), Ok(()));
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(0));
+    let (advanced, timer, _) = rig.advance(7000);
+    assert_eq!(advanced, report(true, Some(a()), None));
+    assert_eq!(payloads(&timer), vec![turn_started(b(), 0)]);
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(1000));
+}
+
+/// B-5: the party is the union of every session's control list: a member of
+/// the first session's list dies, with a later session that does not hold it.
+#[test]
+fn party_is_the_union_of_every_session() {
+    let (mut rig, _) = fight(0x10, Some(&[b()]));
+    let _second = rig.bind(&[a()], 0);
+    let (advanced, _, tick) = rig.advance(1);
+    assert_eq!(payloads(&tick), fight_events());
+    assert_eq!(
+        advanced.paused,
+        Some(PauseReason::Auto(AutoPauseTrigger::PartyMemberDied))
+    );
+    // Control: neither session holds B, so nothing fires.
+    let (mut rig, _) = fight(0x10, Some(&[a()]));
+    let _second = rig.bind(&[c()], 0);
+    let (advanced, _, _) = rig.advance(1);
+    assert_eq!(advanced, report(true, None, None));
+}
+
+/// B-5/B-9: an auto-pause freezes the timer even when the head does not
+/// change (an ability that does not end the turn kills a party member, so the
+/// same head's timer stays armed): the remainder holds while paused and
+/// counts down again from the unpause.
+#[test]
+fn auto_pause_freezes_the_same_head_timer() {
+    let mut value = tb3_value();
+    // `smite` (the second authored ability) no longer ends the turn.
+    value["world"]["combat"]["definition"]["abilities"][1]["ends_turn"] = json!(false);
+    let mut rig = Rig::new(&value);
+    assert_eq!(
+        rig.host.set_settings(settings(0x10, Some(1000)), 100),
+        Ok(())
+    );
+    // C is the party; binding at 400 accepts time: 700 remain.
+    let _party = rig.bind(&[c()], 400);
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(700));
+    assert_eq!(rig.host.paused(), None);
+
+    // A smites C; the turn stays with A and the timer's key is unchanged.
+    let outcome = rig.host.host_action(&use_ability(a(), smite(), c()));
+    assert!(matches!(outcome, Ok(Some(_))), "{outcome:?}");
+    let events = rig.mirror(use_ability(a(), smite(), c()));
+    assert_eq!(
+        payloads(&events),
+        vec![
+            action_resolved(a(), c(), smite(), "critical_success", 4_000_000_000),
+            HistoryEvent::Died { entity: c() },
+        ]
+    );
+    assert_eq!(
+        rig.host.awaiting_orders(),
+        vec![a()],
+        "the head is unchanged"
+    );
+    assert_eq!(
+        rig.host.paused(),
+        Some(PauseReason::Auto(AutoPauseTrigger::PartyMemberDied))
+    );
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(700));
+    // Time passes while paused: the remainder holds.
+    let (advanced, _, _) = rig.advance(5000);
+    assert_eq!(
+        advanced,
+        report(
+            false,
+            None,
+            Some(PauseReason::Auto(AutoPauseTrigger::PartyMemberDied))
+        )
+    );
+    assert_eq!(rig.host.turn_timer_remaining_ms(), Some(700));
+    // Unpause: 700 count from 5000.
+    assert_eq!(rig.host.unpause(5000), Ok(()));
+    let (advanced, _, _) = rig.advance(5699);
+    assert_eq!(advanced, report(true, None, None));
+    let (advanced, timer, _) = rig.advance(5700);
+    assert_eq!(advanced, report(true, Some(a()), None));
+    assert_eq!(payloads(&timer), vec![turn_started(b(), 0)]);
+    rig.assert_authority();
 }
