@@ -76,7 +76,6 @@ impl PreviewCount {
     }
 }
 
-#[allow(dead_code)] // used by T143c, which removes this allow
 impl PreviewCount {
     /// Adds `other` into `self`.
     pub(crate) fn add_assign(&mut self, other: &Self) {

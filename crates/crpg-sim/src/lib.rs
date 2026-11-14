@@ -58,7 +58,10 @@ pub use movement::{
     MoveOutcome, MoveRoute, MovementFact, Mover, NavRevision, RouteTag, TurnMovement,
     COORD_LIMIT_RAW, MAX_ROUTE_LENGTH_RAW, MAX_ROUTE_POINTS,
 };
-pub use preview::PreviewCount;
+pub use preview::{
+    preview_action, ActionPreview, OutcomeOdds, PreviewCount, PreviewError, PreviewPart,
+    PreviewRules, PreviewScope, MAX_PREVIEW_COST,
+};
 pub use store::ComponentStore;
 pub use tick::{end_turn, tick, tick_with_movement};
 pub use timeline::{InitiativeKey, Timeline};
