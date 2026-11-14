@@ -1136,6 +1136,74 @@ aggregate (`POLICY_INTENT_*`, the ingress and egress caps, the failure
 budgets). The interpolation delay is client policy. `tests/v4_movement.rs`
 carries the literal byte oracles (M1–M8).
 
+### T026p3: `positions_v4` and `projection_v4`, the position filter
+
+`positions_v4` decides who is told where an entity is; the host supplies every
+position and grant (`PositionRow { key, granted, point, moving }`), and the
+module reads no `World`, RNG or clock. **Disclosure is a reliable anchor, then
+unreliable samples (Reading 7).** The lane-0 op `Position { Some }` starts
+disclosure of one entity's position (and repeats it on a resend page);
+`Position { None }` stops it while the entity stays visible, the "forget"
+image. Values between those two travel only in lane-1 samples, so a walking
+creature costs no lane-0 traffic. An entity that leaves view needs no
+`Position` op: `EntityLeave` removes it.
+
+**`PositionView`** is the per-viewer companion of one `InterestView` and one
+`FactView`: per visible key it remembers the `PositionFact` the viewer was last
+told and the `NetId` it was told under. It mints no id (every `NetId` is read
+from the `InterestView`), is not `Serialize` and has no restore constructor.
+
+**Op ownership (extends the table above).**
+
+| Op | Owner |
+|---|---|
+| `Position` | `PositionView` (`positions_v4::project_page_v4`) |
+| `Moved` | `projection_v4::project_events` |
+| every v3 op, wrapped in `V3` | its v3 owner, unchanged |
+| position samples (lane 1, not an op) | `positions_v4::project_samples` |
+
+**`project_page_v4`** checks before anything changes, first failure wins: the
+`PositionView`'s epoch against the `FactView`'s (`WrongEpoch`); more than 1,024
+rows (`TooManyFacts`); two rows with one key (`DuplicateFact`); then
+`facts_v3::project_page` with its error unchanged. The position checks come
+before every fact check, and every `Err` leaves all three views equal to their
+clones. Then it forgets, silently, each remembered key whose `view.net_id` is
+no longer the id it was told under (left, retired, or re-entered under a new
+id), and emits at most one `Position` per visible key in ascending `NetId`,
+after `project_page`'s ops wrapped in `V3`: a granted row not yet told is
+anchored; a told key whose row is not granted (or is gone) is withdrawn with
+`None`; on a resend page every granted position is re-anchored; otherwise
+nothing, and the memory keeps the old value (a changed point is the samples'
+job). A page is at most `MAX_PAGE_OPS_V4` (5,123) ops and is not a frame.
+
+**`project_samples`** reads the current grant on every call. For each
+remembered key in ascending `NetId` whose id is still current and whose row is
+granted now, it emits a `SampleEntry` when the value differs from the told one
+(or on `refresh`) and remembers it; any other remembered key gives nothing and
+keeps its memory. It adds no key, so a position is sampled only after its
+anchor, and **revocation is immediate**: a row that stops being granted leaves
+the samples in that call, ahead of the page whose `None` tells the client to
+forget. Its checks are the page's position checks (epoch against the interest
+view's, then rows); `positions` is untouched on `Err`. Cut the result into
+datagrams with `movement_v4::sample_datagrams`.
+
+**Reconnect (Reading 8).** `project_snapshot_v4` checks the epoch, runs
+`facts_v3::project_snapshot_v3` (its error unchanged, nothing changed on `Err`)
+and on `Ok` returns that result untouched and empties the `PositionView`. The
+`0x82` body carries no positions; the next `project_page_v4` re-anchors every
+granted visible position in the first delta above the snapshot's cursor, and
+`project_samples` returns nothing until then. This meets ADR-0036 L5 ("resync
+snapshots carry only granted positions") without a `0x83` body.
+
+**`Moved` disclosure (Reading 9).** `projection_v4::EventCandidate` is `V3(c)`
+(exactly `projection_v3::project_events(&[c])`, wrapped; its errors fail the
+call) or `Moved { entity, points, disclose }`, which yields a `Moved` op
+exactly when `entity` is `Some`, `disclose` is true and `check_points` is
+`Ok`; otherwise it is withheld. More than 256 candidates is `TooManyEvents`.
+Order is the input's, with no sort and no deduplication. `disclose` is the
+host's position grant for the viewer, as `Joined`/`Left`'s is for notices.
+`tests/v4_positions.rs` (Q1..Q12 plus ordering and bound cases) is the suite.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -1160,3 +1228,4 @@ carries the literal byte oracles (M1–M8).
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the `replica_v3` section (state, the R-5..R-8 op table, the liveness rule and its T140c emission-order/T027b history-slot justification, stale references, images, delta/snapshot precedence and host state kept across a snapshot); no earlier section changed.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the "Protocol v4 (T026p, ADR-0036 L1–L6)" section for the new `protocol_v4`/`codec_v4` pair (lane table, `V3` wrapping and why, `Moved`, `Position`, `Point` and U3, `frame_spans`); no earlier section changed.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the lane-1 `movement_v4` subsection (the `0xA1` subprotocol, the four messages and their layouts, the 1,024-byte and 38-entry sample bounds and splitter, the decode order and the U7 policies) and marked lane 1 built in the lane table.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the `positions_v4`/`projection_v4` subsection (the anchor-then-samples disclosure, `PositionView`, the page, sample and snapshot rules, reconnect and `Moved` disclosure) and extended the op-owner table; no earlier section changed.

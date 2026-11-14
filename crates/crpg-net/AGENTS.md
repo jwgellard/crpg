@@ -218,6 +218,21 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   two `const` assertions; change neither alone, and a change to either is a new
   movement version. The policy constants are host-enforced and never wire.
 
+- *2026-11-14 (UTC), T026p3:* **Protocol v4, the position filter** (`positions_v4`,
+  `projection_v4`; see architecture §"T026p3"). **A position is sampled only
+  after its anchor**: `project_samples` walks the `PositionView`'s remembered
+  keys and never adds one, so a key reaches the samples only through a
+  `Position { Some }` op on a page. **`project_samples` reads the current
+  grant, so revocation is immediate**: never sample from the remembered value
+  of a key whose row is gone or no longer granted, and never let a changed
+  value of a withheld row move a byte of a page or sample. **A snapshot
+  empties the `PositionView`; the next page re-anchors**: the `0x82` body has
+  no positions (Reading 8), so `project_snapshot_v4` must clear the memory and
+  the host must send a page in the same tick. `PositionView` mints no id, is
+  not `Serialize`, has no restore constructor and is driven only through
+  `project_page_v4`/`project_samples`/`project_snapshot_v4`; the position
+  checks run before `project_page`'s, so a refusal never half-updates a view.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
@@ -264,3 +279,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the v3 client-replica entry with its four traps (fact references checked only when the op applies; `apply_snapshot` keeps `pause` and `host_facts`; no codec value check is re-run; every v3 refusal is an existing `ReplicaError`, add no variant).
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the protocol v4 lane-0 entry with its three traps (v4 wraps v3 ops and never moves a v3 tag; a v4 tag 0..=20 goes only through `codec_v3::take_op`/`extend_op`; no new rejection code without a new version) and superseded the "Spatial replication waits for the lane-1 movement channel" trap by that dated entry, leaving the old line unedited.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the protocol v4 lane-1 entry with its two traps (samples are datagrams only and never carry an `event_seq`; lane-1 intents have no `observed_tick`) and the bound and order rules for `movement_v4`.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the position-filter entry with its three traps (a position is sampled only after its anchor; `project_samples` reads the current grant so revocation is immediate; a snapshot empties the `PositionView` and the next page re-anchors).
