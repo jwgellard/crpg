@@ -6073,4 +6073,480 @@ mod tests {
         let session = host.sessions.get(&peer).expect("bound");
         assert_eq!(session.next_event_seq, u64::MAX);
     }
+
+    // -- T141d: codes, candidates, fencing and page cutting (D5, D13, D14) ----
+
+    /// D5: the nine named sim refusals take codes 21 to 29 in order and every
+    /// other refusal stays 18; the trusted projection folds 21 to 29 onto
+    /// `IllegalAction` and 30 onto `NotAuthorized`; v1/v2 sessions never get a
+    /// v3 code.
+    #[test]
+    fn code_map_and_trusted_projection() {
+        let entity = eid(0);
+        let named = [
+            (CombatError::ModeUnsupported, CodeV3::ModeUnsupported, 21),
+            (
+                CombatError::WrongMode {
+                    mode: EncounterMode::RealTime,
+                },
+                CodeV3::WrongMode,
+                22,
+            ),
+            (
+                CombatError::StatEvaluation {
+                    stat: "alpha".to_owned(),
+                },
+                CodeV3::StatEvaluation,
+                23,
+            ),
+            (
+                CombatError::EncounterTerminal,
+                CodeV3::EncounterTerminal,
+                24,
+            ),
+            (
+                CombatError::RulesetMismatch { entity },
+                CodeV3::RulesetMismatch,
+                25,
+            ),
+            (
+                CombatError::PlacementInUse {
+                    placement: Ulid::from_u128(1),
+                },
+                CodeV3::PlacementInUse,
+                26,
+            ),
+            (CombatError::NotCreature { entity }, CodeV3::NotCreature, 27),
+            (
+                CombatError::AlreadyParticipant { entity },
+                CodeV3::AlreadyParticipant,
+                28,
+            ),
+            (CombatError::NoEntrants, CodeV3::NoEntrants, 29),
+        ];
+        for (error, expected, wire) in named {
+            assert_eq!(code(&error), expected);
+            assert_eq!(code(&error).as_u8(), wire);
+            assert_eq!(refusal_code(true, &error), expected);
+            // v1/v2 sessions keep `IllegalAction` for all of them.
+            assert_eq!(refusal_code(false, &error), CodeV3::IllegalAction);
+            assert_eq!(trusted_code(code(&error)), RejectionCode::IllegalAction);
+        }
+        let others = [
+            CombatError::NoEncounter,
+            CombatError::OutOfTurn {
+                actor: entity,
+                active: None,
+            },
+            CombatError::InsufficientAction {
+                pool: Ulid::from_u128(606),
+                cost: 1,
+                current: 0,
+            },
+        ];
+        for error in others {
+            assert_eq!(code(&error), CodeV3::IllegalAction);
+            assert_eq!(code(&error).as_u8(), 18);
+            assert_eq!(refusal_code(true, &error), CodeV3::IllegalAction);
+        }
+        // The trusted projection: 30 reads `NotAuthorized`, the v1 codes read
+        // as themselves.
+        assert_eq!(
+            trusted_code(CodeV3::NoPauseRight),
+            RejectionCode::NotAuthorized
+        );
+        assert_eq!(
+            trusted_status(ReceiptV3::Rejected(CodeV3::NoPauseRight)),
+            ReceiptStatus::Rejected(RejectionCode::NotAuthorized)
+        );
+        assert_eq!(trusted_status(ReceiptV3::Applied), ReceiptStatus::Applied);
+        for raw in 1..=20u8 {
+            let v3 = CodeV3::from_u8(raw).expect("a v1 code");
+            assert_eq!(trusted_code(v3).as_u8(), raw);
+        }
+        for raw in 21..=29u8 {
+            let v3 = CodeV3::from_u8(raw).expect("a v3 code");
+            assert_eq!(trusted_code(v3), RejectionCode::IllegalAction);
+        }
+    }
+
+    /// A hand-built grant table: `entity(1)` fully disclosed and mapped to
+    /// `NetId` 1; `entity(2)` present with no notice grants, `NetId` 2;
+    /// `entity(3)` not present and unmapped.
+    fn candidate_table(turn_round: bool) -> (DisclosureGrants, BTreeMap<EntityId, NetId>) {
+        let mut grants = DisclosureGrants {
+            entities: vec![
+                EntityDisclosure {
+                    entity: eid(1),
+                    present: true,
+                    health: true,
+                    spawn: true,
+                    despawn: true,
+                    died: true,
+                    action_actor: true,
+                    action_target: true,
+                    action_outcome: true,
+                    action_damage: true,
+                    turn_start: true,
+                },
+                EntityDisclosure {
+                    entity: eid(2),
+                    present: true,
+                    health: false,
+                    spawn: false,
+                    despawn: false,
+                    died: false,
+                    action_actor: false,
+                    action_target: false,
+                    action_outcome: false,
+                    action_damage: false,
+                    turn_start: false,
+                },
+                EntityDisclosure {
+                    entity: eid(3),
+                    present: false,
+                    health: true,
+                    spawn: true,
+                    despawn: true,
+                    died: true,
+                    action_actor: true,
+                    action_target: true,
+                    action_outcome: true,
+                    action_damage: true,
+                    turn_start: true,
+                },
+            ],
+            abilities: Vec::new(),
+            encounters: Vec::new(),
+            turn_round,
+            encounter_end: false,
+            turn_state: false,
+        };
+        grants.entities.sort_by_key(|entry| entry.entity);
+        let map = BTreeMap::from([(eid(1), net(1)), (eid(2), net(2))]);
+        (grants, map)
+    }
+
+    /// D13: the private v3 candidate builder against D-8, both directions.
+    #[test]
+    fn candidates_follow_the_grant_table() {
+        let (grants, map) = candidate_table(true);
+        let view = PeerView {
+            grants: &grants,
+            map: &map,
+        };
+        let control = [eid(1)];
+        let build = |event: HistoryEvent| view.candidate_v3(&control, true, &event);
+
+        // Joined and Left need `present && spawn` / `present && despawn`.
+        assert_eq!(
+            build(HistoryEvent::Joined { entity: eid(1) }),
+            Some(EventCandidateV3::Joined {
+                entity: Some(net(1)),
+                disclose: true,
+            })
+        );
+        assert_eq!(
+            build(HistoryEvent::Joined { entity: eid(2) }),
+            Some(EventCandidateV3::Joined {
+                entity: Some(net(2)),
+                disclose: false,
+            })
+        );
+        assert_eq!(
+            build(HistoryEvent::Joined { entity: eid(3) }),
+            Some(EventCandidateV3::Joined {
+                entity: None,
+                disclose: false,
+            })
+        );
+        assert_eq!(
+            build(HistoryEvent::Left { entity: eid(1) }),
+            Some(EventCandidateV3::Left {
+                entity: Some(net(1)),
+                disclose: true,
+            })
+        );
+        assert_eq!(
+            build(HistoryEvent::Left { entity: eid(2) }),
+            Some(EventCandidateV3::Left {
+                entity: Some(net(2)),
+                disclose: false,
+            })
+        );
+        // `Moved` stays withheld (H-4).
+        assert_eq!(
+            build(HistoryEvent::Moved {
+                entity: eid(1),
+                points: Vec::new(),
+            }),
+            None
+        );
+        // `ModeChanged` needs the mode grant for the mode and `turn_round` for
+        // the round.
+        let changed = HistoryEvent::ModeChanged {
+            mode: EncounterMode::RealTime,
+            round: 7,
+        };
+        assert_eq!(
+            view.candidate_v3(&control, true, &changed),
+            Some(EventCandidateV3::ModeChanged {
+                mode: Some(crpg_net::protocol_v3::EncounterMode::RealTime),
+                round: Some(7),
+            })
+        );
+        assert_eq!(
+            view.candidate_v3(&control, false, &changed),
+            Some(EventCandidateV3::ModeChanged {
+                mode: None,
+                round: Some(7),
+            })
+        );
+        // `OrderEnded` needs control and presence of the actor.
+        assert_eq!(
+            build(HistoryEvent::OrderEnded { actor: eid(1) }),
+            Some(EventCandidateV3::OrderEnded {
+                actor: Some(net(1)),
+            })
+        );
+        assert_eq!(
+            build(HistoryEvent::OrderEnded { actor: eid(2) }),
+            Some(EventCandidateV3::OrderEnded { actor: None })
+        );
+        assert_eq!(
+            view.candidate_v3(&[eid(3)], true, &HistoryEvent::OrderEnded { actor: eid(3) }),
+            Some(EventCandidateV3::OrderEnded { actor: None })
+        );
+        // `RoundStarted` needs `turn_round`.
+        assert_eq!(
+            build(HistoryEvent::RoundStarted { round: 4 }),
+            Some(EventCandidateV3::RoundStarted { round: Some(4) })
+        );
+        let (no_round, map) = candidate_table(false);
+        let hidden = PeerView {
+            grants: &no_round,
+            map: &map,
+        };
+        assert_eq!(
+            hidden.candidate_v3(&control, true, &HistoryEvent::RoundStarted { round: 4 }),
+            Some(EventCandidateV3::RoundStarted { round: None })
+        );
+        assert_eq!(
+            hidden.candidate_v3(&control, true, &changed),
+            Some(EventCandidateV3::ModeChanged {
+                mode: Some(crpg_net::protocol_v3::EncounterMode::RealTime),
+                round: None,
+            })
+        );
+        // The six v2 events go through the v2 predicates, wrapped.
+        assert!(matches!(
+            build(HistoryEvent::Died { entity: eid(1) }),
+            Some(EventCandidateV3::V2(_))
+        ));
+    }
+
+    /// An `RT3` host with `P` (controls A) and `Q` (controls `q_control`) bound
+    /// as v3 sessions and both first deliveries acknowledged, and a mirror
+    /// authority for the oracle.
+    fn fence_fixture(q_control: &[u32]) -> (Host, HistoryWorld, PeerHandle, PeerHandle) {
+        let mut host = v2_host(true);
+        let mut mirror: HistoryWorld =
+            serde_json::from_value(host_fixture_value(true)).expect("fixture loads");
+        mirror
+            .acknowledge(mirror.last_sequence())
+            .expect("acknowledges");
+        let bind = |host: &mut Host, actors: &[u32]| {
+            host.bind_v3_peer(
+                ControlGrant {
+                    actors: actors.iter().copied().map(eid).collect(),
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                100,
+            )
+            .expect("binds")
+        };
+        let p = bind(&mut host, &[0]);
+        let q = bind(&mut host, q_control);
+        ack_all(&mut host, p);
+        ack_all(&mut host, q);
+        // Publish both transfers (the first-delivery rule for T141c/T141d).
+        for peer in [p, q] {
+            host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        }
+        // Three acknowledged ticks, then 128 that only Q acknowledges: P's log
+        // is exactly full, and the next tick (132) starts a round, which
+        // journals an event and so makes a host record.
+        for tick in 0..131 {
+            host.tick().expect("ticks");
+            mirror.tick().expect("the mirror ticks");
+            let last = mirror.last_sequence();
+            mirror.acknowledge(last).expect("acknowledges");
+            ack_all(&mut host, q);
+            if tick < 3 {
+                ack_all(&mut host, p);
+            }
+        }
+        assert_eq!(host.sessions.get(&p).expect("bound").log.len(), 128);
+        (host, mirror, p, q)
+    }
+
+    fn v3_intent(
+        host: &Host,
+        peer: PeerHandle,
+        seq: u64,
+        actor: u64,
+        body: IntentBodyV3,
+    ) -> Vec<u8> {
+        codec_v3::encode_intent(&IntentFrameV3 {
+            epoch: host.epoch(peer).expect("bound"),
+            lane: LANE_COMBAT,
+            seq,
+            observed_tick: host.server_tick(),
+            actor: net(actor),
+            body,
+        })
+        .expect("encodes")
+    }
+
+    /// D14 (a): a session whose page does not fit and whose restage cannot be
+    /// planned is fenced; the tick still succeeds, its host record is
+    /// appended and the other session gets its page.
+    #[test]
+    fn a_failed_restage_fences_one_session_and_the_tick_succeeds() {
+        let (mut host, mut mirror, p, q) = fence_fixture(&[1]);
+        host.sessions.get_mut(&p).expect("bound").next_transfer = u64::MAX;
+        let before_capture = host.last_capture();
+        assert_eq!(host.session_wire(p), Ok(3));
+        let bytes = v3_intent(&host, p, 1, 1, IntentBodyV3::EndTurn);
+
+        assert_eq!(host.tick(), Ok(()));
+        mirror.tick().expect("the mirror ticks");
+        let last = mirror.last_sequence();
+        mirror.acknowledge(last).expect("acknowledges");
+        assert_eq!(host.authority_hash(), history_hash(&mirror));
+        assert_eq!(host.session_wire(p), Err(HostError::UnknownPeer));
+        assert_eq!(host.session_wire(q), Ok(3));
+        assert_eq!(host.history.pending_len(), 0);
+
+        // The host record was appended: exactly one new entry, a tick record.
+        assert_eq!(host.last_capture(), before_capture + 1);
+        let entries = host.read_capture_entries(before_capture, 4).expect("reads");
+        assert_eq!(entries.len(), 1);
+        let CaptureEntry::Host(record) = &entries[0] else {
+            panic!("a host entry");
+        };
+        assert_eq!(record.op, HostOp::Tick);
+        assert_eq!(record.events.len(), 1);
+        assert_eq!(
+            record.events[0].payload,
+            HistoryEvent::RoundStarted { round: 33 }
+        );
+
+        // Q got its page: the round start is in it.
+        let frames = host.take_delivery_entries(q).expect("bound");
+        assert_eq!(frames.len(), 1);
+        let page = codec_v3::decode_delta(&frames[0].bytes).expect("v3");
+        assert!(page.ops.contains(&DeltaOpV3::RoundStarted { round: 33 }));
+        // Control: the fenced session is gone from ingress too.
+        assert_eq!(
+            host.ingest(p, &bytes, 200),
+            Ok(IngestDisposition::Refused {
+                status: ReceiptStatus::Rejected(RejectionCode::Unauthenticated),
+            })
+        );
+    }
+
+    /// D14 (b): the fenced session is the originator of an accepted command:
+    /// no panic, the command is `Applied`, the record is appended with only
+    /// the other session's view, and the sim journal is acknowledged. (`Q`
+    /// controls A here, so it sees the order and gets a frame; with `Q`
+    /// controlling only B it would get none and the record no view, D-10.)
+    #[test]
+    fn a_fenced_originator_still_commits() {
+        let (mut host, mut mirror, p, q) = fence_fixture(&[0, 1]);
+        host.sessions.get_mut(&p).expect("bound").next_transfer = u64::MAX;
+        let before_capture = host.last_capture();
+
+        let bytes = v3_intent(
+            &host,
+            p,
+            1,
+            1,
+            IntentBodyV3::DeclareAction {
+                ability: Ulid::from_u128(603),
+                target: net(2),
+            },
+        );
+        assert_eq!(host.ingest(p, &bytes, 200), Ok(IngestDisposition::Staged));
+        let summary = host.pump(200).expect("pump");
+        assert_eq!(summary.applied, 1);
+        assert_eq!(summary.results[0].status, ReceiptStatus::Applied);
+        mirror
+            .perform_action(&CombatAction::UseAbility {
+                actor: eid(0),
+                ability: Ulid::from_u128(603),
+                target: eid(1),
+            })
+            .expect("the mirror accepts");
+        let last = mirror.last_sequence();
+        mirror.acknowledge(last).expect("acknowledges");
+        assert_eq!(host.authority_hash(), history_hash(&mirror));
+        assert_eq!(host.executions(), 1);
+        assert_eq!(host.history.pending_len(), 0);
+        assert_eq!(host.session_wire(p), Err(HostError::UnknownPeer));
+
+        assert_eq!(host.last_capture(), before_capture + 1);
+        let entries = host.read_capture_entries(before_capture, 4).expect("reads");
+        let CaptureEntry::Command(record) = &entries[0] else {
+            panic!("a command entry");
+        };
+        let epochs: Vec<[u8; 16]> = record.views.iter().map(|view| view.epoch).collect();
+        assert_eq!(epochs, vec![host.epoch(q).expect("bound")]);
+        // Q's page carries the order it can now see.
+        let frames = host.take_delivery_entries(q).expect("bound");
+        assert_eq!(frames.len(), 1);
+    }
+
+    /// D-7 step 6 and D-8: a page with more candidates than one frame holds
+    /// is cut by `frame_spans`, one `event_seq` per span, in order, and no op
+    /// is lost; the candidates are projected in chunks of at most 256.
+    #[test]
+    fn a_large_page_is_cut_into_gapless_spans() {
+        let (mut host, peer) = drained_v3_host();
+        let mut events = Vec::new();
+        for index in 0..300u64 {
+            events.push(round_started(5 + index));
+        }
+        let first = host.sessions.get(&peer).expect("bound").next_event_seq;
+        host.publish_v3(Some(peer), &events);
+        let log = &host.sessions.get(&peer).expect("bound").log;
+        let frames: Vec<crpg_net::protocol_v3::DeltaFrame> = log
+            .iter()
+            .map(|frame| codec_v3::decode_delta(&frame.bytes).expect("v3"))
+            .collect();
+        assert!(frames.len() >= 2);
+        for (position, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.event_seq, first + position as u64);
+            assert!(frame.ops.len() <= MAX_DELTA_OPS);
+        }
+        let rounds: usize = frames
+            .iter()
+            .flat_map(|frame| frame.ops.iter())
+            .filter(|op| matches!(op, DeltaOpV3::RoundStarted { round: 1 }))
+            .count();
+        assert_eq!(rounds, 300);
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").next_event_seq,
+            first + frames.len() as u64
+        );
+        // Control: no events and nothing changed publishes nothing.
+        let logged = host.sessions.get(&peer).expect("bound").log.len();
+        host.publish_v3(Some(peer), &[]);
+        assert_eq!(host.sessions.get(&peer).expect("bound").log.len(), logged);
+    }
 }
