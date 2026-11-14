@@ -1961,3 +1961,106 @@ fn w11_v4_constants_match_sim() {
     assert_eq!(COORD_LIMIT_RAW, crpg_sim::COORD_LIMIT_RAW);
     assert_eq!(MAX_MOVED_POINTS, crpg_sim::MAX_ROUTE_POINTS);
 }
+
+// ---------------------------------------------------------------------------
+// Review survivors: header order, byte-budget reset, string bound.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn header_check_order_version_then_lane() {
+    // Delta: version before lane, with a valid remainder after the bad lane.
+    assert_eq!(
+        decode_delta(&[3, 1, 0x64, 1, 0]),
+        Err(CodecError::UnsupportedVersion)
+    );
+    assert_eq!(
+        decode_delta(&[4, 1, 0x64, 1, 0]),
+        Err(CodecError::WrongDirection)
+    );
+    assert_eq!(decode_delta(&[4, 0, 0x64, 1, 0]), Ok(delta(vec![])));
+    // Lane before server_tick, event_seq and count: truncated right after it.
+    assert_eq!(decode_delta(&[4, 1]), Err(CodecError::WrongDirection));
+    assert_eq!(decode_delta(&[4, 0]), Err(CodecError::Malformed));
+    assert_eq!(decode_delta(&[4]), Err(CodecError::Malformed));
+    // Intent: version, then epoch, then lane, truncated after each.
+    assert_eq!(
+        decode_intent(&cat(&[&[3], &Z16, &[1]])),
+        Err(CodecError::UnsupportedVersion)
+    );
+    assert_eq!(
+        decode_intent(&cat(&[&[4], &Z16, &[1]])),
+        Err(CodecError::WrongDirection)
+    );
+    assert_eq!(
+        decode_intent(&cat(&[&[4], &Z16, &[0]])),
+        Err(CodecError::Malformed)
+    );
+    assert_eq!(
+        decode_intent(&cat(&[&[4], &Z16])),
+        Err(CodecError::Malformed)
+    );
+    assert_eq!(
+        decode_intent(&cat(&[&[4], &Z16[..15]])),
+        Err(CodecError::Malformed)
+    );
+}
+
+#[test]
+fn frame_spans_budget_resets_after_every_split() {
+    // Three or more consecutive byte-budget splits: 67 maximal Moved (65,124
+    // bytes) fit, the 68th does not. 140 ops are 67 + 67 + 6.
+    let many: Vec<DeltaOp> = (0..140).map(|_| big_moved()).collect();
+    assert_eq!(
+        frame_spans(&many),
+        Ok(spans(&[(0, 67), (67, 134), (134, 140)]))
+    );
+    let more: Vec<DeltaOp> = (0..201).map(|_| big_moved()).collect();
+    assert_eq!(
+        frame_spans(&more),
+        Ok(spans(&[(0, 67), (67, 134), (134, 201)]))
+    );
+    // An ops-count split followed by a byte-budget split: 256 small ops, then
+    // 68 maximal Moved. The byte count restarts at 0 after the count split.
+    let mut mixed: Vec<DeltaOp> = (0..256).map(|_| r(0)).collect();
+    mixed.extend((0..68).map(|_| big_moved()));
+    assert_eq!(
+        frame_spans(&mixed),
+        Ok(spans(&[(0, 256), (256, 323), (323, 324)]))
+    );
+    // A byte-budget split followed by a count split.
+    let mut other: Vec<DeltaOp> = (0..68).map(|_| big_moved()).collect();
+    other.extend((0..257).map(|_| r(0)));
+    assert_eq!(
+        frame_spans(&other),
+        Ok(spans(&[(0, 67), (67, 323), (323, 325)]))
+    );
+}
+
+#[test]
+fn ulid_length_prefix_bound_is_exactly_256() {
+    let declare = |prefix: &[u8], body: &[u8], target: &[u8]| {
+        intent_bytes(&cat(&[&[0], prefix, body, target]))
+    };
+    // 256 (80 02): within the bound, so never LimitExceeded.
+    assert_eq!(
+        decode_intent(&declare(&[0x80, 0x02], &[], &[])),
+        Err(CodecError::Malformed)
+    );
+    let body = vec![0x41u8; 256];
+    assert_eq!(
+        decode_intent(&declare(&[0x80, 0x02], &body, &[2])),
+        Err(CodecError::Malformed)
+    );
+    // 257 (81 02) is LimitExceeded, with and without a body.
+    assert_eq!(
+        decode_intent(&declare(&[0x81, 0x02], &[], &[])),
+        Err(CodecError::LimitExceeded)
+    );
+    let body257 = vec![0x41u8; 257];
+    assert_eq!(
+        decode_intent(&declare(&[0x81, 0x02], &body257, &[2])),
+        Err(CodecError::LimitExceeded)
+    );
+    // Control: a real 26-byte ULID decodes.
+    assert!(decode_intent(&declare(&ulid_wire(1), &[], &[2])).is_ok());
+}
