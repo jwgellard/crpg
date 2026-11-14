@@ -913,8 +913,9 @@ fn awaiting_orders_and_terminal_tick() {
         }
     );
     assert_eq!(rig.host.executions(), 0);
-    // One combatant is alive: nobody is awaited, although C has a due entry
-    // and no order any more.
+    // One combatant is alive and the sim has emptied the timeline, so the
+    // due filter alone yields nobody here. The two-alive floor is tested
+    // separately (`awaiting_orders_needs_two_alive`).
     assert_eq!(rig.host.awaiting_orders(), Vec::<EntityId>::new());
     rig.assert_authority();
 
@@ -1024,4 +1025,112 @@ fn awaiting_orders_branches() {
     assert_eq!(tb.host.awaiting_orders(), vec![a()]);
     assert_eq!(tb.host.shutdown(), Vec::new());
     assert_eq!(tb.host.awaiting_orders(), Vec::<EntityId>::new());
+}
+
+/// `RT3` with only A alive in the timeline (B and C dead, keys 0), or with
+/// A and C alive (B dead).
+fn rt3_with_dead(alive: &[usize]) -> Value {
+    let mut value = rt3_value();
+    for (slot, entry) in value["world"]["combatants"]
+        .as_array_mut()
+        .expect("combatants")
+        .iter_mut()
+        .enumerate()
+    {
+        if !alive.contains(&slot) {
+            entry[1]["dead"] = json!(true);
+            entry[1]["health"] = json!(0);
+        }
+    }
+    let timeline: Vec<Value> = value["world"]["timeline"]
+        .as_array()
+        .expect("timeline")
+        .iter()
+        .enumerate()
+        .filter(|(slot, _)| alive.contains(slot))
+        .map(|(_, entry)| entry.clone())
+        .collect();
+    value["world"]["timeline"] = json!(timeline);
+    value
+}
+
+/// The two-alive floor: A alone is due and unordered yet awaited by nobody;
+/// with C alive as well, A (and C) are awaited.
+#[test]
+fn awaiting_orders_needs_two_alive() {
+    let rig = Rig::new(&rt3_with_dead(&[0, 2]));
+    assert_eq!(rig.host.awaiting_orders(), vec![a(), c()]);
+    let rig = Rig::new(&rt3_with_dead(&[0]));
+    assert_eq!(rig.host.awaiting_orders(), Vec::<EntityId>::new());
+    // The dead are never counted: three combatants with two dead is one alive.
+    let rig = Rig::new(&rt3_with_dead(&[2]));
+    assert_eq!(rig.host.awaiting_orders(), Vec::<EntityId>::new());
+}
+
+/// A closed host refuses a request that would change the pending mode, and
+/// the pending mode stays unset (the sim is not called after the fence).
+#[test]
+fn closed_host_request_mode_changes_nothing() {
+    let mut rig = Rig::new(&tb3c_value());
+    // Control: live, the same request is accepted on a copy.
+    let mut live = Rig::new(&tb3c_value());
+    let live_before = live.host.authority_hash();
+    assert_eq!(live.host.request_mode(EncounterMode::RealTime), Ok(()));
+    assert_ne!(live.host.authority_hash(), live_before);
+
+    assert_eq!(rig.host.shutdown(), Vec::new());
+    assert_eq!(rig.host.authority_hash(), live_before);
+    rig.assert_mode_refused(&[], EncounterMode::RealTime, HostError::Closed);
+    assert_eq!(
+        rig.host.authority_hash(),
+        live_before,
+        "no pending mode staged"
+    );
+}
+
+/// `request_mode` reserves no journal room: with the journal full on an open
+/// host it succeeds and the switch applies at the next boundary, beside the
+/// control that `host_action` on the same journal is `CaptureFull`.
+#[test]
+fn request_mode_with_a_full_journal() {
+    let mut rig = Rig::new(&tb3c_value());
+    let v = rig.bind_v();
+    for seq in 1..=MAX_CAPTURE_RECORDS as u64 {
+        let actor = (seq - 1) % 3;
+        assert_eq!(
+            rig.end_turn(v, seq, actor + 1).status,
+            ReceiptStatus::Applied,
+            "seq {seq}"
+        );
+        rig.mirror(end(eid(actor as u32)));
+        rig.drain(v);
+    }
+    assert_eq!(rig.host.last_capture(), MAX_CAPTURE_RECORDS as u64);
+    // The head is B (4,096 = 1 mod 3).
+    rig.assert_action_refused(&[v], end(b()), HostError::CaptureFull);
+
+    let before = rig.host.authority_hash();
+    assert_eq!(rig.host.request_mode(EncounterMode::RealTime), Ok(()));
+    rig.mirror_mode(EncounterMode::RealTime);
+    assert_ne!(rig.host.authority_hash(), before, "the request is staged");
+    assert_eq!(rig.host.last_capture(), MAX_CAPTURE_RECORDS as u64);
+    rig.assert_authority();
+
+    // The switch applies at the next boundary: with room made, B and C end
+    // their turns as host actions and the round rollover changes the mode.
+    rig.host
+        .acknowledge_captures(MAX_CAPTURE_RECORDS as u64)
+        .expect("acks");
+    assert_eq!(rig.host.host_action(&end(b())), Ok(None));
+    rig.mirror(end(b()));
+    assert_eq!(rig.host.host_action(&end(c())), Ok(None));
+    let mirrored = rig.mirror(end(c()));
+    assert!(mirrored.iter().any(|envelope| matches!(
+        envelope.payload,
+        HistoryEvent::ModeChanged {
+            mode: EncounterMode::RealTime,
+            ..
+        }
+    )));
+    rig.assert_authority();
 }
