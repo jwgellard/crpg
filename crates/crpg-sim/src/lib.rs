@@ -11,7 +11,8 @@
 //! system, the [`end_turn`] advance primitive, and the [`state_hash`]
 //! measurement instrument. Further systems, movement and components arrive in
 //! later tasks; the module docs say which task owns each missing piece so
-//! nothing here reads as finished.
+//! nothing here reads as finished. The `preview` module holds the exact
+//! counting layer of the read-only action preview (T143).
 
 // T097: the unit-test fixtures are included with `#[path]`, so the crate
 // names itself the way an integration test does.
@@ -25,6 +26,7 @@ pub mod event;
 pub mod hash;
 pub mod history;
 pub mod movement;
+pub mod preview;
 pub mod store;
 pub mod tick;
 pub mod timeline;
@@ -55,6 +57,10 @@ pub use movement::{
     validate_move, validate_route, within_range, ActiveRoute, CancelReason, Measure, MoveError,
     MoveOutcome, MoveRoute, MovementFact, Mover, NavRevision, RouteTag, TurnMovement,
     COORD_LIMIT_RAW, MAX_ROUTE_LENGTH_RAW, MAX_ROUTE_POINTS,
+};
+pub use preview::{
+    preview_action, ActionPreview, OutcomeOdds, PreviewCount, PreviewError, PreviewPart,
+    PreviewRules, PreviewScope, MAX_PREVIEW_COST,
 };
 pub use store::ComponentStore;
 pub use tick::{end_turn, tick, tick_with_movement};

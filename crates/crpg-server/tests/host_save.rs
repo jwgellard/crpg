@@ -1221,13 +1221,13 @@ fn checkpoint_refusals_pass_through() {
 
     // A checkpoint version T022 does not read.
     let text = String::from_utf8(checkpoint.clone()).expect("utf8");
-    let v2 = text.replacen("{\"version\":1,", "{\"version\":2,", 1);
+    let v2 = text.replacen("{\"version\":1,", "{\"version\":3,", 1);
     assert_ne!(v2, text);
     refuse(
         &dir,
         "checkpoint_v2",
         &concat(&valid_header(), v2.as_bytes()),
-        &SaveError::Checkpoint(CheckpointError::UnsupportedVersion { version: 2 }),
+        &SaveError::Checkpoint(CheckpointError::UnsupportedVersion { version: 3 }),
     );
 
     // Incarnations not greater than the saved one (1).

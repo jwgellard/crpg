@@ -602,8 +602,20 @@ rule.
 
 ## Supersession and corrections
 
+- 2026-11-14 (UTC) · claude-code/claude-opus-5-5 (architect) + T026p, user answer to Question 2 (a) · **L5's "resync
+  snapshots carry only granted positions" is met by the first page after the
+  snapshot, not by the `0x82` body.** The position filter forgets what it told
+  a viewer when it projects a snapshot, so the next page, whose `event_seq` is
+  above the snapshot's cursor and which the host sends in the same tick,
+  re-sends every granted position as a reliable `Position` anchor; the
+  client's pool applies it right after the snapshot. No `0x83` package is
+  defined. Also per T026p: lane 1 is the separately versioned movement
+  subprotocol `0xA1` (D13), beside lane-0 protocol version 4
+  (`tasks/T026p.md` Readings 1, 7, 8).
+
 ## Agent log
 
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 · Filed the proposed movement and navigation ADR. Authoritative positions are fixed-point with an `f32` mirror, the host supplies nav routes to sim by revision and tag, TB moves are atomic pool spends, and lane 1 carries reliable intents with datagram samples. Six user questions are left open.
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 D46 · Recorded the user's six answers as D46a-f in place of the open questions, and added section S so that grids and hexes plug into a `Measure` enum, a destination `snap` and a later nav query without changing the v1 core. Listed the five source conflicts as acceptance notes; the status stays Proposed.
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (manager) + user acceptance · Marked the ADR Accepted: the user accepted it on 2026-11-08 after reviewing D46 and the five acceptance notes.
+- 2026-11-14 (UTC) · claude-code/claude-opus-5-5 (architect) + T026p revision · Appended the dated L5 correction note after the user chose (a) for T026p Question 2, so the ADR says where reconnect positions travel and names lane 1's `0xA1` subprotocol.

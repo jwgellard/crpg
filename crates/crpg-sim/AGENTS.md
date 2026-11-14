@@ -47,7 +47,10 @@ the T138b history v2 surface: `HistoryWorld::{version, start_encounter_in_mode,
 request_mode}`, the `HistoryEvent` variants `RoundStarted`, `ModeChanged` and
 `OrderEnded`, and `HISTORY_VERSION` now 2 (1 is still read). T139c adds the variants `Joined` and `Left` (the last two of five
 version 2 variants) and `HistoryWorld::{start_encounter_with_members,
-join_encounter, leave_encounter}`.
+join_encounter, leave_encounter}`. The T143 action preview adds
+`preview_action`, `ActionPreview`, `OutcomeOdds`, `PreviewCount`,
+`PreviewError`, `PreviewPart`, `PreviewRules`, `PreviewScope` and
+`MAX_PREVIEW_COST` (re-exported from `crpg-data`).
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -277,7 +280,11 @@ join_encounter, leave_encounter}`.
     derived stats it builds the action plan on a scratch interner and queries
     the defence-side stat, then the actor's bonus stats, and a failure (a zero
     divisor a `Stat` effect or lost health caused) is `StatEvaluation`; it runs
-    after affordability and mutates nothing.
+    after affordability and mutates nothing. Since T143c the one source is
+    `admit(world, action, Admission)` (crate-private; `validate_action` is
+    `admit(.., Execute)`): admission has one parameter, `Admission`; `Plan`
+    skips only the turn and affordability stages, and a new stage applies to
+    both.
 13. **Area identity is world-owned and immutable (T027a, ADR-0020).** One
     `World` is one area; presence is liveness, so there is no membership
     index to dangle. Cross-world identity is `(area, EntityId)` — never key
@@ -289,6 +296,11 @@ join_encounter, leave_encounter}`.
     `AreaError::PlacementInUse` (T139 T1). Viewer
     grants, snapshot cancellation and actionable-mapping retirement belong to
     the host (T027c) and net (T027b), not sim.
+15. **The action preview is execution counted (T143).** `preview_action`
+    admits through `admit`, reuses `action_plan`, and takes its defence, folds
+    and decisions from the kernel. A change to `resolve_use`'s draws, folds,
+    damage or their order changes the preview in the same task and extends the
+    G sweep (`tests/preview.rs`, G1-G7).
 
 ## Allowed dependencies
 
@@ -622,6 +634,20 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - Trap: a range needs a mover on both sides. A ruleset without `movement` creates no movers, so a ranged ability can never be used there; a mover missing from a save is `OutOfRange`, never "unlimited".
 - Tests: `tests/ability_range.rs` (the implementer suite; `ability_range_contract.rs` is the two-keys writer's).
 
+## Action preview (T143, ADR-0029 U9)
+
+Design: [`docs/architecture/crpg-sim.md`](../../docs/architecture/crpg-sim.md), "Action preview"; contract: [`tasks/T143.md`](../../tasks/T143.md). T143b is the counting layer; T143c adds `preview_action` and `admit`.
+
+- Public addition: `PreviewCount` (`src/preview/count.rs`, re-exported at the crate root), an exact unsigned integer of any size with `zero`, `is_zero`, `to_u64`, `to_u128`, `From<u64>`, numeric `Ord` and decimal `Display`. Its arithmetic is crate-private. `src/preview/dist.rs` (distributions and the cost formulas) is crate-private. No dependency, no float, no `HashMap`.
+- Trap: costs are a contract: change an algorithm and its formula (`limbs`, `rows`, `cost`) together. T143c charges `cost` before doing any work, so a formula that undercounts lets a ruleset stall the host and one that overcounts refuses a preview the budget allows. The `costs` test in `src/preview/dist.rs` pins each term.
+- Trap: never enumerate face tuples. `sides^count` overflows every fixed-width integer long before the dice limits (`1024d1000000`); the sliding window, the keep/drop program over face values and the held-die natural face are polynomial, and the test enumeration in `dist.rs` is the only enumerator, bounded to a few dozen tuples.
+- Trap: the natural tag follows the die at `natural_die` even when that die is dropped, and only a face in `rule_faces` tags; `distribution` subtracts each tagged count from the full distribution, so an untagged entry with count zero must be omitted, not stored.
+- Trap: T143b's two scoped `#[allow(dead_code)]` attributes were deleted by T143c when it used the code; `grep -rn "allow(dead_code)" crates/crpg-sim/src/preview` must find nothing, and none is added.
+- Public addition (T143c): `preview_action(world, actor, ability, target, &PreviewRules) -> Result<ActionPreview, PreviewError>` in `src/preview/mod.rs`, with `PreviewScope` (`Actionable` is `validate_action`; `Planning` skips only the turn and affordability stages), `PreviewRules { scope, max_cost }` and `PreviewRules::from_wire` (absent or `never` is `None`), `ActionPreview`, `OutcomeOdds`, `PreviewPart`, `PreviewError` and `MAX_PREVIEW_COST`. In `combat.rs`, `admit` and `Admission` are crate-private; `ActionPlan`, `action_plan` and `ability_entry` are `pub(crate)` and nothing else changed.
+- Trap: admission runs first and its error is returned unchanged, before any cost check; the limit is `min(rules.max_cost, MAX_PREVIEW_COST)`, so dropping the `min` lets a ruleset stall the host. Parts are charged in B3's order (actor, opposing, attack, each damage row in table order) and the first part whose running total crosses the limit is named, with the full cost.
+- Trap: rows are the table's outcomes in table order (bands, then `Override` outcomes), zero counts included and each charged; an outcome with a damage entry but no row is never evaluated. `natural` counts draws where a natural-face rule matched, and the opposing roll never reaches `evaluate` with a face. The preview takes `&World`: no interner write (the `TargetStat` world intern of `resolve_use` is not repeated), no RNG draw.
+- Tests: `tests/preview.rs` (T1-T14 and the seed sweeps G1-G7, which compare the preview with `perform_action` draw for draw).
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -658,3 +684,5 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036b · Added the stage-4 section: the facts reader, the tick order, the three `stop` call sites and the traps (id order, carry-over, new TB entry must call `stop`, dead corpses).
 - 2026-11-09 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T036c · Added the turn-based move section: the public additions, the single `validate_move` judgement, the `is_v3` and persistence traps (including the `movement_v1` hash move), and updated the history version statement to 3.
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T149b · Added the ability-range section: the new public items, the last-admission-stage invariant, the legacy-form invariant and the X3 and missing-mover traps.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143b · Added the action-preview section with its public addition and the traps (costs are a contract, never enumerate tuples, natural tag and zero entries, the two scoped dead-code allows), so a later change to a counting algorithm keeps its cost formula.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143c · Extended the action-preview section and the public-API sentence with `preview_action`, the planning scope and the limit, amended invariant 12 for `admit`, and added invariant 15 (the preview is execution counted), so a change to resolution's draws extends the preview and its sweep.

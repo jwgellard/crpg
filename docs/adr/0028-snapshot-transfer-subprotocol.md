@@ -49,9 +49,11 @@ Authoritative contract: `tasks/T024.md` S§11.
 ## Supersession and corrections
 
 - 2026-11-10: T140 (protocol v3, D52) adds a separate 0x82 snapshot transfer with a 4 MiB / 128-chunk cap; the 0x81 transfer and its 1 MiB / 32-chunk cap are unchanged for v1/v2.
+- 2026-11-13: the v3 receiver is `ReassemblyPoolV3` in `crates/crpg-net/src/pool_v3.rs` (T140r1, D55): this ADR's reassembly and cutover gate transliterated for `0x82` frames and v3 deltas, sized by T140e's `TransferLimitsV3` (20 s deadline, 4 MiB per-receiver staging). `ReassemblyPool` (`reassembly.rs`) is unchanged and still serves only v1/v2 and `0x81`.
 
 ## Agent log
 
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024 · Filed ADR-0028 Accepted per D35.
 - 2026-10-25 (UTC) · opencode-go/beam-free + T024-docs · Added Host requirements (T024 S§11) section listing each sender rule.
 - 2026-11-10 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S49-bookkeeping · Added the Supersession and corrections section the coordinator directed, recording the T140 0x82 transfer cap as a dated correction; the 0x81 transfer and its caps are unchanged.
+- 2026-11-13 (UTC) · claude-code/claude-opus-5-5 (architect) + T141 contract brief · Appended the dated note that `pool_v3` (T140r1) is the v3 reassembly gate, the manager edit `tasks/T140r.md` Routing and size names, so readers of this ADR find the v3 receiver without the task files.

@@ -427,6 +427,49 @@
       "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
       "type": "string"
     },
+    "PreviewWhenWire": {
+      "description": "When the server answers a player's odds preview.",
+      "oneOf": [
+        {
+          "const": "never",
+          "description": "Never.",
+          "type": "string"
+        },
+        {
+          "const": "actionable",
+          "description": "Only for an action the actor may take now.",
+          "type": "string"
+        },
+        {
+          "const": "planning",
+          "description": "Also out of turn and regardless of costs, for planning.",
+          "type": "string"
+        }
+      ]
+    },
+    "PreviewWire": {
+      "additionalProperties": false,
+      "description": "A ruleset's odds-preview policy.",
+      "properties": {
+        "max_cost": {
+          "description": "The work one preview may take, `1..=MAX_PREVIEW_COST`; absent means\n`MAX_PREVIEW_COST`.",
+          "maximum": 16777216,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "when": {
+          "$ref": "#/$defs/PreviewWhenWire",
+          "description": "When the server answers."
+        }
+      },
+      "required": [
+        "when"
+      ],
+      "type": "object"
+    },
     "RefreshWire": {
       "description": "When an action pool refills to maximum.",
       "oneOf": [
@@ -884,6 +927,17 @@
             "$ref": "#/$defs/ActionPoolTemplate"
           },
           "type": "array"
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreviewWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Odds-preview policy (T143); absent means no preview is answered."
         },
         "round_ticks": {
           "description": "Ticks per real-time round, nonzero; absent means turn-based only.",

@@ -2852,7 +2852,10 @@ pub(crate) fn leave_encounter_tracked(
     Ok(facts)
 }
 /// Looks up one ability entry by identity, scanning in ascending order.
-fn ability_entry(definition: &CombatDefinition, ability: Ulid) -> Option<&AbilityDefinition> {
+pub(crate) fn ability_entry(
+    definition: &CombatDefinition,
+    ability: Ulid,
+) -> Option<&AbilityDefinition> {
     definition
         .abilities
         .iter()
@@ -3206,27 +3209,27 @@ fn bonus_modifiers(
 ///
 /// Built from a scratch interner, so no handle in it reaches the world.
 /// Shared by the validation stage and by execution, which cannot disagree.
-struct ActionPlan {
-    pipeline: ModifierPipeline,
-    roll_tag: RollTag,
-    actor_stats: StatBlock,
-    target_stats: StatBlock,
+pub(crate) struct ActionPlan {
+    pub(crate) pipeline: ModifierPipeline,
+    pub(crate) roll_tag: RollTag,
+    pub(crate) actor_stats: StatBlock,
+    pub(crate) target_stats: StatBlock,
     /// The actor's tag projection (T137 B19).
-    actor_tags: TagSet,
+    pub(crate) actor_tags: TagSet,
     /// The target's tag projection.
-    target_tags: TagSet,
+    pub(crate) target_tags: TagSet,
     /// The actor's modifiers; the one combined view when self-targeted.
-    actor_mods: Vec<Modifier>,
+    pub(crate) actor_mods: Vec<Modifier>,
     /// The target's modifiers; empty when self-targeted.
-    target_mods: Vec<Modifier>,
-    against: Against,
+    pub(crate) target_mods: Vec<Modifier>,
+    pub(crate) against: Against,
 }
 
 /// Builds one action's plan, querying in the B15 order: the defence-side
 /// stat, the actor's bonus stats, then an `Opposed` defence's bonus stats on
 /// the target. The first failed query is
 /// `StatEvaluation` naming that stat. Reads the world, writes nothing.
-fn action_plan(
+pub(crate) fn action_plan(
     world: &World,
     mut scratch: Interners,
     entry: &AbilityDefinition,
@@ -3445,7 +3448,31 @@ fn action_plan(
 /// `EndTurn` fails `WrongMode`, and `Stop` in turn-based play fails
 /// `WrongMode`. `Stop` checks `NoEncounter`; live nonparticipant actor;
 /// `AbsentActor`; `DeadActor`; then the mode stage.
+///
+/// This is [`admit`] with [`Admission::Execute`], the one legality source.
 pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), CombatError> {
+    admit(world, action, Admission::Execute)
+}
+
+/// Which admission stages run (T143 B2). Crate-private.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// Every stage: what execution and enumeration use.
+    Execute,
+    /// The preview's planning scope: no turn or affordability stage.
+    Plan,
+}
+
+/// The one legality source; [`validate_action`] is `admit(…, Execute)`.
+///
+/// `Plan` differs in exactly two places, both for `UseAbility`: the turn
+/// stage becomes the terminal gate (fewer than two alive is `OutOfTurn` with
+/// no active) in both modes, and the affordability loops are skipped.
+pub(crate) fn admit(
+    world: &World,
+    action: &CombatAction,
+    admission: Admission,
+) -> Result<(), CombatError> {
     use CombatError::{
         AbsentActor, AbsentTarget, DeadActor, DeadTarget, InsufficientAction, NoEncounter,
         NotParticipant, OutOfTurn, SelfTarget, UnknownAbility, ValueOverflow, WrongMode,
@@ -3538,8 +3565,8 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
             if target_state.dead {
                 return Err(DeadTarget { target });
             }
-            match combat.mode {
-                EncounterMode::TurnBased => {
+            match (admission, combat.mode) {
+                (Admission::Execute, EncounterMode::TurnBased) => {
                     if combat.active != Some(actor) {
                         return Err(OutOfTurn {
                             actor,
@@ -3547,7 +3574,7 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
                         });
                     }
                 }
-                EncounterMode::RealTime => {
+                (Admission::Execute, EncounterMode::RealTime) | (Admission::Plan, _) => {
                     if rt_alive(world) < 2 {
                         return Err(OutOfTurn {
                             actor,
@@ -3562,50 +3589,52 @@ pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), Comba
             if target == actor && !entry.allow_self_target {
                 return Err(SelfTarget);
             }
-            for template in &definition.pools {
-                let mut total: u32 = 0;
-                let mut present = false;
-                for (pool, amount) in &entry.costs {
-                    if pool.0 == template.id {
-                        present = true;
-                        total = total.checked_add(*amount).ok_or(ValueOverflow)?;
+            if admission == Admission::Execute {
+                for template in &definition.pools {
+                    let mut total: u32 = 0;
+                    let mut present = false;
+                    for (pool, amount) in &entry.costs {
+                        if pool.0 == template.id {
+                            present = true;
+                            total = total.checked_add(*amount).ok_or(ValueOverflow)?;
+                        }
+                    }
+                    if !present {
+                        continue;
+                    }
+                    let current = pool_balance(actor_state, template.id).unwrap_or(0);
+                    if current < total {
+                        return Err(InsufficientAction {
+                            pool: template.id,
+                            cost: total,
+                            current,
+                        });
                     }
                 }
-                if !present {
-                    continue;
-                }
-                let current = pool_balance(actor_state, template.id).unwrap_or(0);
-                if current < total {
-                    return Err(InsufficientAction {
-                        pool: template.id,
-                        cost: total,
-                        current,
-                    });
-                }
-            }
-            let mut unknown: Vec<Ulid> = Vec::new();
-            for (pool, _) in &entry.costs {
-                if definition.pools.iter().any(|item| item.id == pool.0) {
-                    continue;
-                }
-                if !unknown.contains(&pool.0) {
-                    unknown.push(pool.0);
-                }
-            }
-            for pool_id in unknown {
-                let mut summed: u32 = 0;
-                for (other, amount) in &entry.costs {
-                    if other.0 == pool_id {
-                        summed = summed.checked_add(*amount).ok_or(ValueOverflow)?;
+                let mut unknown: Vec<Ulid> = Vec::new();
+                for (pool, _) in &entry.costs {
+                    if definition.pools.iter().any(|item| item.id == pool.0) {
+                        continue;
+                    }
+                    if !unknown.contains(&pool.0) {
+                        unknown.push(pool.0);
                     }
                 }
-                let current = pool_balance(actor_state, pool_id).unwrap_or(0);
-                if current < summed {
-                    return Err(InsufficientAction {
-                        pool: pool_id,
-                        cost: summed,
-                        current,
-                    });
+                for pool_id in unknown {
+                    let mut summed: u32 = 0;
+                    for (other, amount) in &entry.costs {
+                        if other.0 == pool_id {
+                            summed = summed.checked_add(*amount).ok_or(ValueOverflow)?;
+                        }
+                    }
+                    let current = pool_balance(actor_state, pool_id).unwrap_or(0);
+                    if current < summed {
+                        return Err(InsufficientAction {
+                            pool: pool_id,
+                            cost: summed,
+                            current,
+                        });
+                    }
                 }
             }
             // T137 B15: a derived formula can fail mid-fight (a zero
