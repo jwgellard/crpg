@@ -5109,4 +5109,215 @@ mod tests {
         after.egress_bytes = before.egress_bytes;
         assert_eq!(after, before);
     }
+    // -- T141c fix round: review survivors (private-field cases) ---------------
+
+    /// Replaces the outbox with one entry per size in `sizes`, each filled with
+    /// its own index.
+    fn load_sizes(host: &mut Host, peer: PeerHandle, sizes: &[usize]) {
+        let session = host.sessions.get_mut(&peer).expect("bound");
+        let outbox = &mut session.v3.as_mut().expect("v3").outbox;
+        outbox.clear();
+        for (index, len) in sizes.iter().enumerate() {
+            outbox.push_back(OutboxEntry {
+                event_seq: None,
+                bytes: vec![index as u8; *len],
+            });
+        }
+    }
+
+    /// C-7: the per-peer byte cap (2,097,152) and the host byte cap
+    /// (16,777,216) each admit a frame that lands exactly on them and refuse
+    /// one that is a byte over.
+    #[test]
+    fn pacing_byte_caps_are_inclusive() {
+        let (mut host, peer) = drained_v3_host();
+        assert_eq!(host.egress_caps.per_peer_bytes, 2_097_152);
+        assert_eq!(host.egress_caps.host_bytes, 16_777_216);
+        // Per peer: exactly on the cap moves both; a byte over stops the second.
+        load_sizes(&mut host, peer, &[1_048_576, 1_048_576]);
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 2);
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").log_bytes,
+            2_097_152
+        );
+        let (mut host, peer) = drained_v3_host();
+        load_sizes(&mut host, peer, &[1_048_576, 1_048_577]);
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 1);
+        assert_eq!(outbox_len(&host, peer), 1);
+        // Host: exactly on the cap moves both; a byte over stops the second.
+        let (mut host, peer) = drained_v3_host();
+        load_sizes(&mut host, peer, &[20_000, 20_000]);
+        host.egress_bytes = 16_777_216 - 40_000;
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 2);
+        assert_eq!(host.egress_bytes, 16_777_216);
+        let (mut host, peer) = drained_v3_host();
+        load_sizes(&mut host, peer, &[20_000, 20_000]);
+        host.egress_bytes = 16_777_216 - 39_999;
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 1);
+        assert_eq!(host.egress_bytes, 16_777_216 - 39_999 + 20_000);
+        assert_eq!(outbox_len(&host, peer), 1);
+    }
+
+    /// C-7: `take_delivery` (the bytes-only read) paces the outbox, as
+    /// `take_delivery_entries` does.
+    #[test]
+    fn take_delivery_paces_the_outbox() {
+        let mut host = v2_host(false);
+        let full = host.egress_caps.host_bytes;
+        host.egress_bytes = full;
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds without egress room");
+        assert_eq!(host.take_delivery(peer), Ok(Vec::new()));
+        assert_eq!(outbox_len(&host, peer), 3);
+        host.egress_bytes = 0;
+        let frames = host.take_delivery(peer).expect("bound");
+        assert_eq!(frames.len(), 3);
+        assert_eq!(outbox_len(&host, peer), 0);
+        assert_eq!(logged(&host, peer).len(), 3);
+    }
+
+    /// C-5 step 5: a restage retires the old log's bytes from egress and
+    /// acknowledges its ordinals, so the ordinals stay gapless.
+    #[test]
+    fn restage_retires_the_old_log() {
+        let mut host = v2_host(false);
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds");
+        let session = host.sessions.get(&peer).expect("bound");
+        let old_bytes = session.log_bytes;
+        assert!(old_bytes > 0);
+        assert_eq!(host.egress_bytes, old_bytes);
+        assert_eq!((session.delivered, session.next_ordinal), (0, 4));
+        let mut narrow = full_grants();
+        narrow.entities.pop();
+        assert_eq!(
+            host.set_grants(peer, narrow),
+            Ok(GrantUpdate::SnapshotStaged)
+        );
+        let session = host.sessions.get(&peer).expect("bound");
+        let new_bytes: usize = session.log.iter().map(|frame| frame.bytes.len()).sum();
+        assert_eq!(session.delivered, 3, "the old ordinals are acknowledged");
+        assert_eq!(session.log.front().map(|frame| frame.ordinal), Some(4));
+        assert_eq!(session.log_bytes, new_bytes);
+        assert_eq!(host.egress_bytes, new_bytes, "the old log left egress");
+        // Control: a drained session restages to the same accounting.
+        let (mut host, peer) = drained_v3_host();
+        let mut narrow = full_grants();
+        narrow.entities.pop();
+        assert_eq!(
+            host.set_grants(peer, narrow),
+            Ok(GrantUpdate::SnapshotStaged)
+        );
+        let session = host.sessions.get(&peer).expect("bound");
+        assert_eq!(session.delivered, 3);
+        assert_eq!(host.egress_bytes, session.log_bytes);
+    }
+
+    /// C-6: the host-facts delta clamps a timer remainder above `u32::MAX`.
+    #[test]
+    fn host_input_clamps_the_timer_remainder() {
+        let mut host = v2_host(false);
+        let armed = |remaining: u64| {
+            Some(TurnTimer {
+                head: eid(0),
+                round: 0,
+                clock: TimerClock::Frozen { remaining },
+            })
+        };
+        host.timer = armed(1000);
+        assert_eq!(
+            host.host_input(PauseRights::default()).turn_timer_ms,
+            Some(1000)
+        );
+        host.timer = armed(u64::from(u32::MAX));
+        assert_eq!(
+            host.host_input(PauseRights::default()).turn_timer_ms,
+            Some(u32::MAX)
+        );
+        host.timer = armed(u64::from(u32::MAX) + 1);
+        assert_eq!(
+            host.host_input(PauseRights::default()).turn_timer_ms,
+            Some(u32::MAX)
+        );
+        host.timer = armed(5_000_000_000);
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant { actors: vec![] },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds");
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        let delta = crpg_net::codec_v3::decode_delta(&entries[2].bytes).expect("decodes");
+        match &delta.ops[1] {
+            crpg_net::protocol_v3::DeltaOp::HostFacts(facts) => {
+                assert_eq!(facts.turn_timer_ms, Some(Some(u32::MAX)));
+            }
+            other => panic!("expected HostFacts, got {other:?}"),
+        }
+    }
+
+    /// The `Display` of `NotV3Peer` is `<VariantName> at host/admission`.
+    #[test]
+    fn not_v3_peer_display_is_pinned() {
+        assert_eq!(
+            HostError::NotV3Peer.to_string(),
+            "NotV3Peer at host/admission"
+        );
+    }
+
+    /// C-5, C-6: a staging whose delta would take `event_seq` `u64::MAX` is
+    /// `CounterExhausted` and changes nothing; one below it commits.
+    #[test]
+    fn v3_staging_refuses_the_last_event_seq() {
+        let resync = |host: &Host, peer: PeerHandle| {
+            transfer_v3::encode_up(&TransferUp::Resync {
+                epoch: host.epoch(peer).expect("bound"),
+                after: None,
+                reason: crpg_net::protocol_transfer::ResyncReason::Overflow,
+            })
+            .expect("encodes")
+        };
+        let (mut host, peer) = drained_v3_host();
+        host.sessions.get_mut(&peer).expect("bound").next_event_seq = u64::MAX;
+        let before = staging_evidence(&host, peer);
+        let bytes = resync(&host, peer);
+        assert_eq!(
+            host.ingest_transfer(peer, &bytes, 0),
+            Err(HostError::CounterExhausted)
+        );
+        assert_eq!(staging_evidence(&host, peer), before);
+        host.sessions.get_mut(&peer).expect("bound").next_event_seq = u64::MAX - 1;
+        let bytes = resync(&host, peer);
+        assert_eq!(
+            host.ingest_transfer(peer, &bytes, 0),
+            Ok(TransferDisposition::Resynced)
+        );
+        let session = host.sessions.get(&peer).expect("bound");
+        assert_eq!(session.next_event_seq, u64::MAX);
+    }
 }

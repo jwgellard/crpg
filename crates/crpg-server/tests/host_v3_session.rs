@@ -1578,3 +1578,292 @@ fn c6_host_facts_delta_reads_the_host() {
         })
     );
 }
+// ---------------------------------------------------------------------------
+// T141c fix round: cases that kill review survivors.
+// ---------------------------------------------------------------------------
+
+/// C-2: only a granted, `present` entity that is in the world is read. A
+/// `present: false` grant and an entity the world does not hold add neither
+/// an entity fact nor a fact row; the control binds with both present.
+#[test]
+fn c2_visibility_filter() {
+    let mut host = host_of(&tb3_value());
+    let oracle = history_of(&tb3_value());
+    let mut hidden = full_grants(&[a(), b(), eid(99)]);
+    hidden.entities[1].present = false;
+    let mut fact_grants = facts();
+    fact_grants.entities.push(all_fact_flags(eid(99)));
+    let p = host
+        .bind_v3_peer(control(&[a(), b()]), hidden, fact_grants.clone(), r1(), 0)
+        .expect("binds");
+    let mut client = Client::new(host.epoch(p).expect("bound"));
+    client.drain(&mut host, p, 0);
+    assert_eq!(
+        client.replica.entities(),
+        &[row(1, health(10, 10, false), row_facts(Some(None)))]
+    );
+    // Control: B present, and the world still lacks index 99.
+    let shown = full_grants(&[a(), b(), eid(99)]);
+    let q = host
+        .bind_v3_peer(control(&[a(), b()]), shown, fact_grants, r1(), 0)
+        .expect("binds");
+    let mut other = Client::new(host.epoch(q).expect("bound"));
+    other.drain(&mut host, q, 0);
+    assert_eq!(
+        other.replica.entities(),
+        &[
+            row(1, health(10, 10, false), row_facts(Some(None))),
+            row(2, health(10, 10, false), row_facts(Some(None))),
+        ]
+    );
+    assert_authority(&host, &oracle);
+}
+
+/// C-2: health is the combatant's own `{ health, max_health, dead }`, exactly:
+/// a damaged one and a dead one.
+#[test]
+fn c2_health_is_the_combatants_own() {
+    let mut value = tb3_value();
+    value["world"]["combatants"][0][1]["health"] = json!(4);
+    value["world"]["combatants"][1][1]["health"] = json!(0);
+    value["world"]["combatants"][1][1]["dead"] = json!(true);
+    // A dead combatant leaves the timeline.
+    value["world"]["timeline"]
+        .as_array_mut()
+        .expect("timeline")
+        .remove(1);
+    let mut host = host_of(&value);
+    let oracle = history_of(&value);
+    let p = bind_p(&mut host, 0);
+    let mut client = Client::new(host.epoch(p).expect("bound"));
+    client.drain(&mut host, p, 0);
+    let rows = client.replica.entities();
+    assert_eq!(rows[0].health, Some(health(4, 10, false)));
+    assert_eq!(rows[1].health, Some(health(0, 10, true)));
+    assert_eq!(rows[2].health, Some(health(3, 3, false)));
+    assert_authority(&host, &oracle);
+}
+
+/// C-2: pools are the action pool then the extras in stored (template) order,
+/// and attached effects carry their effect and widened expiry. The templates
+/// are deliberately not ascending by id, so a sort would show.
+#[test]
+fn c2_extra_pools_and_attached_effects() {
+    let mut value = tb3_value();
+    let template = |id: u128, max: u32| {
+        json!({"id": Ulid::from_u128(id).to_string(), "max": max,
+               "refresh": {"type": "on_turn_start"}})
+    };
+    let pools = value["world"]["combat"]["definition"]["pools"]
+        .as_array_mut()
+        .expect("pools");
+    pools.push(template(609, 3));
+    pools.push(template(607, 5));
+    let effect = |id: u128| {
+        json!({"effect": Ulid::from_u128(id).to_string(), "aim": {"type": "slf"},
+               "mod_type": "bonus", "policy": "stack_all",
+               "modifiers": [{"id": Ulid::from_u128(id + 100).to_string(),
+                              "target": {"type": "roll"}, "op": {"type": "add"},
+                              "value": 1, "priority": 0, "name": null}],
+               "duration_rounds": 9})
+    };
+    value["world"]["combat"]["definition"]["effects"] = json!([effect(801), effect(802)]);
+    for index in 0..3 {
+        let state = &mut value["world"]["combatants"][index][1];
+        state["extra_pools"] = json!([
+            {"id": Ulid::from_u128(609).to_string(), "max": 3, "current": 2,
+             "refresh": {"type": "on_turn_start"}},
+            {"id": Ulid::from_u128(607).to_string(), "max": 5, "current": 4,
+             "refresh": {"type": "on_turn_start"}},
+        ]);
+    }
+    value["world"]["combatants"][0][1]["attached"] = json!([
+        {"effect": Ulid::from_u128(801).to_string(), "expires_round": 5},
+        {"effect": Ulid::from_u128(802).to_string(), "expires_round": 9},
+    ]);
+    let mut host = host_of(&value);
+    let oracle = history_of(&value);
+    let p = bind_p(&mut host, 0);
+    let mut client = Client::new(host.epoch(p).expect("bound"));
+    client.drain(&mut host, p, 0);
+    let rows = client.replica.entities();
+    let pool = |id: Ulid, current: u32, max: u32| PoolFact {
+        pool: id,
+        current,
+        max,
+    };
+    assert_eq!(
+        rows[0].facts.pools,
+        Some(vec![
+            pool(pool_jy(), 1, 1),
+            pool(Ulid::from_u128(609), 2, 3),
+            pool(Ulid::from_u128(607), 4, 5),
+        ])
+    );
+    assert_eq!(
+        rows[0].facts.effects,
+        Some(vec![
+            crpg_net::protocol_v3::EffectFact {
+                effect: Ulid::from_u128(801),
+                expires_round: 5,
+            },
+            crpg_net::protocol_v3::EffectFact {
+                effect: Ulid::from_u128(802),
+                expires_round: 9,
+            },
+        ])
+    );
+    // Control: a combatant with no attachment has an empty effect list.
+    assert_eq!(rows[1].facts.effects, Some(vec![]));
+    assert_eq!(rows[1].facts.pools.as_ref().map(Vec::len), Some(3));
+    assert_authority(&host, &oracle);
+}
+
+/// C-5 step 5, C-8: a narrowing stores the narrower grants, so a later
+/// `Resync` is cut under them, not under the old ones.
+#[test]
+fn c4_narrowing_stores_the_new_grants() {
+    let mut host = host_of(&tb3_value());
+    let oracle = history_of(&tb3_value());
+    let p = bind_p(&mut host, 100);
+    let mut client = Client::new(host.epoch(p).expect("bound"));
+    client.drain(&mut host, p, 100);
+    assert_eq!(
+        host.set_grants(p, full_grants(&[a(), b()])),
+        Ok(GrantUpdate::SnapshotStaged)
+    );
+    client.drain(&mut host, p, 100);
+    let (again, _) = resync_and_drain(&mut host, p, Some(2), 101);
+    let ids: Vec<NetId> = again
+        .replica
+        .entities()
+        .iter()
+        .map(|entity| entity.net_id)
+        .collect();
+    assert_eq!(ids, vec![n(1), n(2)]);
+    // Control: a widening is what brings C back.
+    assert_eq!(
+        host.set_grants(p, full_grants(&[a(), b(), c()])),
+        Ok(GrantUpdate::Unchanged)
+    );
+    let (wide, _) = resync_and_drain(&mut host, p, Some(3), 102);
+    assert_eq!(wide.replica.entities().len(), 3);
+    assert_authority(&host, &oracle);
+}
+
+/// C-1: fact grants given out of entity order behave as sorted, on bind and on
+/// `set_fact_grants`: each entity gets its own flags.
+#[test]
+fn c1_unsorted_fact_grants_behave_sorted() {
+    let flags = |entity: EntityId, pools: bool, stats: bool, tags: bool| EntityFactGrant {
+        entity,
+        pools,
+        effects: false,
+        stats,
+        tags,
+    };
+    let unsorted = || FactGrants {
+        entities: vec![
+            flags(c(), false, false, true),
+            flags(a(), true, false, false),
+            flags(b(), false, true, false),
+        ],
+        ..facts()
+    };
+    let mut host = host_of(&tb3_value());
+    let p = host
+        .bind_v3_peer(
+            control(&[a()]),
+            full_grants(&[a(), b(), c()]),
+            unsorted(),
+            r1(),
+            0,
+        )
+        .expect("binds");
+    let mut client = Client::new(host.epoch(p).expect("bound"));
+    client.drain(&mut host, p, 0);
+    let check = |client: &Client| {
+        let rows = client.replica.entities();
+        assert_eq!(rows[0].facts.pools, row_facts(None).pools);
+        assert_eq!(rows[0].facts.stats, None);
+        assert_eq!(rows[0].facts.tags, None);
+        assert_eq!(rows[1].facts.pools, None);
+        assert_eq!(rows[1].facts.stats, row_facts(None).stats);
+        assert_eq!(rows[1].facts.tags, None);
+        assert_eq!(rows[2].facts.pools, None);
+        assert_eq!(rows[2].facts.stats, None);
+        assert_eq!(rows[2].facts.tags, Some(vec![]));
+    };
+    check(&client);
+    // The same through the setter, then a snapshot.
+    host.set_fact_grants(
+        p,
+        FactGrants {
+            entities: vec![
+                flags(c(), false, false, true),
+                flags(b(), false, true, false),
+                flags(a(), true, false, false),
+            ],
+            ..facts()
+        },
+    )
+    .expect("stores");
+    let (again, _) = resync_and_drain(&mut host, p, Some(1), 1);
+    check(&again);
+}
+
+/// C-1 precedence: invalid control beats invalid disclosure grants, each alone
+/// gives its own error, and nothing changes on a refusal.
+#[test]
+fn c10_control_over_disclosure_grants() {
+    let too_many_control = || control(&(0..1025).map(eid).collect::<Vec<_>>());
+    let duplicate_disclosure = || full_grants(&[a(), a()]);
+    let mut host = host_of(&tb3_value());
+    let first = bind_p(&mut host, 0);
+    let before = state(&mut host, &[first]);
+    assert_eq!(
+        host.bind_v3_peer(too_many_control(), duplicate_disclosure(), facts(), r1(), 0),
+        Err(HostError::InvalidControl)
+    );
+    assert_eq!(
+        host.bind_v3_peer(too_many_control(), full_grants(&[a()]), facts(), r1(), 0),
+        Err(HostError::InvalidControl)
+    );
+    assert_eq!(
+        host.bind_v3_peer(control(&[a()]), duplicate_disclosure(), facts(), r1(), 0),
+        Err(HostError::InvalidGrants)
+    );
+    assert_eq!(state(&mut host, &[first]), before);
+    assert!(host
+        .bind_v3_peer(control(&[a()]), full_grants(&[a()]), facts(), r1(), 0)
+        .is_ok());
+}
+
+/// C-5, C-6: a staging after ticks is cut at the live tick: the Begin's base
+/// tick, the delta's server tick, the clock fact and the replica's tick are
+/// all 3.
+#[test]
+fn c1_staging_after_ticks_carries_the_tick() {
+    let mut host = host_of(&rt3_value());
+    for _ in 0..3 {
+        host.tick().expect("ticks");
+    }
+    assert_eq!(host.server_tick(), 3);
+    let p = bind_p(&mut host, 0);
+    let mut client = Client::new(host.epoch(p).expect("bound"));
+    let drained = client.drain(&mut host, p, 0);
+    let TransferDown::Begin(begin) = decoded(&drained.entries[0]) else {
+        panic!("the first entry is a Begin");
+    };
+    assert_eq!(begin.base_tick, 3);
+    assert_eq!(drained.deltas.len(), 1);
+    assert_eq!(drained.deltas[0].server_tick, 3);
+    assert_eq!(client.replica.server_tick(), 3);
+    assert_eq!(
+        client.replica.encounter().clock,
+        Some(Some(crpg_net::protocol_v3::ClockFact {
+            round_ticks: 4,
+            elapsed: 3,
+        }))
+    );
+}
