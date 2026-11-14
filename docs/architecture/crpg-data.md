@@ -496,4 +496,4 @@ matches `show_odds` defaulting to false, and leaks nothing about hidden DCs
 from an existing ruleset. This crate only decodes the policy; no rule reads it
 here. The sim maps it (T143c).
 
-- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143a · Documented the optional ruleset `preview` policy, `MAX_PREVIEW_COST`, the read-time bound and why absence means `never` (D3).
+- 2026-11-14 (UTC) Â· claude-code/claude-sonnet-5-5 (implementer) + T143a Â· Documented the optional ruleset `preview` policy, `MAX_PREVIEW_COST`, the read-time bound and why absence means `never` (D3).

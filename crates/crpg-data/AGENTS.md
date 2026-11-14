@@ -488,4 +488,4 @@ meaning here.
   `round_trip.rs` and `support/migration_gate.rs`, and the property name in
   `schema_drift.rs` and `rt_fields_contract.rs`.
 
-- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143a · Recorded the optional ruleset `preview` field, the engine ceiling, the schema-bound trap and the four test-list lines a new optional ruleset field needs.
+- 2026-11-14 (UTC) Â· claude-code/claude-sonnet-5-5 (implementer) + T143a Â· Recorded the optional ruleset `preview` field, the engine ceiling, the schema-bound trap and the four test-list lines a new optional ruleset field needs.
