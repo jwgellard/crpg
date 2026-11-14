@@ -5,7 +5,7 @@
 #[allow(dead_code)]
 mod support;
 
-use crpg_core::EntityId;
+use crpg_core::{EntityId, Ulid};
 use crpg_sim::{
     perform_action, request_mode, state_hash, CombatAction, CombatError, EncounterMode, World,
     COMBAT_ROLL_STREAM,
@@ -185,6 +185,257 @@ fn natural_rule_does_not_fire_on_opposing_roll() {
     panic!("no seed produced an opposing roll of 20");
 }
 
+// ---------------------------------------------------------------------------
+// B21: start-order precedence (one double fault per adjacent rung pair)
+// ---------------------------------------------------------------------------
+
+/// Starts the fixture into a fresh world, returning the error and asserting
+/// that the rejected start left the world exactly as it was.
+fn rejected(fixture: &Fixture) -> CombatError {
+    let mut world = World::new(3);
+    let before = world.clone();
+    let err = draws::start_into(fixture, &mut world).expect_err("the start is rejected");
+    assert_eq!(world, before, "a rejected start leaves the world unchanged");
+    err
+}
+
+fn missing(stat: &str) -> CombatError {
+    CombatError::MissingStat {
+        stat: stat.to_owned(),
+    }
+}
+
+#[test]
+fn b21_initiative_dice_before_its_bonus_names() {
+    let rule = |dice: &str, bonus: &[&str]| {
+        let mut fixture = Fixture::standard();
+        draws::set_initiative_rule(&mut fixture, dice, bonus);
+        fixture
+    };
+    assert_eq!(rejected(&rule("1d20", &["nope"])), missing("nope"));
+    assert_eq!(
+        rejected(&rule("not-dice", &["nope"])),
+        CombatError::InvalidDice
+    );
+}
+
+#[test]
+fn b21_opposed_dice_before_its_bonus_names() {
+    let opposed = |dice: &str, bonus: &[&str]| {
+        let mut fixture = Fixture::standard();
+        draws::defend_opposed(&mut fixture, dice, bonus);
+        fixture
+    };
+    assert_eq!(rejected(&opposed("1d6", &["nope"])), missing("nope"));
+    assert_eq!(
+        rejected(&opposed("not-dice", &["nope"])),
+        CombatError::InvalidDice
+    );
+}
+
+#[test]
+fn b21_defense_bonus_names_before_ability_bonus_names() {
+    let both = |opposed: &str, own: &str| {
+        let mut fixture = Fixture::standard();
+        draws::defend_opposed(&mut fixture, "1d6", &[opposed]);
+        surface::edit_ability(&mut fixture, |ability| {
+            ability.bonus_stats = Some(vec![own.to_owned()]);
+        });
+        fixture
+    };
+    assert_eq!(
+        rejected(&both("nope-opposed", "nope-own")),
+        missing("nope-opposed")
+    );
+    assert_eq!(rejected(&both("beta", "nope-own")), missing("nope-own"));
+}
+
+#[test]
+fn b21_ability_bonus_names_before_damage_dice() {
+    let fixture = |bonus: Option<&str>, dice: &str| {
+        let mut fixture = Fixture::standard();
+        draws::set_damage(
+            &mut fixture,
+            json!([{"outcome": {"type": "success"}, "amount": 2, "dice": dice}]),
+        );
+        surface::edit_ability(&mut fixture, |ability| {
+            ability.bonus_stats = bonus.map(|name| vec![name.to_owned()]);
+        });
+        fixture
+    };
+    assert_eq!(
+        rejected(&fixture(Some("nope"), "not-dice")),
+        missing("nope")
+    );
+    assert_eq!(
+        rejected(&fixture(Some("beta"), "not-dice")),
+        CombatError::InvalidDice
+    );
+    assert_eq!(
+        rejected(&fixture(None, "not-dice")),
+        CombatError::InvalidDice
+    );
+}
+
+const E1: u128 = 141;
+const E2: u128 = 151;
+
+/// A second listed ability (id 203) so that two effects are referenced:
+/// effect `E1` (modifier 142) on the standard ability, `E2` (modifier 152) on
+/// the second. Both are valid, `stack_all` and share the mod type.
+fn two_effects() -> Fixture {
+    let mut fixture = Fixture::standard();
+    let first = surface::effect_doc(
+        E1,
+        "target",
+        "probe-type",
+        "stack_all",
+        vec![surface::modifier(142, json!({"type": "roll"}), "add", 1)],
+        3,
+    );
+    let second = surface::effect_doc(
+        E2,
+        "target",
+        "probe-type",
+        "stack_all",
+        vec![surface::modifier(152, json!({"type": "roll"}), "add", 1)],
+        3,
+    );
+    surface::attach_to_ability(&mut fixture, first);
+    let mut other = fixture
+        .abilities
+        .get(&fixture.ability)
+        .expect("the ability")
+        .clone();
+    other.id = Ulid::from_u128(203);
+    other.slug = "probe-attack-2".to_owned();
+    other.name = "probe.attack-2".to_owned();
+    other.effect = Some(Ulid::from_u128(E2));
+    fixture.effects.insert(Ulid::from_u128(E2), second);
+    fixture.ruleset.abilities.push(other.id);
+    fixture.abilities.insert(other.id, other);
+    fixture
+}
+
+fn effect_mut(fixture: &mut Fixture, id: u128) -> &mut crpg_data::Effect {
+    fixture
+        .effects
+        .get_mut(&Ulid::from_u128(id))
+        .expect("the effect")
+}
+
+fn bad_damage_dice(fixture: &mut Fixture) {
+    draws::set_damage(
+        fixture,
+        json!([{"outcome": {"type": "success"}, "amount": 2, "dice": "not-dice"}]),
+    );
+}
+
+/// Makes `E1` fail `InvalidEffect`.
+fn fault_invalid_effect(fixture: &mut Fixture) -> CombatError {
+    effect_mut(fixture, E1).duration_rounds = 0;
+    CombatError::InvalidEffect {
+        effect: Ulid::from_u128(E1),
+    }
+}
+
+/// Makes the two effects share modifier id 142.
+fn fault_duplicate_modifier(fixture: &mut Fixture) -> CombatError {
+    effect_mut(fixture, E2).modifiers[0].id = Ulid::from_u128(142);
+    CombatError::DuplicateModifier {
+        id: Ulid::from_u128(142),
+    }
+}
+
+/// Gives `E2` a different policy for the shared mod type.
+fn fault_policy_conflict(fixture: &mut Fixture) -> CombatError {
+    effect_mut(fixture, E2).policy = surface::effect_doc(
+        E2,
+        "target",
+        "probe-type",
+        "highest_bonus_worst_penalty",
+        vec![surface::modifier(152, json!({"type": "roll"}), "add", 1)],
+        3,
+    )
+    .policy;
+    CombatError::PolicyConflict {
+        mod_type: "probe-type".to_owned(),
+    }
+}
+
+type Fault = fn(&mut Fixture) -> CombatError;
+const FAULTS: [Fault; 3] = [
+    fault_invalid_effect,
+    fault_duplicate_modifier,
+    fault_policy_conflict,
+];
+
+#[test]
+fn b21_damage_dice_before_every_effect_check() {
+    let mut control = two_effects();
+    bad_damage_dice(&mut control);
+    assert_eq!(
+        rejected(&control),
+        CombatError::InvalidDice,
+        "control: damage dice alone"
+    );
+    for fault in FAULTS {
+        let mut effect_only = two_effects();
+        let expected = fault(&mut effect_only);
+        assert_eq!(rejected(&effect_only), expected, "control: effect fault");
+
+        let mut both = two_effects();
+        fault(&mut both);
+        bad_damage_dice(&mut both);
+        assert_eq!(
+            rejected(&both),
+            CombatError::InvalidDice,
+            "{expected:?} loses to the damage dice"
+        );
+    }
+}
+
+#[test]
+fn b21_effect_checks_in_contract_order() {
+    // InvalidEffect (8.1) before DuplicateModifier (9) before PolicyConflict (9).
+    let mut fixture = two_effects();
+    let invalid = fault_invalid_effect(&mut fixture);
+    fault_duplicate_modifier(&mut fixture);
+    fault_policy_conflict(&mut fixture);
+    assert_eq!(rejected(&fixture), invalid);
+
+    let mut fixture = two_effects();
+    let duplicate = fault_duplicate_modifier(&mut fixture);
+    fault_policy_conflict(&mut fixture);
+    assert_eq!(rejected(&fixture), duplicate);
+
+    let mut fixture = two_effects();
+    let conflict = fault_policy_conflict(&mut fixture);
+    assert_eq!(rejected(&fixture), conflict);
+}
+
+#[test]
+fn b21_effect_checks_before_the_tag_bound() {
+    let over_bound = |fixture: &mut Fixture| {
+        fixture
+            .creatures
+            .get_mut(&fixture.creature_a)
+            .expect("c")
+            .tags = (0..1024).map(|i| format!("tag-{i:04}")).collect();
+        let first = effect_mut(fixture, E1).clone();
+        *effect_mut(fixture, E1) = draws::grant(first, &["hasted"]);
+    };
+    let mut control = two_effects();
+    over_bound(&mut control);
+    assert_eq!(rejected(&control), CombatError::TooManyTags, "control");
+
+    for fault in FAULTS {
+        let mut fixture = two_effects();
+        over_bound(&mut fixture);
+        let expected = fault(&mut fixture);
+        assert_eq!(rejected(&fixture), expected, "{expected:?} before B20");
+    }
+}
 // ---------------------------------------------------------------------------
 // B14: Opposed bonus stats
 // ---------------------------------------------------------------------------
@@ -404,6 +655,62 @@ fn damage_report_matches_health_delta() {
     assert_eq!(before - after, outcome.damage);
 }
 
+#[test]
+fn nonlethal_damaging_hit_emits_no_died() {
+    for dice in [None, Some("1d4")] {
+        let mut fixture = Fixture::standard();
+        let entry = match dice {
+            None => json!([{"outcome": {"type": "success"}, "amount": 1}]),
+            Some(d) => json!([{"outcome": {"type": "success"}, "amount": 1, "dice": d}]),
+        };
+        draws::set_damage(&mut fixture, entry);
+        surface::always_success(&mut fixture);
+        let ability = fixture.ability;
+        let (mut world, ids) = start(&fixture, 7);
+        let actor = world.combat().expect("encounter").active.expect("active");
+        let target = if actor == ids[0] { ids[1] } else { ids[0] };
+        let outcome = surface::act(&mut world, actor, ability, target);
+        assert!(outcome.damage >= 1, "the hit does damage");
+        assert!(!outcome.target_died, "and does not kill");
+        assert_eq!(draws::died_events(&mut world), 0);
+    }
+}
+
+#[test]
+fn damage_dice_for_an_undecided_outcome_draw_nothing() {
+    let entries = json!([
+        {"outcome": {"type": "success"}, "amount": 2},
+        {"outcome": {"type": "failure"}, "amount": 1, "dice": "1d4"}
+    ]);
+    // Dice authored only for failure; success is decided: flat, no draw.
+    let mut fixture = Fixture::standard();
+    draws::set_damage(&mut fixture, entries.clone());
+    surface::always_success(&mut fixture);
+    let ability = fixture.ability;
+    let (mut world, ids) = start(&fixture, 7);
+    let actor = world.combat().expect("encounter").active.expect("active");
+    let target = if actor == ids[0] { ids[1] } else { ids[0] };
+    let mut rng = world.rng_mut().clone();
+    draws::draw(&mut rng, "2d6");
+    let outcome = surface::act(&mut world, actor, ability, target);
+    assert_eq!(outcome.damage, 2);
+    assert_eq!(*world.rng_mut(), rng, "no damage draw for the success");
+
+    // Control: the same dice do draw when failure is decided.
+    let mut fixture = Fixture::standard();
+    draws::set_damage(&mut fixture, entries);
+    draws::always_failure(&mut fixture);
+    let ability = fixture.ability;
+    let (mut world, ids) = start(&fixture, 7);
+    let actor = world.combat().expect("encounter").active.expect("active");
+    let target = if actor == ids[0] { ids[1] } else { ids[0] };
+    let mut rng = world.rng_mut().clone();
+    draws::draw(&mut rng, "2d6");
+    let dice_roll = draws::draw(&mut rng, "1d4");
+    let outcome = surface::act(&mut world, actor, ability, target);
+    assert_eq!(outcome.damage, 1 + dice_roll.total as u32);
+    assert_eq!(*world.rng_mut(), rng);
+}
 // ---------------------------------------------------------------------------
 // B17: initiative
 // ---------------------------------------------------------------------------
@@ -514,6 +821,31 @@ fn rolled_key_saturates_at_both_ends() {
         world.combatants().get(ids[1]).expect("B").initiative(),
         i32::MIN
     );
+}
+
+#[test]
+fn initiative_bonus_and_total_saturate_instead_of_wrapping() {
+    // Stored stats are 16.16 fixed point, so near-`i32` bonuses come from
+    // derived `Int` stats with literal formulas.
+    let key_a = |bonus: &[&str]| {
+        let mut fixture = Fixture::standard();
+        surface::add_derived(&mut fixture, "big", surface::lit(i32::MAX));
+        surface::add_derived(&mut fixture, "small", surface::lit(5));
+        surface::add_derived(&mut fixture, "low", surface::lit(i32::MIN));
+        surface::add_derived(&mut fixture, "minus", surface::lit(-1));
+        draws::set_initiative_rule(&mut fixture, "1d6", bonus);
+        let (world, ids) = start(&fixture, 3);
+        let roll = draws::draw(&mut draws::oracle(3), "1d6").total;
+        let key = world.combatants().get(ids[0]).expect("A").initiative();
+        (key, roll)
+    };
+    // The bonus sum saturates (wrapping would give a very negative sum).
+    assert_eq!(key_a(&["big", "small"]).0, i32::MAX);
+    // The dice total plus a maximal bonus, then the authored 10, saturate.
+    assert_eq!(key_a(&["big"]).0, i32::MAX);
+    // Negative end: the bonus sum saturates at i32::MIN, then roll + 10 add.
+    let (key, roll) = key_a(&["low", "minus"]);
+    assert_eq!(key, i32::MIN + roll + 10);
 }
 
 #[test]
