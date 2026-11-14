@@ -46,8 +46,9 @@ options confer no authorization.
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
    accessor returns `&HistoryWorld`, `&World` or `&mut` anything. Gameplay
-   after the wrap enters only through `ingest` → `pump`; `tick()` is the one
-   trusted extra op. Host operations journal and are recorded as
+   after the wrap enters only through `ingest` → `pump`; `tick()`,
+   `host_action()` and `request_mode()` are the trusted extra ops (T141a).
+   Host operations journal and are recorded as
    `HostRecord`s (T141s); they are never peer commands.
 2. **Determine, reserve, then commit.** Every pump step decides the outcome
    class (gameplay through `crpg_sim::validate_action`, never a host copy of
@@ -166,6 +167,14 @@ git diff --check
   checks use `MAX_NEW_EVENTS_PER_COMMAND_RT` (4).** A killing command that
   ends the last turn of a round with a pending switch to real time journals
   `ActionResolved`, `Died`, `ModeChanged`, `RoundStarted`.
+- **Which combatants are AI-controlled is the caller's fact (T141a).**
+  `awaiting_orders()` lists every combatant the AI must decide for (turn-based
+  head; real-time due, alive, unordered); the host holds no AI policy and no
+  controller list, and `host_action` executes whatever the caller decides
+  after `validate_action`. A host action is never a peer command: no
+  sequence, receipt, `executions()` move or `last_combat_error`, and a
+  refused one (`Combat(_)`, `CaptureFull`) changes nothing. `request_mode`
+  journals nothing and records nothing.
 - **Save identity never goes into the checkpoint JSON** without a
   `CHECKPOINT_VERSION` bump (which reopens T022). It lives in the `save`
   header in front of the verbatim checkpoint.
@@ -261,3 +270,4 @@ git diff --check
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Added the adapter surface and traps for the `/2` path (ordinal acks live/departed/shutdown, no legacy `try_send`/`try_recv`, `bind`/`bind_dual` only), so the crate contract matches the as-built QUIC adapter and the ADR-0026 addendum.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Recorded `LegalIntent`, `Host::legal_intents` and `Host::replica_id` in the surface, so the bridge read API is known to be trusted, read-only and non-authorizing rather than a client capability.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Amended invariants 1 and 3 (host operations journal as `HostRecord`s and are captured before the sim acknowledgement) and added the version-1-unless-a-host-record, no-`commit_accepted`-for-host-operations and four-event-bound traps, so the contract matches checkpoint version 2.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added `host_action`, `request_mode` and `awaiting_orders` to invariant 1's trusted ops and a trap that AI control is the caller's fact and a host action is never a peer command.

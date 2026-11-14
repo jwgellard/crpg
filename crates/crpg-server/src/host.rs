@@ -382,6 +382,8 @@ pub enum HostError {
     /// The capture journal has no room for a host record; the trusted
     /// consumer must `acknowledge_captures` first.
     CaptureFull,
+    /// The sim refused a host operation; nothing changed.
+    Combat(CombatError),
 }
 
 impl fmt::Display for HostError {
@@ -402,6 +404,7 @@ impl fmt::Display for HostError {
             Self::FutureDeliveryCursor { .. } => "FutureDeliveryCursor",
             Self::Invariant(_) => "Invariant",
             Self::CaptureFull => "CaptureFull",
+            Self::Combat(_) => "Combat",
         };
         write!(f, "{name} at host/admission")
     }
@@ -2088,6 +2091,110 @@ impl Host {
         self.complete_host_op(HostOp::Tick, before)
     }
 
+    /// One trusted host action (T141a, A-2): the AI's decision for a
+    /// combatant, validated by [`validate_action`], journaled, recorded as a
+    /// [`HostOp::Action`] [`HostRecord`] when it journaled any event, and
+    /// returned with the sim's outcome.
+    ///
+    /// It reserves journal room first ([`HostError::CaptureFull`]), then
+    /// maps any sim refusal to [`HostError::Combat`] with nothing changed.
+    /// It is never a peer command: no sequence, no receipt, no
+    /// [`executions`](Self::executions) move, no
+    /// [`last_combat_error`](Self::last_combat_error), and no frame for a
+    /// v1/v2 session. Pause does not stop it (ADR-0029 P2).
+    pub fn host_action(
+        &mut self,
+        action: &CombatAction,
+    ) -> Result<Option<crpg_sim::ActionOutcome>, HostError> {
+        self.run_host_action(HostOp::Action, action)
+    }
+
+    /// The body of [`host_action`](Self::host_action), recorded as `op`.
+    fn run_host_action(
+        &mut self,
+        op: HostOp,
+        action: &CombatAction,
+    ) -> Result<Option<crpg_sim::ActionOutcome>, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.reserve_host_record()?;
+        validate_action(self.history.world(), action).map_err(HostError::Combat)?;
+        let before = self.history.last_sequence();
+        let outcome = match self.history.perform_action(action) {
+            Ok(outcome) => outcome,
+            Err(HistoryError::Combat(error)) => return Err(HostError::Combat(error)),
+            Err(_) => return Err(HostError::Invariant("history refused a host operation")),
+        };
+        self.complete_host_op(op, before)?;
+        Ok(outcome)
+    }
+
+    /// The operator's mode request (T141a, A-3; ADR-0029 T9):
+    /// [`HistoryWorld::request_mode`], applied at the next round boundary.
+    ///
+    /// A sim refusal (`NoEncounter`, `ModeUnsupported`) is
+    /// [`HostError::Combat`] with nothing changed. A request journals no
+    /// event, so it makes no record and reserves no room.
+    pub fn request_mode(&mut self, mode: EncounterMode) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let before = self.history.last_sequence();
+        match self.history.request_mode(mode) {
+            Ok(()) => {}
+            Err(HistoryError::Combat(error)) => return Err(HostError::Combat(error)),
+            Err(_) => return Err(HostError::Invariant("history refused a host operation")),
+        }
+        self.complete_host_op(HostOp::Action, before)
+    }
+
+    /// The combatants the AI must decide for now (T141a, A-4), in order.
+    ///
+    /// Reads the world only. Turn-based: the active head. Real-time (T15): when
+    /// at least two combatants are alive and the clock is below its maximum,
+    /// every timeline entry due at the clock (`key <= elapsed`) whose
+    /// combatant is alive and has no standing order, in timeline order. A
+    /// closed host or no encounter: empty. Which combatants are AI-controlled
+    /// is the caller's fact; this lists everyone that has no order.
+    pub fn awaiting_orders(&self) -> Vec<EntityId> {
+        if self.closed {
+            return Vec::new();
+        }
+        let world = self.history.world();
+        let Some(combat) = world.combat() else {
+            return Vec::new();
+        };
+        match combat.mode {
+            EncounterMode::TurnBased => combat.active.into_iter().collect(),
+            EncounterMode::RealTime => {
+                let Some(clock) = combat.clock else {
+                    return Vec::new();
+                };
+                let alive = world
+                    .combatants()
+                    .iter()
+                    .filter(|(_, state)| !state.dead())
+                    .count();
+                if alive < 2 || clock.elapsed >= crpg_sim::RT_CLOCK_MAX {
+                    return Vec::new();
+                }
+                world
+                    .timeline()
+                    .iter()
+                    .filter(|(key, _)| i64::from(key.0) <= clock.elapsed as i64)
+                    .filter(|(_, entity)| {
+                        world
+                            .combatants()
+                            .get(*entity)
+                            .is_some_and(|state| !state.dead() && state.order().is_none())
+                    })
+                    .map(|(_, entity)| entity)
+                    .collect()
+            }
+        }
+    }
+
     /// Whether the encounter is in real-time mode, the only mode whose ticks
     /// journal events.
     fn is_real_time(&self) -> bool {
@@ -3437,6 +3544,40 @@ mod tests {
                 assert_eq!(host.last_capture(), last + 1);
                 assert_eq!(host.history.pending_len(), 0);
             }
+        }
+    }
+
+    /// A host action the history caps refuse after validation commits nothing
+    /// and is `Invariant`; one event below the cap is accepted (A-2 step 4).
+    #[test]
+    fn host_action_refused_by_the_history_caps_changes_nothing() {
+        for (spawns, refused) in [(MAX_HISTORY_EVENTS, true), (MAX_HISTORY_EVENTS - 1, false)] {
+            let mut host = v2_host(false);
+            for _ in 0..spawns {
+                host.history
+                    .spawn(crpg_sim::EntityMeta::default())
+                    .expect("fits the journal");
+            }
+            let hash = host.authority_hash();
+            let result = host.host_action(&CombatAction::EndTurn { actor: eid(0) });
+            if refused {
+                assert_eq!(
+                    result,
+                    Err(HostError::Invariant("history refused a host operation"))
+                );
+                assert_eq!(host.authority_hash(), hash);
+                assert_eq!(host.last_capture(), 0);
+                assert!(host.captures.is_empty());
+                assert_eq!(host.history.pending_len(), spawns);
+            } else {
+                assert_eq!(result, Ok(None));
+                assert_ne!(host.authority_hash(), hash);
+                assert_eq!(host.last_capture(), 1);
+                assert_eq!(host.history.pending_len(), 0);
+                assert_eq!(host.history.acknowledged(), host.history.last_sequence());
+            }
+            assert_eq!(host.executions(), 0);
+            assert_eq!(host.last_combat_error(), None);
         }
     }
 

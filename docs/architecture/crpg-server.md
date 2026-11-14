@@ -190,6 +190,43 @@ uncaptured, so the next checkpoint's evidence rule refused to load.
   or no-encounter tick reserves nothing and journals nothing. Host operations
   never move `executions()` and send nothing to v1/v2 sessions.
 
+## Host actions (T141a)
+
+Three trusted `Host` calls act on the encounter without a peer. All three
+return `Closed` after `shutdown`, and none moves `executions()`, consumes an
+intent sequence, sets `last_combat_error` or sends a frame to a v1/v2
+session.
+
+- **`host_action(&CombatAction)`** (the AI's decision, later the turn timer's
+  `EndTurn`): `Closed`, then the journal reservation of one host record
+  (`CaptureFull`, always: an action may journal), then
+  `crpg_sim::validate_action` (`Combat(error)`), then
+  `HistoryWorld::perform_action` (`Combat(error)`; any other refusal is
+  `Invariant("history refused a host operation")` and the sim committed
+  nothing), then the host-operation tail with `HostOp::Action`, so the
+  envelopes become one `HostRecord` before the sim acknowledgement. The sim's
+  `Option<ActionOutcome>` is returned. A real-time order (`UseAbility`) and
+  anything else that journals nothing makes no record. It is not stopped by
+  pause (ADR-0029 P2; pause itself arrives with T141b).
+- **`request_mode(EncounterMode)`** (the operator's mode request, ADR-0029
+  T9): `Closed`, then `HistoryWorld::request_mode`; the sim's refusals
+  (`NoEncounter`, `ModeUnsupported`) are `Combat(error)`. A request journals no
+  event, so it reserves nothing and records nothing; the switch itself happens
+  at the next round boundary and its `ModeChanged`/`RoundStarted` events are
+  recorded by whichever operation crosses the boundary.
+- **`awaiting_orders()`** reads the world only: nothing awaited with no
+  encounter or a closed host; turn-based, the active head; real-time (T15),
+  while at least two combatants are alive and the clock is below
+  `RT_CLOCK_MAX`, every timeline entry with `key <= elapsed` whose combatant
+  is alive and has no standing order, in ascending `(key, EntityId)` order. A
+  combatant the sim removed from the timeline (the dead) or rescheduled past
+  the clock (one that just acted) is not listed.
+
+`HostError::Combat(CombatError)` is the new variant; its `Display` is
+`Combat at host/admission` like the rest. Which combatants are AI-controlled
+is the caller's fact: `awaiting_orders` lists everyone with no order, and the
+caller decides whom to answer with `host_action`.
+
 ## Connections and bindings (T023b)
 
 A QUIC connection has no gameplay identity until the adapter binds it. The
@@ -381,3 +418,4 @@ with T040/T041.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T024h2 · Updated the adapter routing to the as-built `/2` path (framing bind, channel reads and writes, ordinal acks, retiring drain, shutdown flush, `bind_dual` precondition), so the doc describes the adapter rather than calling it a future task.
 - 2026-11-02 (UTC) · opencode-go/deepseek-v4.1-flash + T047a · Added the host read API section (prelude, active head, eligibility, one enumeration, the sim-action mapping table, replica-id snapshot semantics), so the bridge can rely on one described legality path with non-authorizing options.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141s · Added the host-records and checkpoint-version-2 section (entry journal, dual read and conditional write, four-event bound, tail order) and named both versions in the `checkpoint` and `capture` module paragraphs, so the doc describes the journal and save the crate now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added the host-actions section (`host_action`, `request_mode`, `awaiting_orders`, the `Combat` error and their reservation and precedence order), so the doc describes the trusted calls the host now has.
