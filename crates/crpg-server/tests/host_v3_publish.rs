@@ -1355,7 +1355,7 @@ fn d4_v3_intents() {
 #[test]
 fn d4_tb_codes() {
     let mut host = host_of(&tb3_value());
-    let mirror = Mirror::new(&tb3_value());
+    let mut mirror = Mirror::new(&tb3_value());
     let (p, mut client) = bind_p(&mut host, 100);
     let epoch = host.epoch(p).expect("bound");
 
@@ -1393,10 +1393,16 @@ fn d4_tb_codes() {
             vec![rejected(epoch, 2, RejectionCode::WrongMode)],
         ]
     );
-    // A code that is not one of the nine stays 18: out of turn.
+    // Anything that is not one of the nine never reaches the sim: an actor this
+    // session does not control is `NotAuthorized`.
     let result = send3(&mut host, p, 3, 2, IntentBody::EndTurn, 103);
     assert_rejected(&result, 3, CodeV1::NotAuthorized);
     assert_eq!(host.executions(), 0);
+    // Control: the head's own `EndTurn` is accepted, with no refusal code.
+    let result = send3(&mut host, p, 4, 1, IntentBody::EndTurn, 104);
+    mirror.act(CombatAction::EndTurn { actor: a() });
+    assert_applied(&result, 4);
+    assert_eq!(host.executions(), 1);
     mirror.check(&host);
 }
 
@@ -1972,5 +1978,97 @@ fn d12_auto_pause_reaches_the_page() {
     let report = host.advance(105).expect("advances");
     assert!(!report.ticked);
     assert_eq!(state(&mut host, &[p]), before);
+    mirror.check(&host);
+}
+
+// ---------------------------------------------------------------------------
+// D-1 (Blocked branch) and D-6 (failure budget).
+// ---------------------------------------------------------------------------
+
+/// D-1, D-5: an accepted v3 intent still reserves capture room, and the head
+/// that stays staged is decoded with the session's own codec.
+#[test]
+fn d_capture_full_blocks_an_accepted_v3_intent_and_decodes_its_seq() {
+    let mut host = host_of(&rt3_value());
+    let mirror = Mirror::new(&rt3_value());
+    let (p, _client) = bind_p(&mut host, 0);
+    for seq in 1..=4096u64 {
+        let result = send3(&mut host, p, seq, 1, IntentBody::Pause, 100 * seq);
+        assert_applied(&result, seq);
+        let entries = host.take_delivery_entries(p).expect("bound");
+        let last = entries.last().expect("a receipt frame").ordinal;
+        host.acknowledge_delivery(p, last).expect("acks");
+    }
+    assert_eq!(host.last_capture(), 4096);
+    assert_eq!(host.executions(), 4096);
+    assert_eq!(host.paused(), Some(PauseReason::Player));
+
+    let now = 100 * 4097;
+    let bytes = intent_bytes(&host, p, 4097, 1, 0, IntentBody::Unpause);
+    let before = state(&mut host, &[p]);
+    assert_eq!(host.ingest(p, &bytes, now), Ok(IngestDisposition::Staged));
+    let summary = host.pump(now).expect("pump");
+    assert_eq!(summary.backpressured, 1);
+    assert_eq!(summary.admitted, 0);
+    assert_eq!(
+        summary.results,
+        vec![AdmissionResult {
+            peer: p,
+            seq: Some(4097),
+            status: StatusV1::Rejected(CodeV1::QueueFull),
+            cached: false,
+            retained_in_ingress: true,
+        }]
+    );
+    assert_eq!(state(&mut host, &[p]), before);
+    assert_eq!(host.cached_status_v3(p, 4097), Ok(None));
+
+    // Control: with room the same head is admitted and applied.
+    host.acknowledge_captures(1).expect("acknowledges");
+    let summary = host.pump(now + 1).expect("pump");
+    assert_eq!(summary.backpressured, 0);
+    assert_eq!(summary.applied, 1);
+    assert_eq!(host.paused(), None);
+    assert_eq!(host.executions(), 4097);
+    mirror.check(&host);
+}
+
+/// D-6: a rejected v3 receipt spends the failure budgets like any other; one
+/// the budget refuses is dropped, counted, and recovered by the retry.
+#[test]
+fn d_rejected_v3_receipts_obey_the_failure_budget() {
+    let mut host = host_of(&rt3_value());
+    let mirror = Mirror::new(&rt3_value());
+    let (p, mut client) = bind_p(&mut host, 0);
+    let epoch = host.epoch(p).expect("bound");
+    // Twelve rejected `EndTurn`s in one instant: the burst is ten.
+    for seq in 1..=12u64 {
+        let bytes = intent_bytes(&host, p, seq, 1, 0, IntentBody::EndTurn);
+        assert_eq!(host.ingest(p, &bytes, 10), Ok(IngestDisposition::Staged));
+    }
+    let summary = host.pump(10).expect("pump");
+    assert_eq!(summary.rejected, 12);
+    assert_eq!(summary.backpressured, 0);
+    assert_eq!(summary.dropped_replies, 2);
+    let drained = pages(&mut host, &mut client, p, 10);
+    let expected: Vec<Vec<DeltaOp>> = (1..=10)
+        .map(|seq| vec![rejected(epoch, seq, RejectionCode::WrongMode)])
+        .collect();
+    assert_eq!(drained, expected);
+    // The dropped replies were still committed to the cache.
+    for seq in 11..=12 {
+        assert_eq!(
+            host.cached_status_v3(p, seq),
+            Ok(Some(ReceiptStatus::Rejected(RejectionCode::WrongMode)))
+        );
+    }
+    // The retry recovers one once the budget has refilled.
+    let bytes = intent_bytes(&host, p, 11, 1, 0, IntentBody::EndTurn);
+    let retry = pump_bytes(&mut host, p, &bytes, 20_000);
+    assert!(retry.cached);
+    assert_eq!(
+        pages(&mut host, &mut client, p, 20_000),
+        vec![vec![rejected(epoch, 11, RejectionCode::WrongMode)]]
+    );
     mirror.check(&host);
 }

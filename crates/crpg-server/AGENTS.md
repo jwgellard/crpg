@@ -202,8 +202,20 @@ git diff --check
   clones and commits only whole; its frames wait in a per-session outbox (not
   egress) that `pace_session` drains in order under the egress caps, so a bind
   never returns `QueueFull`. A delta takes its `event_seq` when built, not when
-  logged. Until T141d, v3 sessions are skipped by `accepted_room` and get no v2
-  frames, and their v2-format intents are refused `UnsupportedVersion`.
+  logged. v3 sessions are skipped by `accepted_room`.
+- **v3 publication (T141d): split a page only with `frame_spans`.** One page per
+  v3 session per operation is `[receipt?] ++ enters ++ events ++ rest ++ [Clock?]
+  ++ [HostFacts?]`, built on clones of the views after auto-pause and the timer,
+  and cut by `codec_v3::frame_spans`, never `ops.chunks`. v3 sessions never block
+  admission: an overflowing page restages a snapshot, a rejected v3 intent never
+  returns `Blocked` (its receipt is logged if it fits, else dropped and recovered
+  by the retry), and a page or restage that cannot be built fences that one
+  session, never the operation. Decide every session's plan (read-only) before any
+  ledger moves; a fenced originator skips the cache and sequence update.
+- **`AdmissionResult` carries v1 codes; read exact v3 codes with
+  `cached_status_v3`.** The retry cache stores the v3 status for every session;
+  `AdmissionResult` and `cached_status` report 21..=29 as `IllegalAction` and 30
+  as `NotAuthorized`. v1/v2 sessions never get a code above 20.
 - **Save identity never goes into the checkpoint JSON** without a
   `CHECKPOINT_VERSION` bump (which reopens T022). It lives in the `save`
   header in front of the verbatim checkpoint.
@@ -302,3 +314,4 @@ git diff --check
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added `host_action`, `request_mode` and `awaiting_orders` to invariant 1's trusted ops and a trap that AI control is the caller's fact and a host action is never a peer command.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the traps for `tick` versus `advance`, unpersisted pause and settings, and the caller-time timer, and amended invariant 1 to name the T141b pause calls, so the contract matches the pause and timer code.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the v3-session trap (no stored map, atomic staging into a paced outbox, interim v3 guards) and named the `bind_v3_peer` family in the surface, so the contract matches the v3 session code.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Replaced the interim v3 trap with the publication traps (frame_spans only, never-blocking v3 sessions with per-session fences, exact v3 codes behind `cached_status_v3`), so the contract matches the v3 pipeline.

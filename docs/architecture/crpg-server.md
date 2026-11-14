@@ -308,9 +308,62 @@ cursor `next_event_seq - 1`, one `[Clock, HostFacts]` delta that takes its
 pacing moves entries into the delivery log, in order, while the per-peer (128
 frames, 2 MiB) and host caps allow, at the end of staging, in `take_delivery*`
 and after `acknowledge_delivery`. A bind therefore never returns `QueueFull`.
-Interim until T141d: v3 sessions are skipped by `accepted_room` and receive no
-v2 frames from peer commands, and a v2-format intent from a v3 session is refused
-as `UnsupportedVersion`; publication of pages and the v3 intent pipeline are T141d.
+Until T141d, v3 sessions were skipped by `accepted_room` and received no v2 frames
+and no pages; publication and the v3 intent pipeline are the next section. v3
+sessions are still skipped by `accepted_room`.
+
+## v3 publication (T141d)
+
+**Intents.** A v3 session's staged bytes decode with `codec_v3::decode_intent` (the
+session's codec, also for the `Blocked` head's `seq`) into one common `Frame`; a
+v1/v2 verb maps into the v3 vocabulary, so one pipeline serves both. Steps 1 to 4
+of the T022 pipeline are unchanged. Step 5 resolves the actor through the session's
+`InterestView` (mapped, in the world's area, `present && action_actor`, controlled,
+else `NotAuthorized`), then the body: `DeclareAction` as T022 (target `present &&
+action_target`), `EndTurn`, `Stop`, `Pause` and `Unpause` (their right, else
+`NoPauseRight`), `RequestMode` (the `pause` right, else `NotAuthorized`). A sim
+action is judged by `validate_action`; `RequestMode` reserves the accepted class and
+runs `HistoryWorld::request_mode`, whose refusal commits a rejection under that
+reservation. `Pause` and `Unpause` change host state (reason `Player`, the timer
+frozen or resumed) and journal nothing. Every `Applied` intent goes through
+`commit_accepted`, so it makes a capture record and moves `executions()`.
+
+**Codes.** `code(CombatError)` maps `ModeUnsupported` 21, `WrongMode` 22,
+`StatEvaluation` 23, `EncounterTerminal` 24, `RulesetMismatch` 25, `PlacementInUse`
+26, `NotCreature` 27, `AlreadyParticipant` 28, `NoEntrants` 29, every other error
+`IllegalAction` 18; v1/v2 sessions keep 18 for all. The retry cache stores the exact
+`protocol_v3::ReceiptStatus` for every session (a v1/v2 status converts by `From`);
+a hit re-sends the exact code. `AdmissionResult.status` and `cached_status` keep the
+frozen v1 type and report 21 to 29 as `IllegalAction` and 30 as `NotAuthorized`;
+`cached_status_v3` returns the exact status (`UnknownPeer`, then `NotV3Peer`).
+
+**Pages.** After every operation one page per v3 session, ascending handle: an
+accepted peer command (its events, the receipt to the originator), every host
+operation (also a zero-event one: an RT order, a pending mode, a tick's clock),
+`pause`, `unpause`, `set_settings`, and to one session `set_fact_grants`,
+`set_pause_rights`, a widening `set_grants` and `set_control`. The page is built on
+clones of the session's two views after auto-pause and the timer, so its `Clock` and
+`HostFacts` are current: `[receipt?] ++ enters ++ events ++ rest of the page (health,
+turn, removals, then fact ops) ++ [Clock?] ++ [HostFacts?]`, cut only by
+`codec_v3::frame_spans`, one `event_seq` per span. `Clock` and `HostFacts` are added
+when they differ from what the session was last sent; the host-facts image holds the
+rights, the toggles if granted and the timer epoch if granted, so the countdown
+alone never re-sends it. Event candidates (`candidate_v3`) resolve ids against the
+view after the page, else before it: the six v2 events by the v2 predicates,
+`RoundStarted` and `ModeChanged` by `turn_round` and the mode grant, `OrderEnded`
+only for a controlled, present actor, `Joined` and `Left` by `present && spawn` and
+`present && despawn`, `Moved` withheld. Candidates are projected in chunks of 256.
+
+**Room, overflow and failure.** A page that fits the session's egress room is logged
+and its clones committed; otherwise the session is restaged (`Superseded`) and the
+page dropped, so v3 never blocks admission and a rejected v3 intent never returns
+`Blocked` (its receipt is logged if it fits and dropped if not, the client's retry
+recovers it). Every fallible step of every session is decided before any ledger
+moves: a page or restage that cannot be built fences that one session (as
+`unbind_peer`) and never fails the operation, which has already committed. A fenced
+originator is skipped by the cache and sequence update, and its record is appended
+without its view. A v3 session that gets at least one frame for an accepted command
+adds a capture view, named by its own ids.
 
 ## Connections and bindings (T023b)
 
@@ -506,3 +559,4 @@ with T040/T041.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141a · Added the host-actions section (`host_action`, `request_mode`, `awaiting_orders`, the `Combat` error and their reservation and precedence order), so the doc describes the trusted calls the host now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the pause, settings and tick-driver section (`HostSettings`, pause state and its restore default, `advance`, auto-pause as tail step 1, the turn timer and its freezing), so the doc describes the host calls the crate now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the protocol v3 sessions section (per-session wire, views read from `World` each call, atomic `0x82` staging, the paced outbox and its interim guards), so the doc matches `bind_v3_peer` and `host_v3.rs`.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Added the v3 publication section (intent pipeline and codes, the exact-status cache and its v1 projection, the page layout, candidates, room, overflow and per-session fencing) and replaced the T141c interim paragraph, so the doc matches the v3 intents and pages the host now has.
