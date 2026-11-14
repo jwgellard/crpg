@@ -602,7 +602,7 @@ rule.
 
 ## Supersession and corrections
 
-- 2026-11-14 (UTC), T026p (user answer, Question 2 (a)): **L5's "resync
+- 2026-11-14 (UTC) · claude-code/claude-opus-5-5 (architect) + T026p, user answer to Question 2 (a) · **L5's "resync
   snapshots carry only granted positions" is met by the first page after the
   snapshot, not by the `0x82` body.** The position filter forgets what it told
   a viewer when it projects a snapshot, so the next page, whose `event_seq` is
