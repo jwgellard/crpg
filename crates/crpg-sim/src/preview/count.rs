@@ -384,6 +384,50 @@ mod tests {
         );
     }
 
+    /// Operands with several nonzero limbs: each partial product must be
+    /// added onto what earlier rows left in the same cell.
+    #[test]
+    fn mul_accumulates_across_limbs() {
+        let limbs = |count: &PreviewCount| count.limbs.clone();
+        let make = |limbs: &[u64]| PreviewCount {
+            limbs: limbs.to_vec(),
+        };
+
+        // (2^64 + 1)^2 = 2^128 + 2^65 + 1.
+        let a = make(&[1, 1]);
+        assert_eq!(limbs(&a.mul(&a)), vec![1, 2, 1]);
+        assert_eq!(
+            a.mul(&a).to_string(),
+            "340282366920938463500268095579187314689"
+        );
+
+        // Three limbs by three limbs, no carries: the coefficients of
+        // (1 + 2x + 3x^2)(4 + 5x + 6x^2).
+        let left = make(&[1, 2, 3]);
+        let right = make(&[4, 5, 6]);
+        assert_eq!(limbs(&left.mul(&right)), vec![4, 13, 28, 27, 18]);
+        assert_eq!(limbs(&right.mul(&left)), vec![4, 13, 28, 27, 18]);
+
+        // Three full limbs by three full limbs: (2^192 - 1)^2 =
+        // 2^384 - 2^193 + 1, so every cell carries.
+        let full = make(&[u64::MAX, u64::MAX, u64::MAX]);
+        assert_eq!(
+            limbs(&full.mul(&full)),
+            vec![1, 0, 0, u64::MAX - 1, u64::MAX, u64::MAX]
+        );
+
+        // A carry out of one cell lands on a cell that already holds a
+        // partial product.
+        let carrying = make(&[u64::MAX, u64::MAX]);
+        let other = make(&[u64::MAX, 3]);
+        assert_eq!(limbs(&carrying.mul(&other)), limbs(&other.mul(&carrying)));
+        let product = carrying.mul(&other);
+        // Independent value: (2^128 - 1) * other = other * 2^128 - other.
+        let mut shifted = other.clone();
+        shifted.limbs.splice(0..0, [0, 0]);
+        assert_eq!(product, shifted.checked_sub(&other).unwrap());
+    }
+
     #[test]
     #[should_panic(expected = "preview count division was not exact")]
     fn div_small_exact_panics_on_a_remainder() {

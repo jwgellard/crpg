@@ -489,6 +489,121 @@ mod tests {
         assert_eq!(total.to_u64(), Some(10_000_000_000));
     }
 
+    /// The kept cost at counts with more than one limb: `steps * limbs *
+    /// ceil(n / 64)`, each figure worked by hand from B3.
+    #[test]
+    fn kept_cost_charges_count_and_binomial_widths() {
+        // (expression, steps, limbs, ceil(n / 64), cost)
+        let cases = [
+            // 2 * 34^2 * 3 = 6936
+            ("33d2kh1", 6_936u64, 2u64, 1u64, 13_872u64),
+            // 2 * 65^2 * 3 = 25350; limbs ceil(128 / 64) = 2
+            ("64d2kh1", 25_350, 2, 1, 50_700),
+            // 2 * 66^2 * 3 = 26136; limbs ceil(130 / 64) = 3
+            ("65d2kh1", 26_136, 3, 2, 156_816),
+            // 2 * 129^2 * 3 = 99846; limbs ceil(256 / 64) = 4
+            ("128d2kh1", 99_846, 4, 2, 798_768),
+            // drop arms: k = 64, 2 * 66^2 * (64 * 2 + 1) = 1123848
+            ("65d2dh1", 1_123_848, 3, 2, 6_743_088),
+            ("65d2dl1", 1_123_848, 3, 2, 6_743_088),
+            ("65d2kl64", 1_123_848, 3, 2, 6_743_088),
+        ];
+        for (text, steps, width, binomial, want) in cases {
+            let expr = dice(text);
+            assert_eq!(limbs(&expr), width, "limbs of {text}");
+            assert_eq!(steps * width * binomial, want, "hand figure of {text}");
+            assert_eq!(cost(&expr, None, &[]), Some(want), "cost of {text}");
+        }
+        // The natural factor (2r + 1) multiplies before the widths:
+        // 6936 * 3 * 2 * 1.
+        assert_eq!(cost(&dice("33d2kh1"), Some(0), &[2]), Some(41_616));
+    }
+
+    /// Partial products of the kept cost, in u128 so no step can wrap.
+    fn kept_steps(n: u64, s: u64, k: u64, r: u64, width: u64) -> [u128; 4] {
+        let base = u128::from(s) * u128::from((n + 1) * (n + 1)) * u128::from(k * s + 1);
+        let with_natural = if r > 0 {
+            base * u128::from(2 * r + 1)
+        } else {
+            base
+        };
+        let with_width = with_natural * u128::from(width);
+        let total = with_width * u128::from(n.div_ceil(64));
+        [base, with_natural, with_width, total]
+    }
+
+    fn fits(value: u128) -> bool {
+        value <= u128::from(u64::MAX)
+    }
+
+    #[test]
+    fn kept_cost_overflows_at_the_natural_factor() {
+        // 3d1000000kh1: one limb, so only the (2r + 1) product can overflow.
+        let expr = dice("3d1000000kh1");
+        assert_eq!(limbs(&expr), 1);
+        let base = kept_steps(3, 1_000_000, 1, 0, 1)[0];
+        let most = u128::from(u64::MAX) / base; // the largest 2r + 1
+        let r_fits = ((most - 1) / 2) as u32;
+        let faces_fit: Vec<u32> = (1..=r_fits).collect();
+        let faces_over: Vec<u32> = (1..=r_fits + 1).collect();
+        let fit = kept_steps(3, 1_000_000, 1, u64::from(r_fits), 1);
+        let over = kept_steps(3, 1_000_000, 1, u64::from(r_fits) + 1, 1);
+        assert!(fits(fit[3]) && !fits(over[1]) && fits(over[0]));
+        assert_eq!(cost(&expr, Some(0), &faces_fit), Some(fit[3] as u64));
+        assert_eq!(cost(&expr, Some(0), &faces_over), None);
+    }
+
+    #[test]
+    fn kept_cost_overflows_at_the_limb_width() {
+        // 64d1000000kh64: width 20, one binomial limb. With r = 2 the steps
+        // still fit and only `* width` overflows; r = 1 is the control.
+        let expr = dice("64d1000000kh64");
+        assert_eq!(limbs(&expr), 20);
+        let control = kept_steps(64, 1_000_000, 64, 1, 20);
+        let over = kept_steps(64, 1_000_000, 64, 2, 20);
+        assert!(fits(control[3]));
+        assert!(fits(over[1]) && !fits(over[2]));
+        assert_eq!(cost(&expr, Some(0), &[1]), Some(control[3] as u64));
+        assert_eq!(cost(&expr, Some(0), &[1, 2]), None);
+    }
+
+    #[test]
+    fn kept_cost_overflows_at_the_binomial_width() {
+        // 1024d5000kh1024: width 208, binomial width 16. The steps times the
+        // width fit and only `* ceil(n / 64)` overflows; kh100 is the control.
+        let expr = dice("1024d5000kh1024");
+        assert_eq!(limbs(&expr), 208);
+        let over = kept_steps(1024, 5000, 1024, 0, 208);
+        assert!(fits(over[2]) && !fits(over[3]));
+        assert_eq!(cost(&expr, None, &[]), None);
+        let control_expr = dice("1024d5000kh100");
+        let control = kept_steps(1024, 5000, 100, 0, 208);
+        assert!(fits(control[3]));
+        assert_eq!(cost(&control_expr, None, &[]), Some(control[3] as u64));
+    }
+
+    #[test]
+    fn negative_extreme_offset_is_not_clamped_or_shifted() {
+        // Faces are positive, so the totals sit just above i32::MIN.
+        let got = distribution(&built(1, 4, DiceSelection::All, i32::MIN), Some(0), &[1, 2]);
+        let mut want = Distribution::new();
+        want.insert((i32::MIN + 1, Some(1)), PreviewCount::from(1));
+        want.insert((i32::MIN + 2, Some(2)), PreviewCount::from(1));
+        want.insert((i32::MIN + 3, None), PreviewCount::from(1));
+        want.insert((i32::MIN + 4, None), PreviewCount::from(1));
+        assert_eq!(got, want);
+
+        let kept = distribution(
+            &built(2, 2, DiceSelection::KeepLowest(1), i32::MIN),
+            None,
+            &[],
+        );
+        let mut want = Distribution::new();
+        want.insert((i32::MIN + 1, None), PreviewCount::from(3));
+        want.insert((i32::MIN + 2, None), PreviewCount::from(1));
+        assert_eq!(kept, want);
+    }
+
     #[test]
     fn clamping_merges_totals_and_tags() {
         // Every total clamps to i32::MAX: the tagged and untagged parts
