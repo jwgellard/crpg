@@ -273,6 +273,7 @@ fn documents(
             late_join: None,
             effects_on_exit: None,
             movement: None,
+            preview: None,
         }));
     }
     result.push(Document::Ability(Ability {

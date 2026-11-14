@@ -421,6 +421,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
             late_join: None,
             effects_on_exit: None,
             movement: None,
+            preview: None,
         }),
         Document::Ability(Ability {
             id: id(21),

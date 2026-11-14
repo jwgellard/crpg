@@ -475,3 +475,17 @@ with no `movement`; the warning never fails validation and adds no runtime
 meaning here.
 
 - 2026-11-09 (UTC) Â· opencode-go/deepseek-v4.1-flash (implementer) + T149a Â· Recorded the optional range field, its raw `i32` wire, the positive read-time rule, the current-tag addition under D32c and the second warning diagnostic.
+
+## Ruleset preview policy (T143a)
+- `Ruleset.preview` is optional and last; it joins `crpg.ruleset/2` with no
+  version bump (D32c). Absence means `never`: no preview is answered (D3).
+- `MAX_PREVIEW_COST` (16,777,216) is the engine ceiling. `crpg-sim` re-exports
+  it; do not copy the number elsewhere.
+- Do not use `#[schemars(range(..))]` on a `uint64` field: `schema::integer_bounds`
+  overwrites it with the full `u64` range. State the bound with `schema_with`
+  (see `preview_max_cost_schema`).
+- A new optional ruleset field needs four test-list lines: `preview: None,` in
+  `round_trip.rs` and `support/migration_gate.rs`, and the property name in
+  `schema_drift.rs` and `rt_fields_contract.rs`.
+
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143a · Recorded the optional ruleset `preview` field, the engine ceiling, the schema-bound trap and the four test-list lines a new optional ruleset field needs.
