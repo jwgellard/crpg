@@ -365,6 +365,31 @@ originator is skipped by the cache and sequence update, and its record is append
 without its view. A v3 session that gets at least one frame for an accepted command
 adds a capture view, named by its own ids.
 
+## v3 timing (T141e)
+
+**Heartbeat.** At every `tick` publication of a running host (`HostOp::Tick`, not
+paused), a session whose `server_tick - last_clock_tick` is at least
+`POLICY_CLOCK_HEARTBEAT_TICKS` (100) gets `Clock` at the end of that tick's page,
+even when the page is otherwise empty. `last_clock_tick` is the server tick of the
+last `Clock` the session was sent (a staging's delta, a changed `Clock`, a
+heartbeat), so a pause or unpause page restarts the count. A paused host does not
+tick through `advance`, and a direct `tick()` on a paused host sends no heartbeat.
+
+**Throttle.** A staging installs a `Throttle` on the session (`host_v3.rs`) that
+lasts until `Published` ends the transfer. While it is set a publication at server
+tick `t` is logged only if `t >= last_page + POLICY_V3_THROTTLE_TICKS` (10;
+`last_page` is the staging tick, then the tick of the last logged frames) and the
+frames keep the delta frames and bytes logged since the staging (C-6's frame
+included) within `POLICY_V3_IN_FLIGHT_FRAMES` (128) and `POLICY_V3_IN_FLIGHT_BYTES`
+(2 MiB), the receiver's held-delta budget. A publication that is not allowed logs
+nothing and leaves both views and the sent host facts as they were, so the next
+allowed page carries every change; a page the budget refuses also ends the deltas
+until the transfer ends. An allowed page carries no event ops and no receipt: a
+download window loses notices (Question 4 (a)), never state. A rejected-intent
+receipt and a cache-hit receipt are single delta frames under the same gate, so a
+dropped one is recovered by the client's retry at an allowed tick. A new staging
+(`Resync`, narrowing, overflow) restarts the throttle; other sessions are unaffected.
+
 ## Connections and bindings (T023b)
 
 A QUIC connection has no gameplay identity until the adapter binds it. The
@@ -560,3 +585,4 @@ with T040/T041.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the pause, settings and tick-driver section (`HostSettings`, pause state and its restore default, `advance`, auto-pause as tail step 1, the turn timer and its freezing), so the doc describes the host calls the crate now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the protocol v3 sessions section (per-session wire, views read from `World` each call, atomic `0x82` staging, the paced outbox and its interim guards), so the doc matches `bind_v3_peer` and `host_v3.rs`.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Added the v3 publication section (intent pipeline and codes, the exact-status cache and its v1 projection, the page layout, candidates, room, overflow and per-session fencing) and replaced the T141c interim paragraph, so the doc matches the v3 intents and pages the host now has.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing section (the running-host `Clock` heartbeat and the in-flight throttle with its frame and byte budget, receipts and notices dropped during a download), so the doc matches the throttle and heartbeat the host now has.

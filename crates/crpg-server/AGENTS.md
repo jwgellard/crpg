@@ -212,6 +212,15 @@ git diff --check
   by the retry), and a page or restage that cannot be built fences that one
   session, never the operation. Decide every session's plan (read-only) before any
   ledger moves; a fenced originator skips the cache and sequence update.
+- **v3 timing (T141e): a throttled session loses notices and receipts, never
+  state.** While a v3 session's transfer is in flight, a publication is logged only
+  every `POLICY_V3_THROTTLE_TICKS` ticks within the 128-frame, 2 MiB budget, and an
+  allowed page has no event ops or receipt; a held publication changes no view, so
+  the next allowed page folds every change. Gate every delta frame to such a session
+  through `Throttle` (pages, rejected receipts, cache-hit receipts) and record what
+  is logged. The `Clock` heartbeat belongs to a running host's tick only. A test that
+  publishes to a v3 session without `Published` first is throttled: send `Published`
+  right after the first drain.
 - **`AdmissionResult` carries v1 codes; read exact v3 codes with
   `cached_status_v3`.** The retry cache stores the v3 status for every session;
   `AdmissionResult` and `cached_status` report 21..=29 as `IllegalAction` and 30
@@ -315,3 +324,4 @@ git diff --check
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141b · Added the traps for `tick` versus `advance`, unpersisted pause and settings, and the caller-time timer, and amended invariant 1 to name the T141b pause calls, so the contract matches the pause and timer code.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the v3-session trap (no stored map, atomic staging into a paced outbox, interim v3 guards) and named the `bind_v3_peer` family in the surface, so the contract matches the v3 session code.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Replaced the interim v3 trap with the publication traps (frame_spans only, never-blocking v3 sessions with per-session fences, exact v3 codes behind `cached_status_v3`), so the contract matches the v3 pipeline.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing trap (throttled sessions lose notices and receipts, never state; gate every delta frame through `Throttle`; heartbeat only on a running tick) so the contract matches the throttle and heartbeat code.

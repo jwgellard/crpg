@@ -55,7 +55,7 @@ use crpg_net::protocol_v2;
 use crpg_net::protocol_v3::{
     AutoPauseToggles, AutoPauseTrigger, DeltaFrame as DeltaFrameV3, DeltaOp as DeltaOpV3,
     IntentBody as IntentBodyV3, IntentFrame as IntentFrameV3, PauseReason, PauseRights,
-    ReceiptStatus as ReceiptV3, RejectionCode as CodeV3,
+    ReceiptStatus as ReceiptV3, RejectionCode as CodeV3, POLICY_CLOCK_HEARTBEAT_TICKS,
 };
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_net::transfer_v3;
@@ -74,8 +74,8 @@ use crate::capture::{
 };
 use crate::checkpoint::{check_host_record, CheckpointError};
 use crate::host_v3::{
-    host_facts_image, key_of, net_mode, outbox_fits, read_world, sim_mode, OutboxEntry, PagePlan,
-    V3Session, V3Stage,
+    host_facts_image, key_of, net_mode, outbox_fits, read_world, sim_mode, Gate, OutboxEntry,
+    PagePlan, Throttle, V3Session, V3Stage,
 };
 
 // ---------------------------------------------------------------------------
@@ -212,6 +212,16 @@ pub const DEFAULT_HOST_GRANTS: HostGrants = HostGrants {
     auto_pause: true,
     turn_timer: true,
 };
+
+/// While a v3 session's transfer is in flight it gets at most one delta page
+/// per this many ticks (T141e, H-8, D54). Policy, never wire.
+pub const POLICY_V3_THROTTLE_TICKS: u64 = 10;
+/// Delta frames one v3 session may receive while its transfer is in flight:
+/// the receiver's held-delta budget (`TransferLimitsV3::v3()`, T140e).
+pub const POLICY_V3_IN_FLIGHT_FRAMES: usize = protocol::POLICY_EGRESS_FRAMES_PER_PEER;
+/// Delta bytes one v3 session may receive while its transfer is in flight:
+/// the receiver's held-delta budget (`TransferLimitsV3::v3()`, T140e).
+pub const POLICY_V3_IN_FLIGHT_BYTES: usize = protocol::POLICY_EGRESS_BYTES_PER_PEER;
 
 /// One entity's v3 fact grants. There is no `order` flag: the standing order
 /// follows control (T141 Reading 9, N2).
@@ -727,6 +737,10 @@ enum V3Decision {
     Restage(V3Stage),
     /// The page or the restage could not be built: fence the session.
     Fence,
+    /// The in-flight throttle logs nothing (T141e, E-2) and changes no view;
+    /// `close` ends the session's deltas until its transfer ends (a page the
+    /// held-delta budget refused).
+    Hold { close: bool },
 }
 
 /// What committing one [`V3Decision`] did.
@@ -1773,7 +1787,13 @@ impl Host {
         let receipt = self.receipt_frame(session, frame.seq, server_tick, status)?;
         let fits = self.room(session, std::slice::from_ref(&receipt));
         let receipt = if session.v3.is_some() {
-            fits.then_some(receipt)
+            // The throttle decides too (D-6, E-2): a receipt is one delta
+            // frame, so it counts toward the in-flight allowance.
+            let gate = receipt_gate(session, server_tick, receipt.bytes.len());
+            if gate == Gate::Over {
+                self.close_throttle(peer);
+            }
+            (fits && gate == Gate::Open).then_some(receipt)
         } else if block && !session.resync_pending && !fits {
             return Ok(Step::Blocked);
         } else {
@@ -1814,7 +1834,14 @@ impl Host {
             let frame = self.receipt_frame(session, seq, entry.processed_tick, status)?;
             // Best effort under the egress caps: a cache hit reserves nothing,
             // and the sender's next identical retry recovers the receipt.
-            if self.room(session, std::slice::from_ref(&frame)) {
+            // A v3 session's receipt is also a throttled delta frame (E-2).
+            let gate = receipt_gate(session, self.server_tick(), frame.bytes.len());
+            if gate == Gate::Over {
+                self.close_throttle(peer);
+            }
+            let session = self.sessions.get(&peer).expect("bound by caller");
+            if gate == Gate::Open && self.room(session, std::slice::from_ref(&frame)) {
+                let tick = self.server_tick();
                 let session = self.sessions.get_mut(&peer).expect("bound by caller");
                 let spend = match status {
                     ReceiptV3::Applied => true,
@@ -1825,7 +1852,9 @@ impl Host {
                 if spend {
                     let generation = session.generation;
                     let ordinal = session.next_ordinal;
+                    let len = frame.bytes.len();
                     push_frames(&mut self.egress_bytes, session, vec![frame])?;
+                    record_throttle(session, tick, len);
                     let entry = session
                         .cache
                         .iter_mut()
@@ -1925,7 +1954,9 @@ impl Host {
             Some(receipt) => {
                 if try_consume_failure(session, now_ms, receipt.bytes.len()) {
                     entry.receipt = Some((session.generation, session.next_ordinal));
+                    let len = receipt.bytes.len();
                     push_frames(&mut self.egress_bytes, session, vec![receipt])?;
+                    record_throttle(session, processed_tick, len);
                     false
                 } else {
                     true
@@ -2068,7 +2099,8 @@ impl Host {
         }
         // v3 sessions (D-6 to D-10): each page is decided without changing
         // anything; a session that gets at least one frame adds its view.
-        let decisions = self.decide_v3_pages(None, &events, Some((peer, seq)), Some(&involved));
+        let decisions =
+            self.decide_v3_pages(None, &events, Some((peer, seq)), Some(&involved), false);
         for (_, decision) in &decisions {
             if let V3Decision::Deliver(plan) = decision {
                 if let (false, Some(view)) = (plan.frames.is_empty(), &plan.capture) {
@@ -2453,6 +2485,19 @@ impl Host {
         })
     }
 
+    /// Ends a v3 session's deltas until its transfer ends (E-2): a frame the
+    /// held-delta budget refused.
+    fn close_throttle(&mut self, peer: PeerHandle) {
+        if let Some(throttle) = self
+            .sessions
+            .get_mut(&peer)
+            .and_then(|session| session.v3.as_mut())
+            .and_then(|v3| v3.throttle.as_mut())
+        {
+            throttle.close();
+        }
+    }
+
     /// Moves `peer`'s outbox into its delivery log while the egress caps
     /// allow (C-7).
     fn pace(&mut self, peer: PeerHandle) {
@@ -2483,13 +2528,15 @@ impl Host {
     /// two views and so reading only: `[receipt?] ++ enters ++ events ++ rest
     /// of the page ++ [Clock?] ++ [HostFacts?]`, cut by `frame_spans` (H-6),
     /// one `event_seq` per span. `involved` (an accepted peer command's
-    /// entities) asks for the session's capture view (D-10).
+    /// entities) asks for the session's capture view (D-10). `heartbeat` marks
+    /// a running host's tick publication, which adds a due `Clock` (E-1).
     fn plan_v3_page(
         &self,
         session: &Session,
         events: &[HistoryEnvelope],
         receipt: Option<DeltaOpV3>,
         involved: Option<&BTreeSet<EntityId>>,
+        heartbeat: bool,
     ) -> Result<PagePlan, HostError> {
         const PAGE: &str = "v3 page projection failed";
         let v3 = session.v3.as_ref().ok_or(HostError::NotV3Peer)?;
@@ -2560,7 +2607,9 @@ impl Host {
             v3.fact_grants.host,
             self.timer_epoch(),
         );
-        let send_clock = v3.sent_clock.as_ref() != Some(&clock);
+        let heartbeat_due =
+            heartbeat && tick.saturating_sub(v3.last_clock_tick) >= POLICY_CLOCK_HEARTBEAT_TICKS;
+        let send_clock = heartbeat_due || v3.sent_clock.as_ref() != Some(&clock);
         let send_facts = v3.sent_host_facts != Some(image);
         let mut ops: Vec<DeltaOpV3> = Vec::new();
         ops.extend(receipt);
@@ -2617,18 +2666,44 @@ impl Host {
 
     /// What publication does for one v3 session (D-9), reading only: the page
     /// if its frames fit the egress room, else a restage, and a fence if
-    /// either plan cannot be built.
+    /// either plan cannot be built. While the session's transfer is in flight
+    /// the throttle decides first (E-2): too soon is [`V3Decision::Hold`]
+    /// with nothing planned; an allowed page carries no event ops and no
+    /// receipt, and one the held-delta budget refuses closes the session's
+    /// deltas.
     fn decide_v3(
         &self,
         session: &Session,
         events: &[HistoryEnvelope],
         receipt: Option<DeltaOpV3>,
         involved: Option<&BTreeSet<EntityId>>,
+        heartbeat: bool,
     ) -> V3Decision {
-        let Ok(plan) = self.plan_v3_page(session, events, receipt, involved) else {
+        let tick = self.server_tick();
+        let throttle = session
+            .v3
+            .as_ref()
+            .and_then(|v3| v3.throttle.as_ref())
+            .filter(|_| session.in_flight.is_some());
+        if let Some(throttle) = throttle {
+            if throttle.gate(tick, 0, 0) != Gate::Open {
+                return V3Decision::Hold { close: false };
+            }
+        }
+        let (events, receipt) = if throttle.is_some() {
+            (&[][..], None)
+        } else {
+            (events, receipt)
+        };
+        let Ok(plan) = self.plan_v3_page(session, events, receipt, involved, heartbeat) else {
             return V3Decision::Fence;
         };
         let bytes: usize = plan.frames.iter().map(|(_, bytes)| bytes.len()).sum();
+        if let Some(throttle) = throttle {
+            if throttle.gate(tick, plan.frames.len(), bytes) != Gate::Open {
+                return V3Decision::Hold { close: true };
+            }
+        }
         if self.room_for(session, plan.frames.len(), bytes) {
             return V3Decision::Deliver(plan);
         }
@@ -2647,6 +2722,7 @@ impl Host {
         events: &[HistoryEnvelope],
         origin: Option<(PeerHandle, u64)>,
         involved: Option<&BTreeSet<EntityId>>,
+        heartbeat: bool,
     ) -> Vec<(PeerHandle, V3Decision)> {
         let tick = self.server_tick();
         self.sessions
@@ -2658,7 +2734,10 @@ impl Host {
                 let receipt = origin
                     .filter(|(originator, _)| originator == handle)
                     .map(|(_, seq)| receipt_op_v3(session.epoch, seq, tick, ReceiptV3::Applied));
-                (*handle, self.decide_v3(session, events, receipt, involved))
+                (
+                    *handle,
+                    self.decide_v3(session, events, receipt, involved, heartbeat),
+                )
             })
             .collect()
     }
@@ -2670,6 +2749,19 @@ impl Host {
             V3Decision::Fence => {
                 self.fence(handle);
                 V3Outcome::Fenced
+            }
+            V3Decision::Hold { close } => {
+                if close {
+                    if let Some(throttle) = self
+                        .sessions
+                        .get_mut(&handle)
+                        .and_then(|session| session.v3.as_mut())
+                        .and_then(|v3| v3.throttle.as_mut())
+                    {
+                        throttle.close();
+                    }
+                }
+                V3Outcome::Logged { receipt: None }
             }
             V3Decision::Restage(stage) => {
                 let Some(session) = self.sessions.get_mut(&handle) else {
@@ -2700,6 +2792,8 @@ impl Host {
                     })
                     .collect();
                 let logged = !frames.is_empty();
+                let logged_bytes: usize = frames.iter().map(|frame| frame.bytes.len()).sum();
+                let logged_frames = frames.len();
                 if push_frames(&mut self.egress_bytes, session, frames).is_err() {
                     self.fence(handle);
                     return V3Outcome::Fenced;
@@ -2710,6 +2804,9 @@ impl Host {
                     .expect("a v3 decision needs a v3 session");
                 v3.view = plan.view;
                 v3.facts = plan.facts;
+                if let Some(throttle) = v3.throttle.as_mut() {
+                    throttle.record(plan.tick, logged_frames, logged_bytes);
+                }
                 if let Some(clock) = plan.clock {
                     v3.sent_clock = Some(clock);
                     v3.last_clock_tick = plan.tick;
@@ -2728,10 +2825,27 @@ impl Host {
     /// ascending by handle). A failure fences that session and never fails
     /// the operation, which has already committed (D-9).
     fn publish_v3(&mut self, only: Option<PeerHandle>, events: &[HistoryEnvelope]) {
-        let decisions = self.decide_v3_pages(only, events, None, None);
+        self.publish_v3_with(only, events, false);
+    }
+
+    /// [`publish_v3`](Self::publish_v3) for one operation; `heartbeat` marks
+    /// a tick of a running host, whose page carries a due `Clock` (E-1).
+    fn publish_v3_with(
+        &mut self,
+        only: Option<PeerHandle>,
+        events: &[HistoryEnvelope],
+        heartbeat: bool,
+    ) {
+        let decisions = self.decide_v3_pages(only, events, None, None, heartbeat);
         for (handle, decision) in decisions {
             self.commit_v3(handle, decision);
         }
+    }
+
+    /// Whether `op`'s publication is a running host's tick (E-1): only a tick
+    /// of an unpaused host sends the heartbeat.
+    fn heartbeat_for(&self, op: HostOp) -> bool {
+        op == HostOp::Tick && self.paused.is_none()
     }
 
     // -- delivery ------------------------------------------------------------
@@ -2894,6 +3008,9 @@ impl Host {
                     let issued = session.next_transfer - 1;
                     if session.in_flight == Some(t) {
                         session.in_flight = None;
+                        if let Some(v3) = session.v3.as_mut() {
+                            v3.throttle = None;
+                        }
                         Effect::Reply(TransferDisposition::Published)
                     } else if t <= issued {
                         Effect::Reply(TransferDisposition::Stale)
@@ -3237,7 +3354,7 @@ impl Host {
         if after == before {
             // A zero-event operation makes no record but still publishes: an
             // RT order, a pending mode or a tick's clock changes v3 state.
-            self.publish_v3(None, &[]);
+            self.publish_v3_with(None, &[], self.heartbeat_for(op));
             return Ok(());
         }
         let record = self.read_host_record(op, before, after);
@@ -3302,7 +3419,7 @@ impl Host {
     ) -> Result<(), HostError> {
         let after = self.history.last_sequence();
         let events = self.read_events(before, after).unwrap_or_default();
-        self.publish_v3(None, &events);
+        self.publish_v3_with(None, &events, self.heartbeat_for(op));
         let appended = record.map(|record| {
             debug_assert_eq!(record.op, op);
             debug_assert_eq!(record.history_start, before);
@@ -3714,6 +3831,26 @@ fn push_frames(
     Ok(())
 }
 
+/// What the in-flight throttle says of one receipt frame of `bytes` bytes at
+/// `tick`: [`Gate::Open`] when the session is not a v3 session or its transfer
+/// is not in flight (E-2).
+fn receipt_gate(session: &Session, tick: u64, bytes: usize) -> Gate {
+    session
+        .v3
+        .as_ref()
+        .and_then(|v3| v3.throttle.as_ref())
+        .filter(|_| session.in_flight.is_some())
+        .map_or(Gate::Open, |throttle| throttle.gate(tick, 1, bytes))
+}
+
+/// Counts one logged receipt frame of `bytes` bytes at `tick` toward a v3
+/// session's in-flight allowance (E-2).
+fn record_throttle(session: &mut Session, tick: u64, bytes: usize) {
+    if let Some(throttle) = session.v3.as_mut().and_then(|v3| v3.throttle.as_mut()) {
+        throttle.record(tick, 1, bytes);
+    }
+}
+
 /// The `Invariant` text of a v3 frame that failed to encode.
 const V3_ENCODE: &str = "v3 frame failed to encode";
 
@@ -3751,6 +3888,7 @@ fn commit_v3_stage(
         event_seq: None,
         bytes,
     }));
+    let stage_delta_len = stage.delta.len();
     v3.outbox.push_back(OutboxEntry {
         event_seq: Some(stage.delta_seq),
         bytes: stage.delta,
@@ -3758,6 +3896,9 @@ fn commit_v3_stage(
     v3.sent_clock = Some(stage.clock);
     v3.sent_host_facts = Some(stage.image);
     v3.last_clock_tick = stage.tick;
+    // A staging restarts the throttle; C-6's frame counts toward the budget
+    // (E-2).
+    v3.throttle = Some(Throttle::new(stage.tick, 1, stage_delta_len));
     pace_session(egress_bytes, caps, session);
 }
 
@@ -6548,5 +6689,93 @@ mod tests {
         let logged = host.sessions.get(&peer).expect("bound").log.len();
         host.publish_v3(Some(peer), &[]);
         assert_eq!(host.sessions.get(&peer).expect("bound").log.len(), logged);
+    }
+
+    // -- T141e: the in-flight throttle (E-2, E5) -------------------------------
+
+    /// The policy constants are the receiver's held-delta budget (T140e), the
+    /// throttle spacing is ten ticks and the heartbeat is 100.
+    #[test]
+    fn t141e_in_flight_policy_equals_the_receiver_limits() {
+        let limits = crpg_net::pool_v3::TransferLimitsV3::v3();
+        assert_eq!(POLICY_V3_IN_FLIGHT_FRAMES, limits.delta_frames_per_receiver);
+        assert_eq!(POLICY_V3_IN_FLIGHT_BYTES, limits.delta_bytes_per_receiver);
+        assert_eq!(POLICY_V3_IN_FLIGHT_FRAMES, 128);
+        assert_eq!(POLICY_V3_IN_FLIGHT_BYTES, 2_097_152);
+        assert_eq!(POLICY_V3_THROTTLE_TICKS, 10);
+        assert_eq!(POLICY_CLOCK_HEARTBEAT_TICKS, 100);
+    }
+
+    /// E-2: the spacing is exact (9 ticks held, 10 and 11 open) and counts from
+    /// the last logged frames; a page with no frames moves nothing.
+    #[test]
+    fn t141e_throttle_spacing_counts_from_the_last_logged_frames() {
+        let mut throttle = Throttle::new(30, 1, 100);
+        assert_eq!(throttle.gate(30, 1, 100), Gate::Held);
+        assert_eq!(throttle.gate(39, 1, 100), Gate::Held);
+        assert_eq!(throttle.gate(40, 1, 100), Gate::Open);
+        assert_eq!(throttle.gate(41, 1, 100), Gate::Open);
+        // An empty page changes nothing.
+        throttle.record(40, 0, 0);
+        assert_eq!(throttle.gate(40, 1, 100), Gate::Open);
+        // Logged frames restart the spacing from their tick.
+        throttle.record(45, 1, 100);
+        assert_eq!(throttle.gate(54, 1, 100), Gate::Held);
+        assert_eq!(throttle.gate(55, 1, 100), Gate::Open);
+        // A staging at tick `s` restarts it from `s`.
+        assert_eq!(Throttle::new(500, 1, 100).gate(509, 0, 0), Gate::Held);
+        assert_eq!(Throttle::new(500, 1, 100).gate(510, 0, 0), Gate::Open);
+    }
+
+    /// E-2: the frame budget holds a page that fits exactly and refuses one
+    /// frame more; a closed throttle holds everything.
+    #[test]
+    fn t141e_frame_budget_is_exact_and_closing_is_final() {
+        let throttle = Throttle::new(0, 127, 1_000);
+        assert_eq!(throttle.gate(10, 1, 100), Gate::Open);
+        assert_eq!(throttle.gate(10, 2, 100), Gate::Over);
+        let full = Throttle::new(0, 128, 1_000);
+        assert_eq!(full.gate(10, 0, 0), Gate::Open);
+        assert_eq!(full.gate(10, 1, 1), Gate::Over);
+        let mut closed = Throttle::new(0, 1, 100);
+        closed.close();
+        assert_eq!(closed.gate(10_000, 0, 0), Gate::Held);
+        assert_eq!(closed.gate(10_000, 1, 1), Gate::Held);
+    }
+
+    /// E5: with pages of 20,000 bytes the byte budget stops the allowance at
+    /// 104 frames (2,080,000 bytes), before the 128-frame budget; the
+    /// remaining 17,152 bytes admit a page of exactly that size and not one
+    /// byte more.
+    #[test]
+    fn t141e_byte_budget_stops_before_the_frame_budget() {
+        let mut throttle = Throttle::new(0, 0, 0);
+        let mut tick = 0;
+        let mut pages = 0;
+        loop {
+            tick += POLICY_V3_THROTTLE_TICKS;
+            if throttle.gate(tick, 1, 20_000) != Gate::Open {
+                break;
+            }
+            throttle.record(tick, 1, 20_000);
+            pages += 1;
+        }
+        assert_eq!(pages, 104);
+        assert_eq!(throttle.gate(tick, 1, 20_000), Gate::Over);
+        assert_eq!(throttle.gate(tick, 1, 17_152), Gate::Open);
+        assert_eq!(throttle.gate(tick, 1, 17_153), Gate::Over);
+        // Control: pages of 100 bytes reach the frame budget instead.
+        let mut small = Throttle::new(0, 0, 0);
+        let mut small_pages = 0;
+        let mut tick = 0;
+        loop {
+            tick += POLICY_V3_THROTTLE_TICKS;
+            if small.gate(tick, 1, 100) != Gate::Open {
+                break;
+            }
+            small.record(tick, 1, 100);
+            small_pages += 1;
+        }
+        assert_eq!(small_pages, 128);
     }
 }

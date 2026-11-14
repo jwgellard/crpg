@@ -27,7 +27,10 @@ use crpg_net::protocol_v3::{
 use crpg_sim::World;
 
 use crate::capture::CapturedView;
-use crate::host::{DisclosureGrants, EntityFactGrant, FactGrants, HOST_UNBOUND_AREA};
+use crate::host::{
+    DisclosureGrants, EntityFactGrant, FactGrants, HOST_UNBOUND_AREA, POLICY_V3_IN_FLIGHT_BYTES,
+    POLICY_V3_IN_FLIGHT_FRAMES, POLICY_V3_THROTTLE_TICKS,
+};
 
 /// Most entries one staged plan holds in the outbox (H-7): a `Cancel`, the D5
 /// plan's 88 frames and the host-facts delta.
@@ -60,6 +63,74 @@ pub(crate) struct HostFactsImage {
     pub(crate) timer_epoch: Option<u64>,
 }
 
+/// What the in-flight throttle says of one publication (E-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// The frames may be logged.
+    Open,
+    /// Too soon since the last page, or the deltas already ended.
+    Held,
+    /// The frames would pass the held-delta budget.
+    Over,
+}
+
+/// A v3 session's delta allowance from a staging until its transfer ends
+/// (H-8, D54, E-2): one page per [`POLICY_V3_THROTTLE_TICKS`] ticks, within
+/// the receiver's held-delta frame and byte budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Throttle {
+    /// The server tick of the staging, then of the last logged frames.
+    last_page: u64,
+    /// Delta frames logged since the staging, C-6's frame included.
+    frames: usize,
+    /// Encoded bytes of those frames.
+    bytes: usize,
+    /// A page the budget refused ended the deltas.
+    closed: bool,
+}
+
+impl Throttle {
+    /// A throttle restarted by a staging at `tick` that logged `frames`
+    /// frames of `bytes` bytes (C-6's host-facts delta).
+    pub(crate) fn new(tick: u64, frames: usize, bytes: usize) -> Self {
+        Self {
+            last_page: tick,
+            frames,
+            bytes,
+            closed: false,
+        }
+    }
+
+    /// Whether `frames` frames of `bytes` bytes may be logged at `tick`: not
+    /// before `last_page + POLICY_V3_THROTTLE_TICKS`, never once closed, and
+    /// within both in-flight budgets (an exact fit is allowed).
+    pub(crate) fn gate(&self, tick: u64, frames: usize, bytes: usize) -> Gate {
+        if self.closed || tick < self.last_page.saturating_add(POLICY_V3_THROTTLE_TICKS) {
+            return Gate::Held;
+        }
+        if self.frames.saturating_add(frames) > POLICY_V3_IN_FLIGHT_FRAMES
+            || self.bytes.saturating_add(bytes) > POLICY_V3_IN_FLIGHT_BYTES
+        {
+            return Gate::Over;
+        }
+        Gate::Open
+    }
+
+    /// Counts logged frames; a page with none changes nothing.
+    pub(crate) fn record(&mut self, tick: u64, frames: usize, bytes: usize) {
+        if frames > 0 {
+            self.last_page = tick;
+            self.frames += frames;
+            self.bytes += bytes;
+        }
+    }
+
+    /// Ends the session's deltas until its transfer ends.
+    pub(crate) fn close(&mut self) {
+        self.closed = true;
+    }
+}
+
 /// One v3 session's state beside the shared [`crate::host`] session ledgers.
 #[derive(Debug)]
 pub(crate) struct V3Session {
@@ -77,9 +148,12 @@ pub(crate) struct V3Session {
     pub(crate) sent_clock: Option<DeltaOp>,
     /// The last host-facts image staged for the viewer (D-12).
     pub(crate) sent_host_facts: Option<HostFactsImage>,
-    /// The server tick of the last staged `Clock` (read by T141e).
-    #[allow(dead_code)]
+    /// The server tick of the last logged `Clock` (the heartbeat's clock,
+    /// E-1).
     pub(crate) last_clock_tick: u64,
+    /// The in-flight throttle, set by a staging and cleared when the
+    /// transfer is `Published` (E-2).
+    pub(crate) throttle: Option<Throttle>,
 }
 
 impl V3Session {
@@ -94,6 +168,7 @@ impl V3Session {
             sent_clock: None,
             sent_host_facts: None,
             last_clock_tick: 0,
+            throttle: None,
         }
     }
 }
