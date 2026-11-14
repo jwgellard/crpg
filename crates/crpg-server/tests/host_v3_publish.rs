@@ -2072,3 +2072,259 @@ fn d_rejected_v3_receipts_obey_the_failure_budget() {
     );
     mirror.check(&host);
 }
+// ---------------------------------------------------------------------------
+// Review survivors: D-2 rights and grants, D-5 pause state, D-6 receipts.
+// ---------------------------------------------------------------------------
+
+/// D-2: `Pause` and `RequestMode` need the `pause` right and `Unpause` the
+/// `unpause` right, each on its own.
+#[test]
+fn d_pause_and_unpause_rights_are_separate() {
+    let mut host = host_of(&rt3_value());
+    let mut mirror = Mirror::new(&rt3_value());
+    let only_pause = PauseRights {
+        pause: true,
+        unpause: false,
+    };
+    let only_unpause = PauseRights {
+        pause: false,
+        unpause: true,
+    };
+    let grants = || full_grants(&[a(), b(), c()]);
+    let (p, _pc) = bind3(&mut host, &[a()], grants(), facts(), only_pause, 0);
+    let (u, _uc) = bind3(&mut host, &[a()], grants(), facts(), only_unpause, 0);
+    let denied = |host: &Host, peer, seq, code| {
+        assert_eq!(
+            host.cached_status_v3(peer, seq),
+            Ok(Some(ReceiptStatus::Rejected(code)))
+        );
+    };
+
+    // The pause-only session pauses ...
+    assert_applied(&send3(&mut host, p, 1, 1, IntentBody::Pause, 10), 1);
+    assert_eq!(host.paused(), Some(PauseReason::Player));
+    // ... but cannot unpause.
+    let result = send3(&mut host, p, 2, 1, IntentBody::Unpause, 11);
+    assert_rejected(&result, 2, CodeV1::NotAuthorized);
+    denied(&host, p, 2, RejectionCode::NoPauseRight);
+    assert_eq!(host.paused(), Some(PauseReason::Player));
+    // The unpause-only session cannot pause, nor request a mode ...
+    let result = send3(&mut host, u, 1, 1, IntentBody::Pause, 12);
+    assert_rejected(&result, 1, CodeV1::NotAuthorized);
+    denied(&host, u, 1, RejectionCode::NoPauseRight);
+    let mode = IntentBody::RequestMode {
+        mode: NetMode::TurnBased,
+    };
+    let result = send3(&mut host, u, 2, 1, mode, 13);
+    assert_rejected(&result, 2, CodeV1::NotAuthorized);
+    denied(&host, u, 2, RejectionCode::NotAuthorized);
+    assert_eq!(host.paused(), Some(PauseReason::Player));
+    assert_eq!(host.executions(), 1);
+    // ... but unpauses.
+    assert_applied(&send3(&mut host, u, 3, 1, IntentBody::Unpause, 14), 3);
+    assert_eq!(host.paused(), None);
+    // The pause-only session may request a mode.
+    assert_applied(&send3(&mut host, p, 3, 1, mode, 15), 3);
+    mirror.mode(EncounterMode::TurnBased);
+    assert_eq!(host.executions(), 3);
+    mirror.check(&host);
+}
+
+/// D-2: the actor needs `action_actor` and the target `action_target`; a
+/// session that has the flag beside each is accepted.
+#[test]
+fn d_actor_and_target_flags_are_required() {
+    let mut host = host_of(&rt3_value());
+    let mut mirror = Mirror::new(&rt3_value());
+    let mut grants = full_grants(&[a(), b(), c()]);
+    grants.entities[0].action_actor = false; // A may not act
+    grants.entities[1].action_target = false; // B may not be targeted
+    let (p, _client) = bind3(&mut host, &[a(), c()], grants, facts(), r1(), 0);
+    let denied = |host: &Host, seq| {
+        assert_eq!(
+            host.cached_status_v3(p, seq),
+            Ok(Some(ReceiptStatus::Rejected(RejectionCode::NotAuthorized)))
+        );
+    };
+
+    // A controlled actor without `action_actor`.
+    let result = send3(&mut host, p, 1, 1, IntentBody::Pause, 10);
+    assert_rejected(&result, 1, CodeV1::NotAuthorized);
+    denied(&host, 1);
+    assert_eq!(host.paused(), None);
+    // Control: the controlled actor with the flag.
+    assert_applied(&send3(&mut host, p, 2, 3, IntentBody::Pause, 11), 2);
+    assert_eq!(host.paused(), Some(PauseReason::Player));
+    // A target without `action_target`.
+    let result = send3(&mut host, p, 3, 3, declare(strike(), 2), 12);
+    assert_rejected(&result, 3, CodeV1::NotAuthorized);
+    denied(&host, 3);
+    // Control: a target with the flag.
+    assert_applied(&send3(&mut host, p, 4, 3, declare(strike(), 1), 13), 4);
+    mirror.act(CombatAction::UseAbility {
+        actor: c(),
+        ability: strike(),
+        target: a(),
+    });
+    // The same declare from the actor without the flag.
+    let result = send3(&mut host, p, 5, 1, declare(strike(), 3), 14);
+    assert_rejected(&result, 5, CodeV1::NotAuthorized);
+    denied(&host, 5);
+    assert_eq!(host.executions(), 2);
+    mirror.check(&host);
+}
+
+/// D-5: a v3 `Pause` freezes an armed turn timer and a v3 `Unpause` resumes
+/// it, as the operator's calls do.
+#[test]
+fn d_player_pause_freezes_and_unpause_resumes_the_timer() {
+    let mut host = host_of(&tb3_value());
+    let mut mirror = Mirror::new(&tb3_value());
+    let (p, mut client) = bind_p(&mut host, 100);
+    assert_eq!(host.set_settings(settings(0, Some(1000)), 5000), Ok(()));
+    pages(&mut host, &mut client, p, 5000);
+    assert_eq!(host.turn_timer_remaining_ms(), Some(1000));
+
+    assert_applied(&send3(&mut host, p, 1, 1, IntentBody::Pause, 5300), 1);
+    assert_eq!(host.paused(), Some(PauseReason::Player));
+    assert_eq!(host.turn_timer_remaining_ms(), Some(700));
+    // Time passes while paused: nothing ticks, the remainder is frozen.
+    let report = host.advance(5900).expect("advances");
+    assert!(!report.ticked);
+    assert_eq!(report.paused, Some(PauseReason::Player));
+    assert_eq!(host.turn_timer_remaining_ms(), Some(700));
+
+    assert_applied(&send3(&mut host, p, 2, 1, IntentBody::Unpause, 6000), 2);
+    assert_eq!(host.paused(), None);
+    assert_eq!(host.turn_timer_remaining_ms(), Some(700));
+    let report = host.advance(6300).expect("advances");
+    assert!(report.ticked);
+    mirror.tick();
+    assert_eq!(report.timer_ended_turn, None);
+    assert_eq!(host.turn_timer_remaining_ms(), Some(400));
+    // It expires 700 ms after the unpause, not at the original deadline.
+    let report = host.advance(6700).expect("advances");
+    assert_eq!(report.timer_ended_turn, Some(a()));
+    mirror.act(CombatAction::EndTurn { actor: a() });
+    mirror.tick();
+    mirror.check(&host);
+}
+
+/// D-5: a v3 `Pause` while the host is already paused changes nothing: the
+/// reason stays, and the page is the receipt alone.
+#[test]
+fn d_pause_while_paused_keeps_the_reason() {
+    // Operator-paused.
+    let mut host = host_of(&rt3_value());
+    let (p, mut client) = bind_p(&mut host, 0);
+    let epoch = host.epoch(p).expect("bound");
+    assert_eq!(host.pause(10), Ok(()));
+    assert_eq!(
+        pages(&mut host, &mut client, p, 10),
+        vec![vec![clock_paused(PauseReason::Operator)]]
+    );
+    assert_applied(&send3(&mut host, p, 1, 1, IntentBody::Pause, 11), 1);
+    assert_eq!(host.paused(), Some(PauseReason::Operator));
+    assert_eq!(
+        pages(&mut host, &mut client, p, 11),
+        vec![vec![applied(epoch, 1)]]
+    );
+    // An unpause clears it whatever the reason; the page says so.
+    assert_applied(&send3(&mut host, p, 2, 1, IntentBody::Unpause, 12), 2);
+    assert_eq!(host.paused(), None);
+    assert_eq!(
+        pages(&mut host, &mut client, p, 12),
+        vec![vec![applied(epoch, 2), clock_running()]]
+    );
+
+    // Auto-paused.
+    let mut host = host_of(&rt3_value());
+    assert_eq!(host.set_settings(settings(0x02, None), 100), Ok(()));
+    let (p, mut client) = bind_p(&mut host, 100);
+    let epoch = host.epoch(p).expect("bound");
+    for step in 1..=4 {
+        host.advance(100 + step).expect("advances");
+    }
+    let auto = PauseReason::Auto(AutoPauseTrigger::RoundStarted);
+    assert_eq!(host.paused(), Some(auto));
+    pages(&mut host, &mut client, p, 105);
+    assert_applied(&send3(&mut host, p, 1, 1, IntentBody::Pause, 110), 1);
+    assert_eq!(host.paused(), Some(auto));
+    assert_eq!(
+        pages(&mut host, &mut client, p, 110),
+        vec![vec![receipt(epoch, 1, 4, ReceiptStatus::Applied)]]
+    );
+}
+
+/// D-6, Reading 17: a retry of a seq whose receipt frame is still
+/// unacknowledged is a cache hit that logs nothing new.
+#[test]
+fn d_retry_before_the_receipt_is_acknowledged_adds_no_frame() {
+    let mut host = host_of(&rt3_value());
+    let (p, mut client) = bind_p(&mut host, 0);
+    let epoch = host.epoch(p).expect("bound");
+    let applied_bytes = intent_bytes(&host, p, 1, 1, 0, declare(strike(), 2));
+    assert_applied(&pump_bytes(&mut host, p, &applied_bytes, 10), 1);
+    let rejected_bytes = intent_bytes(&host, p, 2, 1, 0, IntentBody::EndTurn);
+    let result = pump_bytes(&mut host, p, &rejected_bytes, 11);
+    assert_rejected(&result, 2, CodeV1::IllegalAction);
+
+    let before = state(&mut host, &[p]);
+    assert_eq!(before.peers[0].1.len(), 2);
+    let retry = pump_bytes(&mut host, p, &applied_bytes, 12);
+    assert_eq!(retry.seq, Some(1));
+    assert_eq!(retry.status, StatusV1::Applied);
+    assert!(retry.cached);
+    let retry = pump_bytes(&mut host, p, &rejected_bytes, 13);
+    assert_eq!(retry.seq, Some(2));
+    assert_eq!(retry.status, StatusV1::Rejected(CodeV1::IllegalAction));
+    assert!(retry.cached);
+    assert_eq!(state(&mut host, &[p]), before);
+    assert_eq!(host.executions(), 1);
+    // Exactly the two original frames reach the client.
+    assert_eq!(
+        pages(&mut host, &mut client, p, 14),
+        vec![
+            vec![
+                applied(epoch, 1),
+                facts_op(1, fs(Some((1, 1)), order(strike(), 2))),
+            ],
+            vec![rejected(epoch, 2, RejectionCode::WrongMode)],
+        ]
+    );
+}
+
+/// D1, D-6: a receipt carries the server tick it finalized at, for an
+/// accepted and a rejected command alike.
+#[test]
+fn d_receipts_carry_the_server_tick() {
+    let mut host = host_of(&rt3_value());
+    let mut mirror = Mirror::new(&rt3_value());
+    let (p, mut client) = bind_p(&mut host, 0);
+    let epoch = host.epoch(p).expect("bound");
+    for _ in 0..3 {
+        host.tick().expect("ticks");
+        mirror.tick();
+    }
+    pages(&mut host, &mut client, p, 1);
+    assert_eq!(host.server_tick(), 3);
+    assert_applied(&send3(&mut host, p, 1, 1, IntentBody::Pause, 10), 1);
+    let result = send3(&mut host, p, 2, 1, IntentBody::EndTurn, 11);
+    assert_rejected(&result, 2, CodeV1::IllegalAction);
+    assert_eq!(
+        pages(&mut host, &mut client, p, 12),
+        vec![
+            vec![
+                receipt(epoch, 1, 3, ReceiptStatus::Applied),
+                clock_paused(PauseReason::Player),
+            ],
+            vec![receipt(
+                epoch,
+                2,
+                3,
+                ReceiptStatus::Rejected(RejectionCode::WrongMode)
+            )],
+        ]
+    );
+    mirror.check(&host);
+}

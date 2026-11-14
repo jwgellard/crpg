@@ -6695,6 +6695,306 @@ mod tests {
         assert_eq!(host.sessions.get(&peer).expect("bound").log.len(), logged);
     }
 
+    // -- T141d review survivors (D-7, D-8, D-9, Reading 5) -------------------
+
+    /// Every op of every frame logged for `peer`, in order, acknowledging them.
+    fn logged_ops(host: &mut Host, peer: PeerHandle) -> Vec<DeltaOpV3> {
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        let ops = entries
+            .iter()
+            .filter(|entry| entry.kind == DeliveryKind::Delta)
+            .flat_map(|entry| codec_v3::decode_delta(&entry.bytes).expect("v3").ops)
+            .collect();
+        ack_all(host, peer);
+        ops
+    }
+
+    fn envelope(seq: u64, kind: &str, entity: u32) -> HistoryEnvelope {
+        serde_json::from_value(serde_json::json!({
+            "tick": 0,
+            "seq": seq,
+            "payload": {
+                "type": kind,
+                "value": {"entity": {"index": entity, "generation": 1}}
+            }
+        }))
+        .expect("envelope parses")
+    }
+
+    /// A turn-based v3 host (C's id is 3), its transfer ended.
+    fn open_v3_host() -> (Host, PeerHandle) {
+        let (mut host, peer) = drained_v3_host();
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        (host, peer)
+    }
+
+    /// D-7 (4), Reading 11: a page that holds both an enter and an event puts
+    /// the enter first, the event after every enter and before the state ops.
+    #[test]
+    fn a_page_puts_enters_before_events_before_state() {
+        let (mut host, peer) = open_v3_host();
+        let full = host.sessions.get(&peer).expect("bound").grants.clone();
+        let mut hidden = full.clone();
+        hidden.entities[2].present = false;
+        // C leaves the viewer's interest, then returns in the same page as an
+        // event.
+        host.sessions.get_mut(&peer).expect("bound").grants = hidden;
+        host.publish_v3(Some(peer), &[]);
+        let left = logged_ops(&mut host, peer);
+        assert!(left.contains(&DeltaOpV3::EntityLeave { entity: net(3) }));
+        host.sessions.get_mut(&peer).expect("bound").grants = full;
+        host.publish_v3(Some(peer), &[round_started(5)]);
+        let ops = logged_ops(&mut host, peer);
+        assert_eq!(ops[0], DeltaOpV3::EntityEnter { entity: net(4) });
+        assert_eq!(ops[1], DeltaOpV3::RoundStarted { round: 1 });
+        assert_eq!(
+            ops[2],
+            DeltaOpV3::Health {
+                entity: net(4),
+                health: 3,
+                max_health: 3,
+                dead: false,
+            }
+        );
+        // Control: the same event with nothing entering is the first op.
+        host.publish_v3(Some(peer), &[round_started(6)]);
+        assert_eq!(
+            logged_ops(&mut host, peer),
+            vec![DeltaOpV3::RoundStarted { round: 1 }]
+        );
+    }
+
+    /// D-8: `Joined` and `Left` need `present && spawn` / `present &&
+    /// despawn`, in a real page.
+    #[test]
+    fn joined_and_left_pages_follow_their_grants() {
+        for (kind, flag) in [("joined", "spawn"), ("left", "despawn")] {
+            let wanted = |ops: &[DeltaOpV3]| {
+                ops.iter()
+                    .filter(|op| matches!(op, DeltaOpV3::Joined { .. } | DeltaOpV3::Left { .. }))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            // Control: the grant is there.
+            let (mut host, peer) = open_v3_host();
+            host.publish_v3(Some(peer), &[envelope(5, kind, 2)]);
+            let ops = logged_ops(&mut host, peer);
+            let expected = if kind == "joined" {
+                DeltaOpV3::Joined { entity: net(3) }
+            } else {
+                DeltaOpV3::Left { entity: net(3) }
+            };
+            assert_eq!(wanted(&ops), vec![expected]);
+            // The notice flag off: no notice.
+            let (mut host, peer) = open_v3_host();
+            let entry = &mut host.sessions.get_mut(&peer).expect("bound").grants.entities[2];
+            match flag {
+                "spawn" => entry.spawn = false,
+                _ => entry.despawn = false,
+            }
+            host.publish_v3(Some(peer), &[envelope(5, kind, 2)]);
+            assert_eq!(wanted(&logged_ops(&mut host, peer)), vec![]);
+            // Not present: no notice either.
+            let (mut host, peer) = open_v3_host();
+            host.sessions.get_mut(&peer).expect("bound").grants.entities[2].present = false;
+            host.publish_v3(Some(peer), &[envelope(5, kind, 2)]);
+            assert_eq!(wanted(&logged_ops(&mut host, peer)), vec![]);
+        }
+    }
+
+    /// D-7 (1), D-8: an entity that leaves the world reads as `Despawned` only
+    /// for a viewer granted `present && despawn`; the event's id is the one
+    /// live before the page, since the page retires it.
+    #[test]
+    fn a_despawn_page_needs_the_despawn_grant_and_names_the_retired_id() {
+        let despawns = |ops: &[DeltaOpV3]| {
+            ops.iter()
+                .filter(|op| matches!(op, DeltaOpV3::Despawned { .. }))
+                .count()
+        };
+        let run = |despawn_granted: bool| {
+            let (mut host, peer) = open_v3_host();
+            host.sessions.get_mut(&peer).expect("bound").grants.entities[2].despawn =
+                despawn_granted;
+            let before = host.history.last_sequence();
+            assert_eq!(host.history.despawn(eid(2)), Ok(true));
+            let events = host
+                .history
+                .read_after(before, MAX_HISTORY_PAGE)
+                .expect("reads");
+            assert!(events
+                .iter()
+                .any(|e| e.payload == HistoryEvent::Despawned { entity: eid(2) }));
+            host.publish_v3(Some(peer), &events);
+            logged_ops(&mut host, peer)
+        };
+        // Granted: the view's removal and the event are both `Despawned`, both
+        // with the retired id 3.
+        let ops = run(true);
+        assert_eq!(despawns(&ops), 2);
+        assert_eq!(
+            ops.iter()
+                .filter(|op| **op == DeltaOpV3::Despawned { entity: net(3) })
+                .count(),
+            2
+        );
+        assert!(!ops.contains(&DeltaOpV3::EntityLeave { entity: net(3) }));
+        // Not granted: a plain leave and no notice.
+        let ops = run(false);
+        assert_eq!(despawns(&ops), 0);
+        assert!(ops.contains(&DeltaOpV3::EntityLeave { entity: net(3) }));
+    }
+
+    /// An `RT3` v3 session controlling A, its first delivery acknowledged.
+    fn rt3_v3_host() -> (Host, PeerHandle) {
+        let mut host = v2_host(true);
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+            .expect("binds");
+        ack_all(&mut host, peer);
+        (host, peer)
+    }
+
+    /// S-3, Reading 5: a host operation whose record cannot be built still
+    /// publishes to v3 sessions (the sim has committed), and the error is
+    /// returned after the acknowledgement.
+    #[test]
+    fn a_failed_record_still_publishes_the_page() {
+        let (mut host, peer) = rt3_v3_host();
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        let before = host.history.last_sequence();
+        host.history.tick().expect("the sim commits the tick");
+        assert_eq!(
+            host.finish_host_op(HostOp::Tick, before, Err(RECORD_BOUND)),
+            Err(RECORD_BOUND)
+        );
+        let clock = |elapsed| {
+            DeltaOpV3::Encounter(crpg_net::protocol_v3::EncounterFacts {
+                mode: Some(crpg_net::protocol_v3::EncounterMode::RealTime),
+                pending_mode: Some(None),
+                clock: Some(Some(crpg_net::protocol_v3::ClockFact {
+                    round_ticks: 4,
+                    elapsed,
+                })),
+            })
+        };
+        assert!(logged_ops(&mut host, peer).contains(&clock(1)));
+        assert_eq!(host.history.pending_len(), 0);
+        assert_eq!(host.last_capture(), 0);
+        // Control: a normal tick publishes its page too.
+        host.tick().expect("ticks");
+        assert!(logged_ops(&mut host, peer).contains(&clock(2)));
+    }
+
+    /// Adds one unacknowledged log entry of `bytes` bytes.
+    fn stuff_log(host: &mut Host, peer: PeerHandle, bytes: usize) {
+        let session = host.sessions.get_mut(&peer).expect("bound");
+        let ordinal = session.next_ordinal;
+        session.next_ordinal += 1;
+        session.log.push_back(LoggedFrame {
+            ordinal,
+            event_seq: None,
+            bytes: vec![0; bytes],
+        });
+        session.log_bytes += bytes;
+        host.egress_bytes += bytes;
+    }
+
+    /// D-9: a page that overflows the per-peer byte cap (one frame, far under
+    /// the frame cap) restages a snapshot; one that fits is logged.
+    #[test]
+    fn a_page_over_the_byte_cap_restages() {
+        let cap = QueueCaps::v1_egress().per_peer_bytes;
+        // Control: room for the page.
+        let (mut host, peer) = rt3_v3_host();
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        stuff_log(&mut host, peer, cap - 1_000);
+        host.tick().expect("ticks");
+        assert_eq!(
+            host.transfer_state(peer),
+            Ok(Some(TransferState {
+                next_transfer: 2,
+                in_flight: None,
+            }))
+        );
+        assert_eq!(host.sessions.get(&peer).expect("bound").log.len(), 2);
+        // Overflow by bytes alone.
+        let (mut host, peer) = rt3_v3_host();
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        stuff_log(&mut host, peer, cap - 10);
+        host.tick().expect("ticks");
+        assert_eq!(
+            host.transfer_state(peer),
+            Ok(Some(TransferState {
+                next_transfer: 3,
+                in_flight: Some(2),
+            }))
+        );
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            transfer_v3::decode_down(&entries[0].bytes),
+            Ok(TransferDown::Begin(begin)) if begin.transfer == TransferId::new(2).unwrap()
+        ));
+    }
+
+    /// D-9: an overflow while a transfer is in flight cancels it, with the
+    /// `Superseded` cause (not `Aborted`, which a narrowing uses), then stages
+    /// the replacement.
+    #[test]
+    fn an_overflow_with_a_transfer_in_flight_cancels_it_superseded() {
+        let cap = QueueCaps::v1_egress().per_peer_bytes;
+        let (mut host, peer) = rt3_v3_host();
+        assert_eq!(host.sessions.get(&peer).expect("bound").in_flight, Some(1));
+        let epoch = host.epoch(peer).expect("bound");
+        stuff_log(&mut host, peer, cap - 10);
+        // The throttle holds nine ticks (nothing logged, nothing restaged).
+        for _ in 0..9 {
+            host.tick().expect("ticks");
+        }
+        assert_eq!(host.sessions.get(&peer).expect("bound").log.len(), 1);
+        assert_eq!(
+            host.transfer_state(peer),
+            Ok(Some(TransferState {
+                next_transfer: 2,
+                in_flight: Some(1),
+            }))
+        );
+        // The tenth lets a page through; it does not fit, so it restages.
+        host.tick().expect("ticks");
+        assert_eq!(
+            host.transfer_state(peer),
+            Ok(Some(TransferState {
+                next_transfer: 3,
+                in_flight: Some(2),
+            }))
+        );
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        assert_eq!(entries.len(), 4);
+        assert_eq!(
+            transfer_v3::decode_down(&entries[0].bytes),
+            Ok(TransferDown::Cancel {
+                epoch,
+                transfer: TransferId::new(1).unwrap(),
+                reason: CancelReason::Superseded,
+            })
+        );
+        assert!(matches!(
+            transfer_v3::decode_down(&entries[1].bytes),
+            Ok(TransferDown::Begin(begin)) if begin.transfer == TransferId::new(2).unwrap()
+        ));
+    }
     // -- T141e: the in-flight throttle (E-2, E5) -------------------------------
 
     /// The policy constants are the receiver's held-delta budget (T140e), the
