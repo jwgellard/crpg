@@ -34,9 +34,14 @@ use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
 use crpg_net::codec_v3;
 use crpg_net::facts_v3::{
-    clock_op, host_facts_op, project_snapshot_v3, EncounterGrants, HostGrants, HostInput,
+    clock_op, host_facts_op, project_page, project_snapshot_v3, EncounterGrants, HostGrants,
+    HostInput,
 };
+use crpg_net::interest::{EntityKey, InterestView};
 use crpg_net::projection_v2::{project_events, EventCandidate};
+use crpg_net::projection_v3::{
+    project_events as project_events_v3, EventCandidate as EventCandidateV3,
+};
 use crpg_net::protocol::{
     self, IntentBody, IntentFrame, NetId, ReceiptStatus, RejectionCode, LANE_COMBAT, MAX_DELTA_OPS,
     MAX_INTENT_FRAME_BYTES, MAX_VISIBLE_ENTITIES, POLICY_OBSERVED_TICK_WINDOW, POLICY_PROOF_PEERS,
@@ -48,7 +53,9 @@ use crpg_net::protocol_transfer::{
 };
 use crpg_net::protocol_v2;
 use crpg_net::protocol_v3::{
-    AutoPauseToggles, AutoPauseTrigger, DeltaFrame as DeltaFrameV3, PauseReason, PauseRights,
+    AutoPauseToggles, AutoPauseTrigger, DeltaFrame as DeltaFrameV3, DeltaOp as DeltaOpV3,
+    IntentBody as IntentBodyV3, IntentFrame as IntentFrameV3, PauseReason, PauseRights,
+    ReceiptStatus as ReceiptV3, RejectionCode as CodeV3,
 };
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_net::transfer_v3;
@@ -67,7 +74,8 @@ use crate::capture::{
 };
 use crate::checkpoint::{check_host_record, CheckpointError};
 use crate::host_v3::{
-    host_facts_image, key_of, outbox_fits, read_world, OutboxEntry, V3Session, V3Stage,
+    host_facts_image, key_of, net_mode, outbox_fits, read_world, sim_mode, OutboxEntry, PagePlan,
+    V3Session, V3Stage,
 };
 
 // ---------------------------------------------------------------------------
@@ -542,7 +550,9 @@ struct StagedCommand {
 struct CacheEntry {
     seq: u64,
     canonical: Vec<u8>,
-    status: ReceiptStatus,
+    /// The exact v3 status for every session (a v1/v2 status converts by
+    /// `From`, losslessly); the trusted API reports its v1 projection.
+    status: ReceiptV3,
     processed_tick: u64,
     /// `(delivery generation, ordinal)` of the most recently issued
     /// receipt frame, if any.
@@ -650,6 +660,85 @@ struct TurnTimer {
     head: EntityId,
     round: u32,
     clock: TimerClock,
+}
+
+/// One decoded intent in the pipeline's common form: a v1/v2 verb maps into
+/// the v3 vocabulary (T141d D-1).
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    epoch: [u8; 16],
+    seq: u64,
+    observed_tick: u64,
+    actor: NetId,
+    body: IntentBodyV3,
+}
+
+/// The two header fields the capture steps read from an intent, so that both
+/// the v1/v2 and the v3 frame feed one commit.
+trait IntentHeader {
+    fn header_epoch(&self) -> [u8; 16];
+    fn header_seq(&self) -> u64;
+}
+
+impl IntentHeader for Frame {
+    fn header_epoch(&self) -> [u8; 16] {
+        self.epoch
+    }
+    fn header_seq(&self) -> u64 {
+        self.seq
+    }
+}
+
+impl IntentHeader for IntentFrame {
+    fn header_epoch(&self) -> [u8; 16] {
+        self.epoch
+    }
+    fn header_seq(&self) -> u64 {
+        self.seq
+    }
+}
+
+/// What a resolved intent asks of the host (D-2).
+#[derive(Debug, Clone, Copy)]
+enum Intent {
+    /// A sim action, validated by `validate_action`.
+    Action(CombatAction),
+    /// `Pause`: needs the `pause` right.
+    Pause,
+    /// `Unpause`: needs the `unpause` right.
+    Unpause,
+    /// `RequestMode`: needs the `pause` right.
+    Mode(EncounterMode),
+}
+
+/// An intent resolved against one session: the acting entity and the request.
+#[derive(Debug, Clone, Copy)]
+struct Resolved {
+    actor: EntityId,
+    intent: Intent,
+}
+
+/// What one operation decided for one v3 session's publication (D-9).
+#[derive(Debug)]
+enum V3Decision {
+    /// Log the page's frames (possibly none) and install its clones.
+    Deliver(PagePlan),
+    /// The page did not fit: stage a snapshot instead and drop the page.
+    Restage(V3Stage),
+    /// The page or the restage could not be built: fence the session.
+    Fence,
+}
+
+/// What committing one [`V3Decision`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V3Outcome {
+    /// The page was committed; `receipt` is the `(generation, ordinal)` of its
+    /// first frame, if it had one.
+    Logged { receipt: Option<(u64, u64)> },
+    /// A snapshot was staged instead of the page.
+    Staged,
+    /// The session was fenced.
+    Fenced,
 }
 
 /// One step of the §3 pipeline for the head command.
@@ -1098,8 +1187,8 @@ impl Host {
         })
     }
 
-    /// Replaces a v3 session's fact grants (C-4). T141c pushes no frame; the
-    /// next staging reads them. Precedence: [`Closed`](HostError::Closed),
+    /// Replaces a v3 session's fact grants (C-4) and publishes the change to
+    /// that session alone (D-11). Precedence: [`Closed`](HostError::Closed),
     /// [`UnknownPeer`](HostError::UnknownPeer),
     /// [`NotV3Peer`](HostError::NotV3Peer), then
     /// [`InvalidGrants`](HostError::InvalidGrants).
@@ -1114,10 +1203,12 @@ impl Host {
         let session = self.sessions.get_mut(&peer).ok_or(HostError::UnknownPeer)?;
         let v3 = session.v3.as_mut().ok_or(HostError::NotV3Peer)?;
         v3.fact_grants = normalize_fact_grants(facts)?;
+        self.publish_v3(Some(peer), &[]);
         Ok(())
     }
 
-    /// Replaces a v3 session's own pause rights (C-4); same precedence as
+    /// Replaces a v3 session's own pause rights (C-4) and publishes them to
+    /// that session alone (D-11); same precedence as
     /// [`set_fact_grants`](Self::set_fact_grants) minus the grant check.
     pub fn set_pause_rights(
         &mut self,
@@ -1129,6 +1220,7 @@ impl Host {
         }
         let session = self.sessions.get_mut(&peer).ok_or(HostError::UnknownPeer)?;
         session.v3.as_mut().ok_or(HostError::NotV3Peer)?.rights = rights;
+        self.publish_v3(Some(peer), &[]);
         Ok(())
     }
 
@@ -1246,7 +1338,8 @@ impl Host {
     /// precedence, minus the v2 id map, which a v3 session does not keep. A
     /// narrowing stages a fresh `0x82` snapshot (`Aborted`) under the new
     /// grants and changes nothing if the staging fails; anything else stores
-    /// the grants and returns `Unchanged` (T141d publishes the widening).
+    /// the grants, publishes the widening to that session (D-11) and returns
+    /// `Unchanged`.
     fn set_v3_grants(
         &mut self,
         peer: PeerHandle,
@@ -1256,6 +1349,7 @@ impl Host {
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
         if !is_narrowing(&session.grants, &grants) {
             self.sessions.get_mut(&peer).expect("checked above").grants = grants;
+            self.publish_v3(Some(peer), &[]);
             return Ok(GrantUpdate::Unchanged);
         }
         let stage = self.plan_v3_stage(session, &grants, SnapshotCause::Narrowed)?;
@@ -1285,6 +1379,8 @@ impl Host {
         }
         let control = normalize_control(control)?;
         self.sessions.get_mut(&peer).expect("checked above").control = control;
+        // The `order` fact follows control (Reading 9): a v3 session is told.
+        self.publish_v3(Some(peer), &[]);
         Ok(())
     }
 
@@ -1365,7 +1461,10 @@ impl Host {
                     summary.results.push(result);
                 }
                 Step::Blocked => {
-                    let seq = self.decode(&staged.bytes).ok().map(|frame| frame.seq);
+                    let seq = self
+                        .decode(staged.peer, &staged.bytes)
+                        .ok()
+                        .map(|frame| frame.seq);
                     summary.backpressured = 1;
                     summary.results.push(AdmissionResult {
                         peer: staged.peer,
@@ -1399,17 +1498,74 @@ impl Host {
         self.ingress.push_front(staged);
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<IntentFrame, CodecError> {
-        match self.config.protocol {
+    /// Decodes with the session's codec: v3 for a session bound with
+    /// `bind_v3_peer`, else the host-wide v1/v2 (T141d D-1). A peer with no
+    /// session decodes with the host-wide codec (and is then `SessionExpired`).
+    fn decode(&self, peer: PeerHandle, bytes: &[u8]) -> Result<Frame, CodecError> {
+        if self
+            .sessions
+            .get(&peer)
+            .is_some_and(|session| session.v3.is_some())
+        {
+            let frame = codec_v3::decode_intent(bytes)?;
+            return Ok(Frame {
+                epoch: frame.epoch,
+                seq: frame.seq,
+                observed_tick: frame.observed_tick,
+                actor: frame.actor,
+                body: frame.body,
+            });
+        }
+        let frame = match self.config.protocol {
             ProtocolSelection::V1 => codec::decode_intent(bytes),
             ProtocolSelection::V2 => codec_v2::decode_intent(bytes),
-        }
+        }?;
+        Ok(Frame {
+            epoch: frame.epoch,
+            seq: frame.seq,
+            observed_tick: frame.observed_tick,
+            actor: frame.actor,
+            body: match frame.body {
+                IntentBody::DeclareAction { ability, target } => {
+                    IntentBodyV3::DeclareAction { ability, target }
+                }
+                IntentBody::EndTurn => IntentBodyV3::EndTurn,
+            },
+        })
     }
 
-    fn canonical(&self, frame: &IntentFrame, raw: &[u8]) -> Vec<u8> {
-        let encoded = match self.config.protocol {
-            ProtocolSelection::V1 => codec::encode_intent(frame),
-            ProtocolSelection::V2 => codec_v2::encode_intent(frame),
+    /// The canonical bytes of `frame` in its session's codec (D-1); the raw
+    /// bytes when the frame cannot be re-encoded.
+    fn canonical(&self, v3: bool, frame: &Frame, raw: &[u8]) -> Vec<u8> {
+        let encoded = if v3 {
+            codec_v3::encode_intent(&IntentFrameV3 {
+                epoch: frame.epoch,
+                lane: LANE_COMBAT,
+                seq: frame.seq,
+                observed_tick: frame.observed_tick,
+                actor: frame.actor,
+                body: frame.body,
+            })
+        } else {
+            let body = match frame.body {
+                IntentBodyV3::DeclareAction { ability, target } => {
+                    IntentBody::DeclareAction { ability, target }
+                }
+                IntentBodyV3::EndTurn => IntentBody::EndTurn,
+                _ => return raw.to_vec(),
+            };
+            let legacy = IntentFrame {
+                epoch: frame.epoch,
+                lane: LANE_COMBAT,
+                seq: frame.seq,
+                observed_tick: frame.observed_tick,
+                actor: frame.actor,
+                body,
+            };
+            match self.config.protocol {
+                ProtocolSelection::V1 => codec::encode_intent(&legacy),
+                ProtocolSelection::V2 => codec_v2::encode_intent(&legacy),
+            }
         };
         encoded.unwrap_or_else(|_| raw.to_vec())
     }
@@ -1427,8 +1583,8 @@ impl Host {
             },
             dropped: false,
         };
-        // 1. Decode with the selected codec; identity code map.
-        let frame = match self.decode(&staged.bytes) {
+        // 1. Decode with the session's codec; identity code map.
+        let frame = match self.decode(peer, &staged.bytes) {
             Ok(frame) => frame,
             Err(error) => {
                 return Ok(removed(
@@ -1454,18 +1610,9 @@ impl Host {
                 false,
             ));
         }
-        // A v3 session's intents are v3 frames, which this v1/v2 pipeline
-        // cannot decode (the v3 intent pipeline is T141d): refuse as a decode
-        // failure would, with no ledger change and no frame.
-        if session.v3.is_some() {
-            return Ok(removed(
-                seq,
-                ReceiptStatus::Rejected(RejectionCode::UnsupportedVersion),
-                false,
-            ));
-        }
+        let v3 = session.v3.is_some();
         // 3. Seq/cache, cache-first.
-        let canonical = self.canonical(&frame, &staged.bytes);
+        let canonical = self.canonical(v3, &frame, &staged.bytes);
         if let Some(entry) = session.cache.iter().find(|entry| entry.seq == frame.seq) {
             if entry.canonical == canonical {
                 return self.cache_hit(peer, frame.seq, now_ms);
@@ -1500,116 +1647,158 @@ impl Host {
         }
         // 4. Freshness against the server tick.
         let server_tick = self.server_tick();
-        let mut terminal: Option<(RejectionCode, Option<CombatError>)> = None;
+        let mut terminal: Option<(CodeV3, Option<CombatError>)> = None;
         if frame.observed_tick > server_tick {
-            terminal = Some((RejectionCode::FutureTick, None));
+            terminal = Some((RejectionCode::FutureTick.into(), None));
         } else if frame.observed_tick < server_tick.saturating_sub(POLICY_OBSERVED_TICK_WINDOW) {
-            terminal = Some((RejectionCode::StaleTick, None));
+            terminal = Some((RejectionCode::StaleTick.into(), None));
         }
-        // 5. Mapping / ownership / disclosure-gated identity.
-        let mut action = None;
+        // 5. Mapping / ownership / disclosure-gated identity (D-2).
+        let mut resolved = None;
         if terminal.is_none() {
-            match resolve_action(session, &frame) {
-                Some(resolved) => action = Some(resolved),
-                None => terminal = Some((RejectionCode::NotAuthorized, None)),
+            let found = match &session.v3 {
+                Some(v3_session) => resolve_v3(self.history.world(), session, v3_session, &frame),
+                None => resolve_action(session, &frame).ok_or(CodeV3::NotAuthorized),
+            };
+            match found {
+                Ok(found) => resolved = Some(found),
+                Err(code) => terminal = Some((code, None)),
             }
         }
         // Gameplay class through sim's single legality source (no copy).
-        if let Some(resolved) = &action {
-            if let Err(error) = validate_action(self.history.world(), resolved) {
-                terminal = Some((RejectionCode::IllegalAction, Some(error)));
+        if let Some(Resolved {
+            intent: Intent::Action(action),
+            ..
+        }) = &resolved
+        {
+            if let Err(error) = validate_action(self.history.world(), action) {
+                terminal = Some((refusal_code(v3, &error), Some(error)));
             }
         }
         // 6. Reservation, then 7–8 execution and commit.
-        match (terminal, action) {
+        match (terminal, resolved) {
             (Some((code, error)), _) => {
-                let receipt = self.receipt_frame(
-                    session,
-                    frame.seq,
-                    server_tick,
-                    ReceiptStatus::Rejected(code),
-                )?;
-                if !session.resync_pending && !self.room(session, std::slice::from_ref(&receipt)) {
-                    return Ok(Step::Blocked);
-                }
-                if let Some(error) = error {
-                    self.last_combat_error = Some(error);
-                }
-                let dropped = self.commit_rejection(
-                    peer,
-                    &frame,
-                    canonical,
-                    ReceiptStatus::Rejected(code),
-                    server_tick,
-                    receipt,
-                    now_ms,
-                )?;
-                Ok(Step::Removed {
-                    result: AdmissionResult {
-                        peer,
-                        seq,
-                        status: ReceiptStatus::Rejected(code),
-                        cached: false,
-                        retained_in_ingress: false,
-                    },
-                    dropped,
-                })
+                self.reject(peer, &frame, canonical, code, error, now_ms, !v3)
             }
             (None, Some(resolved)) => {
                 if !self.accepted_room()? {
                     return Ok(Step::Blocked);
                 }
                 let before = self.history.last_sequence();
-                match self.history.perform_action(&resolved) {
-                    Ok(outcome) => {
-                        self.commit_accepted(peer, &frame, canonical, &resolved, outcome, before)?;
-                        Ok(removed(seq, ReceiptStatus::Applied, false))
-                    }
-                    Err(HistoryError::Combat(error)) => {
+                // The involved entities of a request that is no sim action are
+                // the requester and the head, as for `Stop`.
+                let evidence = match resolved.intent {
+                    Intent::Action(action) => action,
+                    _ => CombatAction::Stop {
+                        actor: resolved.actor,
+                    },
+                };
+                let outcome = match resolved.intent {
+                    Intent::Action(action) => match self.history.perform_action(&action) {
+                        Ok(outcome) => outcome,
                         // Unreachable after validate_action; committed under
                         // the accepted reservation, which is a superset.
-                        let session = self.sessions.get(&peer).expect("bound above");
-                        let receipt = self.receipt_frame(
-                            session,
-                            frame.seq,
-                            server_tick,
-                            ReceiptStatus::Rejected(RejectionCode::IllegalAction),
-                        )?;
-                        self.last_combat_error = Some(error);
-                        let status = ReceiptStatus::Rejected(RejectionCode::IllegalAction);
-                        let dropped = self.commit_rejection(
-                            peer,
-                            &frame,
-                            canonical,
-                            status,
-                            server_tick,
-                            receipt,
-                            now_ms,
-                        )?;
-                        Ok(Step::Removed {
-                            result: AdmissionResult {
+                        Err(HistoryError::Combat(error)) => {
+                            let code = refusal_code(v3, &error);
+                            return self.reject(
                                 peer,
-                                seq,
-                                status,
-                                cached: false,
-                                retained_in_ingress: false,
-                            },
-                            dropped,
-                        })
+                                &frame,
+                                canonical,
+                                code,
+                                Some(error),
+                                now_ms,
+                                false,
+                            );
+                        }
+                        // Sim capacity failures commit nothing: retryable.
+                        Err(_) => return Ok(Step::Blocked),
+                    },
+                    // A mode request reserves the accepted class; the sim's
+                    // refusal commits a rejection under that reservation (D-3).
+                    Intent::Mode(mode) => match self.history.request_mode(mode) {
+                        Ok(()) => None,
+                        Err(HistoryError::Combat(error)) => {
+                            let code = refusal_code(v3, &error);
+                            return self.reject(
+                                peer,
+                                &frame,
+                                canonical,
+                                code,
+                                Some(error),
+                                now_ms,
+                                false,
+                            );
+                        }
+                        Err(_) => return Ok(Step::Blocked),
+                    },
+                    // Pause and unpause cannot fail (D-5).
+                    Intent::Pause => {
+                        if self.paused.is_none() {
+                            self.set_paused(PauseReason::Player);
+                        }
+                        None
                     }
-                    // Sim capacity failures commit nothing: retryable.
-                    Err(_) => Ok(Step::Blocked),
-                }
+                    Intent::Unpause => {
+                        if self.paused.take().is_some() {
+                            self.resume_timer();
+                        }
+                        None
+                    }
+                };
+                self.commit_accepted(peer, &frame, canonical, &evidence, outcome, before)?;
+                Ok(removed(seq, ReceiptStatus::Applied, false))
             }
             (None, None) => Err(HostError::Invariant("admission without action or terminal")),
         }
     }
 
+    /// Commits a terminal rejection and builds its result. A v1/v2 session's
+    /// receipt must fit its egress room (`block`, else the head stays staged);
+    /// a v3 session never blocks: its receipt is logged when it fits and
+    /// dropped otherwise, and the client's retry recovers it (Reading 12).
+    #[allow(clippy::too_many_arguments)]
+    fn reject(
+        &mut self,
+        peer: PeerHandle,
+        frame: &Frame,
+        canonical: Vec<u8>,
+        code: CodeV3,
+        error: Option<CombatError>,
+        now_ms: u64,
+        block: bool,
+    ) -> Result<Step, HostError> {
+        let server_tick = self.server_tick();
+        let status = ReceiptV3::Rejected(code);
+        let session = self.sessions.get(&peer).expect("bound by caller");
+        let receipt = self.receipt_frame(session, frame.seq, server_tick, status)?;
+        let fits = self.room(session, std::slice::from_ref(&receipt));
+        let receipt = if session.v3.is_some() {
+            fits.then_some(receipt)
+        } else if block && !session.resync_pending && !fits {
+            return Ok(Step::Blocked);
+        } else {
+            Some(receipt)
+        };
+        if let Some(error) = error {
+            self.last_combat_error = Some(error);
+        }
+        let dropped =
+            self.commit_rejection(peer, frame, canonical, status, server_tick, receipt, now_ms)?;
+        Ok(Step::Removed {
+            result: AdmissionResult {
+                peer,
+                seq: Some(frame.seq),
+                status: trusted_status(status),
+                cached: false,
+                retained_in_ingress: false,
+            },
+            dropped,
+        })
+    }
+
     /// Cache hit: return the retained outcome without re-execution and make
     /// sure the receipt is deliverable.
     fn cache_hit(&mut self, peer: PeerHandle, seq: u64, now_ms: u64) -> Result<Step, HostError> {
-        let server_tick = self.server_tick();
-        let protocol = self.config.protocol;
         let session = self.sessions.get(&peer).expect("bound by caller");
         let entry = session
             .cache
@@ -1622,20 +1811,14 @@ impl Host {
         });
         let mut dropped = false;
         if !deliverable && !session.resync_pending {
-            let ops = vec![receipt_op(session.epoch, seq, entry.processed_tick, status)];
-            let frame = encode_frame(protocol, server_tick, session.next_event_seq, &ops)?;
-            let frame = LoggedFrame {
-                ordinal: 0,
-                event_seq: Some(session.next_event_seq),
-                bytes: frame,
-            };
+            let frame = self.receipt_frame(session, seq, entry.processed_tick, status)?;
             // Best effort under the egress caps: a cache hit reserves nothing,
             // and the sender's next identical retry recovers the receipt.
             if self.room(session, std::slice::from_ref(&frame)) {
                 let session = self.sessions.get_mut(&peer).expect("bound by caller");
                 let spend = match status {
-                    ReceiptStatus::Applied => true,
-                    ReceiptStatus::Rejected(_) => {
+                    ReceiptV3::Applied => true,
+                    ReceiptV3::Rejected(_) => {
                         try_consume_failure(session, now_ms, frame.bytes.len())
                     }
                 };
@@ -1658,7 +1841,7 @@ impl Host {
             result: AdmissionResult {
                 peer,
                 seq: Some(seq),
-                status,
+                status: trusted_status(status),
                 cached: true,
                 retained_in_ingress: false,
             },
@@ -1666,21 +1849,37 @@ impl Host {
         })
     }
 
-    /// Builds the originator's receipt-only frame at its next delivery seq.
+    /// Builds the originator's receipt-only frame at its next delivery seq,
+    /// in the session's wire (v3 sessions carry the exact code).
     fn receipt_frame(
         &self,
         session: &Session,
         seq: u64,
         processed_tick: u64,
-        status: ReceiptStatus,
+        status: ReceiptV3,
     ) -> Result<LoggedFrame, HostError> {
-        let ops = vec![receipt_op(session.epoch, seq, processed_tick, status)];
-        let bytes = encode_frame(
-            self.config.protocol,
-            self.server_tick(),
-            session.next_event_seq,
-            &ops,
-        )?;
+        let bytes = if session.v3.is_some() {
+            codec_v3::encode_delta(&DeltaFrameV3 {
+                lane: LANE_COMBAT,
+                server_tick: self.server_tick(),
+                event_seq: session.next_event_seq,
+                ops: vec![receipt_op_v3(session.epoch, seq, processed_tick, status)],
+            })
+            .map_err(|_| HostError::Invariant(V3_ENCODE))?
+        } else {
+            let ops = vec![receipt_op(
+                session.epoch,
+                seq,
+                processed_tick,
+                trusted_status(status),
+            )];
+            encode_frame(
+                self.config.protocol,
+                self.server_tick(),
+                session.next_event_seq,
+                &ops,
+            )?
+        };
         Ok(LoggedFrame {
             ordinal: 0,
             event_seq: Some(session.next_event_seq),
@@ -1689,19 +1888,25 @@ impl Host {
     }
 
     /// Commits a terminal rejection: sequence, cache, receipt subject to the
-    /// failure budgets. Returns whether the reply was dropped.
+    /// failure budgets. `receipt` is `None` when a v3 session had no room for
+    /// it. Returns whether the reply was dropped by a budget.
     #[allow(clippy::too_many_arguments)]
     fn commit_rejection(
         &mut self,
         peer: PeerHandle,
-        frame: &IntentFrame,
+        frame: &Frame,
         canonical: Vec<u8>,
-        status: ReceiptStatus,
+        status: ReceiptV3,
         processed_tick: u64,
-        receipt: LoggedFrame,
+        receipt: Option<LoggedFrame>,
         now_ms: u64,
     ) -> Result<bool, HostError> {
-        let template = self.receipt_template_len(frame.epoch, frame.seq, processed_tick, status)?;
+        let v3 = self
+            .sessions
+            .get(&peer)
+            .is_some_and(|session| session.v3.is_some());
+        let template =
+            self.receipt_template_len(v3, frame.epoch, frame.seq, processed_tick, status)?;
         let session = self.sessions.get_mut(&peer).expect("bound by caller");
         session.next_new_seq = frame.seq + 1;
         let mut entry = CacheEntry {
@@ -1714,14 +1919,18 @@ impl Host {
         };
         // A pending resync stages the fresh state first; the sender's retry
         // recovers this receipt afterwards (like the accepted path).
-        let dropped = if session.resync_pending {
-            false
-        } else if try_consume_failure(session, now_ms, receipt.bytes.len()) {
-            entry.receipt = Some((session.generation, session.next_ordinal));
-            push_frames(&mut self.egress_bytes, session, vec![receipt])?;
-            false
-        } else {
-            true
+        let dropped = match receipt {
+            _ if session.resync_pending => false,
+            None => false,
+            Some(receipt) => {
+                if try_consume_failure(session, now_ms, receipt.bytes.len()) {
+                    entry.receipt = Some((session.generation, session.next_ordinal));
+                    push_frames(&mut self.egress_bytes, session, vec![receipt])?;
+                    false
+                } else {
+                    true
+                }
+            }
         };
         cache_insert(session, entry);
         Ok(dropped)
@@ -1737,7 +1946,7 @@ impl Host {
     fn commit_accepted(
         &mut self,
         peer: PeerHandle,
-        frame: &IntentFrame,
+        frame: &impl IntentHeader,
         canonical: Vec<u8>,
         action: &CombatAction,
         outcome: Option<crpg_sim::ActionOutcome>,
@@ -1755,17 +1964,22 @@ impl Host {
     }
 
     /// The fallible capture steps of [`commit_accepted`](Self::commit_accepted).
+    ///
+    /// Every v3 session's page is decided (read-only) before the record is
+    /// built, so a fenced session contributes no view; nothing is delivered or
+    /// appended unless the record is built (as for v1/v2 deliveries).
     #[allow(clippy::too_many_arguments)]
     fn capture_accepted(
         &mut self,
         peer: PeerHandle,
-        frame: &IntentFrame,
+        frame: &impl IntentHeader,
         canonical: Vec<u8>,
         action: &CombatAction,
         outcome: Option<crpg_sim::ActionOutcome>,
         before: u64,
         after: u64,
     ) -> Result<(), HostError> {
+        let (epoch, seq) = (frame.header_epoch(), frame.header_seq());
         let count = after - before;
         if count as usize > MAX_NEW_EVENTS_PER_COMMAND_RT {
             return Err(HostError::Invariant("command produced too many events"));
@@ -1790,7 +2004,7 @@ impl Host {
         let mut views: Vec<CapturedView> = Vec::new();
         let mut receipt_ref = None;
         for (handle, session) in &self.sessions {
-            // A v3 session never gets v2 frames; its pages are T141d's.
+            // A v3 session never gets v2 frames; its page is decided below.
             if session.resync_pending || session.v3.is_some() {
                 continue;
             }
@@ -1799,7 +2013,7 @@ impl Host {
             if *handle == peer {
                 ops.push(receipt_op(
                     session.epoch,
-                    frame.seq,
+                    seq,
                     processed_tick,
                     ReceiptStatus::Applied,
                 ));
@@ -1852,12 +2066,22 @@ impl Host {
                 turn,
             });
         }
+        // v3 sessions (D-6 to D-10): each page is decided without changing
+        // anything; a session that gets at least one frame adds its view.
+        let decisions = self.decide_v3_pages(None, &events, Some((peer, seq)), Some(&involved));
+        for (_, decision) in &decisions {
+            if let V3Decision::Deliver(plan) = decision {
+                if let (false, Some(view)) = (plan.frames.is_empty(), &plan.capture) {
+                    views.push(view.clone());
+                }
+            }
+        }
         views.sort_by_key(|view| view.epoch);
         let record = CapturedRecord {
             capture_seq: self.last_capture + 1,
-            epoch: frame.epoch,
+            epoch,
             lane: LANE_COMBAT,
-            seq: frame.seq,
+            seq,
             history_start: before,
             history_end: after,
             outcome: captured_outcome,
@@ -1869,11 +2093,16 @@ impl Host {
         if len > MAX_CAPTURE_RECORD_BYTES {
             return Err(HostError::Invariant("capture record exceeds its bound"));
         }
+        let v3_originator = self
+            .sessions
+            .get(&peer)
+            .is_some_and(|session| session.v3.is_some());
         let template = self.receipt_template_len(
-            frame.epoch,
-            frame.seq,
+            v3_originator,
+            epoch,
+            seq,
             processed_tick,
-            ReceiptStatus::Applied,
+            ReceiptV3::Applied,
         )?;
 
         // Infallible appends from here on (room reserved before execution).
@@ -1886,34 +2115,62 @@ impl Host {
             let session = self.sessions.get_mut(&handle).expect("iterated above");
             push_frames(&mut self.egress_bytes, session, vec![logged])?;
         }
-        let session = self.sessions.get_mut(&peer).expect("bound by caller");
-        session.next_new_seq = frame.seq + 1;
-        cache_insert(
-            session,
-            CacheEntry {
-                seq: frame.seq,
-                bytes: canonical.len() + template,
-                canonical,
-                status: ReceiptStatus::Applied,
-                processed_tick,
-                receipt: receipt_ref,
-            },
-        );
+        for (handle, decision) in decisions {
+            let outcome = self.commit_v3(handle, decision);
+            if handle == peer {
+                receipt_ref = match outcome {
+                    V3Outcome::Logged { receipt } => receipt,
+                    V3Outcome::Staged | V3Outcome::Fenced => None,
+                };
+            }
+        }
+        // A fenced originator has no session to update (A-1): its staged
+        // commands later fail `SessionExpired`.
+        if let Some(session) = self.sessions.get_mut(&peer) {
+            session.next_new_seq = seq + 1;
+            cache_insert(
+                session,
+                CacheEntry {
+                    seq,
+                    bytes: canonical.len() + template,
+                    canonical,
+                    status: ReceiptV3::Applied,
+                    processed_tick,
+                    receipt: receipt_ref,
+                },
+            );
+        }
         Ok(())
     }
 
-    /// The retry-cache receipt-only template length (event_seq = 0).
+    /// The retry-cache receipt-only template length (event_seq = 0), in the
+    /// session wire's codec (D-1).
     fn receipt_template_len(
         &self,
+        v3: bool,
         epoch: [u8; 16],
         seq: u64,
         processed_tick: u64,
-        status: ReceiptStatus,
+        status: ReceiptV3,
     ) -> Result<usize, HostError> {
-        let ops = vec![receipt_op(epoch, seq, processed_tick, status)];
+        if v3 {
+            return Ok(codec_v3::encode_delta(&DeltaFrameV3 {
+                lane: LANE_COMBAT,
+                server_tick: processed_tick,
+                event_seq: 0,
+                ops: vec![receipt_op_v3(epoch, seq, processed_tick, status)],
+            })
+            .map_err(|_| HostError::Invariant(V3_ENCODE))?
+            .len());
+        }
+        let ops = vec![receipt_op(
+            epoch,
+            seq,
+            processed_tick,
+            trusted_status(status),
+        )];
         Ok(encode_frame(self.config.protocol, processed_tick, 0, &ops)?.len())
     }
-
     /// Check-only worst-case room for one accepted command (§6).
     fn accepted_room(&self) -> Result<bool, HostError> {
         if self.last_capture >= u64::MAX - 1 {
@@ -1945,9 +2202,14 @@ impl Host {
 
     /// Check-only egress room for `frames` on one session.
     fn room(&self, session: &Session, frames: &[LoggedFrame]) -> bool {
-        let caps = self.egress_caps;
         let bytes: usize = frames.iter().map(|frame| frame.bytes.len()).sum();
-        session.log.len() + frames.len() <= caps.per_peer_frames
+        self.room_for(session, frames.len(), bytes)
+    }
+
+    /// Check-only egress room for `count` frames of `bytes` encoded bytes.
+    fn room_for(&self, session: &Session, count: usize, bytes: usize) -> bool {
+        let caps = self.egress_caps;
+        session.log.len() + count <= caps.per_peer_frames
             && session.log_bytes + bytes <= caps.per_peer_bytes
             && self.egress_bytes + bytes <= caps.host_bytes
     }
@@ -2215,6 +2477,263 @@ impl Host {
         Ok(())
     }
 
+    // -- v3 publication (T141d) ----------------------------------------------
+
+    /// One v3 session's page for one operation (D-7), built on clones of its
+    /// two views and so reading only: `[receipt?] ++ enters ++ events ++ rest
+    /// of the page ++ [Clock?] ++ [HostFacts?]`, cut by `frame_spans` (H-6),
+    /// one `event_seq` per span. `involved` (an accepted peer command's
+    /// entities) asks for the session's capture view (D-10).
+    fn plan_v3_page(
+        &self,
+        session: &Session,
+        events: &[HistoryEnvelope],
+        receipt: Option<DeltaOpV3>,
+        involved: Option<&BTreeSet<EntityId>>,
+    ) -> Result<PagePlan, HostError> {
+        const PAGE: &str = "v3 page projection failed";
+        let v3 = session.v3.as_ref().ok_or(HostError::NotV3Peer)?;
+        let world = self.history.world();
+        let tick = self.server_tick();
+        let epoch = session.epoch;
+        // (1) The contexts, with the `Despawned` events granted present and
+        // despawn as the removals this page may read as `Despawned`.
+        let mut despawned: Vec<EntityKey> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                HistoryEvent::Despawned { entity }
+                    if lookup(&session.grants, *entity)
+                        .is_some_and(|grant| grant.present && grant.despawn) =>
+                {
+                    Some(key_of(world, *entity))
+                }
+                _ => None,
+            })
+            .collect();
+        despawned.sort();
+        despawned.dedup();
+        let read = read_world(
+            world,
+            tick,
+            &session.grants,
+            &v3.fact_grants,
+            &session.control,
+        )
+        .with_despawned(despawned);
+        // (2) The page, on clones of the two views.
+        let mut view = v3.view.clone();
+        let mut facts = v3.facts.clone();
+        let page = project_page(
+            &mut view,
+            &mut facts,
+            &read.viewer(epoch),
+            &read.fact_context(),
+        )
+        .map_err(|_| HostError::Invariant(PAGE))?;
+        // (3) The event ops: ids resolve against the ids live after the page
+        // or, failing that, before it (D-8).
+        let ids = id_map(world, &session.grants, &view, Some(&v3.view));
+        let peer_view = PeerView {
+            grants: &session.grants,
+            map: &ids,
+        };
+        let candidates: Vec<EventCandidateV3> = events
+            .iter()
+            .filter_map(|envelope| {
+                peer_view.candidate_v3(
+                    &session.control,
+                    v3.fact_grants.encounter.mode,
+                    &envelope.payload,
+                )
+            })
+            .collect();
+        let mut event_ops: Vec<DeltaOpV3> = Vec::new();
+        for chunk in candidates.chunks(MAX_DELTA_OPS) {
+            event_ops.extend(project_events_v3(chunk).map_err(|_| HostError::Invariant(PAGE))?);
+        }
+        // (4) The host facts, current after auto-pause and the timer (D-12).
+        let input = self.host_input(v3.rights);
+        let clock = clock_op(&input, v3.fact_grants.host);
+        let image = host_facts_image(
+            v3.rights,
+            self.settings.auto_pause,
+            v3.fact_grants.host,
+            self.timer_epoch(),
+        );
+        let send_clock = v3.sent_clock.as_ref() != Some(&clock);
+        let send_facts = v3.sent_host_facts != Some(image);
+        let mut ops: Vec<DeltaOpV3> = Vec::new();
+        ops.extend(receipt);
+        ops.extend_from_slice(&page.ops[..page.enters]);
+        ops.extend(event_ops);
+        ops.extend_from_slice(&page.ops[page.enters..]);
+        if send_clock {
+            ops.push(clock.clone());
+        }
+        if send_facts {
+            ops.push(host_facts_op(&input, v3.fact_grants.host));
+        }
+        // (5, 6) No ops: no frame. Else one frame per span.
+        let mut frames: Vec<(u64, Vec<u8>)> = Vec::new();
+        if !ops.is_empty() {
+            let spans = codec_v3::frame_spans(&ops).map_err(|_| HostError::Invariant(V3_ENCODE))?;
+            let mut event_seq = session.next_event_seq;
+            for span in spans {
+                let bytes = codec_v3::encode_delta(&DeltaFrameV3 {
+                    lane: LANE_COMBAT,
+                    server_tick: tick,
+                    event_seq,
+                    ops: ops[span].to_vec(),
+                })
+                .map_err(|_| HostError::Invariant(V3_ENCODE))?;
+                frames.push((event_seq, bytes));
+                event_seq = event_seq
+                    .checked_add(1)
+                    .ok_or(HostError::CounterExhausted)?;
+            }
+        }
+        let capture = involved.filter(|_| !frames.is_empty()).map(|involved| {
+            let after_ids = id_map(world, &session.grants, &view, None);
+            let after = PeerView {
+                grants: &session.grants,
+                map: &after_ids,
+            };
+            CapturedView {
+                epoch,
+                health: after.health_entries(world, involved),
+                turn: after.turn(world),
+            }
+        });
+        Ok(PagePlan {
+            view,
+            facts,
+            frames,
+            clock: send_clock.then_some(clock),
+            image: send_facts.then_some(image),
+            tick,
+            capture,
+        })
+    }
+
+    /// What publication does for one v3 session (D-9), reading only: the page
+    /// if its frames fit the egress room, else a restage, and a fence if
+    /// either plan cannot be built.
+    fn decide_v3(
+        &self,
+        session: &Session,
+        events: &[HistoryEnvelope],
+        receipt: Option<DeltaOpV3>,
+        involved: Option<&BTreeSet<EntityId>>,
+    ) -> V3Decision {
+        let Ok(plan) = self.plan_v3_page(session, events, receipt, involved) else {
+            return V3Decision::Fence;
+        };
+        let bytes: usize = plan.frames.iter().map(|(_, bytes)| bytes.len()).sum();
+        if self.room_for(session, plan.frames.len(), bytes) {
+            return V3Decision::Deliver(plan);
+        }
+        match self.plan_v3_stage(session, &session.grants, SnapshotCause::Resync) {
+            Ok(stage) => V3Decision::Restage(stage),
+            Err(_) => V3Decision::Fence,
+        }
+    }
+
+    /// The decisions for every v3 session (`only` limits it to one), ascending
+    /// handle. `origin` names the accepted command's originator, whose page
+    /// leads with the `Applied` receipt.
+    fn decide_v3_pages(
+        &self,
+        only: Option<PeerHandle>,
+        events: &[HistoryEnvelope],
+        origin: Option<(PeerHandle, u64)>,
+        involved: Option<&BTreeSet<EntityId>>,
+    ) -> Vec<(PeerHandle, V3Decision)> {
+        let tick = self.server_tick();
+        self.sessions
+            .iter()
+            .filter(|(handle, session)| {
+                session.v3.is_some() && only.is_none_or(|one| one == **handle)
+            })
+            .map(|(handle, session)| {
+                let receipt = origin
+                    .filter(|(originator, _)| originator == handle)
+                    .map(|(_, seq)| receipt_op_v3(session.epoch, seq, tick, ReceiptV3::Applied));
+                (*handle, self.decide_v3(session, events, receipt, involved))
+            })
+            .collect()
+    }
+
+    /// Commits one decision: logs the page and installs its clones, stages the
+    /// replacement snapshot, or fences the session (D-9).
+    fn commit_v3(&mut self, handle: PeerHandle, decision: V3Decision) -> V3Outcome {
+        match decision {
+            V3Decision::Fence => {
+                self.fence(handle);
+                V3Outcome::Fenced
+            }
+            V3Decision::Restage(stage) => {
+                let Some(session) = self.sessions.get_mut(&handle) else {
+                    return V3Outcome::Fenced;
+                };
+                commit_v3_stage(
+                    &mut self.egress_bytes,
+                    &self.egress_caps,
+                    session,
+                    stage,
+                    None,
+                );
+                V3Outcome::Staged
+            }
+            V3Decision::Deliver(plan) => {
+                let Some(session) = self.sessions.get_mut(&handle) else {
+                    return V3Outcome::Fenced;
+                };
+                let generation = session.generation;
+                let first = session.next_ordinal;
+                let frames: Vec<LoggedFrame> = plan
+                    .frames
+                    .into_iter()
+                    .map(|(event_seq, bytes)| LoggedFrame {
+                        ordinal: 0,
+                        event_seq: Some(event_seq),
+                        bytes,
+                    })
+                    .collect();
+                let logged = !frames.is_empty();
+                if push_frames(&mut self.egress_bytes, session, frames).is_err() {
+                    self.fence(handle);
+                    return V3Outcome::Fenced;
+                }
+                let v3 = session
+                    .v3
+                    .as_mut()
+                    .expect("a v3 decision needs a v3 session");
+                v3.view = plan.view;
+                v3.facts = plan.facts;
+                if let Some(clock) = plan.clock {
+                    v3.sent_clock = Some(clock);
+                    v3.last_clock_tick = plan.tick;
+                }
+                if let Some(image) = plan.image {
+                    v3.sent_host_facts = Some(image);
+                }
+                V3Outcome::Logged {
+                    receipt: logged.then_some((generation, first)),
+                }
+            }
+        }
+    }
+
+    /// Publishes one operation to v3 sessions (`only` one, else every one,
+    /// ascending by handle). A failure fences that session and never fails
+    /// the operation, which has already committed (D-9).
+    fn publish_v3(&mut self, only: Option<PeerHandle>, events: &[HistoryEnvelope]) {
+        let decisions = self.decide_v3_pages(only, events, None, None);
+        for (handle, decision) in decisions {
+            self.commit_v3(handle, decision);
+        }
+    }
+
     // -- delivery ------------------------------------------------------------
 
     /// Every unacknowledged frame for `peer`, in delivery (ordinal) order;
@@ -2430,13 +2949,35 @@ impl Host {
         }
     }
 
-    /// The retained retry-cache status for `seq`, if still cached.
+    /// The retained retry-cache status for `seq`, if still cached. It keeps
+    /// the frozen v1 type: a v3 code `21..=29` reads `IllegalAction` and `30`
+    /// reads `NotAuthorized` (T141 Reading 17); see
+    /// [`cached_status_v3`](Self::cached_status_v3) for the exact code.
     pub fn cached_status(
         &self,
         peer: PeerHandle,
         seq: u64,
     ) -> Result<Option<ReceiptStatus>, HostError> {
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        Ok(session
+            .cache
+            .iter()
+            .find(|entry| entry.seq == seq)
+            .map(|entry| trusted_status(entry.status)))
+    }
+
+    /// The retained retry-cache status for `seq` with its exact v3 code, if
+    /// still cached (T141d D-4). Precedence: [`UnknownPeer`](HostError::UnknownPeer),
+    /// then [`NotV3Peer`](HostError::NotV3Peer) for a v1/v2 session.
+    pub fn cached_status_v3(
+        &self,
+        peer: PeerHandle,
+        seq: u64,
+    ) -> Result<Option<ReceiptV3>, HostError> {
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        if session.v3.is_none() {
+            return Err(HostError::NotV3Peer);
+        }
         Ok(session
             .cache
             .iter()
@@ -2694,10 +3235,35 @@ impl Host {
         // every committed operation, recorded or not.
         self.after_commit(before, after);
         if after == before {
+            // A zero-event operation makes no record but still publishes: an
+            // RT order, a pending mode or a tick's clock changes v3 state.
+            self.publish_v3(None, &[]);
             return Ok(());
         }
         let record = self.read_host_record(op, before, after);
         self.finish_host_op(op, before, record)
+    }
+
+    /// The envelopes of `(before, after]`, read from the sim journal.
+    fn read_events(&self, before: u64, after: u64) -> Result<Vec<HistoryEnvelope>, HostError> {
+        let mut events: Vec<HistoryEnvelope> = Vec::with_capacity(
+            usize::try_from(after - before)
+                .unwrap_or(0)
+                .min(MAX_HISTORY_EVENTS),
+        );
+        let mut cursor = before;
+        while cursor < after {
+            let page = self
+                .history
+                .read_after(cursor, MAX_HISTORY_PAGE)
+                .map_err(|_| HostError::Invariant("captured range unreadable"))?;
+            if page.is_empty() {
+                return Err(HostError::Invariant("captured range incomplete"));
+            }
+            cursor += page.len() as u64;
+            events.extend(page);
+        }
+        Ok(events)
     }
 
     /// Step 2 of the tail: reads the operation's envelopes and builds its
@@ -2711,19 +3277,7 @@ impl Host {
         if after - before > MAX_HOST_RECORD_EVENTS as u64 {
             return Err(HostError::Invariant("host record exceeds its bound"));
         }
-        let mut events: Vec<HistoryEnvelope> = Vec::with_capacity((after - before) as usize);
-        let mut cursor = before;
-        while cursor < after {
-            let page = self
-                .history
-                .read_after(cursor, MAX_HISTORY_PAGE)
-                .map_err(|_| HostError::Invariant("captured range unreadable"))?;
-            if page.is_empty() {
-                return Err(HostError::Invariant("captured range incomplete"));
-            }
-            cursor += page.len() as u64;
-            events.extend(page);
-        }
+        let events = self.read_events(before, after)?;
         build_host_record(
             self.last_capture + 1,
             op,
@@ -2734,11 +3288,12 @@ impl Host {
         )
     }
 
-    /// Steps 3 to 5 of the tail (S-3): publication (v3 sessions, later
-    /// parts), the append, then the sim acknowledgement, which always runs.
-    /// A `record` that could not be built is returned only after the
-    /// acknowledgement, with nothing appended: evidence is then missing, so
-    /// the next checkpoint fails to load, visibly.
+    /// Steps 3 to 5 of the tail (S-3): publication to v3 sessions (a failure
+    /// fences that session only), the append, then the sim acknowledgement,
+    /// which always runs. A `record` that could not be built is returned only
+    /// after the acknowledgement, with nothing appended: evidence is then
+    /// missing, so the next checkpoint fails to load, visibly. v3 sessions
+    /// still get their page: the sim has committed.
     fn finish_host_op(
         &mut self,
         op: HostOp,
@@ -2746,6 +3301,8 @@ impl Host {
         record: Result<HostRecord, HostError>,
     ) -> Result<(), HostError> {
         let after = self.history.last_sequence();
+        let events = self.read_events(before, after).unwrap_or_default();
+        self.publish_v3(None, &events);
         let appended = record.map(|record| {
             debug_assert_eq!(record.op, op);
             debug_assert_eq!(record.history_start, before);
@@ -2792,6 +3349,7 @@ impl Host {
             self.disarm_timer();
             self.observe_timer();
         }
+        self.publish_v3(None, &[]);
         Ok(())
     }
 
@@ -2811,6 +3369,7 @@ impl Host {
         if self.paused.is_none() {
             self.set_paused(PauseReason::Operator);
         }
+        self.publish_v3(None, &[]);
         Ok(())
     }
 
@@ -2825,6 +3384,7 @@ impl Host {
         if self.paused.take().is_some() {
             self.resume_timer();
         }
+        self.publish_v3(None, &[]);
         Ok(())
     }
 
@@ -3382,7 +3942,7 @@ fn plan_map(
 
 /// §3 step 5: resolve actor/target through the peer's live map, disclosure
 /// and control; `None` is the single public `NotAuthorized`.
-fn resolve_action(session: &Session, frame: &IntentFrame) -> Option<CombatAction> {
+fn resolve_action(session: &Session, frame: &Frame) -> Option<Resolved> {
     let actor = *session.reverse.get(&frame.actor)?;
     let actor_grant = lookup(&session.grants, actor)?;
     if !(actor_grant.present && actor_grant.action_actor) {
@@ -3391,20 +3951,175 @@ fn resolve_action(session: &Session, frame: &IntentFrame) -> Option<CombatAction
     if session.control.binary_search(&actor).is_err() {
         return None;
     }
-    match frame.body {
-        IntentBody::DeclareAction { ability, target } => {
+    let action = match frame.body {
+        IntentBodyV3::DeclareAction { ability, target } => {
             let target = *session.reverse.get(&target)?;
             let target_grant = lookup(&session.grants, target)?;
             if !(target_grant.present && target_grant.action_target) {
                 return None;
             }
-            Some(CombatAction::UseAbility {
+            CombatAction::UseAbility {
+                actor,
+                ability,
+                target,
+            }
+        }
+        IntentBodyV3::EndTurn => CombatAction::EndTurn { actor },
+        _ => return None,
+    };
+    Some(Resolved {
+        actor,
+        intent: Intent::Action(action),
+    })
+}
+
+/// D-2: resolves a v3 intent through the session's `InterestView`: the actor
+/// must be mapped, granted present and `action_actor`, and controlled, else
+/// `NotAuthorized`; then the body (`Pause` and `Unpause` need their right,
+/// else `NoPauseRight`; `RequestMode` needs `pause`, else `NotAuthorized`).
+fn resolve_v3(
+    world: &World,
+    session: &Session,
+    v3: &V3Session,
+    frame: &Frame,
+) -> Result<Resolved, CodeV3> {
+    let deny = CodeV3::NotAuthorized;
+    let area = world.area().unwrap_or(HOST_UNBOUND_AREA);
+    let entity_of = |net: NetId| {
+        v3.view
+            .entity(net)
+            .filter(|key| key.area == area)
+            .map(|key| key.entity)
+    };
+    let actor = entity_of(frame.actor).ok_or(deny)?;
+    let grant = lookup(&session.grants, actor).ok_or(deny)?;
+    if !(grant.present && grant.action_actor) || session.control.binary_search(&actor).is_err() {
+        return Err(deny);
+    }
+    let intent = match frame.body {
+        IntentBodyV3::DeclareAction { ability, target } => {
+            let target = entity_of(target).ok_or(deny)?;
+            let grant = lookup(&session.grants, target).ok_or(deny)?;
+            if !(grant.present && grant.action_target) {
+                return Err(deny);
+            }
+            Intent::Action(CombatAction::UseAbility {
                 actor,
                 ability,
                 target,
             })
         }
-        IntentBody::EndTurn => Some(CombatAction::EndTurn { actor }),
+        IntentBodyV3::EndTurn => Intent::Action(CombatAction::EndTurn { actor }),
+        IntentBodyV3::Stop => Intent::Action(CombatAction::Stop { actor }),
+        IntentBodyV3::Pause if v3.rights.pause => Intent::Pause,
+        IntentBodyV3::Unpause if v3.rights.unpause => Intent::Unpause,
+        IntentBodyV3::Pause | IntentBodyV3::Unpause => return Err(CodeV3::NoPauseRight),
+        IntentBodyV3::RequestMode { mode } if v3.rights.pause => Intent::Mode(sim_mode(mode)),
+        IntentBodyV3::RequestMode { .. } => return Err(deny),
+    };
+    Ok(Resolved { actor, intent })
+}
+
+/// The ids a viewer's mapped entities hold: live after the page, else (when
+/// `before` is given) live before it (D-8).
+fn id_map(
+    world: &World,
+    grants: &DisclosureGrants,
+    after: &InterestView,
+    before: Option<&InterestView>,
+) -> BTreeMap<EntityId, NetId> {
+    grants
+        .entities
+        .iter()
+        .filter_map(|grant| {
+            let key = key_of(world, grant.entity);
+            after
+                .net_id(key)
+                .or_else(|| before.and_then(|earlier| earlier.net_id(key)))
+                .map(|net| (grant.entity, net))
+        })
+        .collect()
+}
+
+/// H-5: the v3 code of a sim refusal. The nine named variants take
+/// `21..=29`; every other refusal is `IllegalAction`, as it is on v1/v2.
+fn code(error: &CombatError) -> CodeV3 {
+    match error {
+        CombatError::ModeUnsupported => CodeV3::ModeUnsupported,
+        CombatError::WrongMode { .. } => CodeV3::WrongMode,
+        CombatError::StatEvaluation { .. } => CodeV3::StatEvaluation,
+        CombatError::EncounterTerminal => CodeV3::EncounterTerminal,
+        CombatError::RulesetMismatch { .. } => CodeV3::RulesetMismatch,
+        CombatError::PlacementInUse { .. } => CodeV3::PlacementInUse,
+        CombatError::NotCreature { .. } => CodeV3::NotCreature,
+        CombatError::AlreadyParticipant { .. } => CodeV3::AlreadyParticipant,
+        CombatError::NoEntrants => CodeV3::NoEntrants,
+        _ => CodeV3::IllegalAction,
+    }
+}
+
+/// The code a session's receipt carries for a sim refusal: exact for v3,
+/// `IllegalAction` for v1/v2 (D-4).
+fn refusal_code(v3: bool, error: &CombatError) -> CodeV3 {
+    if v3 {
+        code(error)
+    } else {
+        CodeV3::IllegalAction
+    }
+}
+
+/// The trusted API's projection of a v3 code onto the frozen v1 type (T141
+/// Reading 17): `21..=29` read `IllegalAction`, `30` reads `NotAuthorized`.
+fn trusted_code(code: CodeV3) -> RejectionCode {
+    match code {
+        CodeV3::FrameTooLarge => RejectionCode::FrameTooLarge,
+        CodeV3::QueueFull => RejectionCode::QueueFull,
+        CodeV3::UnsupportedVersion => RejectionCode::UnsupportedVersion,
+        CodeV3::WrongDirection => RejectionCode::WrongDirection,
+        CodeV3::UnknownMessage => RejectionCode::UnknownMessage,
+        CodeV3::Malformed => RejectionCode::Malformed,
+        CodeV3::LimitExceeded => RejectionCode::LimitExceeded,
+        CodeV3::RateLimited => RejectionCode::RateLimited,
+        CodeV3::Unauthenticated => RejectionCode::Unauthenticated,
+        CodeV3::SessionExpired => RejectionCode::SessionExpired,
+        CodeV3::SeqConflict => RejectionCode::SeqConflict,
+        CodeV3::SeqGap => RejectionCode::SeqGap,
+        CodeV3::StaleSeq => RejectionCode::StaleSeq,
+        CodeV3::SeqExhausted => RejectionCode::SeqExhausted,
+        CodeV3::StaleTick => RejectionCode::StaleTick,
+        CodeV3::FutureTick => RejectionCode::FutureTick,
+        CodeV3::NotAuthorized | CodeV3::NoPauseRight => RejectionCode::NotAuthorized,
+        CodeV3::IllegalAction
+        | CodeV3::ModeUnsupported
+        | CodeV3::WrongMode
+        | CodeV3::StatEvaluation
+        | CodeV3::EncounterTerminal
+        | CodeV3::RulesetMismatch
+        | CodeV3::PlacementInUse
+        | CodeV3::NotCreature
+        | CodeV3::AlreadyParticipant
+        | CodeV3::NoEntrants => RejectionCode::IllegalAction,
+        CodeV3::ServerBusy => RejectionCode::ServerBusy,
+        CodeV3::SnapshotExpired => RejectionCode::SnapshotExpired,
+    }
+}
+
+/// [`trusted_code`] for a whole receipt status.
+fn trusted_status(status: ReceiptV3) -> ReceiptStatus {
+    match status {
+        ReceiptV3::Applied => ReceiptStatus::Applied,
+        ReceiptV3::Rejected(code) => ReceiptStatus::Rejected(trusted_code(code)),
+    }
+}
+
+/// One v3 `Receipt` op.
+fn receipt_op_v3(epoch: [u8; 16], seq: u64, processed_tick: u64, status: ReceiptV3) -> DeltaOpV3 {
+    DeltaOpV3::Receipt {
+        epoch,
+        lane: LANE_COMBAT,
+        seq,
+        processed_tick,
+        status,
     }
 }
 
@@ -3604,6 +4319,43 @@ impl PeerView<'_> {
             | HistoryEvent::Joined { .. }
             | HistoryEvent::Left { .. }
             | HistoryEvent::Moved { .. } => None,
+        }
+    }
+
+    /// Maps one history fact to a v3 candidate (D-8, H-3, H-4): the six v2
+    /// events as `V2`; the five v3 events from the grants, `control` (the
+    /// `OrderEnded` actor) and `mode_granted` (the `ModeChanged` mode);
+    /// `Moved` stays withheld (H-4).
+    fn candidate_v3(
+        &self,
+        control: &[EntityId],
+        mode_granted: bool,
+        event: &HistoryEvent,
+    ) -> Option<EventCandidateV3> {
+        match event {
+            HistoryEvent::RoundStarted { round } => Some(EventCandidateV3::RoundStarted {
+                round: self.grants.turn_round.then_some(*round),
+            }),
+            HistoryEvent::ModeChanged { mode, round } => Some(EventCandidateV3::ModeChanged {
+                mode: mode_granted.then(|| net_mode(*mode)),
+                round: self.grants.turn_round.then_some(*round),
+            }),
+            HistoryEvent::OrderEnded { actor } => Some(EventCandidateV3::OrderEnded {
+                actor: control
+                    .binary_search(actor)
+                    .ok()
+                    .and_then(|_| self.net_if(*actor, |_| true)),
+            }),
+            HistoryEvent::Joined { entity } => Some(EventCandidateV3::Joined {
+                entity: self.net_if(*entity, |_| true),
+                disclose: self.grant(*entity).is_some_and(|g| g.present && g.spawn),
+            }),
+            HistoryEvent::Left { entity } => Some(EventCandidateV3::Left {
+                entity: self.net_if(*entity, |_| true),
+                disclose: self.grant(*entity).is_some_and(|g| g.present && g.despawn),
+            }),
+            HistoryEvent::Moved { .. } => None,
+            other => self.candidate(other).map(EventCandidateV3::V2),
         }
     }
 
@@ -5059,10 +5811,11 @@ mod tests {
         assert_eq!(host.accepted_room(), Ok(false));
     }
 
-    /// Interim (T141d replaces it): until the v3 intent and page pipelines
-    /// exist, a v2 peer's command never writes v2 frames into a v3 session's
-    /// log, and a v2-format intent from a v3 session is refused as an
-    /// unsupported version with no frame, sequence or execution.
+    /// A v2 peer's command reaches a v3 session only as a v3 page, never as v2
+    /// bytes, and a v2-format intent from a v3 session is refused as an
+    /// unsupported version with no frame, sequence or execution. T141c pinned
+    /// the interim "no page at all" rule here; T141d (D-6) replaced that half
+    /// with the page, whose ops `tests/host_v3_publish.rs` D1 pins.
     #[test]
     fn v3_sessions_are_not_served_v2_bytes() {
         let mut host = v2_host(false);
@@ -5080,19 +5833,21 @@ mod tests {
             .expect("binds");
         ack_all(&mut host, v);
         ack_all(&mut host, p);
-        let before = staging_evidence(&host, p);
         let bytes = intent(&host, v, 1, 1, IntentBody::EndTurn);
         assert_eq!(host.ingest(v, &bytes, 1), Ok(IngestDisposition::Staged));
         let summary = host.pump(1).expect("pump");
         assert_eq!(summary.applied, 1);
         assert_eq!(host.executions(), 1);
         assert!(!host.take_delivery(v).expect("bound").is_empty());
-        // V's own frames are in the host's egress total; P's session is
-        // untouched.
-        let mut after = staging_evidence(&host, p);
-        assert_eq!(after.egress_bytes, 43);
-        after.egress_bytes = before.egress_bytes;
-        assert_eq!(after, before);
+        // V's own frame is 43 bytes of the host's egress total; P's log holds
+        // exactly one frame, a v3 delta that no v2 decoder reads.
+        let before = staging_evidence(&host, p);
+        assert_eq!(before.log.len(), 1);
+        let (_, event_seq, page) = &before.log[0];
+        assert_eq!(*event_seq, Some(2));
+        assert!(crpg_net::codec_v3::decode_delta(page).is_ok());
+        assert!(codec_v2::decode_delta(page).is_err());
+        assert_eq!(before.egress_bytes, 43 + page.len());
 
         // The v3 session's own v2-format intent.
         let bytes = intent(&host, p, 1, 1, IntentBody::EndTurn);
@@ -5105,9 +5860,7 @@ mod tests {
         );
         assert_eq!(host.executions(), 1);
         assert_eq!(host.cached_status(p, 1), Ok(None));
-        let mut after = staging_evidence(&host, p);
-        after.egress_bytes = before.egress_bytes;
-        assert_eq!(after, before);
+        assert_eq!(staging_evidence(&host, p), before);
     }
     // -- T141c fix round: review survivors (private-field cases) ---------------
 

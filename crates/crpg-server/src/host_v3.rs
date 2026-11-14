@@ -26,6 +26,7 @@ use crpg_net::protocol_v3::{
 };
 use crpg_sim::World;
 
+use crate::capture::CapturedView;
 use crate::host::{DisclosureGrants, EntityFactGrant, FactGrants, HOST_UNBOUND_AREA};
 
 /// Most entries one staged plan holds in the outbox (H-7): a `Cancel`, the D5
@@ -72,11 +73,9 @@ pub(crate) struct V3Session {
     pub(crate) rights: PauseRights,
     /// The staged plan not yet logged: at most [`OUTBOX_MAX_ENTRIES`].
     pub(crate) outbox: VecDeque<OutboxEntry>,
-    /// The last `Clock` op staged for the viewer (read by T141d).
-    #[allow(dead_code)]
+    /// The last `Clock` op staged for the viewer (D-12).
     pub(crate) sent_clock: Option<DeltaOp>,
-    /// The last host-facts image staged for the viewer (read by T141d).
-    #[allow(dead_code)]
+    /// The last host-facts image staged for the viewer (D-12).
     pub(crate) sent_host_facts: Option<HostFactsImage>,
     /// The server tick of the last staged `Clock` (read by T141e).
     #[allow(dead_code)]
@@ -121,6 +120,36 @@ pub(crate) struct V3Stage {
     /// The `Clock` op and facts image the delta carries.
     pub(crate) clock: DeltaOp,
     pub(crate) image: HostFactsImage,
+}
+
+/// One planned publication page (D-7) for one v3 session: the projected
+/// clones, the encoded frames (each with the `event_seq` it took) and what the
+/// page told the viewer of the host. Built by reading only; committing it
+/// installs the clones, logs the frames and remembers the sent host facts.
+#[derive(Debug)]
+pub(crate) struct PagePlan {
+    /// The projected clone of the interest view.
+    pub(crate) view: InterestView,
+    /// The projected clone of the fact view.
+    pub(crate) facts: FactView,
+    /// One encoded frame per `frame_spans` span, ascending `event_seq`.
+    pub(crate) frames: Vec<(u64, Vec<u8>)>,
+    /// The `Clock` op the page carries, if it carries one.
+    pub(crate) clock: Option<DeltaOp>,
+    /// The host-facts image the page carries, if it carries `HostFacts`.
+    pub(crate) image: Option<HostFactsImage>,
+    /// The server tick the page was cut at.
+    pub(crate) tick: u64,
+    /// The session's capture view of an accepted command (D-10).
+    pub(crate) capture: Option<CapturedView>,
+}
+
+/// The sim mode of a wire mode.
+pub(crate) fn sim_mode(mode: EncounterMode) -> crpg_sim::EncounterMode {
+    match mode {
+        EncounterMode::TurnBased => crpg_sim::EncounterMode::TurnBased,
+        EncounterMode::RealTime => crpg_sim::EncounterMode::RealTime,
+    }
 }
 
 /// The host-fact image of one viewer's grants (D-12).
@@ -175,18 +204,25 @@ pub(crate) struct WorldRead {
     encounter: Option<EncounterShape>,
     timeline: Vec<(i32, EntityKey)>,
     encounter_grants: EncounterGrants,
+    despawned: Vec<EntityKey>,
 }
 
 impl WorldRead {
-    /// The interest view's context for `epoch`; `despawned` is empty here
-    /// (D-7 fills it in a publication page).
+    /// The keys a publication page may read a removal of as `Despawned`
+    /// (D-7); empty for a staging.
+    pub(crate) fn with_despawned(mut self, despawned: Vec<EntityKey>) -> Self {
+        self.despawned = despawned;
+        self
+    }
+
+    /// The interest view's context for `epoch`.
     pub(crate) fn viewer(&self, epoch: [u8; 16]) -> ViewerContext<'_> {
         ViewerContext {
             epoch: SessionEpoch(epoch),
             tick: self.tick,
             interest: InterestSet { area: self.area },
             facts: &self.facts,
-            despawned: &[],
+            despawned: &self.despawned,
             turn: self.turn,
             turn_granted: self.turn_granted,
             resend_turn: false,
@@ -355,6 +391,7 @@ pub(crate) fn read_world(
             .map(|(key, entity)| (key.0, key_of(world, entity)))
             .collect(),
         encounter_grants: facts.encounter,
+        despawned: Vec::new(),
     }
 }
 
