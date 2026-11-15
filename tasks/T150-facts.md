@@ -128,7 +128,25 @@ Dependencies and lint row:
 
 ## The vendored quinn-proto and D23
 
-(pending)
+- `Vendor directory` (`third_party/quinn-proto/`) — `crate/` (the unmodified 0.11.19 archive except the applied patches) and `patches/`; `VENDOR.md` documents source, hashes, patches, re-derivation and retirement.
+- `Cargo.toml [patch.crates-io]` (`Cargo.toml:33–42`) — "T023v (user decision 2026-10-05, D23's vendoring mechanism, ADR-0027)"; `quinn-proto = { path = "third_party/quinn-proto/crate" }` is the last table, and the comment says it is "Not a workspace member".
+- `VENDOR.md rules` (`third_party/quinn-proto/VENDOR.md:3–9`) — `crate/` is "unmodified except by the patches in `patches/`, applied in file-name order"; "Never edit `crate/` by hand, never run `rustfmt` on it, and never run cargo inside it in this repository."
+- `VENDOR.md patch table` (`third_party/quinn-proto/VENDOR.md:26`) — exactly one patch, `0001-send-connection-close-when-congestion-blocked.patch` (upstream `e556fde`, #2787); "A change to the vendored code is a new numbered patch plus an updated table above" (`:67–70`).
+- `T023v patch` (`tasks/T023v.md:1–7`) — the task is "vendored quinn-proto 0.11.19 with the `CONNECTION_CLOSE` fix", decided by T023c Q6 path b.
+- `T023v dedup stacking` (`tasks/T023v.md:146`) — "D23 dedup patch stacking": `docs/reviews/T030-quinn/dedup-window.patch` "applies with `--dry-run` on top of 0001. Disjoint file (`spaces.rs`)".
+- `T023v Windows gap` (`tasks/T023v.md:177`) — "No Windows run: this environment has no Windows host. Windows acceptance…".
+- `D23 what the dedup patch must do` (`tasks/DECISIONS-2026-09-30.md:83–88`) — the prepared patch "stays ready"; it "is applied, by the vendoring mechanism in the dossier, with the first unreliable-datagram lane (movement, T026p)"; "The T030 impairment probe must be re-run on native Windows at that point."
+- `Dedup patch width` (`docs/reviews/T030-quinn/README.md:14–15`) — the 129-packet window drops ages 129–2048 as duplicates at unit level; the patch is "2048 history bits (`[u64; 32]`) plus the separately stored highest packet → **effective window 2049**".
+- `Dedup patch shape` (`docs/reviews/T030-quinn/README.md:77–92`) — it touches only `src/connection/spaces.rs`; `WINDOW_BITS = 2048`, `WINDOW_SIZE = 2049`, `insert`, `smallest_missing_in_interval` and three unit tests are rewritten width-generically.
+- `Dedup patch memory` (`docs/reviews/T030-quinn/README.md:17`) — `Dedup` 32 → 264 bytes, "+696 bytes per connection, no heap allocation".
+- `Dedup end-to-end result` (`docs/reviews/T030-quinn/README.md:18`) — "Did not reproduce. 0 dedup discards in all 26 real QUIC runs"; reorder depth at the relay was ≤ 29.
+- `Dedup patch source` (`docs/reviews/T030-quinn/dedup-window.patch:1–31`) — the patch against `src/connection/spaces.rs`: `type Window = u128` becomes `[u64; WINDOW_WORDS]` with `WINDOW_WORDS = 32`, `WINDOW_BITS = 2048`, `WINDOW_SIZE = 1 + WINDOW_BITS`.
+- `Vendored tree today` (`third_party/quinn-proto/crate/src/connection/spaces.rs:480–483`) — still `type Window = u128;` and `const WINDOW_SIZE: u64 = 1 + mem::size_of::<Window>() as u64 * 8;` (129), so the dedup patch is not applied on this branch.
+- `Impairment probe harness` (`docs/reviews/T030-quinn/README.md:148–166`) — `probe/` (isolated crate with its own `[workspace]` and `Cargo.lock`) and `probe/run-matrix.sh`; a tokio UDP relay between a real quinn client and server applies `clean`, `reorder` (75 ms ± 15 ms) and `impaired` (plus 3% loss), with a raw-UDP control.
+- `Impairment probe parameters` (`docs/reviews/T030-quinn/README.md:159–166`) — payload 1,000 bytes and one DATAGRAM per packet; rates 30/300/3,000 datagrams/s; `datagram_receive_buffer_size` 64 MiB, `datagram_send_buffer_size` 16 MiB; patched and unpatched builds compared through `--config patch.crates-io.quinn-proto.path=…`.
+- `Impairment probe results` (`docs/reviews/T030-quinn/README.md:179–201`) — 0 dedup discards in every run on both builds; at ≥ 300/s the shortfall is sender-side loss/congestion response, which the patch does not change.
+- `Impairment probe Windows gap` (`docs/reviews/T030-quinn/README.md:292–293`) — "**Native Windows/MSVC**: none of the suites, the harness or the impairment matrix have been run on Windows."
+- `deny.toml` (`deny.toml:76–99`) — no `quinn-proto` entry of its own; its graph appears only in the comments explaining the `getrandom`, `rand` and `windows-sys@0.52.0` skips.
 
 ## The lane-1 codec in crpg-net
 
