@@ -557,7 +557,28 @@ the largest sample 1,012 (24 + 38 × 26), and `DATAGRAM_MIN_BYTES` = 1,024.
 
 ## Dependency edges
 
-<!-- TODO -->
+No new edge, no new lockfile package, no `ALLOWED` change.
+
+| Edge | Section | Part | `ALLOWED` change |
+|---|---|---|---|
+| (none) | — | — | — |
+
+- `crpg-net-quic` keeps its one workspace edge `crpg-net` (`ALLOWED` row
+  `{"crpg-net"}`, `tools/lint/deps.py:55–59`) and its four D23 pins
+  (`crates/crpg-net-quic/AGENTS.md:73–83`). The lane-1 API reuses
+  `crpg_net::movement_v4::MAX_MOVE_DOWN_BYTES` and
+  `crpg_net::protocol::MAX_INTENT_FRAME_BYTES` by path, which the existing
+  edge already permits; `movement_v4` is already `pub` in `crpg-net`
+  (`crates/crpg-net/src/lib.rs:50`).
+- `crpg-server` keeps its existing `crpg-net-quic` path edge
+  (`crates/crpg-server/AGENTS.md:92–106`) and its `crpg-net` normal edge; the
+  v4 route calls `host.bind_v4_peer`/`ingest_move`/`take_move_receipts`/
+  `take_samples` (already in the crate) and the new `crpg-net-quic` methods
+  through the existing edge. `FactGrants` and `PauseRights` are already
+  reachable (`crates/crpg-server/src/host.rs`, `crpg_net::protocol_v3`).
+- The dedup patch is a vendored-patch change under `[patch.crates-io]`
+  (`Cargo.toml:33–42`), not a new dependency; `deny.toml` is untouched.
+- `tools/lint/deps.py`, `determinism.py` and their self-tests are not edited.
 
 ## Out of scope
 
