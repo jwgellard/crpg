@@ -47,7 +47,46 @@ plus the workspace `Cargo.toml`), T150b is not.
 
 ## Parts
 
-<!-- TODO -->
+Each part is one crate and one implementer run. Order: **serial**, T150a →
+T150b. T150b needs T150a's `Framing::V3`, `try_recv_lane1`,
+`try_send_lane1` and `try_send_datagram`.
+
+| Part | Crate | Scope | S-set | Review |
+|---|---|---|---|---|
+| T150a | `crpg-net-quic` | V3 framing + lane-1 stream + datagrams + dedup patch + probe | **yes** | Claude reviewer mutant run, one fix round |
+| T150b | `crpg-server` | the `quic.rs` v4 route | no | same |
+
+**S-set** (`docs/IMPLEMENTATION_PLAN.md` §1.4, read as T140 read it): T150a
+fixes wire bytes (a new ALPN = a new stream mapping and DATAGRAM
+negotiation) and vendors a dependency patch (the workspace `Cargo.toml`
+`[patch.crates-io]` and `third_party/quinn-proto/` are S-set). T150b fixes
+no new byte: every wire byte it moves is already fixed by T026p (lane 1),
+T140 (v3) and the T037 host surface; it maps `DeliveryKind` and host calls
+to the transport API, so it is not S-set.
+
+### T150a owns
+- `crates/crpg-net-quic/src/handshake.rs` (`ALPN_LANE0_V3`, `Framing::V3`),
+  `crates/crpg-net-quic/src/tls.rs` (the V3 transport parameters and the
+  datagram buffers), `crates/crpg-net-quic/src/queue.rs` (the lane-1
+  reader/writer and the datagram path), `crates/crpg-net-quic/src/server.rs`,
+  `crates/crpg-net-quic/src/client.rs` (the lane-1 and datagram API),
+  `crates/crpg-net-quic/src/limits.rs`, `crates/crpg-net-quic/src/close.rs`
+  (a datagram send error), `crates/crpg-net-quic/src/lib.rs` (re-exports)
+- `crates/crpg-net-quic/tests/lane1.rs` (new), `crates/crpg-net-quic/tests/lane1_datagram.rs` (new)
+- `third_party/quinn-proto/patches/0002-widen-dedup-window.patch` (new),
+  `third_party/quinn-proto/crate/src/connection/spaces.rs` (re-derived by the
+  patch, never hand-edited), `third_party/quinn-proto/VENDOR.md` (patch table
+  + tree digest), the root `Cargo.toml` (only if the `[patch.crates-io]`
+  comment changes; the table itself already points at `third_party/quinn-proto/crate`)
+- `docs/architecture/crpg-net-quic.md`, `crates/crpg-net-quic/AGENTS.md`
+- goldens: none new, none moved.
+
+### T150b owns
+- `crates/crpg-server/src/quic.rs` (the `Framing::V3` arm, `Invitation`'s
+  two new fields, the lane-1 drain/deliver steps, the `HostCall` variants)
+- `crates/crpg-server/tests/host_quic_move.rs` (new)
+- `docs/architecture/crpg-server.md`, `crates/crpg-server/AGENTS.md`
+- goldens: none new, none moved.
 
 ## Readings
 
