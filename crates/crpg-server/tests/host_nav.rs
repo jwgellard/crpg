@@ -91,6 +91,10 @@ fn m4() -> NavMesh {
 fn mh() -> NavMesh {
     bake_box(Fx16_16::ZERO, rect(0, 0, 10, 10), &[rect(4, 0, 6, 8)]).expect("bakes")
 }
+/// The 2 m square that contains only A of `MV3`.
+fn m2() -> NavMesh {
+    bake_box(Fx16_16::ZERO, rect(0, 0, 2, 2), &[]).expect("bakes")
+}
 
 fn r(mesh: &NavMesh) -> NavRevision {
     NavRevision::of_bytes(&mesh.to_canonical_bytes())
@@ -171,6 +175,19 @@ fn mv3_c_value() -> Value {
     for key in ["movers", "transforms"] {
         let pairs = value["world"][key].as_array_mut().expect("pair list");
         pairs.retain(|pair| pair[0]["index"].as_u64() != Some(2));
+    }
+    value
+}
+
+/// The same value with the mover and transform pairs in descending id order,
+/// so a result in ascending `EntityId` cannot come from store order.
+fn descending_movers(value: &Value) -> Value {
+    let mut value = value.clone();
+    for key in ["movers", "transforms"] {
+        value["world"][key]
+            .as_array_mut()
+            .expect("pair list")
+            .reverse();
     }
     value
 }
@@ -497,6 +514,59 @@ fn a1_bind_area_and_mesh() {
     raised.mirror_bind_nav(&raised_mesh);
     raised.assert_authority();
 
+    // Asymmetric bounds bake `rect(min.x, min.z, max.x, max.z)`: x spans
+    // 0..10 m and z spans 0..4 m. A, moved to m(6, 1), is on that mesh only
+    // under the correct orientation; B at m(3, 1) is on both.
+    let tall = bake_box(Fx16_16::ZERO, rect(0, 0, 10, 4), &[]).expect("bakes");
+    let swapped = bake_box(Fx16_16::ZERO, rect(0, 0, 4, 10), &[]).expect("bakes");
+    let tall_revision = r(&tall);
+    let swapped_revision = r(&swapped);
+    let mut asymmetric = Rig::new(&mv3_c_value());
+    assert_eq!(asymmetric.host.place(a(), m(6, 1)), Ok(()));
+    asymmetric.mirror_place(a(), m(6, 1));
+    assert_eq!(
+        asymmetric
+            .host
+            .bind_area_bounds(p(0, 0, 0), p(655360, 655360, 262144)),
+        Ok(NavBinding {
+            revision: tall_revision,
+            cleared: Vec::new(),
+            placed: Vec::new(),
+        })
+    );
+    assert_eq!(asymmetric.host.nav_revision(), Some(tall_revision));
+    asymmetric.mirror_bind_nav(&tall);
+    asymmetric.assert_authority();
+
+    // Control: the same position is off the z-swapped mesh and is placed.
+    let mut swapped_host = Rig::new(&mv3_c_value());
+    assert_eq!(swapped_host.host.place(a(), m(6, 1)), Ok(()));
+    swapped_host.mirror_place(a(), m(6, 1));
+    assert_eq!(
+        swapped_host.host.bind_nav_mesh(swapped.clone()),
+        Ok(NavBinding {
+            revision: swapped_revision,
+            cleared: Vec::new(),
+            placed: vec![a()],
+        })
+    );
+    swapped_host.mirror_bind_nav(&swapped);
+    swapped_host.mirror_place(a(), m(4, 1));
+    swapped_host.assert_authority();
+    assert_eq!(mover_position(&swapped_host.oracle, a()), m(4, 1));
+
+    // An asymmetric failing bake: x spans 10 m, z spans none.
+    let before_asymmetric = asymmetric.state(&[]);
+    assert_eq!(
+        asymmetric
+            .host
+            .bind_area_bounds(p(0, 0, 0), p(655360, 655360, 0)),
+        Err(HostError::NavBake(BakeError::EmptyOuter))
+    );
+    asymmetric.assert_unchanged(&before_asymmetric, &[]);
+    assert_eq!(asymmetric.host.nav_revision(), Some(tall_revision));
+    asymmetric.assert_authority();
+
     // A failed bake is refused and changes nothing.
     let before = rig.state(&[]);
     assert_eq!(
@@ -538,6 +608,13 @@ fn a1_bind_area_and_mesh() {
         Err(HostError::Closed)
     );
     assert_eq!(closed.host.bind_nav_mesh(m10()), Err(HostError::Closed));
+    // A-3 step 1 precedes step 2: closed wins over an unbakeable pair.
+    assert_eq!(
+        closed
+            .host
+            .bind_area_bounds(p(0, 0, 0), p(0, 655360, 655360)),
+        Err(HostError::Closed)
+    );
     closed.assert_authority();
 }
 
@@ -577,6 +654,24 @@ fn a2_off_mesh_movers_are_placed() {
     wide.mirror_bind_nav(&m10());
     wide.assert_authority();
     assert_eq!(mover_position(&wide.oracle, c()), m(1, 5));
+
+    // A-2 step 4: two off-mesh movers are placed in ascending `EntityId`,
+    // though this fixture's mover store is in descending order. B (index 1)
+    // is placed before C (index 2), and A is on the 2 m mesh.
+    let reversed = descending_movers(&mv3_value());
+    let mut two = Rig::new(&reversed);
+    let binding = two.host.bind_nav_mesh(m2()).expect("binds");
+    assert_eq!(binding.placed.len(), 2);
+    assert_eq!(binding.placed, vec![b(), c()]);
+    assert_eq!(binding.revision, r(&m2()));
+    assert_eq!(binding.cleared, Vec::new());
+    assert_eq!(two.mirror_bind_nav(&m2()), Vec::new());
+    two.mirror_place(b(), m(2, 1));
+    two.mirror_place(c(), m(1, 2));
+    two.assert_authority();
+    assert_eq!(mover_position(&two.oracle, a()), m(1, 1));
+    assert_eq!(mover_position(&two.oracle, b()), m(2, 1));
+    assert_eq!(mover_position(&two.oracle, c()), m(1, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +745,67 @@ fn a3_rebind_keeps_or_clears_routes() {
     assert_eq!(rig.mirror_bind_nav(&mh()), vec![(a(), RouteTag(0))]);
     rig.assert_authority();
     assert_eq!(mover_route(&rig.oracle, a()), None);
+
+    // A-2 step 5: the kept mesh is the new one, and a route computed after
+    // the rebind is nav's answer on it (the wall bends the straight M10
+    // line).
+    assert_eq!(rig.host.nav_revision(), Some(r(&mh())));
+    let wall_path: Vec<[Fx16_16; 3]> = mh()
+        .find_path(m(1, 1), m(9, 1))
+        .expect("the wall's path exists")
+        .into_points();
+    assert!(wall_path.len() >= 3);
+    assert_ne!(
+        wall_path,
+        m10()
+            .find_path(m(1, 1), m(9, 1))
+            .expect("a path")
+            .into_points()
+    );
+    assert_eq!(rig.host.move_to(a(), m(9, 1)), Ok(None));
+    assert_eq!(rig.mirror_set_route(a(), route(&mh(), 0, &wall_path)), None);
+    rig.assert_authority();
+    assert_eq!(
+        mover_route(&rig.oracle, a()).map(|route| route.points),
+        Some(wall_path)
+    );
+
+    // `NavBinding.cleared` is ascending `EntityId` too: one rebind clears two
+    // routes in a fixture whose mover store is in descending order.
+    let reversed = descending_movers(&mv3rt_value());
+    let mut two = Rig::new(&reversed);
+    assert_eq!(
+        two.host.bind_nav_mesh(m10()),
+        Ok(NavBinding {
+            revision: r(&m10()),
+            cleared: Vec::new(),
+            placed: Vec::new(),
+        })
+    );
+    assert_eq!(two.mirror_bind_nav(&m10()), Vec::new());
+    assert_eq!(two.host.move_to(c(), m(1, 4)), Ok(None));
+    assert_eq!(
+        two.mirror_set_route(c(), route(&m10(), 0, &[m(1, 5), m(1, 4)])),
+        None
+    );
+    assert_eq!(two.host.move_to(b(), m(4, 4)), Ok(None));
+    assert_eq!(
+        two.mirror_set_route(b(), route(&m10(), 0, &[m(3, 1), m(4, 4)])),
+        None
+    );
+    two.assert_authority();
+    let rebind = two.host.bind_nav_mesh(mh()).expect("binds");
+    assert_eq!(rebind.revision, r(&mh()));
+    assert_eq!(rebind.cleared.len(), 2);
+    assert_eq!(rebind.cleared, vec![(b(), RouteTag(0)), (c(), RouteTag(0))]);
+    assert_eq!(rebind.placed, Vec::new());
+    assert_eq!(
+        two.mirror_bind_nav(&mh()),
+        vec![(b(), RouteTag(0)), (c(), RouteTag(0))]
+    );
+    two.assert_authority();
+    assert_eq!(mover_route(&two.oracle, b()), None);
+    assert_eq!(mover_route(&two.oracle, c()), None);
 
     // No zero-event operation publishes a frame.
     assert_eq!(rig.host.take_delivery_entries(v2), Ok(Vec::new()));
@@ -893,11 +1049,39 @@ fn a6_halt_and_place() {
     assert_eq!(unbound.host.halt(a()), Ok(None));
     assert_eq!(unbound.mirror_clear_route(a()), None);
     unbound.assert_authority();
+
+    // A-6 step 1 and A-8 step 1: a closed host refuses both before the sim.
+    let mut closed = Rig::new(&value);
+    closed.host.shutdown();
+    assert_eq!(closed.host.place(a(), m(2, 2)), Err(HostError::Closed));
+    assert_eq!(closed.host.halt(a()), Err(HostError::Closed));
+    closed.assert_authority();
 }
 
 // ---------------------------------------------------------------------------
 // A7.
 // ---------------------------------------------------------------------------
+
+/// 4,096 `EndTurn` commands through the host and the mirror, so the capture
+/// journal is full (T141 B9's pattern).
+fn fill_journal(rig: &mut Rig, peer: PeerHandle) {
+    for seq in 1..=4096_u64 {
+        let active = rig
+            .oracle
+            .world()
+            .combat()
+            .expect("an encounter")
+            .active
+            .expect("a head");
+        assert_eq!(rig.end_turn(peer, seq, active), ReceiptStatus::Applied);
+        rig.oracle
+            .perform_action(&CombatAction::EndTurn { actor: active })
+            .expect("the mirror ends the same turn");
+        rig.mirror_ack();
+        rig.drain(peer);
+    }
+    assert_eq!(rig.host.last_capture(), 4096);
+}
 
 #[test]
 fn a7_host_move_turn_based() {
@@ -1015,22 +1199,7 @@ fn a7_host_move_turn_based() {
     let v2 = full.bind_v();
     full.host.bind_nav_mesh(m10()).unwrap();
     full.mirror_bind_nav(&m10());
-    for seq in 1..=4096_u64 {
-        let active = full
-            .oracle
-            .world()
-            .combat()
-            .expect("an encounter")
-            .active
-            .expect("a head");
-        assert_eq!(full.end_turn(v2, seq, active), ReceiptStatus::Applied);
-        full.oracle
-            .perform_action(&CombatAction::EndTurn { actor: active })
-            .expect("the mirror ends the same turn");
-        full.mirror_ack();
-        full.drain(v2);
-    }
-    assert_eq!(full.host.last_capture(), 4096);
+    fill_journal(&mut full, v2);
     full.assert_authority();
     let before = full.state(&[v2]);
     assert_eq!(
@@ -1038,6 +1207,54 @@ fn a7_host_move_turn_based() {
         Err(HostError::CaptureFull)
     );
     full.assert_unchanged(&before, &[v2]);
+
+    // Four thousand and ninety-six turns leave B holding the turn, so A is
+    // out of turn: A-9 step 2 wins over step 3 (`OutOfTurn`, the control on
+    // this rig's opening move) and over step 5 (`CannotAfford`).
+    assert_eq!(
+        full.oracle.world().combat().expect("an encounter").active,
+        Some(b())
+    );
+    assert_eq!(
+        full.host.host_move(a(), m(4, 1)),
+        Err(HostError::CaptureFull)
+    );
+    full.assert_unchanged(&before, &[v2]);
+    assert_eq!(
+        full.host.host_move(a(), m(9, 9)),
+        Err(HostError::CaptureFull)
+    );
+    full.assert_unchanged(&before, &[v2]);
+
+    // CaptureFull × NoNavMesh: a full, unbound host refuses the record room
+    // before the route; the unbound control above is `NoNavMesh`.
+    let mut full_bare = Rig::new(&value);
+    let v2b = full_bare.bind_v();
+    fill_journal(&mut full_bare, v2b);
+    full_bare.assert_authority();
+    let before_bare = full_bare.state(&[v2b]);
+    assert_eq!(
+        full_bare.host.host_move(a(), m(4, 1)),
+        Err(HostError::CaptureFull)
+    );
+    full_bare.assert_unchanged(&before_bare, &[v2b]);
+
+    // A-9 step 1: a closed host refuses before the reservation, with or
+    // without a mesh.
+    let mut closed = Rig::new(&value);
+    closed.host.bind_nav_mesh(m10()).unwrap();
+    closed.mirror_bind_nav(&m10());
+    closed.host.shutdown();
+    assert_eq!(closed.host.host_move(a(), m(4, 1)), Err(HostError::Closed));
+    assert_eq!(closed.host.nav_revision(), Some(r(&m10())));
+    let mut closed_bare = Rig::new(&value);
+    closed_bare.host.shutdown();
+    assert_eq!(
+        closed_bare.host.host_move(a(), m(4, 1)),
+        Err(HostError::Closed)
+    );
+    closed.assert_authority();
+    closed_bare.assert_authority();
 }
 
 // ---------------------------------------------------------------------------
