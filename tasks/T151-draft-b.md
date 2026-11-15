@@ -402,6 +402,22 @@ states its control and what failure looks like.
 
 ## Dependency edges
 
+No new edge in any part, and `tools/lint/deps.py` / `ALLOWED` are not edited
+by any part.
+
+| Edge used | Section | Part | `ALLOWED` change |
+|---|---|---|---|
+| `crpg-godot` → `crpg-net` (`pool_v4`, `replica_v4`, `outbox_v4`, `movement_v4`) | `[dependencies]` (path, exists) | T151a | none: the row permits every workspace crate (`tasks/T151-facts.md:243`) |
+| `crpg-godot` → `crpg-server` (`bind_v4_peer`, `take_samples`, `ingest_move`, …) | `[dependencies]` (path, exists) | T151b | none (same row); `crates/crpg-godot/Cargo.toml:13–19` already lists all five |
+| `crpg-godot` → `godot` (optional, `engine`) | `[dependencies]` (exists) | T151c | none; no bump, no default change |
+| `apps/client` GDScript → `CrpgSession`/`CrpgView` | GDExtension runtime only | T151d | none (not a Cargo edge) |
+
+No external crate and no new lockfile package. `crpg-godot` already depends
+on `crpg-core`, `crpg-data`, `crpg-net`, `crpg-server` and `crpg-sim`
+(`crates/crpg-godot/Cargo.toml:13–19`), so the v4 types arrive over existing
+edges. No lower crate imports the bridge back: `crpg-testkit` and
+`crpg-server` both exclude `crpg-godot` (`tasks/T151-facts.md:244`).
+
 ## Out of scope
 
 ## Open questions
