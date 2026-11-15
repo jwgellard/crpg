@@ -465,4 +465,47 @@ B-22. A host that never calls `load_area`, `decide_move_to`,
 
 ## Open questions (each with a recommendation)
 
+1. **`crpg-server` → `crpg-nav` dependency edge (H5).** The `ALLOWED`
+   table already permits it (`tools/lint/deps.py:69`), but H5 asks for
+   approval at contract review. *Recommendation:* approve; add `crpg-nav` to
+   `crates/crpg-server/Cargo.toml` as a normal dependency. The edge is
+   compile-time only (constants and `bake_box`/`nearest_on_mesh`/`find_path`/
+   `to_canonical_bytes`), and nav stays on `crpg-core` only.
+
+2. **Refresh interval.** H4 leaves the value to T037. *Recommendation:*
+   `MOVE_SAMPLE_REFRESH_TICKS = 4` (200 ms at the 50 ms tick), so a
+   stationary mover is re-anchored twice per interpolation-delay window
+   (U7's 2 ticks) and datagram load stays bounded by 38 entries per
+   datagram. Tightening to 2 is allowed later; loosening past 10 risks a
+   client holding a stale position through a full heartbeat.
+
+3. **Area input shape.** `load_area` takes `&crpg_data::Area`, which would
+   add `crpg-data` to `crpg-server` (not currently a dependency). *Recommendation:*
+   keep `&crpg_data::Area` and approve the edge alongside question 1; the
+   alternative (passing `Bounds` + holes) leaks bake parameters into every
+   caller and duplicates `Area.bounds` reading.
+
+4. **Lane-1 freshness.** Lane-1 intents carry no `observed_tick` (L2).
+   *Recommendation:* check freshness against the receipt's `processed_tick`
+   with the same `POLICY_OBSERVED_TICK_WINDOW`, as HM-2's step 4 requires;
+   if that is judged too loose, add `observed_tick` to `MoveIntent` (a wire
+   change, out of scope for this draft).
+
+5. **Nav query gate key.** Keying by `(tick, actor)` assumes `Host::tick`
+   clears the set. *Recommendation:* clear in `Host::tick` before
+   `HistoryWorld::tick`, and also clear in `advance`'s tick path; a direct
+   `decide_move_to` outside a tick uses the passed `now_tick`.
+
+6. **`MoveTo` on a turn-based participant.** H2 does not say which mode.
+   *Recommendation:* reject with `WrongMode` (22) and advise the client to
+   send `DeclareMove`; this matches Reading 3's code table.
+
+7. **Off-mesh placement threshold.** H1 says place "any mover that is off
+   the mesh in x/z". *Recommendation:* use `crpg_nav::locate(p) == None`,
+   not a distance test, so a mover exactly on an edge is not moved.
+
+8. **Sample deduplication order.** B-16 deduplicates moved entries first.
+   *Recommendation:* keep moved-first so a walking entity's freshest
+   position wins over the refresh snapshot in the same datagram.
+
 ## Agent log
