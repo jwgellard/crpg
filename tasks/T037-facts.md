@@ -241,6 +241,74 @@ All in `crates/crpg-server/src/`.
 
 ## Protocol v4 surface to call
 
+All in `crates/crpg-net/src/`.
+
+- **`codec_v4` module** (`lib.rs:47`): version 4 lane-0 codec. Public
+  functions: `encode_intent(&IntentFrame) -> Result<Vec<u8>, CodecError>`
+  (`codec_v4.rs:181`), `decode_intent(&[u8]) -> Result<IntentFrame,
+  CodecError>` (`codec_v4.rs:223`), `frame_spans(ops: &[DeltaOp]) ->
+  Result<Vec<Range<usize>>, CodecError>` (`codec_v4.rs:375`),
+  `encode_delta(&DeltaFrame) -> Result<Vec<u8>, CodecError>`
+  (`codec_v4.rs:402`), `decode_delta(&[u8]) -> Result<DeltaFrame,
+  CodecError>` (`codec_v4.rs:428`).
+- **`protocol_v4`** (`protocol_v4.rs`): `PROTOCOL_VERSION = 4` (`:27`),
+  `INTENT_TAG_DECLARE_MOVE = 6` (`:30`), `DELTA_TAG_MOVED = 21` (`:32`),
+  `DELTA_TAG_POSITION = 22` (`:34`), `COORD_LIMIT_RAW: i32 = 1 << 29` (`:38`),
+  `MAX_MOVED_POINTS = 64` (`:41`). `Point([i32; 3])` (`:45`) with
+  `Point::new(raw: [i32; 3]) -> Option<Self>` (`:50`) and `raw() -> [i32; 3]`
+  (`:60`); `PositionFact { point, moving }` (`:67`). `IntentBody` (`:95`) adds
+  `DeclareMove { destination: Point }` (tag 6) at `:118`. `DeltaOp` (`:155`) is
+  `V3(v3::DeltaOp)` (tags 0..=20), `Moved { entity: NetId, points: Vec<Point> }`
+  (`:160`) and `Position { entity: NetId, position: Option<PositionFact> }`
+  (`:168`); `check_points(&[Point])` at `:187`.
+- **Lane-1 module `movement_v4`** (`movement_v4.rs`):
+  `MOVEMENT_VERSION = 0xA1` (`:32`), `LANE_MOVEMENT = 1` (`:34`).
+  `MoveBody::MoveTo { destination: Point }` (`:78`) and `Halt` (`:83`);
+  `MoveIntent { epoch: [u8; 16], seq: u64, actor: NetId, body: MoveBody }`
+  (`:89`); `MoveOutcome::{Accepted { start_tick: u64 }, Superseded,
+  Rejected(RejectionCode)}` (`:102`, arms at `:104`, `:109`, `:111`);
+  `MoveReceipt { epoch, seq, actor, processed_tick, outcome }` (`:116`);
+  `SampleEntry { entity: NetId, point: Point, moving: bool }` (`:131`);
+  `MoveSample { server_tick, processed_seq, entries }` (`:143`);
+  `MoveDown::{Receipt, Sample}` (`:154`); `encode_intent` (`:207`),
+  `decode_intent` (`:228`), `encode_down` (`:273`), `decode_down` (`:318`),
+  `check_sample` (`:432`), and
+  `sample_datagrams(server_tick: u64, processed_seq: u64, entries:
+  &[SampleEntry]) -> Result<Vec<Vec<u8>>, CodecError>` (`:447`).
+- **Lane-1 wire bounds** (`movement_v4.rs`): `MAX_MOVE_DOWN_BYTES = 1_024`
+  (`:50`), `MAX_SAMPLE_HEADER_BYTES = 24` (`:53`), `MAX_SAMPLE_ENTRY_BYTES =
+  26` (`:55`), `MAX_SAMPLE_ENTRIES = 38` (`:57`).
+- **Lane-1 host policies** (`movement_v4.rs`): `POLICY_MOVE_INTENTS_PER_SEC =
+  20` (`:67`), `POLICY_MOVE_INTENT_BURST = 40` (`:69`), `POLICY_MOVE_IN_FLIGHT
+  = 8` (`:71`), with the const assertion against
+  `protocol::POLICY_RETRY_CACHE_PER_PEER_LANE` at `:72`. The doc comments say
+  "Policy, never wire" (`:65`, `:68`, `:70`); the const assertions at
+  `:58`–`64` pin the sample byte bounds.
+- **`positions_v4`** (`positions_v4.rs`): `MAX_POSITION_PAGE_OPS`
+  (`:27`), `MAX_PAGE_OPS_V4` (`:32`), `PositionRow { key: EntityKey, granted:
+  bool, point: Point, moving: bool }` (`:36`), `PositionView` (`:54`, `new` at
+  `:61`), `PageV4 { ops, enters, cursor }` (`:76`), and
+  `project_page_v4(view: &mut InterestView, facts: &mut FactView, positions:
+  &mut PositionView, state: &ViewerContext<'_>, context: &FactContext<'_>,
+  rows: &[PositionRow]) -> Result<PageV4, FactError>` (`:116`).
+  `project_samples(view: &InterestView, positions: &mut PositionView, rows:
+  &[PositionRow], refresh: bool) -> Result<Vec<SampleEntry>, FactError>`
+  (`:199`); `project_snapshot_v4(view, facts, positions, state, context) ->
+  Result<SnapshotProjectionV3, FactError>` (`:252`).
+- **`projection_v4`** (`projection_v4.rs`): `EventCandidate::{V3(v3 candidate),
+  Moved { entity: Option<NetId>, points: Vec<Point>, disclose: bool }}`
+  (`:18`, variant at `:23`) and
+  `project_events(candidates: &[EventCandidate]) -> Result<Vec<DeltaOp>,
+  ProjectionError>` (`:41`); a `Moved` with no entity, `disclose == false` or
+  points failing `check_points` is omitted, not refused (`:38`–`40`).
+- **`SEQ_LAST`** (`protocol.rs:48`): `u64::MAX - 1`, the last per-epoch,
+  per-lane sequence; `SEQ_FIRST` is 1 (`protocol.rs:41`).
+- **`RejectionCode`** (`protocol_v3.rs:525`–`586`, re-exported by
+  `protocol_v4.rs:24`): the closed codes 1..=30 used by lane-1
+  `MoveOutcome::Rejected`; lane-1-relevant members include `RateLimited` 8,
+  `SessionExpired` 10, `SeqConflict` 11, `SeqGap` 12, `StaleSeq` 13,
+  `SeqExhausted` 14, `NotAuthorized` 17, `IllegalAction` 18, `WrongMode` 22.
+
 ## Movement in sim to call
 
 ## Navigation to call
