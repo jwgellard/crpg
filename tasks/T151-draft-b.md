@@ -286,6 +286,28 @@ B10. **Error mapping is closed.** `HostError::Closed` → 50, any other
 
 ## Errors
 
+No new `BridgeCode`, no new `Display` text (Reading 9). The closed table and
+`name()`/`is_fatal()` are untouched
+(`crates/crpg-godot/src/core/errors.rs:12–53`,
+`crates/crpg-godot/src/core/errors.rs:62`,
+`crates/crpg-godot/src/core/errors.rs:88–90`).
+
+| Source | Mapping | Detail |
+|---|---|---|
+| `HostError::Closed` anywhere | 50 `HostClosed` | as today |
+| `HostError::NotV4Peer` and every other `HostError` | 51 `HostFailed` | wildcard arm, `error.to_string()` |
+| `MoveOutbox::send` → `Full` (8 pending, `tasks/T151-facts.md:140`) | 30 (notice, processing continues) | link-full precedent, queue unchanged |
+| `MoveOutbox::send` → `Exhausted` | 51 `HostFailed`, fence | `seq` space is worn out; unrecoverable |
+| undecodable lane-0 frame | 52, fence | as today |
+| replica refusal (`UnknownEntity`, version) | 53, fence | as today |
+| `DeliveryKind::Transfer` on a v4 session | 54 `UnexpectedTransfer`, fence | same arm as today (`crates/crpg-godot/src/core/authority.rs:62–67`); unreachable because the player binds with `bind_snapshot_peer` semantics (`tasks/T151-facts.md:20`) |
+| `submit_move` negative/unknown actor | 3 / 6 | same argument/index rules as `submit` |
+| panic at any boundary | 55 `PANICKED` | same guard as today |
+
+Lane-1 receipt bytes that fail to decode for the oldest pending intent fence
+like a refused lane-0 frame (B10); receipts for a non-oldest `seq` or a
+foreign epoch are ignored without a code (B7).
+
 ## Tests
 
 ## What must not change
