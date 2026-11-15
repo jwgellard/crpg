@@ -485,7 +485,21 @@ row, `docs/adr/0026-quic-host-adapter.md:106–110`).
 
 ## Out of scope
 
-TODO (fill)
+- T026 prediction (G2, `docs/adr/0036-movement-and-navigation.md:453–458`);
+  the `crpg-godot` bridge (T151: `ReassemblyPoolV4`, `ReplicaWorldV4`,
+  `MoveOutbox`, T049/G1, T050/G3), owed by T026p
+  (`tasks/T026p.md:1477–1479`).
+- The nav revision on the wire (T037 Reading 4,
+  `tasks/T037.md:136–160`); a `0x83` snapshot with positions (T026p
+  Reading 8, `tasks/T026p.md:238–250`); new rejection codes (T026p
+  Reading 3, `tasks/T026p.md:185–193`); route length on the wire.
+- Any change to `crpg-net`'s codec or to the T037 host surface: T150c
+  calls `ingest_move`, `take_move_receipts`, `take_samples` but owns
+  none of them.
+- T040 invitation generation and format; T025 resume/narrowing; grid
+  snapping (S2–S5); terrain, facing, formations and the rest of the D46f
+  list (`docs/adr/0036-movement-and-navigation.md:575–589`).
+- Any code outside the owning lists; any other file.
 
 ## Open questions (each with a recommendation)
 
