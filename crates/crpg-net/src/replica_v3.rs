@@ -255,7 +255,7 @@ impl ReplicaWorldV3 {
     }
 
     /// Applies one op to the working state, in the contract's check order.
-    fn apply_op(&mut self, op: &DeltaOp) -> Result<(), ReplicaError> {
+    pub(crate) fn apply_op(&mut self, op: &DeltaOp) -> Result<(), ReplicaError> {
         match op {
             DeltaOp::EntityEnter { entity } => {
                 if self.index_of(*entity).is_some() {

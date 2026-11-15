@@ -993,6 +993,314 @@ in the `0x82` body; the host re-sends both after every publication (T140
 H-2). `apply_snapshot` therefore leaves `pause` and `host_facts` as they are,
 and both are `None` until their first op.
 
+## Protocol v4 (T026p, ADR-0036 L1–L6)
+
+`protocol_v4` / `codec_v4` add lane-0 wire version 4 beside frozen v1, v2,
+v3, `0x81`, `0x82` and `0x91`. T026p1 fixes lane 0: every v3 message by its
+v3 bytes, the turn-based `DeclareMove` intent, and the `Moved` and `Position`
+delta ops over the bounded `Point` type. T026p2 (below) fixes lane 1 (`0xA1`).
+The position filter, the v4 pool, the replica and the outbox are T026p3–p5 and
+extend this section as they land.
+
+**Lanes.** A v4 session is lane-0 version 4 plus the movement subprotocol
+version `0xA1` (T026p2). Each lane keeps its own first byte, so one can change
+without a lane-0 version and the reverse:
+
+| Lane | Carries | First byte | Module |
+|---|---|---|---|
+| 0 | combat and session (v1–v4) | 1, 2, 3, 4 | `protocol` … `protocol_v4` |
+| 1 | movement intents, receipts, position samples (T026p2) | `0xA1` | `movement_v4` |
+| 2 | snapshot transfer | `0x81`, `0x82` | `protocol_transfer`, `transfer_v3` |
+| 3 | session resume | `0x91` | `protocol_resume` |
+
+Every codec refuses another version's first byte with `UnsupportedVersion`
+and a foreign lane with `WrongDirection`; the v1, v2 and v3 codecs refuse
+byte 4 the same way. There is no negotiation: the host picks the versions per
+session.
+
+**v3 ops are wrapped, not re-declared.** `DeltaOp::V3(op)` carries every v3
+op (tags 0..=20) with exactly its v3 bytes, so byte identity holds by
+construction instead of by a second 21-variant copy to keep in step. The
+v4 decoder reads a tag of 0..=20 only through `codec_v3::take_op`, and the
+encoder writes it only through `codec_v3::extend_op`; those two functions
+became `pub(crate)` for this (the only edit to `codec_v3`). Intents have no
+per-body function to call, so v4 re-declares the six small v3 bodies (tags
+0..=5, `From<protocol_v3::IntentBody>` converts) and adds tag 6.
+`RejectionCode`, `ReceiptStatus` and `EncounterMode` are v3's types
+re-exported; **v4 adds no rejection code** (`DeclareMove` refusals reuse
+`NotAuthorized`, `WrongMode`, `IllegalAction` and the admission codes).
+
+**Intent.** `04`, `epoch`, `lane` 0, `seq`, `observed_tick`, `actor`, body
+tag, body. Tag 6 `DeclareMove` is one point, and the header's actor moves
+(ADR-0036 L6). Decode order is v3's with tag 6 added: cap, version, `epoch`,
+`lane`, `seq`, `observed_tick`, `actor`, tag (7..=255 `UnknownMessage`), body,
+trailing bytes.
+
+**Delta.** `04`, `lane` 0, `server_tick`, `event_seq`, op count (at most
+256, checked before any op is read), then ops. Tag 21 `Moved` is `entity`, a
+count varint (2..=64, both bounds checked before any point is read) and the
+points; a point equal to the previous one in `x` and `z` is `Malformed` (a
+zero horizontal segment, exactly sim's `ZeroSegment`; `y` may differ). Route
+length is not checked on the wire: it needs a square root, and sim validated
+it. Tag 22 `Position` is `entity`, a disclosed flag and, only when set, a
+point and a `moving` flag: `None` means "withheld from now on while the entity
+stays visible" (the forget image), and has no bytes after its `00` flag. Tags
+23..=255 are `UnknownMessage`. `check_points` is the encode check for
+`Moved`, in the decoder's order, and returns exactly the error `encode_delta`
+does.
+
+**`Point` and U3.** A position is raw `Fx16_16` metres `[x, y, z]`; `Point`'s
+field is private and `Point::new` refuses any component whose `unsigned_abs()`
+exceeds `COORD_LIMIT_RAW` (2^29, ADR-0036 U3), so a `Point` cannot be out of
+bounds and an encoded one is at most 15 bytes (a coordinate is a zigzag `i32`,
+at most 5 bytes). The decoder checks each coordinate when it is read: `x`
+before `y` before `z`. `COORD_LIMIT_RAW` and `MAX_MOVED_POINTS` (64) are
+declared here because net cannot use sim outside tests; test W11 asserts they
+equal `crpg_sim::COORD_LIMIT_RAW` and `MAX_ROUTE_POINTS`.
+
+**`frame_spans`.** T140 B-6's greedy split over v4 ops: every op's encode check
+runs first (first failure, no spans), then a frame closes when one more op
+would pass 256 ops or `MAX_FRAME_OP_BYTES_V3` (65,512) op bytes. The v4 header
+is at most 24 bytes, so one span always encodes within 65,536 bytes. For all
+`V3` ops it equals `codec_v3::frame_spans`. The largest `Moved` is 972 bytes
+and the largest `Position` 28.
+
+**Errors.** No new variant: `CodecError` covers every refusal (see T140a's
+list; the new ones are intent tag 7..=255 and op tag 23..=255 as
+`UnknownMessage`; a `Moved` count over 64 as `LimitExceeded`; a count under 2,
+a zero horizontal segment, a coordinate beyond U3 and a flag byte other than
+0/1 as `Malformed`). `tests/v4_wire.rs` carries the literal byte oracles
+(W1–W11) and a differential against the v3 codec over every v3 op and a
+mutation corpus.
+
+### T026p2: `movement_v4`, lane 1
+
+Lane 1 is its own separately versioned subprotocol (D13): every message starts
+with `MOVEMENT_VERSION` (`0xA1`) and carries `lane` 1 as a second guard.
+Lane-0 v4 starts with byte 4, so `codec_v4::decode_intent` and `decode_delta`
+refuse lane-1 bytes, and `movement_v4` refuses a lane-0 v4 intent, with
+`UnsupportedVersion`; the v1, v2, v3, `0x81`/`0x82` and `0x91` codecs refuse
+`0xA1` the same way. A "v4 session" is lane-0 version 4 with movement version
+`0xA1`, picked by the host; there is no negotiation. The module reads no
+`World`, checks shape and not entitlement, and reuses v3's `RejectionCode`
+(gameplay refusals are receipts, never codec errors). It calls
+`codec_v4::{extend_point, take_point}` and duplicates only the five postcard
+helpers it uses.
+
+**Four messages.**
+
+| Message | Direction | Layout after `0xA1` |
+|---|---|---|
+| `MoveIntent` | up | `epoch[16]`, `lane` 1, `seq`, `actor`, tag: 0 `MoveTo` + one point, 1 `Halt` |
+| `MoveReceipt` | down, kind 0 | `lane` 1, `kind` 0, `epoch[16]`, `seq`, `actor`, `processed_tick`, outcome: 0 `Accepted` + `start_tick`, 1 `Superseded`, 2 `Rejected` + v3 code 1..=30 |
+| `MoveSample` | down, kind 1 | `lane` 1, `kind` 1, `server_tick`, `processed_seq` (0..=`SEQ_LAST`), count varint (at most 38), per entry `entity`, point, `moving` |
+| `MoveDown` | down | the sum of the receipt and the sample, which `decode_down` returns |
+
+A lane-1 intent has **no `observed_tick`** (ADR-0036 L2: "There are no other
+fields"). The largest intent is 54 bytes and the largest receipt 60. Intents
+are per input and reliable, each earning exactly one receipt in `seq` order
+(L2, L3); the host keeps the latest target per actor per tick and answers the
+earlier ones `Superseded` (H2). A receipt carries `epoch` and `processed_tick`
+beyond ADR's `{ seq, actor, outcome }` so it names the processed `seq` and a
+server tick without using the tick as identity.
+
+**Sample bounds (Reading 6).** A sample is one self-contained datagram of at
+most `MAX_MOVE_DOWN_BYTES` (1,024) bytes and `MAX_SAMPLE_ENTRIES` (38) entries.
+QUIC guarantees 1,200-byte UDP payloads and a 1-RTT packet spends at most about
+44 bytes on its header, tag and DATAGRAM framing, so 1,024 fits inside that.
+38 is the largest `n` with 24 + 26 `n` <= 1,024 (`MAX_SAMPLE_HEADER_BYTES`
+24, `MAX_SAMPLE_ENTRY_BYTES` 26), so a sample within the count cap always fits
+(1,012 bytes at most) and splitting is fixed chunking; two `const` assertions
+pin both sides of that, so 38 cannot move alone. Entries are in strictly
+ascending `NetId`, checked on decode and by `check_sample`, which `encode_down`
+returns the error of (order: `processed_seq` above `SEQ_LAST`, more than 38
+entries, then entity order). A sample has no epoch, because a datagram belongs
+to one connection; `processed_seq` is the highest lane-1 `seq` receipted to
+the receiving peer (0 before any). `sample_datagrams(tick, processed_seq,
+entries)` cuts one tick's entries into chunks of 38 and encodes each; empty
+input gives no datagrams, and it checks `processed_seq` and strict ascent over
+the whole input before any output, so a fault in a late chunk yields nothing.
+1,024 visible entities make 27 datagrams (26 of 38, one of 36).
+
+**Decode order** is contract in both directions: whole-message cap (4,096 for an
+intent, 1,024 downstream, `FrameTooLarge`), empty (`Malformed`), version,
+`lane`, then fields in wire order, each checked when read, then trailing
+bytes. A varint count that overflows `u64` is `Malformed`; a count over 38 is
+`LimitExceeded` before any entry is read.
+
+**Policies (Reading 14, U7).** `POLICY_MOVE_INTENTS_PER_SEC` 20,
+`POLICY_MOVE_INTENT_BURST` 40 and `POLICY_MOVE_IN_FLIGHT` 8 are host-enforced,
+tightening-only and never on the wire; a `const` assertion keeps the in-flight
+limit within the retry cache. Lane-1 traffic also counts toward every existing
+aggregate (`POLICY_INTENT_*`, the ingress and egress caps, the failure
+budgets). The interpolation delay is client policy. `tests/v4_movement.rs`
+carries the literal byte oracles (M1–M8).
+
+### T026p3: `positions_v4` and `projection_v4`, the position filter
+
+`positions_v4` decides who is told where an entity is; the host supplies every
+position and grant (`PositionRow { key, granted, point, moving }`), and the
+module reads no `World`, RNG or clock. **Disclosure is a reliable anchor, then
+unreliable samples (Reading 7).** The lane-0 op `Position { Some }` starts
+disclosure of one entity's position (and repeats it on a resend page);
+`Position { None }` stops it while the entity stays visible, the "forget"
+image. Values between those two travel only in lane-1 samples, so a walking
+creature costs no lane-0 traffic. An entity that leaves view needs no
+`Position` op: `EntityLeave` removes it.
+
+**`PositionView`** is the per-viewer companion of one `InterestView` and one
+`FactView`: per visible key it remembers the `PositionFact` the viewer was last
+told and the `NetId` it was told under. It mints no id (every `NetId` is read
+from the `InterestView`), is not `Serialize` and has no restore constructor.
+
+**Op ownership (extends the table above).**
+
+| Op | Owner |
+|---|---|
+| `Position` | `PositionView` (`positions_v4::project_page_v4`) |
+| `Moved` | `projection_v4::project_events` |
+| every v3 op, wrapped in `V3` | its v3 owner, unchanged |
+| position samples (lane 1, not an op) | `positions_v4::project_samples` |
+
+**`project_page_v4`** checks before anything changes, first failure wins: the
+`PositionView`'s epoch against the `FactView`'s (`WrongEpoch`); more than 1,024
+rows (`TooManyFacts`); two rows with one key (`DuplicateFact`); then
+`facts_v3::project_page` with its error unchanged. The position checks come
+before every fact check, and every `Err` leaves all three views equal to their
+clones. Then it forgets, silently, each remembered key whose `view.net_id` is
+no longer the id it was told under (left, retired, or re-entered under a new
+id), and emits at most one `Position` per visible key in ascending `NetId`,
+after `project_page`'s ops wrapped in `V3`: a granted row not yet told is
+anchored; a told key whose row is not granted (or is gone) is withdrawn with
+`None`; on a resend page every granted position is re-anchored; otherwise
+nothing, and the memory keeps the old value (a changed point is the samples'
+job). A page is at most `MAX_PAGE_OPS_V4` (5,123) ops and is not a frame.
+
+**`project_samples`** reads the current grant on every call. For each
+remembered key in ascending `NetId` whose id is still current and whose row is
+granted now, it emits a `SampleEntry` when the value differs from the told one
+(or on `refresh`) and remembers it; any other remembered key gives nothing and
+keeps its memory. It adds no key, so a position is sampled only after its
+anchor, and **revocation is immediate**: a row that stops being granted leaves
+the samples in that call, ahead of the page whose `None` tells the client to
+forget. Its checks are the page's position checks (epoch against the interest
+view's, then rows); `positions` is untouched on `Err`. Cut the result into
+datagrams with `movement_v4::sample_datagrams`.
+
+**Reconnect (Reading 8).** `project_snapshot_v4` checks the epoch, runs
+`facts_v3::project_snapshot_v3` (its error unchanged, nothing changed on `Err`)
+and on `Ok` returns that result untouched and empties the `PositionView`. The
+`0x82` body carries no positions; the next `project_page_v4` re-anchors every
+granted visible position in the first delta above the snapshot's cursor, and
+`project_samples` returns nothing until then. This meets ADR-0036 L5 ("resync
+snapshots carry only granted positions") without a `0x83` body.
+
+**`Moved` disclosure (Reading 9).** `projection_v4::EventCandidate` is `V3(c)`
+(exactly `projection_v3::project_events(&[c])`, wrapped; its errors fail the
+call) or `Moved { entity, points, disclose }`, which yields a `Moved` op
+exactly when `entity` is `Some`, `disclose` is true and `check_points` is
+`Ok`; otherwise it is withheld. More than 256 candidates is `TooManyEvents`.
+Order is the input's, with no sort and no deduplication. `disclose` is the
+host's position grant for the viewer, as `Joined`/`Left`'s is for notices.
+`tests/v4_positions.rs` (Q1..Q12 plus ordering and bound cases) is the suite.
+
+### T026p4: `pool_v4`, the v4 receiver gate
+
+`pool_v4` is `pool_v3` for one v4 session: `ReassemblyPoolV4` is
+`ReassemblyPoolV3` with the v4 delta decoder and nothing else changed. It
+re-exports, by path, everything the v3 pool already shares (`PublicationV3`,
+`ReceiverStatusV3`, `TransferLimitsV3`, `LimitsError`, `ResyncReason` and
+T024's outcome, error, status and mode types), so a v4 receiver's status and
+publications have exactly the v3 types. New are `ReceiverIdV4` (a separate
+id type with a private field, so a v3 receiver cannot be passed to a v4
+pool) and `ReplicaUpdateV4` (`Snapshot(PublicationV3)` or
+`Delta(protocol_v4::DeltaFrame)`, in FIFO order). The pool reads no op: a
+decoded v4 delta, `Moved` and `Position` included, is gated by `event_seq`
+alone and released as decoded.
+
+**Transliteration rule (V-1).** `pool_v4.rs` is `pool_v3.rs` with exactly
+these substitutions and nothing else:
+
+| In `pool_v3.rs` | In `pool_v4.rs` |
+|---|---|
+| `use crate::codec_v3::decode_delta;` | `use crate::codec_v4::decode_delta;` |
+| `use crate::protocol_v3::DeltaFrame;` | `use crate::protocol_v4::DeltaFrame;` |
+| the definitions of `PublicationV3` and `ReceiverStatusV3` | `pub use crate::pool_v3::{PublicationV3, ReceiverStatusV3};` |
+| `ReceiverIdV3`, `ReplicaUpdateV3`, `ReassemblyPoolV3` | `ReceiverIdV4`, `ReplicaUpdateV4`, `ReassemblyPoolV4` |
+
+`TransferAssemblyV3`, `TransferLimitsV3` and every `transfer_v3` call stay:
+the `0x82` snapshot is the v3 snapshot, so a v4 session transfers the v3
+body. Check order, saturating arithmetic, the clamp-then-sweep prologue,
+`BTreeMap` order and FIFO handling are unchanged. The check is runnable
+(contract T026p V-1, bash, repository root; it must print nothing, and the
+reviewer runs it): `diff -B` of `pool_v3.rs` after `sed` deletes lines 39-50
+and 72-95 and applies the five name substitutions, against `pool_v4.rs` less
+the one `pub use` line, both with whole-line `//` comments removed. Lines
+39-50 and 72-95 are the two re-exported definitions with their docs and
+derives, so a change to `pool_v3.rs` that moves them breaks the check on
+purpose.
+
+**Proved two ways.** `tests/v4_pool.rs` drives one script on a `ReassemblyPoolV3`
+and a `ReassemblyPoolV4` of the same limits (the same transfer bytes, each
+delta's v3 bytes with byte 0 changed from 3 to 4) and compares every result,
+every receiver's whole status, both pool totals and every popped update (a v4
+`Delta` against the v3 frame with its ops wrapped in `V3`), after every step.
+V1 is T140r's P8 script; V5 is one test each for its P2, P3, P4, P5, P9,
+P10 and P11. The v3 pool is the oracle, so a fix to one pool that is not made
+to the other fails the mirror.
+
+**Version isolation.** One pool holds one wire. `ReassemblyPoolV4` accepts
+`0x82` transfer frames and v4 delta frames only: v1, v2 and v3 delta bytes,
+the lane-1 `0xA1` sample bytes and `0x81` frames are
+`Codec(UnsupportedVersion)`; `ReassemblyPoolV3` refuses v4 delta bytes the
+same way. The host picks the pool per session; there is no fallback or
+negotiation.
+
+### T026p5: `replica_v4` and `outbox_v4`, the v4 client replica and sender
+
+`replica_v4::ReplicaWorldV4` is the v3 client replica plus positions and
+samples. It holds a `ReplicaWorldV3`, the disclosed positions
+(`BTreeMap<NetId, PositionState { tick, point, moving }>`) and the newest
+sample's clock (`SampleClock { server_tick, processed_seq }`). Every v3 query
+is `v3()`. It reads no `World`, clock or I/O and invents no position: a
+position comes only from a `Position` anchor or a sample.
+
+- **`apply_delta`** checks, in v3's order, lane, op count, then `event_seq`
+  (`ReplicaError`, reused unchanged), then applies the ops in frame order on a
+  working copy of the whole replica and commits on success, so an `Err` leaves
+  the replica equal to its pre-call clone. A `V3` op goes through
+  `ReplicaWorldV3::apply_op` (the one `pub(crate)` token in `replica_v3.rs`);
+  a v3 `EntityLeave` or `Despawned` also removes that entity's position. The
+  sequence and tick advance by applying an empty v3 frame to the inner
+  replica. `Position { Some }` needs a live row (`UnknownEntity` otherwise) and
+  stores `{ frame.server_tick, point, moving }` unless the stored position is
+  newer than the frame; `Position { None }` needs a live row and forgets the
+  position. **`Moved` is an unchecked notice**, like `Joined`/`Left`
+  (Reading 9): no liveness check, nothing stored; a presenter pairs its id with
+  `v3().entity()` and treats a miss as "not visible".
+- **`apply_snapshot`** is the inner `apply_snapshot`; on `Ok` the positions
+  are emptied (the next page re-anchors them, Reading 8) and the sample clock
+  is kept.
+- **`apply_sample`** never fails: a datagram that is old, repeated or about an
+  entity the replica does not know is ordinary traffic. The clock moves only
+  to a strictly newer `server_tick`; an entry is stored only for an entity
+  that already has a position and only when the sample is strictly newer than
+  that position (L4, newest wins). It returns how many entries it stored and
+  never touches `v3()`. The invariant is that every key of `positions()` is a
+  live row of `v3()`.
+
+`outbox_v4::MoveOutbox` is the client's lane-1 sender state for one epoch:
+`next_seq` from 1, at most `POLICY_MOVE_IN_FLIGHT` (8) unreceipted intents,
+`pending()` in ascending `seq` for a resend after a resume, and
+`processed_seq`. `send` mints the intent (`Exhausted`, `Full`); `receive`
+completes the oldest pending intent with its receipt, whatever the outcome,
+and checks epoch, then emptiness, then `seq`, then actor (`WrongEpoch`,
+`Unexpected { expected, got }`, `WrongActor { seq }`). `OutboxError` has no
+payload in its `Display` and no `source()`. A refusal changes nothing.
+`tests/v4_replica.rs` (R1..R9, O1..O4) is the suite; R2 runs the T140r R2
+script on a `ReplicaWorldV3` and, wrapped in `V3`, on a `ReplicaWorldV4`, and
+R9 drives a `ReassemblyPoolV4` into the replica.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -1015,3 +1323,8 @@ and both are `None` until their first op.
 
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the `pool_v3` section (the reused and new types, the P-1 substitution table, the P8 mirror, version isolation and T140e's sizing), superseding T140e's "later task" sentence without editing it; no earlier section changed.
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the `replica_v3` section (state, the R-5..R-8 op table, the liveness rule and its T140c emission-order/T027b history-slot justification, stale references, images, delta/snapshot precedence and host state kept across a snapshot); no earlier section changed.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the "Protocol v4 (T026p, ADR-0036 L1–L6)" section for the new `protocol_v4`/`codec_v4` pair (lane table, `V3` wrapping and why, `Moved`, `Position`, `Point` and U3, `frame_spans`); no earlier section changed.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the lane-1 `movement_v4` subsection (the `0xA1` subprotocol, the four messages and their layouts, the 1,024-byte and 38-entry sample bounds and splitter, the decode order and the U7 policies) and marked lane 1 built in the lane table.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the `positions_v4`/`projection_v4` subsection (the anchor-then-samples disclosure, `PositionView`, the page, sample and snapshot rules, reconnect and `Moved` disclosure) and extended the op-owner table; no earlier section changed.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the `pool_v4` subsection (what is re-exported from `pool_v3`, the V-1 substitution table and its runnable `diff -B` check, the two-pool mirror proof and version isolation); no earlier section changed.
+- 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the `replica_v4`/`outbox_v4` subsection with the replica's apply rules, the sample and anchor ordering rule and the outbox window and receipt order.

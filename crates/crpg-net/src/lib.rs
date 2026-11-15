@@ -35,26 +35,37 @@
 //! gates `0x82` transfers and v3 deltas into the v3 receiver's FIFO queue.
 //! The T140r2 [`replica_v3`] module applies those updates to the client copy,
 //! holding the v3 fact, encounter, timeline, pause and host-fact state.
+//! The T026p1 [`protocol_v4`]/[`codec_v4`] pair adds lane-0 version 4 (byte 4):
+//! every v3 message by its v3 bytes, plus the turn-based `DeclareMove` intent
+//! and the `Moved` and `Position` delta ops over the bounded `Point` type.
 
 pub mod codec;
 pub mod codec_resume;
 pub mod codec_transfer;
 pub mod codec_v2;
 pub mod codec_v3;
+pub mod codec_v4;
 pub mod facts_v3;
 pub mod interest;
+pub mod movement_v4;
+pub mod outbox_v4;
 pub mod pool_v3;
+pub mod pool_v4;
+pub mod positions_v4;
 pub mod projection_v2;
 pub mod projection_v3;
+pub mod projection_v4;
 pub mod protocol;
 pub mod protocol_resume;
 pub mod protocol_transfer;
 pub mod protocol_v2;
 pub mod protocol_v3;
+pub mod protocol_v4;
 pub mod reassembly;
 pub mod reassembly_v3;
 pub mod replica;
 pub mod replica_v3;
+pub mod replica_v4;
 pub mod resume;
 pub mod sim;
 pub mod transfer_v3;

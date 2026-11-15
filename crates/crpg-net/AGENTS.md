@@ -190,6 +190,71 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   existing `ReplicaError`: add no variant**, or the bridge's fatal-53 mapping
   and T046's `Display` strings change.
 
+- *2026-11-14 (UTC), T026p1:* **Protocol v4, lane 0** (`protocol_v4`,
+  `codec_v4`; see architecture §"Protocol v4"). **Supersedes the trap above
+  that says "Spatial replication waits for the lane-1 movement channel"**:
+  positions now travel as the lane-0 `Position` and `Moved` ops and, from
+  T026p2, lane-1 samples; there is still no open bag and no transform op, and
+  a position is a bounded `Point`, never a free float or an unchecked `i32`
+  triple. **v4 wraps v3 ops; never re-declare a v3 op in v4, and never move a
+  v3 tag** (tags 0..=20 are `DeltaOp::V3`; 21 and 22 are v4's). **A v4 tag
+  0..=20 is decoded only by `codec_v3::take_op` and encoded only by
+  `codec_v3::extend_op`**: never copy a v3 op body into `codec_v4`, or the
+  byte identity the W4 differential proves stops being true by construction.
+  **No new rejection code without a new version**: `RejectionCode` is v3's,
+  re-exported, so a movement refusal reuses an existing code. The v4 intent
+  bodies 0..=5 are re-declared, not wrapped; keep them equal to v3's bytes.
+
+- *2026-11-14 (UTC), T026p2:* **Protocol v4, lane 1** (`movement_v4`; see
+  architecture §"T026p2"). **Samples are datagrams only and never carry an
+  `event_seq`**: a sample is self-contained (at most 1,024 bytes and 38
+  entries, strictly ascending `NetId`), has no epoch, and is never ordered or
+  retried; anything that must be reliable or ordered goes on lane 0 or in a
+  receipt. **Lane-1 intents have no `observed_tick`** (ADR-0036 L2): never add
+  one, and never reuse the lane-0 `IntentFrame` for lane 1. The lane-1 first
+  byte is `0xA1`, so a lane-0 codec never reads lane-1 bytes and the reverse;
+  keep every check in the contract's order (cap, empty, version, lane, kind,
+  body, trailing). The 38-entry and 1,024-byte bounds are pinned together by
+  two `const` assertions; change neither alone, and a change to either is a new
+  movement version. The policy constants are host-enforced and never wire.
+
+- *2026-11-14 (UTC), T026p3:* **Protocol v4, the position filter** (`positions_v4`,
+  `projection_v4`; see architecture §"T026p3"). **A position is sampled only
+  after its anchor**: `project_samples` walks the `PositionView`'s remembered
+  keys and never adds one, so a key reaches the samples only through a
+  `Position { Some }` op on a page. **`project_samples` reads the current
+  grant, so revocation is immediate**: never sample from the remembered value
+  of a key whose row is gone or no longer granted, and never let a changed
+  value of a withheld row move a byte of a page or sample. **A snapshot
+  empties the `PositionView`; the next page re-anchors**: the `0x82` body has
+  no positions (Reading 8), so `project_snapshot_v4` must clear the memory and
+  the host must send a page in the same tick. `PositionView` mints no id, is
+  not `Serialize`, has no restore constructor and is driven only through
+  `project_page_v4`/`project_samples`/`project_snapshot_v4`; the position
+  checks run before `project_page`'s, so a refusal never half-updates a view.
+- *2026-11-14 (UTC), T026p4:* **v4 receiver gate** (`pool_v4`; see
+  architecture §"T026p4"). **Supersedes the T140r1 two-pool wording above:
+  `pool_v3` and `pool_v4` are transliterations of `reassembly.rs`'s pool: a
+  fix to one is a fix to all three, in one task.** `pool_v4.rs` is
+  `pool_v3.rs` by the V-1 substitutions and nothing else; keep it so and run
+  V-1's `diff -B` check (it prints nothing) before changing either file.
+  `PublicationV3`, `ReceiverStatusV3` and the `0x82` path stay v3's and are
+  re-exported, never copied. The pool reads no op: never teach it
+  `Moved`, `Position` or any other op, and never add a `V4` arm to the v1/v3
+  types.
+- *2026-11-15 (UTC), T026p5:* **v4 replica and sender** (`replica_v4`,
+  `outbox_v4`; see architecture §"T026p5"). **`ReplicaWorldV4` applies v3 ops
+  only through `ReplicaWorldV3::apply_op`; never copy a v3 rule** into it (the
+  one `pub(crate)` token in `replica_v3.rs` is the only change that file
+  takes). **`Moved` is an unchecked notice, like `Joined`/`Left`**: do not
+  liveness-check it or store anything from it; positions come only from anchors
+  and samples. **`apply_sample` never fails**: do not add an error for a stale,
+  duplicate or unknown entry, because datagrams are unordered and lossy.
+  **An anchor replaces a position only if it is not older than it** (equal tick
+  replaces), and a sample only if it is strictly newer. A snapshot empties the
+  positions and keeps the sample clock. `MoveOutbox` never reorders or skips a
+  receipt: `receive` takes only the oldest pending intent.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
@@ -234,3 +299,8 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r1 · Added the v3 receiver-gate entry with its three traps (one transliteration fixed in both pools in one task; no V3 arm on the frozen v1/v2 types; a v3 receiver uses only the v3 codecs, assembly and limits). P9 remains unwritten because the contract's `G(1)` expectation contradicts P-5 step 4; reported to the manager.
 - 2026-11-13 (UTC) · opencode/deepseek-v4.1-flash-free + T140r2 · Added the v3 client-replica entry with its four traps (fact references checked only when the op applies; `apply_snapshot` keeps `pause` and `host_facts`; no codec value check is re-run; every v3 refusal is an existing `ReplicaError`, add no variant).
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the protocol v4 lane-0 entry with its three traps (v4 wraps v3 ops and never moves a v3 tag; a v4 tag 0..=20 goes only through `codec_v3::take_op`/`extend_op`; no new rejection code without a new version) and superseded the "Spatial replication waits for the lane-1 movement channel" trap by that dated entry, leaving the old line unedited.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the protocol v4 lane-1 entry with its two traps (samples are datagrams only and never carry an `event_seq`; lane-1 intents have no `observed_tick`) and the bound and order rules for `movement_v4`.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the position-filter entry with its three traps (a position is sampled only after its anchor; `project_samples` reads the current grant so revocation is immediate; a snapshot empties the `PositionView` and the next page re-anchors).
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the v4 receiver-gate entry; its trap that a pool fix is a fix to all three pools supersedes the T140r1 two-pool wording by a new entry, not an edit.
+- 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the v4 replica and sender entry with its four traps (v3 ops only through `apply_op`; `Moved` is an unchecked notice; `apply_sample` never fails; an anchor replaces only if not older).
