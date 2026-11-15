@@ -38,6 +38,16 @@ Since [T024q](../../tasks/T024q.md) the crate also re-exports:
 `QuicClient` gains `connect_framed`, `connect_resume`, `framing`,
 `try_send_channel` and `try_recv_channel`.
 
+Since [T150b](../../tasks/T150.md) the crate also re-exports:
+- `ALPN_LANE0_V3`, `MOVEMENT_WIRE_VERSION`, `MAX_DATAGRAM_BYTES` and
+  `LANE1_OUTBOUND_FRAMES` (handshake);
+- `Lane1Stats` (close).
+
+`QuicServer` gains `bind_movement`, `movement`, `try_recv_lane1`,
+`try_send_lane1`, `try_send_datagram` and `lane1_stats`; `QuicClient` gains
+`connect_movement`, `movement`, `try_send_lane1`, `try_recv_lane1`,
+`try_recv_datagram` and `lane1_stats`.
+
 The submodules are private. Changing a public item, a wire byte, a cap, a
 close code, an ALPN or a `Display` text (`<VariantName> at quic/<area>`)
 needs an ADR. A wire change also needs a new ALPN.
@@ -50,7 +60,9 @@ needs an ADR. A wire change also needs a new ALPN.
 2. **The host side stays synchronous.** Every public call is non-blocking,
    except `wait`, `connect`, `close`, `shutdown` and `Drop`, and reaches the
    I/O thread only through the shared state and its wakeups. No tokio,
-   quinn or rustls type appears in a public signature.
+   quinn or rustls type appears in a public signature. `try_send_datagram`
+   hands its datagram to quinn's synchronous `send_datagram` outside the
+   state lock, as `stats` reads quinn's stats.
 3. **Never touch simulation state.** No `World`, RNG, event queue or sim
    clock. quinn's and ring's randomness never reaches the host.
 4. **Bytes are opaque.** Lane payloads are never decoded here. The `/2`
@@ -58,10 +70,13 @@ needs an ADR. A wire change also needs a new ALPN.
    stay opaque. The caps are checked on the length prefix before any
    allocation.
 5. **Every queue is bounded** in frames and bytes, per connection and
-   host-wide. `QueueFull` is retryable and changes nothing. A full inbound
-   queue parks one frame and stops reading, and nothing is dropped.
+   host-wide (lane-1 queues are per connection and host-wide only through
+   `max_connections`, T150b Reading 8). `QueueFull` is retryable and changes
+   nothing. A full inbound queue parks one frame and stops reading, and
+   nothing is dropped.
 6. **Ordering.** Within a connection and a direction, frames are delivered
-   exactly once, in `try_send` order, across channels too. Across connections
+   exactly once, in `try_send` order, across channels too (lane 1 has no
+   order relation to lane 0, T150b Reading 3). Across connections
    there is no order.
 7. **Closes are recorded first-wins, then published.** A close becomes
    visible through the `Closed` event and `try_recv`'s error only after the
@@ -96,6 +111,7 @@ cargo test -p crpg-net-quic --test close_budget --locked
 cargo test -p crpg-net-quic --test quic --locked   # 32 cases (T023: 1–23, T023c: 24–27, T023v: 28, T023d: 29–30)
 cargo test -p crpg-net-quic --test quic_gaps --locked
 cargo test -p crpg-net-quic --test channel --locked # 21 cases (T024q S§10)
+cargo test -p crpg-net-quic --test movement --locked # 19 tests (T150b M1–M13)
 cargo test -p crpg-net --locked
 cargo tree -p crpg-net -e normal,build --target all   # must name no tokio/quinn/rustls/ring/mio/socket2
 cargo test --workspace --locked
@@ -123,6 +139,14 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - Never log, `Display` or put a credential in a close reason. Its `Debug` is
   `Credential(<redacted>)`, and `crpg-net-quic` emits no logs.
 - Never enable DATAGRAM frames or more streams without a new ALPN.
+- Only `bind_movement` offers `/3`; never add `/3` to another endpoint's
+  ALPN list.
+- Never add a `Framing` variant without the `crpg-server` part that matches
+  it.
+- Lane 1 has its own queues: its order is independent of lane 0's.
+- The server never reads a datagram; its quinn receive buffer stays
+  `Some(0)`.
+- Never retry a datagram.
 - Never add a platform verifier, webpki roots or `rustls-native-certs`.
 - Never use `#[tokio::main]` or any tokio macro. `race` in `queue.rs` is the
   hand-rolled select.
@@ -183,3 +207,4 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4.1-flash + T024q · Added the `/2` framing, channel and resume-opening surface, extended invariants 4 and 6 and added the channel traps, so later channel work keeps one queue, one opaque payload and the `bind`/`bind_dual` refusal rules.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added the two teardown test commands, the no-flush-deadline-endpoint-wait/yield trap and corrected the tokio pin to =1.53.3, so a later close change keeps the reserve and the exit yield that make CONNECTION_CLOSE go out.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T098h · Noted the lib suite now also runs H1–H5 and added the trap that only `FlushClose::flush_close` builds a `Flush` request and the guard / `Stop.deadline` stay on `overall`, so a future close site cannot pick the wrong deadline (D44c (a)).
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4-pro + T150b · Added the `/3` public surface (`bind_movement`, `connect_movement`, lane-1 and datagram calls, `Lane1Stats`), the `movement` suite in the DoD block, the `try_send_datagram` outside-the-lock sentence in invariant 2, the five movement traps, and amended invariants 5 and 6 for the per-connection lane-1 queues and lane 1's independence from lane 0, so the crate's rules match the movement endpoint's new stream and datagram mapping.

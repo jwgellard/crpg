@@ -140,7 +140,8 @@ impl std::error::Error for SendError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelSendError {
     /// `Transfer` or `Resume` on a `crpg-lane0/1` connection, or `Resume`
-    /// from a client.
+    /// from a client, or a lane-1 or datagram call on a connection that is
+    /// not `crpg-lane0/3`.
     ChannelUnavailable,
     /// The `try_send` refusal for the same frame.
     Send(SendError),
@@ -173,4 +174,29 @@ pub struct ConnectionStats {
     pub reader_parked: bool,
     /// QUIC PING frames this side sent (quinn `frame_tx.ping`).
     pub keepalive_pings_sent: u64,
+}
+
+/// One connection's lane-1 and datagram accounting (T150). On a connection
+/// that is not `crpg-lane0/3` every count is 0 and `max_datagram_bytes` is
+/// `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lane1Stats {
+    /// Complete inbound lane-1 frames queued for `try_recv_lane1`.
+    pub inbound_frames: usize,
+    /// Payload bytes of those frames.
+    pub inbound_bytes: usize,
+    /// Outbound lane-1 frames queued and not yet handed to QUIC.
+    pub outbound_frames: usize,
+    /// Payload bytes of those frames.
+    pub outbound_bytes: usize,
+    /// One complete inbound lane-1 frame is held, waiting for queue room.
+    pub reader_parked: bool,
+    /// Datagrams queued for `try_recv_datagram` (client; always 0 on a server).
+    pub datagrams_queued: usize,
+    /// Datagrams this side dropped because its datagram queue was full
+    /// (client; always 0 on a server).
+    pub datagrams_dropped: u64,
+    /// quinn's `max_datagram_size()` on this side: the largest datagram this
+    /// side may send now (`Some(0)` on a client, whose server advertises 0).
+    pub max_datagram_bytes: Option<usize>,
 }

@@ -7,7 +7,7 @@
 //! hello, a welcome, and then every lane-0 frame in both directions, each
 //! prefixed with a 4-byte big-endian length checked against the
 //! direction's cap before any allocation. There are no other streams and no
-//! DATAGRAM frames. The server is trusted by a SHA-256 pin of its
+//! DATAGRAM frames, except on `crpg-lane0/3` (T150). The server is trusted by a SHA-256 pin of its
 //! certificate (D03); the client presents an opaque invitation credential
 //! that this crate checks for format only.
 //!
@@ -18,6 +18,12 @@
 //! an async, quinn or rustls type. Payload bytes are never decoded here:
 //! intents and deltas stay `crpg-net`'s, and this crate re-exports nothing
 //! from it.
+//!
+//! Under the `crpg-lane0/3` ALPN, served only by `QuicServer::bind_movement`,
+//! the first stream is the `/2` lane stream unchanged, a second
+//! client-initiated bidirectional stream carries lane 1 (intents up, receipts
+//! down, each frame prefixed with a 4-byte length), and DATAGRAM frames carry
+//! position samples downstream only (T150).
 //!
 //! Under the `crpg-lane0/2` ALPN the first byte of each lane-frame header is
 //! a channel selector (`0x00` lane 0, `0x81` transfer, `0x91` resume), and a
@@ -38,12 +44,15 @@ mod teardown;
 mod tls;
 
 pub use client::{CloseReport, ConnectError, QuicClient};
-pub use close::{ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, SendError};
+pub use close::{
+    ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, Lane1Stats, SendError,
+};
 pub use handshake::{
     channel_frame_header, frame_header, parse_channel_frame_header, parse_frame_header, Channel,
     Credential, CredentialError, FrameError, Framing, HandshakeError, Hello, Welcome,
-    ALPN_LANE0_V1, ALPN_LANE0_V2, FRAME_HEADER_BYTES, MAX_CREDENTIAL_BYTES, MAX_HELLO_BYTES,
-    MIN_CREDENTIAL_BYTES, TLS_SERVER_NAME, WELCOME_BYTES,
+    ALPN_LANE0_V1, ALPN_LANE0_V2, ALPN_LANE0_V3, FRAME_HEADER_BYTES, LANE1_OUTBOUND_FRAMES,
+    MAX_CREDENTIAL_BYTES, MAX_DATAGRAM_BYTES, MAX_HELLO_BYTES, MIN_CREDENTIAL_BYTES,
+    MOVEMENT_WIRE_VERSION, TLS_SERVER_NAME, WELCOME_BYTES,
 };
 pub use identity::{CertificatePin, ServerIdentity};
 pub use limits::{ClientConfig, ClientLimits, ConfigError, ServerConfig, ServerLimits};
