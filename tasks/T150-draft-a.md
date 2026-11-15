@@ -582,7 +582,26 @@ No new edge, no new lockfile package, no `ALLOWED` change.
 
 ## Out of scope
 
-<!-- TODO -->
+- **T026 prediction**, and any `crpg-godot` work: the bridge's move to
+  `ReassemblyPoolV4`/`ReplicaWorldV4`/`MoveOutbox` is T151 (after T037);
+  T049 interpolation (G1), T026 prediction (G2) and T050 click-to-move (G3)
+  are separate tasks. This task only carries the bytes.
+- **The nav revision on the wire** (T037 Reading 4; a separate `crpg-net`
+  task before T026).
+- **A `0x83` snapshot with positions** (T026p Reading 8); new rejection
+  codes (T026p Reading 3); route length on the wire.
+- **Any change to `crpg-net`'s codec or to the T037 host surface.**
+  `movement_v4`, `outbox_v4`, `positions_v4`, `projection_v4`, `pool_v4`,
+  `replica_v4` and the T037 `host.rs`/`host_v4.rs` items are frozen here;
+  this task consumes them, it does not edit them.
+- **v3-over-QUIC**: the `/3` ALPN is movement; binding a plain v3 session
+  over QUIC (a `/2` hello naming version 3) is not T150 and stays unbound.
+- **Resume on `/3`** (T025b): `bind_resumable` and the `0x91` channel are
+  unchanged here; `QuicHost::start` still takes `bind`/`bind_dual`.
+- **Running the impairment probe or vendoring in this draft**: this is a
+  doc-only slot; the probe re-run and the patch application are T150a's
+  implementer Definition of done, described above, not done here.
+- **Any other crate or file**; goldens are not re-blessed.
 
 ## Open questions
 
