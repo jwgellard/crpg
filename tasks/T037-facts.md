@@ -111,6 +111,134 @@ recommendations, no proposed types, no opinions.
 
 ## Host today
 
+All in `crates/crpg-server/src/`.
+
+- **`Host`** (`host.rs:779`–`803`): `config`, `history`, `closed`,
+  `last_now_ms`, `next_handle`, `sessions: BTreeMap<PeerHandle, Session>`,
+  `ingress: VecDeque<StagedCommand>`, `ingress_bytes`, `egress_bytes`,
+  `executions`, `last_combat_error`, the capture journal (`captures`,
+  `capture_lens`, `capture_bytes`, `capture_acknowledged`, `last_capture`),
+  `ingress_caps`/`egress_caps: QueueCaps`, `rates: RateCaps`, and T141b's
+  `settings`, `paused`, `timer`, `timer_epoch`.
+- **`PeerHandle(u64)`** (`host.rs:144`), opaque and never reused; `get()`
+  (`host.rs:148`). Bound peers are `MAX_PEERS = POLICY_PROOF_PEERS` (8)
+  (`host.rs:94`).
+- **`Session`** (`host.rs:605`–`637`): `epoch`, `control`, `grants`, `map` and
+  `reverse` (`BTreeMap`), `next_net`, `next_new_seq`, `cache: VecDeque<CacheEntry>`,
+  `cache_bytes`, four `TokenBucket`s (`intent_frames`, `intent_bytes`,
+  `fail_frames`, `fail_bytes`), `ingress_frames`/`ingress_bytes`, `log:
+  VecDeque<LoggedFrame>`, `log_bytes`, `next_event_seq`, `delivered`,
+  `generation`, `resync_pending`, `snapshot: bool`, `next_ordinal`,
+  `next_transfer`, `in_flight`, and `v3: Option<Box<V3Session>>`.
+- **`StagedCommand`** (`host.rs:553`): `peer` plus copied `bytes`. **`CacheEntry`**
+  (`host.rs:560`): `seq`, canonical bytes, `ReceiptV3` status, `processed_tick`,
+  optional `(generation, ordinal)` receipt, ledger `bytes`. **`LoggedFrame`**
+  (`host.rs:578`): `ordinal`, `event_seq: Option<u64>`, `bytes`.
+- **Protocol version per session.** `HostConfig.protocol` is `V1 | V2`
+  (`host.rs:106`, `:134`–`139`); `Host::protocol` returns it
+  (`host.rs:877`). A binding does not negotiate: `bind_peer`/`bind_snapshot_peer`
+  call `bind` (`host.rs:1048`) and speak `HostConfig.protocol`; `bind_v3_peer`
+  (`host.rs:1153`) always makes a v3 snapshot session whatever the config says
+  (`host.rs:1141`–`1143`). `session_wire` reports `1`, `2` or `3`
+  (`host.rs:1195`–`1201`). `decode` picks the session's codec: `codec_v3` for a
+  v3 session, else `codec`/`codec_v2` by `HostConfig.protocol`
+  (`host.rs:1518`–`1549`).
+- **Lane-0 admission order.** `Host::pump` (`host.rs:1456`) drains the FIFO
+  and stops at the first `Step::Blocked` (`host.rs:1463`–`1494`); `admit`
+  (`host.rs:1588`) is the pipeline, first failure wins: (1) decode with the
+  session's codec (`host.rs:1600`–`1610`); (2) "session epoch" — no session or a
+  different epoch is `SessionExpired` (`host.rs:1612`–`1626`); (3) cache first,
+  identical bytes re-send the retained receipt, different bytes
+  `SeqConflict` and fence (`host.rs:1628`–`1640`); `next_new_seq > SEQ_LAST`
+  is `SeqExhausted`, a higher `seq` `SeqGap`, a lower `StaleSeq`
+  (`host.rs:1641`–`1661`); (4) freshness `FutureTick`/`StaleTick` against
+  `POLICY_OBSERVED_TICK_WINDOW` (`host.rs:1662`–`1669`); (5) mapping/control/
+  disclosure resolution (`host.rs:1670`–`1681`); then `validate_action`
+  (`host.rs:1682`–`1691`); (6) the reservation and execution/commit split
+  (`host.rs:1692`–`1728`).
+- **Note on the T026p citation.** `tasks/T026p.md:974` cites
+  `crates/crpg-server/src/host.rs:1122–1170` for this order; on this branch
+  those lines are inside `blank_session`/`bind_v3_peer`
+  (`host.rs:1122`–`1126` are `fail_bytes` bucket setup, `:1153` is
+  `bind_v3_peer`), and the pipeline is `admit` at `host.rs:1588`.
+- **Retry cache.** `CacheEntry` per acknowledged intent; `cache_hit`
+  re-sends the retained receipt without re-execution
+  (`host.rs:1821`–`1879`); `cache_insert` evicts oldest until
+  `POLICY_RETRY_CACHE_PER_PEER_LANE` (256) entries and
+  `POLICY_RETRY_CACHE_BYTES_PER_PEER_LANE` (2 MiB) hold
+  (`host.rs:3963`–`3974`); the constants are `crpg-net`'s
+  (`crates/crpg-net/src/protocol.rs:147`, `:149`) and are imported at
+  `host.rs:47`–`48`.
+- **Rate buckets.** Per session, `intent_frames`/`intent_bytes` and
+  `fail_frames`/`fail_bytes`, built from `RateCaps` in `blank_session`
+  (`host.rs:1109`–`1124`) from `rates: RateCaps::v1()` (`host.rs:846`).
+  `ingest` spends both intent buckets per attempt, retries included
+  (`host.rs:1425`–`1431`), then checks `MAX_INTENT_FRAME_BYTES`
+  (`host.rs:1432`). The failure buckets are spent in `try_consume_failure`
+  (`host.rs:3955`–`3959`), called by `cache_hit` (`host.rs:1849`) and
+  `commit_rejection` (`host.rs:1955`). The values are
+  `POLICY_INTENT_FRAMES_PER_SEC` 40, `_FRAME_BURST` 80,
+  `_BYTES_PER_SEC` 64 KiB, `_BYTE_BURST` 128 KiB
+  (`crates/crpg-net/src/protocol.rs:108`–`114`).
+- **Ingress caps.** `Host::ingress_caps = QueueCaps::v1()` (per peer 128
+  frames / 256 KiB, host 1024 frames / 2 MiB; `host.rs:844`, values at
+  `crates/crpg-net/src/protocol.rs:130`–`136`, mapped in
+  `crates/crpg-net/src/sim.rs:88`–`91`). `ingest` checks per-peer then host
+  frames and bytes and refuses `QueueFull` (`host.rs:1435`–`1442`); released
+  on pump pop in `release_ingress` (`host.rs:1498`) and re-added by
+  `restage_front` (`host.rs:1506`). Egress caps are `QueueCaps::v1_egress()`
+  (`host.rs:845`, values `crates/crpg-net/src/protocol.rs:139`–`143`), checked
+  in `pace_session` (`host.rs:3909`–`3934`) and `room` (`host.rs:2236`).
+- **Failure budgets.** A refused or cached rejection can drop its receipt when
+  `try_consume_failure` fails; `reject` returns `Step::Blocked` for v1/v2 when
+  a receipt does not fit and no resync is pending (`host.rs:1797`–`1798`), and
+  `AdmissionResult` carries the retained status either way
+  (`host.rs:1805`–`1816`).
+- **Per-tick step function.** `Host::tick` (`host.rs:3206`–`3218`) reserves
+  one host record when real time (`reserve_host_record`), calls
+  `HistoryWorld::tick`, then `complete_host_op(HostOp::Tick, before)`
+  (`host.rs:3349`): step 1 `after_commit` (auto-pause then timer), then either
+  `publish_v3_with` for a zero-event op (`host.rs:3357`) or
+  `read_host_record` + `finish_host_op` (`host.rs:3360`–`3361`). The real-time
+  movement stage is inside sim's `tick` (`tick_with_movement`, sim §"Movement
+  stage 4"); the host has no movement step today.
+- **Projection and delivery.** Accepted command: v1/v2 sessions get a receipt
+  and, for v2, `project_events` over `PeerView::candidate` (`host.rs:2044`–`2060`);
+  health and turn ops follow (`host.rs:2061`–`2068`); frames are encoded with
+  `encode_frame` and pushed by `push_frames` (`host.rs:2077`, `:2146`–`2149`).
+  v3 sessions get a page from `decide_v3_pages`/`commit_v3`
+  (`host.rs:2102`–`2158`); the page builder is `plan_v3_page`, with
+  `project_events_v3` (`host.rs:2599`) and `frame_spans` handling spans.
+  Snapshot staging is `stage_snapshot` (`host.rs:2280`, using
+  `codec_transfer::plan_transfer` at `:2320`) and `plan_v3_stage`
+  (`host.rs:2395`, `project_snapshot_v3` at `:2431`,
+  `transfer_v3::plan_transfer` at `:2439`). Delivery leaves through
+  `take_delivery` (`host.rs:2859`) / `take_delivery_entries` (`host.rs:2873`).
+- **History events to clients.** v2: `project_events(&candidates)` where
+  candidates come from `PeerView::candidate` (`host.rs:2053`–`2059`, the
+  grant-filtered match ending at `:4462`). v3: `candidate_v3`
+  (`host.rs:4470`) maps `RoundStarted`, `ModeChanged`, `OrderEnded`, `Joined`,
+  `Left` and the six v2 events, and returns `None` for `Moved`
+  (`host.rs:4498`). Host operations publish through `publish_v3_with`
+  (`host.rs:2833`), gated by `heartbeat_for` (`host.rs:2847`).
+- **Area load: none found.** No `Area` load, bake, `bind_nav` or bounds path
+  exists in `crates/crpg-server/src/`. The only `area` uses are
+  `world.area().unwrap_or(HOST_UNBOUND_AREA)` in v3 keys
+  (`host_v3.rs:255`, `:365`; `host.rs:4128`) and the constant
+  `HOST_UNBOUND_AREA` (`host.rs:206`). Nothing reads `Area.bounds`, holds a
+  `NavRevision`, or calls `crpg-nav`.
+- **T141 pause/mode/heartbeat entry points.** `host_action` (`host.rs:3231`),
+  `request_mode` (`host.rs:3265`), `awaiting_orders` (`host.rs:3286`),
+  `settings` (`host.rs:3443`), `set_settings` (`host.rs:3454`), `paused`
+  (`host.rs:3474`), `pause` (`host.rs:3480`), `unpause` (`host.rs:3495`),
+  `advance` (`host.rs:3515`), `turn_timer_remaining_ms` (`host.rs:3543`);
+  heartbeat publication in `publish_v3_with`/`heartbeat_for`
+  (`host.rs:2833`, `:2847`) and the `POLICY_CLOCK_HEARTBEAT_TICKS` read at
+  `host.rs:2611`.
+- **T141 v3 session entry points.** `bind_v3_peer` (`host.rs:1153`),
+  `session_wire` (`host.rs:1195`), `set_fact_grants` (`host.rs:1209`),
+  `set_pause_rights` (`host.rs:1227`), `pause_rights` (`host.rs:1244`).
+
 ## Protocol v4 surface to call
 
 ## Movement in sim to call
