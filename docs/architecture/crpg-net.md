@@ -1256,6 +1256,51 @@ the lane-1 `0xA1` sample bytes and `0x81` frames are
 same way. The host picks the pool per session; there is no fallback or
 negotiation.
 
+### T026p5: `replica_v4` and `outbox_v4`, the v4 client replica and sender
+
+`replica_v4::ReplicaWorldV4` is the v3 client replica plus positions and
+samples. It holds a `ReplicaWorldV3`, the disclosed positions
+(`BTreeMap<NetId, PositionState { tick, point, moving }>`) and the newest
+sample's clock (`SampleClock { server_tick, processed_seq }`). Every v3 query
+is `v3()`. It reads no `World`, clock or I/O and invents no position: a
+position comes only from a `Position` anchor or a sample.
+
+- **`apply_delta`** checks, in v3's order, lane, op count, then `event_seq`
+  (`ReplicaError`, reused unchanged), then applies the ops in frame order on a
+  working copy of the whole replica and commits on success, so an `Err` leaves
+  the replica equal to its pre-call clone. A `V3` op goes through
+  `ReplicaWorldV3::apply_op` (the one `pub(crate)` token in `replica_v3.rs`);
+  a v3 `EntityLeave` or `Despawned` also removes that entity's position. The
+  sequence and tick advance by applying an empty v3 frame to the inner
+  replica. `Position { Some }` needs a live row (`UnknownEntity` otherwise) and
+  stores `{ frame.server_tick, point, moving }` unless the stored position is
+  newer than the frame; `Position { None }` needs a live row and forgets the
+  position. **`Moved` is an unchecked notice**, like `Joined`/`Left`
+  (Reading 9): no liveness check, nothing stored; a presenter pairs its id with
+  `v3().entity()` and treats a miss as "not visible".
+- **`apply_snapshot`** is the inner `apply_snapshot`; on `Ok` the positions
+  are emptied (the next page re-anchors them, Reading 8) and the sample clock
+  is kept.
+- **`apply_sample`** never fails: a datagram that is old, repeated or about an
+  entity the replica does not know is ordinary traffic. The clock moves only
+  to a strictly newer `server_tick`; an entry is stored only for an entity
+  that already has a position and only when the sample is strictly newer than
+  that position (L4, newest wins). It returns how many entries it stored and
+  never touches `v3()`. The invariant is that every key of `positions()` is a
+  live row of `v3()`.
+
+`outbox_v4::MoveOutbox` is the client's lane-1 sender state for one epoch:
+`next_seq` from 1, at most `POLICY_MOVE_IN_FLIGHT` (8) unreceipted intents,
+`pending()` in ascending `seq` for a resend after a resume, and
+`processed_seq`. `send` mints the intent (`Exhausted`, `Full`); `receive`
+completes the oldest pending intent with its receipt, whatever the outcome,
+and checks epoch, then emptiness, then `seq`, then actor (`WrongEpoch`,
+`Unexpected { expected, got }`, `WrongActor { seq }`). `OutboxError` has no
+payload in its `Display` and no `source()`. A refusal changes nothing.
+`tests/v4_replica.rs` (R1..R9, O1..O4) is the suite; R2 runs the T140r R2
+script on a `ReplicaWorldV3` and, wrapped in `V3`, on a `ReplicaWorldV4`, and
+R9 drives a `ReassemblyPoolV4` into the replica.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -1282,3 +1327,4 @@ negotiation.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the lane-1 `movement_v4` subsection (the `0xA1` subprotocol, the four messages and their layouts, the 1,024-byte and 38-entry sample bounds and splitter, the decode order and the U7 policies) and marked lane 1 built in the lane table.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the `positions_v4`/`projection_v4` subsection (the anchor-then-samples disclosure, `PositionView`, the page, sample and snapshot rules, reconnect and `Moved` disclosure) and extended the op-owner table; no earlier section changed.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the `pool_v4` subsection (what is re-exported from `pool_v3`, the V-1 substitution table and its runnable `diff -B` check, the two-pool mirror proof and version isolation); no earlier section changed.
+- 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the `replica_v4`/`outbox_v4` subsection with the replica's apply rules, the sample and anchor ordering rule and the outbox window and receipt order.

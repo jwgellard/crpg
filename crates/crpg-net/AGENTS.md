@@ -242,6 +242,18 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   re-exported, never copied. The pool reads no op: never teach it
   `Moved`, `Position` or any other op, and never add a `V4` arm to the v1/v3
   types.
+- *2026-11-15 (UTC), T026p5:* **v4 replica and sender** (`replica_v4`,
+  `outbox_v4`; see architecture §"T026p5"). **`ReplicaWorldV4` applies v3 ops
+  only through `ReplicaWorldV3::apply_op`; never copy a v3 rule** into it (the
+  one `pub(crate)` token in `replica_v3.rs` is the only change that file
+  takes). **`Moved` is an unchecked notice, like `Joined`/`Left`**: do not
+  liveness-check it or store anything from it; positions come only from anchors
+  and samples. **`apply_sample` never fails**: do not add an error for a stale,
+  duplicate or unknown entry, because datagrams are unordered and lossy.
+  **An anchor replaces a position only if it is not older than it** (equal tick
+  replaces), and a sample only if it is strictly newer. A snapshot empties the
+  positions and keeps the sample clock. `MoveOutbox` never reorders or skips a
+  receipt: `receive` takes only the oldest pending intent.
 
 ## Agent log
 
@@ -291,3 +303,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the protocol v4 lane-1 entry with its two traps (samples are datagrams only and never carry an `event_seq`; lane-1 intents have no `observed_tick`) and the bound and order rules for `movement_v4`.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the position-filter entry with its three traps (a position is sampled only after its anchor; `project_samples` reads the current grant so revocation is immediate; a snapshot empties the `PositionView` and the next page re-anchors).
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the v4 receiver-gate entry; its trap that a pool fix is a fix to all three pools supersedes the T140r1 two-pool wording by a new entry, not an edit.
+- 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the v4 replica and sender entry with its four traps (v3 ops only through `apply_op`; `Moved` is an unchecked notice; `apply_sample` never fails; an anchor replaces only if not older).
