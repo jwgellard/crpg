@@ -111,3 +111,17 @@ this specification: writing them now would describe code that does not exist.
 **Superseded by [ADR-0022](0022-host-session-capture-retirement.md)** (decision D19, approved by the user on 2026-09-30). The text above is kept as decided. See [tasks/DECISIONS-2026-09-30.md](../../tasks/DECISIONS-2026-09-30.md).
 
 - 2026-09-30 (UTC) · claude-code + D19 status update · Appended the user-approved status change as a dated section instead of editing the original status line, per the E007 append-only policy.
+
+## Note — 2026-11-15 (UTC): the wire is chosen per binding (T141)
+
+Decision 2 says the host is constructed with one `ProtocolSelection` for its
+lifetime. Since T141 (approved; Reading 7, `tasks/T141.md:239–245`) that holds
+for `bind_peer` and `bind_snapshot_peer` only: a session bound with
+`bind_v3_peer` speaks protocol v3 whatever `HostConfig.protocol` says, and
+`session_wire` reports each session's version
+(`crates/crpg-server/src/host.rs:1141–1202`). There is still no negotiation
+or sniffing: the operator picks the wire when it binds the peer, and v1/v2
+sessions keep every byte and rule they had. The text above is kept as
+decided.
+
+- 2026-11-15 (UTC) · claude-code/claude-opus-5-5 (architect) + T037 brief, note owed by T141 · Appended the dated note that a v3 session picks its wire per binding (T141 Reading 7), so Decision 2's one-version-per-host wording is not read as the current rule.
