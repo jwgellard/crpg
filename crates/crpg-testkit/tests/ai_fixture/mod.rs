@@ -23,14 +23,15 @@ use std::collections::BTreeMap;
 use crpg_ai::{host_route, SideId, Sides};
 use crpg_core::{EntityId, Fx16_16, Ulid};
 use crpg_data::{
-    Ability, ActionPoolTemplate, Creature, Effect, Encounter, EncounterParticipant, LengthWire,
-    MovementWire, OutcomeTable as AuthoredOutcomeTable, Placement, RefreshWire, Ruleset, StatDecl,
-    StatKindWire, TurnMovementWire,
+    Ability, AbilityCost, ActionPoolTemplate, Creature, Effect, Encounter, EncounterParticipant,
+    LengthWire, MovementWire, OutcomeTable as AuthoredOutcomeTable, Placement, RefreshWire,
+    Ruleset, StatDecl, StatKindWire, TurnMovementWire,
 };
 use crpg_nav::{bake_box, NavMesh, NavRect};
 use crpg_sim::{
-    perform_move, start_encounter_in_mode, CombatAction, CombatError, EncounterMode, EncounterSpec,
-    MoveOutcome, PlacementAndArea, World,
+    perform_move, register_creature, start_encounter_in_mode, start_encounter_with_members,
+    CombatAction, CombatError, CreatureSpec, EncounterMode, EncounterSpec, Entrant, MoveOutcome,
+    PlacementAndArea, World,
 };
 use serde_json::json;
 
@@ -428,6 +429,73 @@ impl Fixture {
         self.start_mode(seed, EncounterMode::RealTime)
             .expect("the fixture starts in real time")
     }
+
+    /// Starts the encounter with placement 113's creature as a member that
+    /// enters from a registered record, after A and B are published.
+    ///
+    /// With `with_movement` the record is registered under the fixture's own
+    /// movement rules and gains a mover. Without, it is registered under a
+    /// copy of the ruleset whose movement rules are absent, so it enters as a
+    /// combatant with no mover — the mixed pair Reading 5 names ("a pair
+    /// without a mover on both sides has distance `u64::MAX`").
+    pub fn start_with_c_record(&self, seed: u64, with_movement: bool) -> (World, Vec<EntityId>) {
+        let mut ruleset = self.ruleset.clone();
+        if !with_movement {
+            ruleset.movement = None;
+        }
+        let (placement, area) = self
+            .placements
+            .get(&ulid(113))
+            .expect("the moving fixture has placement 113")
+            .clone();
+        let creature = self
+            .creatures
+            .get(&ulid(123))
+            .expect("the moving fixture has creature 123")
+            .clone();
+        let mut world = World::new(seed);
+        let member = register_creature(
+            &mut world,
+            &CreatureSpec {
+                ruleset: &ruleset,
+                placement: &placement,
+                area,
+                creature: &creature,
+            },
+        )
+        .expect("the member registers");
+        assert_eq!(
+            world.movers().contains(member),
+            with_movement,
+            "registration creates a mover exactly when the ruleset moves"
+        );
+        let bundle = self.bundle();
+        let spec = EncounterSpec {
+            encounter: &self.encounter,
+            ruleset: &self.ruleset,
+            abilities: &bundle.abilities,
+            outcome_tables: &bundle.tables,
+            placements: &bundle.placements,
+            creatures: &bundle.creatures,
+            effects: &bundle.effects,
+        };
+        start_encounter_with_members(
+            &mut world,
+            &spec,
+            EncounterMode::TurnBased,
+            &[Entrant {
+                entity: member,
+                initiative: 11,
+            }],
+        )
+        .expect("the encounter starts with the member");
+        let ids: Vec<EntityId> = world.combatants().iter().map(|(id, _)| id).collect();
+        assert_eq!(ids.len(), 3, "A, B and the record member");
+        assert_eq!(ids[2], member, "the member publishes last");
+        let active = world.combat().and_then(|state| state.active);
+        assert_eq!(active, Some(ids[1]), "B's initiative 9 is least");
+        (world, ids)
+    }
 }
 
 /// `std()`: the standard fixture, turn-based, with no movement rules.
@@ -627,5 +695,51 @@ pub fn tune(mut fixture: Fixture, ability: u128, range: i32, cost: u32) -> Fixtu
         (1..=max).contains(&cost),
         "a primary-pool cost must fit the pool"
     );
+    fixture
+}
+
+/// `reversed(f)`: the ruleset lists its abilities in reverse order, so the
+/// larger ULID is first in `definition.abilities` (M-5 sorts by ULID).
+pub fn reversed_abilities(mut fixture: Fixture) -> Fixture {
+    fixture.ruleset.abilities.reverse();
+    fixture
+}
+
+/// `step_cost(f, cost)`: the movement rules' per-step pool cost.
+pub fn step_cost(mut fixture: Fixture, cost: u32) -> Fixture {
+    let turn = &mut fixture
+        .ruleset
+        .movement
+        .as_mut()
+        .expect("the fixture moves")
+        .turn;
+    assert!(cost > 0, "a step costs at least one pool unit");
+    turn.step_cost = cost;
+    fixture
+}
+
+/// `extra_cost(f, ability, pool, amount)`: one non-primary pool cost entry.
+pub fn extra_cost(mut fixture: Fixture, ability: u128, pool: u128, amount: u32) -> Fixture {
+    fixture
+        .abilities
+        .get_mut(&ulid(ability))
+        .expect("the ability exists")
+        .extra_costs
+        .push(AbilityCost {
+            pool: ulid(pool),
+            amount,
+        });
+    fixture
+}
+
+/// `place_c(f, x, z)`: placement 113 at `p(x, z)`.
+pub fn place_c(mut fixture: Fixture, x: i32, z: i32) -> Fixture {
+    fixture
+        .placements
+        .get_mut(&ulid(113))
+        .expect("the moving fixture has placement 113")
+        .0
+        .transform
+        .position = p(x, z);
     fixture
 }

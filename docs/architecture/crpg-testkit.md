@@ -207,13 +207,18 @@ production types, then edits them with typed functions (`ranged`, `far`,
 `start`/`start_rt` start the encounter from those documents and assert B
 acts first in turn-based play.
 
-`tests/ai_mvp.rs` is G1-G22: each decision is pinned to the contract's
-hand-computed destination, balance or `Decision` variant, applied through
-`perform_action`, `perform_move` and `set_route`, and every case carries a
-control that changes one input and flips the expectation. The suite proves
-M-1 to M-9 over real turn-based and real-time encounters with a real bound
-mesh; M-8's two validation calls stay declared defence in depth, because no
-fixture can reach them.
+`tests/ai_mvp.rs` is G1-G22 plus the fix round's G23-G34: each decision is
+pinned to the contract's hand-computed destination, balance or `Decision`
+variant, applied through `perform_action`, `perform_move` and `set_route`, and
+every case carries a control that changes one input and flips the expectation.
+The first suite proves M-1 to M-9 over real turn-based and real-time encounters
+with a real bound mesh; M-8's two validation calls stay declared defence in
+depth, because no fixture can reach them. G23-G34 close the mutant review's
+gaps in the ordered rules: the nearest-then-`EntityId` approach target and
+least-ULID intent, the real-time `Stop`/`Halt`/`Hold` precedence, the
+saturating standoff and floored step budget, the full-range hold band, the
+`nearest_on_mesh` goal, the summed reserve, the moverless `u64::MAX` distance
+and the one-raw walk.
 
 The two dev-only edges this suite adds are `crpg-ai` (the decision under
 test) and `crpg-nav` (the mesh the host routes on), approved in D62;
@@ -252,3 +257,4 @@ change, no public export, and no golden.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the module with the as-built srd replay (seed 285, K = 9, per-target goldens, combat_basic untouched).
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite and its three tests-only host edges (`crpg-server`, `crpg-net`, `crpg-nav`), so the crate doc names what `host_movement.rs` proves and why no normal edge moved. No source, fixture, or golden changed.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the tests-only MVP AI decision suite: the private fixture's provenance and typed edits, the G1-G22 shape with its controls, and the two dev-only edges, so the crate doc names the suite's owner and its boundary.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Added G23-G34 and the fixture edits they need (`reversed_abilities`, `step_cost`, `extra_cost`, `place_c`, a member registered without movement) to pin the mutant review's ordered rules exactly, so the suite fails on each named bug rather than passing by coincidence.

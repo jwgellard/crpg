@@ -10,8 +10,9 @@
 mod ai_fixture;
 
 use ai_fixture::{
-    apply_move, bind, far, lethal, m, moving, moving_rt, ms, near, p, ranged, rev, rp, shared,
-    sides, std, trio, tune, twin, ulid, use_ability, R15, R3,
+    apply_move, bind, extra_cost, far, lethal, m, moving, moving_rt, ms, near, p, place_c, ranged,
+    rev, reversed_abilities, rp, shared, sides, std, step_cost, trio, tune, twin, ulid,
+    use_ability, R15, R3,
 };
 use crpg_ai::{decide, host_route, Decision, Sides};
 use crpg_core::EntityId;
@@ -940,5 +941,497 @@ fn g22_rt_no_mesh_or_unbound() {
     assert_eq!(
         decide(&world, ids[0], &split_target(&ids), None),
         Ok(Decision::Hold)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fix round 1: the review's mutant gaps (G23-G34).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn g23_tb_approach_target_is_the_nearest_hostile() {
+    // M-5: T is the least (dist, EntityId) over H — nearer first, then id.
+    let fixture = ranged(trio(moving()), R15);
+    let (mut world, ids) = fixture.start(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    let split = sides(&[(a, 1), (b, 2), (c, 1)]);
+
+    // Both hostiles are out of range: C at 327680 is nearer than A at 655360,
+    // so the higher id is the approach target.
+    world.place(c, p(10, 5)).expect("C has a mover");
+    assert_eq!(
+        legal_actions(&world, b).expect("B may act"),
+        vec![CombatAction::EndTurn { actor: b }]
+    );
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: c,
+            destination: rp(655_360, 0, 229_440),
+        })
+    );
+
+    // Both are 655360 away, so the lower EntityId A wins the tie.
+    world.place(c, p(20, 0)).expect("C has a mover");
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(98_240, 0, 0),
+        })
+    );
+
+    // Control: A one metre left is 720896 away, so C is now the nearer.
+    world.place(a, p(-1, 0)).expect("A has a mover");
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: c,
+            destination: rp(1_212_480, 0, 0),
+        })
+    );
+}
+
+#[test]
+fn g24_rt_no_hostile_stops_before_halting() {
+    // M-3: with no hostile a standing order is cleared with `Stop` before the
+    // route falls to `Halt`.
+    let fixture = near(moving_rt());
+    let (mut world, ids) = fixture.start_rt(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    let same = sides(&[(a, 1), (b, 1)]);
+
+    assert!(apply_move(&mut world, &mesh, a, p(0, 5)).is_none());
+    assert_eq!(
+        perform_action(&mut world, &use_ability(a, 103, b)).expect("the order is accepted"),
+        None
+    );
+    assert!(world
+        .combatants()
+        .get(a)
+        .expect("A exists")
+        .order()
+        .is_some());
+    assert!(world
+        .movers()
+        .get(a)
+        .expect("A has a mover")
+        .route()
+        .is_some());
+    assert_eq!(
+        decide(&world, a, &same, Some(&mesh)),
+        Ok(Decision::Act(CombatAction::Stop { actor: a }))
+    );
+
+    // Control: with the order cleared the same route gives `Halt`, not `Hold`.
+    assert_eq!(
+        perform_action(&mut world, &CombatAction::Stop { actor: a }).expect("the stop is accepted"),
+        None
+    );
+    assert_eq!(decide(&world, a, &same, Some(&mesh)), Ok(Decision::Halt));
+}
+
+#[test]
+fn g25_rt_attack_halts_a_standing_route() {
+    // M-4: with an attack available a route gives `Halt`; the same order
+    // without a route gives `Hold`.
+    let fixture = near(moving_rt());
+    let (mut world, ids) = fixture.start_rt(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+
+    assert_eq!(
+        perform_action(&mut world, &use_ability(a, 103, b)).expect("the order is accepted"),
+        None
+    );
+    assert!(apply_move(&mut world, &mesh, a, p(0, 5)).is_none());
+    assert_eq!(
+        world.combatants().get(a).expect("A exists").order(),
+        Some(StandingOrder {
+            ability: ulid(103),
+            target: b,
+            repeat: false,
+        })
+    );
+    assert_eq!(decide(&world, a, &split, Some(&mesh)), Ok(Decision::Halt));
+
+    // Control: the same order with no route is the never-re-issued hold.
+    world.clear_route(a).expect("A has a mover");
+    assert_eq!(decide(&world, a, &split, Some(&mesh)), Ok(Decision::Hold));
+}
+
+#[test]
+fn g26_rt_hold_is_only_for_the_order_of_k() {
+    // M-4: the standing order must be k's, same ability and same hostile.
+    let fixture = trio(near(moving_rt()));
+    let (mut world, ids) = fixture.start_rt(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    let split = sides(&[(a, 1), (b, 2), (c, 2)]);
+
+    assert_eq!(
+        legal_actions(&world, a).expect("A may act"),
+        vec![
+            use_ability(a, 103, b),
+            use_ability(a, 103, c),
+            CombatAction::Stop { actor: a },
+        ]
+    );
+    // The order is 103 on C: the same ability, but not k (103 on B).
+    assert_eq!(
+        perform_action(&mut world, &use_ability(a, 103, c)).expect("the order is accepted"),
+        None
+    );
+    assert_eq!(
+        decide(&world, a, &split, Some(&mesh)),
+        Ok(Decision::Act(use_ability(a, 103, b)))
+    );
+
+    // Control: the order on B is k's, so the attack is not re-issued.
+    let (mut world, ids) = fixture.start_rt(7);
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        perform_action(&mut world, &use_ability(a, 103, b)).expect("the order is accepted"),
+        None
+    );
+    assert_eq!(decide(&world, a, &split, Some(&mesh)), Ok(Decision::Hold));
+}
+
+#[test]
+fn g27_tb_zero_and_sub_margin_ranges() {
+    // M-5(1)/M-7: range 0 is an intent (only a negative one is no intent),
+    // and `remaining = r.saturating_sub(64)` saturates rather than underflow.
+    let fixture = ranged(moving(), 0);
+    let (mut world, ids) = fixture.start(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+
+    assert_eq!(
+        legal_actions(&world, b).expect("B may act"),
+        vec![CombatAction::EndTurn { actor: b }]
+    );
+    // r = 0: remaining 0, d = 655360 capped at 6 * 98304.
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(65_536, 0, 0),
+        })
+    );
+
+    // Control: a positive range stops 64 raw inside it.
+    let fixture = ranged(moving(), R15);
+    let (mut world, ids) = fixture.start(7);
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(98_240, 0, 0),
+        })
+    );
+
+    // A range below the 64-raw margin (40) saturates to the target's point.
+    let fixture = ranged(near(moving()), 40);
+    let (mut world, ids) = fixture.start(7);
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(0, 0, 0),
+        })
+    );
+
+    // Control: at that distance a 65536 range is already in range.
+    let fixture = ranged(near(moving()), 65_536);
+    let (mut world, ids) = fixture.start(7);
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Act(use_ability(b, 103, a)))
+    );
+}
+
+#[test]
+fn g28_tb_step_cost_floors_the_units() {
+    // M-7: units = (balance - reserve) / step_cost, integer floor.
+    // One shared pool 105 (max 7), 103 range 1.5 m and cost 2.
+    let fixture = step_cost(tune(shared(moving()), 103, R15, 2), 3);
+    let (mut world, ids) = fixture.start(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+
+    // balance 7, reserve 2 → 5 / 3 = 1 unit = 98304 raw.
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(557_056, 0, 0),
+        })
+    );
+    let outcome = apply_move(&mut world, &mesh, b, rp(557_056, 0, 0)).expect("accepted");
+    assert_eq!(outcome.cost, 3);
+    assert_eq!(
+        world
+            .combatants()
+            .get(b)
+            .expect("B exists")
+            .action_pool()
+            .current(),
+        4
+    );
+
+    // Control: step_cost 2 → 5 / 2 = 2 units = 196608 raw.
+    let fixture = step_cost(tune(shared(moving()), 103, R15, 2), 2);
+    let (mut world, ids) = fixture.start(7);
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(458_752, 0, 0),
+        })
+    );
+}
+
+#[test]
+fn g29_rt_hold_inside_the_range_band() {
+    // M-6: the hold compares the route's end with the full range, not
+    // range - 64, against the target's current position.
+    let fixture = ranged(moving_rt(), R15);
+    let (mut world, ids) = fixture.start_rt(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+
+    assert!(apply_move(&mut world, &mesh, a, rp(557_120, 0, 0)).is_none());
+    // B moves 40 raw away, so the end is 98280 from it: still inside R15.
+    world.place(b, rp(655_400, 0, 0)).expect("B has a mover");
+    assert_eq!(decide(&world, a, &split, Some(&mesh)), Ok(Decision::Hold));
+
+    // Control: 65 raw away is 98305, one raw beyond R15, so it re-plans.
+    world.place(b, rp(655_425, 0, 0)).expect("B has a mover");
+    assert_eq!(
+        decide(&world, a, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: b,
+            destination: rp(557_185, 0, 0),
+        })
+    );
+}
+
+#[test]
+fn g30_off_mesh_target_routes_to_the_nearest_mesh_point() {
+    // M-7's goal and R-1's goal: `nearest_on_mesh(snap(.., pos(T)))`, never
+    // the target's own off-mesh position.
+    let fixture = ranged(near(moving()), 0);
+    let (mut world, ids) = fixture.start(7);
+    let wall = ms();
+    bind(&mut world, &wall);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+
+    // A stands inside MS's wall at x = 5 m; the nearest mesh point is x = 4 m.
+    world.place(a, p(5, 0)).expect("A has a mover");
+    assert_eq!(
+        host_route(&wall, &world, b, p(5, 0)),
+        Ok(MoveRoute {
+            revision: rev(&wall),
+            tag: RouteTag(0),
+            points: vec![rp(65_536, 0, 0), rp(262_144, 0, 0)],
+        })
+    );
+    // r = 0 leaves no standoff, so the walk ends exactly at that point.
+    assert_eq!(
+        decide(&world, b, &split, Some(&wall)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(262_144, 0, 0),
+        })
+    );
+
+    // Control: on the mesh at x = 3 m the same walk ends at the target.
+    world.place(a, p(3, 0)).expect("A has a mover");
+    assert_eq!(
+        decide(&world, b, &split, Some(&wall)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(196_608, 0, 0),
+        })
+    );
+}
+
+#[test]
+fn g31_tb_intended_ability_is_the_least_ulid() {
+    // M-5: I is the least ability ULID of the definition, not the first one
+    // the ruleset happens to list.
+    let fixture = reversed_abilities(tune(tune(twin(moving()), 103, R15, 1), 107, R3, 1));
+    let (mut world, ids) = fixture.start(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+
+    assert_eq!(fixture.ruleset.abilities, vec![ulid(107), ulid(103)]);
+    // Both are out of range; I is 103 with R15, not the first-listed 107's R3.
+    assert_eq!(
+        legal_actions(&world, b).expect("B may act"),
+        vec![CombatAction::EndTurn { actor: b }]
+    );
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(98_240, 0, 0),
+        })
+    );
+
+    // Control: swapping the ranges flips the destination while I stays 103.
+    let fixture = reversed_abilities(tune(tune(twin(moving()), 103, R3, 1), 107, R15, 1));
+    let (mut world, ids) = fixture.start(7);
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(196_544, 0, 0),
+        })
+    );
+}
+
+#[test]
+fn g32_tb_reserve_sums_the_ability_costs() {
+    // M-7: the reserve is the sum of I's costs in the movement pool.
+    let fixture = extra_cost(shared(ranged(moving(), R15)), 103, 105, 2);
+    let (mut world, ids) = fixture.start(7);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+
+    // Primary 1 plus the extra 2 is a reserve of 3: units 4, 393216 raw.
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(262_144, 0, 0),
+        })
+    );
+    let outcome = apply_move(&mut world, &mesh, b, rp(262_144, 0, 0)).expect("accepted");
+    assert_eq!(outcome.cost, 4);
+    assert_eq!(
+        world
+            .combatants()
+            .get(b)
+            .expect("B exists")
+            .action_pool()
+            .current(),
+        3
+    );
+
+    // Control: without the extra entry the reserve is 1 and it walks further.
+    let fixture = shared(ranged(moving(), R15));
+    let (mut world, ids) = fixture.start(7);
+    bind(&mut world, &mesh);
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(98_240, 0, 0),
+        })
+    );
+}
+
+#[test]
+fn g33_moverless_hostile_is_farther_than_any_mover() {
+    // Reading 5: a pair without a mover on both sides has distance u64::MAX.
+    let fixture = place_c(ranged(moving(), R15), 2, 0);
+    let (mut world, ids) = fixture.start_with_c_record(7, false);
+    let mesh = m();
+    bind(&mut world, &mesh);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    assert!(
+        world.movers().get(c).is_none(),
+        "the member registered without movement has no mover"
+    );
+    assert!(!world.combatants().get(c).expect("C exists").dead());
+
+    // C's placement is only 524288 from B, but without a mover its distance
+    // is u64::MAX, so the farther A (655360) is the approach target.
+    let split = sides(&[(a, 1), (b, 2), (c, 1)]);
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(98_240, 0, 0),
+        })
+    );
+
+    // Control: the same record registered with the movement rules has a
+    // mover, so the nearer C is the approach target.
+    let (mut world, ids) = fixture.start_with_c_record(7, true);
+    bind(&mut world, &mesh);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    assert!(world.movers().get(c).is_some());
+    assert_eq!(
+        decide(&world, b, &split, Some(&mesh)),
+        Ok(Decision::Move {
+            target: c,
+            destination: rp(229_312, 0, 0),
+        })
+    );
+    assert_ne!(a, c);
+}
+
+#[test]
+fn g34_tb_one_raw_of_movement_moves() {
+    // M-7: `d == 0` is the fallback and `d == 1` moves one raw.
+    // B at 1 m, A inside MS's wall at 5 m: its goal is 4 m, 196608 away.
+    let fixture = ranged(near(moving()), 196_671);
+    let (mut world, ids) = fixture.start(7);
+    let wall = ms();
+    bind(&mut world, &wall);
+    let (a, b) = (ids[0], ids[1]);
+    let split = sides(&[(a, 1), (b, 2)]);
+    world.place(a, p(5, 0)).expect("A has a mover");
+
+    // remaining = 196671 - 64 = 196607 leaves exactly one raw of walk.
+    assert_eq!(
+        decide(&world, b, &split, Some(&wall)),
+        Ok(Decision::Move {
+            target: a,
+            destination: rp(65_537, 0, 0),
+        })
+    );
+
+    // Control: one raw more range leaves d = 0, so the turn ends instead.
+    let fixture = ranged(near(moving()), 196_672);
+    let (mut world, ids) = fixture.start(7);
+    bind(&mut world, &wall);
+    let (a, b) = (ids[0], ids[1]);
+    world.place(a, p(5, 0)).expect("A has a mover");
+    assert_eq!(
+        decide(&world, b, &split, Some(&wall)),
+        Ok(Decision::Act(CombatAction::EndTurn { actor: b }))
     );
 }
