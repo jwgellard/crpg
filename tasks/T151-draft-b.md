@@ -420,6 +420,27 @@ edges. No lower crate imports the bridge back: `crpg-testkit` and
 
 ## Out of scope
 
+- **T049 interpolation (G1).** Each entity's sample buffer, rendering at the
+  newest tick minus the U7 delay, interpolating after `to_f32`
+  (`tasks/T151-facts.md:41`). Proxies show the newest granted point as-is.
+- **T026 prediction (G2).** Own-movement prediction and reconciliation, gated
+  on the announced baked mesh revision (`tasks/T151-facts.md:42`); only for
+  actors the peer controls, never TB.
+- **T050 click-to-move UI (G3).** Camera, picking a ground point, the `snap`
+  preview and sending `MoveTo`/`DeclareMove` by mode
+  (`tasks/T151-facts.md:43`). T151d exposes the calls; no picking is added.
+- **The `crpg-net-quic` lane-1 transport (T150).** The lane-1 reliable stream
+  pair, DATAGRAM extension, and the `quic.rs` route binding v4 sessions
+  (`tasks/T037.md:1351–1355`). The bridge stays in-process over `LocalLink`.
+- **The nav revision on the wire.** Reading 4's `crpg-net` task, owed before
+  T026 (`tasks/T037.md:1359`).
+- **Any change to `crpg-net`.** No new op, code, limit or `Display` text; the
+  v4 types are used as T026p built them.
+- **Any change to the T037 host surface.** No new `Host` method, error,
+  policy constant or byte; `NotV4Peer` arrives with T037d.
+- **`legal_intents` gaining `DeclareMove`** (`tasks/T037.md:1366`); grid
+  snapping (S2–S5); terrain, facing; egress/ingress cap changes.
+
 ## Open questions
 
 ## Agent log
