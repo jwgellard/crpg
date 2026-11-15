@@ -311,6 +311,79 @@ All in `crates/crpg-net/src/`.
 
 ## Movement in sim to call
 
+All in `crates/crpg-sim/src/`.
+
+- **`Mover`** (`movement.rs:106`): private `position`, `speed`, `step`,
+  `route: Option<ActiveRoute>`; readers `position()` (`:116`), `speed()`
+  (`:121`), `step()` (`:126`), `route()` (`:131`). `position()` returns
+  `[Fx16_16; 3]`.
+- **`World::movers`** (`world.rs:1217`): `pub fn movers(&self) ->
+  &ComponentStore<Mover>`; `movers_mut` is crate-private (`world.rs:1223`).
+  `World::nav() -> Option<NavRevision>` (`world.rs:1228`).
+- **`World::set_route`** (`movement.rs:771`): `(&mut self, entity: EntityId,
+  route: MoveRoute) -> Result<Option<RouteTag>, MoveError>`; fails
+  `AbsentEntity`, `NotMover`, `DeadCombatant`, `TurnBased`, then
+  `validate_route` (`:767`–`770`, checks at `:776`–`792`). `TurnBased` fires
+  when the entity is a combatant and `combat().mode == EncounterMode::TurnBased`
+  (`:785`–`791`).
+- **`HistoryWorld::set_route`** (`history.rs:532`): same signature with
+  `HistoryError`; commits zero events (`:530`–`531`).
+- **`World::perform_move`** (`movement.rs:892`): `(world: &mut World, actor:
+  EntityId, route: &MoveRoute) -> Result<MoveOutcome, MoveError>`; runs
+  `validate_move`, spends the movement pool, sets the position to the last
+  point, clears the route, writes the `f32` mirror, keeps the turn
+  (`:886`–`891`).
+- **`HistoryWorld::perform_move`** (`history.rs:560`): `(&mut self, actor:
+  EntityId, route: &MoveRoute) -> Result<MoveOutcome, HistoryError>`; commits
+  exactly `[Moved { entity: actor, points }]` and raises the wrapper to
+  version 3 (`:555`–`557`, event pushed at `:574`–`577`).
+- **`validate_move`** (`movement.rs:858`): `(world: &World, actor: EntityId,
+  route: &MoveRoute) -> Result<u32, MoveError>` (the cost). Order:
+  `validate_action(EndTurn { actor })` wrapped as `MoveError::Combat`,
+  `NotMover` when no mover or no `TurnMovement`, `validate_route`, then
+  `CannotAfford` (`:850`–`883`).
+- **`World::place`** (`movement.rs:744`): `(&mut self, entity: EntityId,
+  position: [Fx16_16; 3]) -> Result<(), MoveError>`; fails `AbsentEntity`,
+  `NotMover`, `OutOfBounds { index: 0 }` (`:743`). `HistoryWorld::place`
+  (`history.rs:519`) commits zero events.
+- **`World::bind_nav`** (`movement.rs:713`): `(&mut self, revision:
+  NavRevision) -> Vec<(EntityId, RouteTag)>`; a new revision clears every
+  route and returns the cleared pairs ascending (`:707`–`712`).
+  `HistoryWorld::bind_nav` (`history.rs:506`) commits zero events.
+  `World::clear_route` (`movement.rs:810`), `HistoryWorld::clear_route`
+  (`history.rs:547`).
+- **`NavRevision`** (`movement.rs:51`): `pub struct NavRevision(pub
+  [u8; 32])`; `NavRevision::of_bytes(&[u8]) -> Self` is
+  `blake3::hash(bytes)` (`:53`–`58`). It is the bound-revision identity
+  checked by `validate_route` (`:433`–`435`).
+- **`MoveRoute`** (`movement.rs:67`): `{ revision: NavRevision, tag:
+  RouteTag, points: Vec<[Fx16_16; 3]> }`; `RouteTag(pub u64)` (`:62`).
+  `MoveOutcome { actor, cost, from, to }` (`:830`).
+- **`HistoryEvent::Moved`** (`history.rs:166`): `{ entity: EntityId, points:
+  Vec<[Fx16_16; 3]> }`, "version 3" (`:165`).
+- **Turn-based vs real-time.** `World::set_route` refuses a turn-based
+  combatant (`movement.rs:785`–`791`) and allows an RT combatant or a
+  non-participant (`:769`–`770`). `validate_move` borrows the turn checks
+  from `validate_action(EndTurn)` (`movement.rs:859`). `perform_move` is the
+  TB verb (atomic, paid); `set_route` is the RT route verb.
+- **Limits** (`movement.rs:42`–`47`): `COORD_LIMIT_RAW: i32 = 1 << 29`,
+  `MAX_ROUTE_POINTS = 64`, `MAX_ROUTE_LENGTH_RAW: u64 = 1 << 28`.
+- **`validate_route`** (`movement.rs:424`): `(route: &MoveRoute, nav:
+  Option<NavRevision>, start: [Fx16_16; 3]) -> Result<u64, MoveError>`, order
+  size, bounds, zero segments, total length, `NavUnbound`, `StaleRevision`,
+  `StartMismatch` (`:422`–`438`). `MoveError` (`movement.rs:207`–`263`) has
+  `AbsentEntity`, `NotMover`, `DeadCombatant`, `TurnBased`, `RouteSize`,
+  `OutOfBounds`, `ZeroSegment`, `TooLong`, `NavUnbound`, `StaleRevision`,
+  `StartMismatch`, `CannotAfford`, `Combat(CombatError)`.
+- **`snap`** (`movement.rs:384`): `(measure: Measure, point: [Fx16_16; 3]) ->
+  [Fx16_16; 3]`, the identity for `Measure::Euclidean` (`:383`).
+  `route_measure` (`:364`), `route_length` (`:354`), `seg_len` (`:310`),
+  `point_at` (`:322`), `to_f32` (`:391`).
+- **`HistoryWorld::tick`** (`history.rs:716`) delegates to
+  `tick_with_movement(&mut self) -> Result<Vec<MovementFact>, HistoryError>`
+  (`history.rs:724`), the stage-4 reader; `Host::tick` calls the former
+  (`host.rs:3214`–`3215`), so movement facts are discarded today.
+
 ## Navigation to call
 
 ## Dependency edges
