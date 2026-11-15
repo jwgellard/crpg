@@ -222,6 +222,68 @@ impl Authority {
 
 ## Behaviour
 
+Normative. "Refused" means the stated code and no state change. Tests are in
+§Tests; every item names its cases.
+
+B1. **Session creation chooses v4.** `open` on the fixture binds the player
+    with `bind_v4_peer` and the NPC with `bind_peer`; `session_wire` is 4 for
+    the player session. The client replica is `ReplicaWorldV4` built from
+    `host.epoch(player)`, and the pool is `ReassemblyPoolV4` built from the v3
+    limits. *Tests:* K1, K2.
+B2. **Positions reach GDScript through polled getters, with exact names.**
+    After a poll that applied a page carrying a `Position` anchor, `view()`
+    exposes it in `position_ids` / `position_points` / `position_moving`
+    (ascending `NetId`, raw integers, never floats per
+    `tasks/T151-facts.md:37`). No signal is emitted. With no granted position
+    all three arrays are empty. *Tests:* K3, K4.
+B3. **`Moved` reaches GDScript as a `ViewEvent` of kind `"moved"`.** The
+    replica stores nothing (`crates/crpg-net/src/replica_v4.rs:186`); the view
+    pairs the id with `v3().entity()` and drops ids with no row. The event
+    joins the same oldest-first `events()` list and the same once-per-poll
+    revision bump as every other event. *Tests:* K5.
+B4. **A move request leaves GDScript through `submit_move` / `submit_halt`.**
+    `submit_move(actor, x, y, z)` encodes one lane-1 `MoveTo` with the outbox's
+    next `seq` (starting at 1, `crates/crpg-net/src/outbox_v4.rs:63`) and
+    queues its canonical bytes up; only success advances the outbox. Negative
+    actor or unknown `NetId` is refused without touching the outbox, matching
+    the `submit` prefix rules (`crates/crpg-godot/src/core/client.rs:491`).
+    *Tests:* K6, K7.
+B5. **Accept is visible as a move receipt.** When the host releases an
+    `Accepted` receipt for the oldest pending intent, the next poll shows
+    `{seq, Accepted, processed_tick}` in `move_receipts()` oldest-first and
+    the outbox drops that intent (`processed_seq` advances). *Tests:* K8.
+B6. **Refuse is visible and keeps the window.** A `Rejected(code)` receipt
+    completes its intent and shows `{seq, Rejected, code}`; a `Superseded`
+    receipt shows `{seq, Superseded}`. Neither changes any other pending
+    intent. *Tests:* K9.
+B7. **Supersede ordering is exact.** Receipts complete only the oldest pending
+    intent whatever the outcome
+    (`crates/crpg-net/src/outbox_v4.rs:113–131`); an out-of-order or
+    foreign-epoch receipt changes nothing and the view shows no receipt for
+    it. *Tests:* K10.
+B8. **Samples move the exposed position without touching the anchor rules.**
+    `apply_sample` stores an entry only for an entity with a disclosed
+    position and only when strictly newer
+    (`crates/crpg-net/src/replica_v4.rs:144–147`); the getters then report the
+    sampled point. A sample for an undisclosed entity changes nothing.
+    *Tests:* K11.
+B9. **Existing v2/v3 behaviour and the HUD tests keep doing what they do.**
+    Lane-0 options, events, receipts, labels, the 14 HUD getters
+    (`tasks/T151-facts.md:187`), the `load.gd` / `hud.gd` / `scene_sync.gd` /
+    `smoke.gd` exit codes (`tasks/T151-facts.md:190–198`), and the proxy
+    layout derived from `net_ids()`/`sides()` only
+    (`tasks/T151-facts.md:186`) are unchanged. T049/G1 (interpolation), T026/G2
+    (prediction) and T050/G3 (click-to-move) are not implemented: proxies do
+    not interpolate, the client does not predict, and no picking is added.
+    *Tests:* K12 plus every existing suite.
+B10. **Error mapping is closed.** `HostError::Closed` → 50, any other
+    `HostError` (including `NotV4Peer`) → 51, through the existing wildcard
+    (`crates/crpg-godot/src/core/errors.rs:106–110`). A corrupt lane-0 frame
+    fences 52/53 as today; an undecodable lane-1 receipt for the oldest
+    pending intent fences the same way a refused lane-0 frame does and keeps
+    the last revision. `is_fatal` stays exactly 50–55
+    (`tasks/T151-facts.md:83`). *Tests:* K13.
+
 ## Errors
 
 ## Tests
