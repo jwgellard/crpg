@@ -5,7 +5,7 @@ Facts gathered for the T150 contract. Sources only; no design.
 ## Requirements
 
 - `ADR-0036 gates T026p` (`docs/adr/0036-movement-and-navigation.md:14–16`) — T034 gates T036, T026p (lane-1 movement, S-set), T037 and the client tasks; the ADR is the movement spec D13 asks for.
-- `ADR-0036 wire today` (`docs/adr/0036-movement-and-navigation.md:48–53`) — lane 0 is the only lane, lanes 1+ are reserved for movement (`crpg-net/src/protocol.rs:27-34`), and ADR-0004's spike sent per-tick `MoveTo` datagrams with latest-seq-wins.
+- `ADR-0036 wire today` (`docs/adr/0036-movement-and-navigation.md:48–53`) — lane 0 is the only lane, lanes 1+ are reserved for movement (the ADR cites `crates/crpg-net/src/protocol.rs:27–34`), and ADR-0004's spike sent per-tick `MoveTo` datagrams with latest-seq-wins.
 - `L1` (`docs/adr/0036-movement-and-navigation.md:389–390`) — "**Lane 1 is movement**, with its own sequence domain per epoch (`SEQ_FIRST..=SEQ_LAST`). Lane 0 keeps window 1 (D13)."
 - `L2` (`docs/adr/0036-movement-and-navigation.md:392–394`) — "**Upstream is a reliable ordered stream**: `MoveTo { seq, actor, destination: [i32; 3] }` (raw `Fx16_16`) and `Halt { seq, actor }`. There are no other fields (A1)."
 - `L3` (`docs/adr/0036-movement-and-navigation.md:396–400`) — "**Reliable receipts**": one `MoveReceipt` per admitted intent, in `seq` order, with `Accepted`/`Superseded`/`Rejected`; `processed_seq` is the highest receipted `seq`.
@@ -49,51 +49,51 @@ Facts gathered for the T150 contract. Sources only; no design.
 
 ## crpg-net-quic today
 
-Public surface, one line per item (`lib.rs:40–53` re-exports these with no glob):
+Public surface, one line per item (`crates/crpg-net-quic/src/lib.rs:40–53` re-exports these with no glob):
 
 - `QuicServer` (`crates/crpg-net-quic/src/server.rs:200`) — the server endpoint handle; `bind` (`:224`), `bind_dual` (`:230`), `bind_resumable` (`:237`), `local_addr` (`:316`), `poll_event` (`:325`), `poll_notice` (`:354`), `wait` (`:378`), `accept` (`:396`), `accept_resume` (`:424`), `refuse` (`:449`), `try_recv` (`:471`), `try_recv_channel` (`:479`), `try_send` (`:532`), `try_send_channel` (`:549`), `framing` (`:586`), `close` (`:598`), `stats` (`:644`), `totals` (`:657`), `lane` (`:687`), `shutdown` (`:703`).
-- `ConnectionId` (`server.rs:37`) — opaque `u64` connection id; `get` (`:41`).
-- `ServerEvent` (`server.rs:52`) — `HelloReceived { conn, remote, hello }` (`:54–61`) and `Closed { conn, reason }` (`:64–69`).
-- `ResumeReceived` (`server.rs:76`) — a resume opening's `conn`, `remote` and opaque `request` bytes.
-- `ServerNotice` (`server.rs:97`) — the `poll_notice` resume-notice enum.
-- `ServerError` (`server.rs:106`) — the server API error enum.
-- `BindError` (`server.rs:139`) — bind/identity failure.
-- `QueueTotals` (`server.rs:166`) — host-wide counters: `connections`, `pending`, inbound/outbound frames and bytes, `refused_handshakes`, `refused_at_limit`.
-- `ShutdownReport` (`server.rs:189`) — what `shutdown` did.
-- `ServerLane<'a>` (`server.rs:799`) — one connection as the net-local `Transport`; `send` (`:808`) and `recv` (`:813`) forward to `try_send`/`try_recv`.
+- `ConnectionId` (`crates/crpg-net-quic/src/server.rs:37`) — opaque `u64` connection id; `get` (`:41`).
+- `ServerEvent` (`crates/crpg-net-quic/src/server.rs:52`) — `HelloReceived { conn, remote, hello }` (`:54–61`) and `Closed { conn, reason }` (`:64–69`).
+- `ResumeReceived` (`crates/crpg-net-quic/src/server.rs:76`) — a resume opening's `conn`, `remote` and opaque `request` bytes.
+- `ServerNotice` (`crates/crpg-net-quic/src/server.rs:97`) — the `poll_notice` resume-notice enum.
+- `ServerError` (`crates/crpg-net-quic/src/server.rs:106`) — the server API error enum.
+- `BindError` (`crates/crpg-net-quic/src/server.rs:139`) — bind/identity failure.
+- `QueueTotals` (`crates/crpg-net-quic/src/server.rs:166`) — host-wide counters: `connections`, `pending`, inbound/outbound frames and bytes, `refused_handshakes`, `refused_at_limit`.
+- `ShutdownReport` (`crates/crpg-net-quic/src/server.rs:189`) — what `shutdown` did.
+- `ServerLane<'a>` (`crates/crpg-net-quic/src/server.rs:799`) — one connection as the net-local `Transport`; `send` (`:808`) and `recv` (`:813`) forward to `try_send`/`try_recv`.
 - `QuicClient` (`crates/crpg-net-quic/src/client.rs:103`) — the client handle; `connect` (`:115`), `connect_framed` (`:125`), `connect_resume` (`:209`), `framing` (`:295`), `welcome` (`:302`), `local_addr` (`:307`), `try_send` (`:313`), `try_send_channel` (`:330`), `try_recv` (`:365`), `try_recv_channel` (`:386`), `wait` (`:400`), `stats` (`:416`), `close_reason` (`:440`), `close` (`:451`).
-- `ConnectError` (`client.rs:43`) — the connect failure enum.
-- `CloseReport` (`client.rs:95`) — `close`'s report of what was flushed.
+- `ConnectError` (`crates/crpg-net-quic/src/client.rs:43`) — the connect failure enum.
+- `CloseReport` (`crates/crpg-net-quic/src/client.rs:95`) — `close`'s report of what was flushed.
 - `CloseCode` (`crates/crpg-net-quic/src/close.rs:10`) — the ten codes 0–9 `Normal`..`SessionFenced` (`:12–31`); `as_u32` (`:36`), `from_u64` (`:41`), `name` (`:58`).
-- `CloseMode` (`close.rs:76`), `CloseReason` (`close.rs:88`) — close modes and the recorded reason enum.
-- `SendError` (`close.rs:108`), `ChannelSendError` (`close.rs:141`) — send failures, with the channel variant.
-- `ConnectionStats` (`close.rs:163`) — per-connection inbound/outbound frames and bytes, `reader_parked`, `keepalive_pings_sent`.
+- `CloseMode` (`crates/crpg-net-quic/src/close.rs:76`), `CloseReason` (`crates/crpg-net-quic/src/close.rs:88`) — close modes and the recorded reason enum.
+- `SendError` (`crates/crpg-net-quic/src/close.rs:108`), `ChannelSendError` (`crates/crpg-net-quic/src/close.rs:141`) — send failures, with the channel variant.
+- `ConnectionStats` (`crates/crpg-net-quic/src/close.rs:163`) — per-connection inbound/outbound frames and bytes, `reader_parked`, `keepalive_pings_sent`.
 - `ALPN_LANE0_V1` (`crates/crpg-net-quic/src/handshake.rs:12`), `ALPN_LANE0_V2` (`:16`) — `crpg-lane0/1` and `crpg-lane0/2`.
-- `TLS_SERVER_NAME` (`handshake.rs:18`), `FRAME_HEADER_BYTES` (`:20`), `MIN_CREDENTIAL_BYTES` (`:22`), `MAX_CREDENTIAL_BYTES` (`:24`), `MAX_HELLO_BYTES` (`:26`), `WELCOME_BYTES` (`:28`).
-- `frame_header` (`handshake.rs:43`), `parse_frame_header` (`:55`) — the 4-byte big-endian length prefix.
-- `FrameError` (`handshake.rs:32`) — `Empty`, `TooLarge`, `UnknownChannel`.
-- `Framing` (`handshake.rs:71`) — `V1`/`V2`; `alpn` (`:81`), `from_alpn` (`:89`).
-- `Channel` (`handshake.rs:103`) — `Lane0`, `Transfer`, `Resume`; `as_u8` (`:115`), `from_u8` (`:120`).
-- `channel_frame_header` (`handshake.rs:134`), `parse_channel_frame_header` (`:156`) — the `/2` header with the channel selector.
-- `Credential` (`handshake.rs:186`) — opaque invitation bytes, redacted `Debug`; `new` (`:190`), `as_bytes` (`:201`), `ct_eq` (`:208`).
-- `CredentialError` (`handshake.rs:228`), `HandshakeError` (`handshake.rs:319`) — format and handshake errors.
-- `Hello` (`handshake.rs:237`) — `wire_version` + credential; `encode` (`:246`), `decode` (`:261`).
-- `Welcome` (`handshake.rs:285`) — `wire_version` + 16-byte epoch; `encode` (`:294`), `decode` (`:303`).
+- `TLS_SERVER_NAME` (`crates/crpg-net-quic/src/handshake.rs:18`), `FRAME_HEADER_BYTES` (`:20`), `MIN_CREDENTIAL_BYTES` (`:22`), `MAX_CREDENTIAL_BYTES` (`:24`), `MAX_HELLO_BYTES` (`:26`), `WELCOME_BYTES` (`:28`).
+- `frame_header` (`crates/crpg-net-quic/src/handshake.rs:43`), `parse_frame_header` (`:55`) — the 4-byte big-endian length prefix.
+- `FrameError` (`crates/crpg-net-quic/src/handshake.rs:32`) — `Empty`, `TooLarge`, `UnknownChannel`.
+- `Framing` (`crates/crpg-net-quic/src/handshake.rs:71`) — `V1`/`V2`; `alpn` (`:81`), `from_alpn` (`:89`).
+- `Channel` (`crates/crpg-net-quic/src/handshake.rs:103`) — `Lane0`, `Transfer`, `Resume`; `as_u8` (`:115`), `from_u8` (`:120`).
+- `channel_frame_header` (`crates/crpg-net-quic/src/handshake.rs:134`), `parse_channel_frame_header` (`:156`) — the `/2` header with the channel selector.
+- `Credential` (`crates/crpg-net-quic/src/handshake.rs:186`) — opaque invitation bytes, redacted `Debug`; `new` (`:190`), `as_bytes` (`:201`), `ct_eq` (`:208`).
+- `CredentialError` (`crates/crpg-net-quic/src/handshake.rs:228`), `HandshakeError` (`crates/crpg-net-quic/src/handshake.rs:319`) — format and handshake errors.
+- `Hello` (`crates/crpg-net-quic/src/handshake.rs:237`) — `wire_version` + credential; `encode` (`:246`), `decode` (`:261`).
+- `Welcome` (`crates/crpg-net-quic/src/handshake.rs:285`) — `wire_version` + 16-byte epoch; `encode` (`:294`), `decode` (`:303`).
 - `CertificatePin` (`crates/crpg-net-quic/src/identity.rs:14`) — SHA-256 of the DER; `from_sha256` (`:18`), `of_certificate` (`:23`), `as_bytes` (`:28`), `to_hex` (`:33`), `from_hex` (`:44`).
-- `ServerIdentity` (`identity.rs:76`) — certificate/key DER; `new` (`:83`), `pin` (`:91`).
+- `ServerIdentity` (`crates/crpg-net-quic/src/identity.rs:76`) — certificate/key DER; `new` (`:83`), `pin` (`:91`).
 - `ServerLimits` (`crates/crpg-net-quic/src/limits.rs:53`) — `v1` (`:87`), `validate` (`:105`).
-- `ClientLimits` (`limits.rs:174`) — `v1` (`:207`), `validate` (`:225`).
-- `ServerConfig` (`limits.rs:289`) — `bind`, `identity`, `limits`.
-- `ClientConfig` (`limits.rs:300`) — `bind`, `pin`, `limits`.
-- `ConfigError` (`limits.rs:311`) — an invalid limit or pin.
+- `ClientLimits` (`crates/crpg-net-quic/src/limits.rs:174`) — `v1` (`:207`), `validate` (`:225`).
+- `ServerConfig` (`crates/crpg-net-quic/src/limits.rs:289`) — `bind`, `identity`, `limits`.
+- `ClientConfig` (`crates/crpg-net-quic/src/limits.rs:300`) — `bind`, `pin`, `limits`.
+- `ConfigError` (`crates/crpg-net-quic/src/limits.rs:311`) — an invalid limit or pin.
 
 How lane 0 maps to streams:
 
-- `lib.rs:6–12` — "One client-initiated bidirectional QUIC stream per connection carries a hello, a welcome, and then every lane-0 frame in both directions"; "There are no other streams and no DATAGRAM frames."
-- `tls.rs:86–91` — the server's transport parameters are `bidi_streams: 1`, zero uni streams, plus the three windows; the client's are `bidi_streams: 0` (`:129–134`).
-- `client.rs:747` — the client's connect calls `.open_bi()`; `server.rs:936` — the server's accept loop calls `.accept_bi()`.
-- `queue.rs:800` `lane_reader` reads `[len][payload]` into the inbound queue; `queue.rs:876` `lane_writer` drains the outbound queue to `SendStream`; `queue.rs:928` `lane_control` runs the close/flush path; `queue.rs:734` `read_lane_frame` parses a header and checks the cap first.
-- `server.rs:1180–1205` and `client.rs:652–676` spawn one reader, one writer and one control task per connection on the endpoint's current-thread runtime.
+- `crates/crpg-net-quic/src/lib.rs:6–12` — "One client-initiated bidirectional QUIC stream per connection carries a hello, a welcome, and then every lane-0 frame in both directions"; "There are no other streams and no DATAGRAM frames."
+- `crates/crpg-net-quic/src/tls.rs:86–91` — the server's transport parameters are `bidi_streams: 1`, zero uni streams, plus the three windows; the client's are `bidi_streams: 0` (`:129–134`).
+- `crates/crpg-net-quic/src/client.rs:747` — the client's connect calls `.open_bi()`; `crates/crpg-net-quic/src/server.rs:936` — the server's accept loop calls `.accept_bi()`.
+- `crates/crpg-net-quic/src/queue.rs:800` `lane_reader` reads `[len][payload]` into the inbound queue; `crates/crpg-net-quic/src/queue.rs:876` `lane_writer` drains the outbound queue to `SendStream`; `crates/crpg-net-quic/src/queue.rs:928` `lane_control` runs the close/flush path; `crates/crpg-net-quic/src/queue.rs:734` `read_lane_frame` parses a header and checks the cap first.
+- `crates/crpg-net-quic/src/server.rs:1180–1205` and `crates/crpg-net-quic/src/client.rs:652–676` spawn one reader, one writer and one control task per connection on the endpoint's current-thread runtime.
 
 Limits (`limits.rs`):
 
@@ -105,11 +105,11 @@ Limits (`limits.rs`):
 
 Close and teardown path:
 
-- `close.rs:10–32` — codes 0–9, sent as QUIC varints with `name()` as the reason phrase.
-- `queue.rs:108` `close_quinn` sends the application `CONNECTION_CLOSE`; `queue.rs:778` `local_close` records first and then calls it.
-- `queue.rs:114` `Phase`, `queue.rs:160` `FlushClose` and `queue.rs:299` `Stop` hold the close state; `queue.rs:928` `lane_control` applies requested closes and maps `connection.closed()` to a `CloseReason`.
-- `teardown.rs:9` `CLOSE_RESERVE_CAP_MS = 200`, `:12` `close_reserve_ms` (`R = min(200 ms, B / 4)`), `:18` `CloseDeadlines`, `:26` `close_deadlines`, `:42` `finish_endpoint_close` (yield, then `wait_idle` bounded by `overall`).
-- `server.rs:703` `shutdown` and `Drop` close every connection with `Shutdown`; `client.rs:451` `close` takes `CloseMode`.
+- `crates/crpg-net-quic/src/close.rs:10–32` — codes 0–9, sent as QUIC varints with `name()` as the reason phrase.
+- `crates/crpg-net-quic/src/queue.rs:108` `close_quinn` sends the application `CONNECTION_CLOSE`; `crates/crpg-net-quic/src/queue.rs:778` `local_close` records first and then calls it.
+- `crates/crpg-net-quic/src/queue.rs:114` `Phase`, `crates/crpg-net-quic/src/queue.rs:160` `FlushClose` and `crates/crpg-net-quic/src/queue.rs:299` `Stop` hold the close state; `crates/crpg-net-quic/src/queue.rs:928` `lane_control` applies requested closes and maps `connection.closed()` to a `CloseReason`.
+- `crates/crpg-net-quic/src/teardown.rs:9` `CLOSE_RESERVE_CAP_MS = 200`, `:12` `close_reserve_ms` (`R = min(200 ms, B / 4)`), `:18` `CloseDeadlines`, `:26` `close_deadlines`, `:42` `finish_endpoint_close` (yield, then `wait_idle` bounded by `overall`).
+- `crates/crpg-net-quic/src/server.rs:703` `shutdown` and `Drop` close every connection with `Shutdown`; `crates/crpg-net-quic/src/client.rs:451` `close` takes `CloseMode`.
 - The architecture doc states the close budget at `docs/architecture/crpg-net-quic.md:120–129` and the fixed transport parameters at `:141–147`.
 
 Architecture doc:
@@ -154,39 +154,39 @@ Module and wire facts. All items are implemented on this branch (T026p1–T026p5
 
 - `movement_v4` (`crates/crpg-net/src/movement_v4.rs:1`, declared `crates/crpg-net/src/lib.rs:50`) — "Lane-1 movement subprotocol (T026p2, ADR-0036 L1–L6, D13)".
 - `outbox_v4` (`crates/crpg-net/src/outbox_v4.rs:1`, declared `crates/crpg-net/src/lib.rs:51`) — "The client's lane-1 sender state (T026p5, ADR-0036 L2–L3)".
-- `subprotocol identity` (`movement_v4.rs:3–8`) — "Lane 1 is its own separately versioned subprotocol: every message starts with [`MOVEMENT_VERSION`] (`0xA1`)"; every lane-0 codec refuses lane-1 bytes with `UnsupportedVersion` and this codec refuses every other first byte the same way.
-- `upstream/downstream shape` (`movement_v4.rs:10–17`) — upstream `0xA1, epoch[16], lane (1), seq, actor, tag`; downstream `0xA1, lane (1), kind`; a sample is "one self-contained datagram of at most [`MAX_MOVE_DOWN_BYTES`] bytes and [`MAX_SAMPLE_ENTRIES`] entries, with no `event_seq` and no epoch".
-- `decode precedence` (`movement_v4.rs:19–21`) — "whole-message cap, empty input, version, header fields, body (each field checked when read), trailing-byte reject"; encode "never returns partial bytes".
-- `MOVEMENT_VERSION` (`movement_v4.rs:32`) — `0xA1`.
-- `LANE_MOVEMENT` (`movement_v4.rs:34`) — `1`.
-- `MOVE_TAG_MOVE_TO` (`movement_v4.rs:36`) — `0`; `MOVE_TAG_HALT` (`movement_v4.rs:38`) — `1`.
-- `DOWN_KIND_RECEIPT` (`movement_v4.rs:40`) — `0`; `DOWN_KIND_SAMPLE` (`movement_v4.rs:42`) — `1`.
-- `OUTCOME_TAG_ACCEPTED`/`_SUPERSEDED`/`_REJECTED` (`movement_v4.rs:44–48`) — `0`, `1`, `2`.
-- `MAX_MOVE_DOWN_BYTES` (`movement_v4.rs:50`) — `1_024`, "Largest lane-1 downstream message, receipt or sample".
-- `MAX_SAMPLE_HEADER_BYTES` (`movement_v4.rs:53`) — `24`; `MAX_SAMPLE_ENTRY_BYTES` (`:55`) — `26`; `MAX_SAMPLE_ENTRIES` (`:57`) — `38`.
-- `sample bounds assertion` (`movement_v4.rs:58–64`) — two `const` assertions pin 24 + 38 × 26 ≤ 1,024 < 24 + 39 × 26, so the entry and byte bounds change together.
-- `POLICY_MOVE_INTENTS_PER_SEC` (`movement_v4.rs:67`) — `20`; `POLICY_MOVE_INTENT_BURST` (`:69`) — `40`; `POLICY_MOVE_IN_FLIGHT` (`:71`) — `8`; all "Policy, never wire".
-- `MAX_MOVE_UP_BYTES` (none found) — `grep` over `crates/` finds no such constant; an intent is capped by `MAX_INTENT_FRAME_BYTES` (4,096, `crates/crpg-net/src/protocol.rs:58`) at `movement_v4.rs:229`, and the largest lane-1 intent is 54 bytes (`tasks/T026p.md:607`).
+- `subprotocol identity` (`crates/crpg-net/src/movement_v4.rs:3–8`) — "Lane 1 is its own separately versioned subprotocol: every message starts with [`MOVEMENT_VERSION`] (`0xA1`)"; every lane-0 codec refuses lane-1 bytes with `UnsupportedVersion` and this codec refuses every other first byte the same way.
+- `upstream/downstream shape` (`crates/crpg-net/src/movement_v4.rs:10–17`) — upstream `0xA1, epoch[16], lane (1), seq, actor, tag`; downstream `0xA1, lane (1), kind`; a sample is "one self-contained datagram of at most [`MAX_MOVE_DOWN_BYTES`] bytes and [`MAX_SAMPLE_ENTRIES`] entries, with no `event_seq` and no epoch".
+- `decode precedence` (`crates/crpg-net/src/movement_v4.rs:19–21`) — "whole-message cap, empty input, version, header fields, body (each field checked when read), trailing-byte reject"; encode "never returns partial bytes".
+- `MOVEMENT_VERSION` (`crates/crpg-net/src/movement_v4.rs:32`) — `0xA1`.
+- `LANE_MOVEMENT` (`crates/crpg-net/src/movement_v4.rs:34`) — `1`.
+- `MOVE_TAG_MOVE_TO` (`crates/crpg-net/src/movement_v4.rs:36`) — `0`; `MOVE_TAG_HALT` (`crates/crpg-net/src/movement_v4.rs:38`) — `1`.
+- `DOWN_KIND_RECEIPT` (`crates/crpg-net/src/movement_v4.rs:40`) — `0`; `DOWN_KIND_SAMPLE` (`crates/crpg-net/src/movement_v4.rs:42`) — `1`.
+- `OUTCOME_TAG_ACCEPTED`/`_SUPERSEDED`/`_REJECTED` (`crates/crpg-net/src/movement_v4.rs:44–48`) — `0`, `1`, `2`.
+- `MAX_MOVE_DOWN_BYTES` (`crates/crpg-net/src/movement_v4.rs:50`) — `1_024`, "Largest lane-1 downstream message, receipt or sample".
+- `MAX_SAMPLE_HEADER_BYTES` (`crates/crpg-net/src/movement_v4.rs:53`) — `24`; `MAX_SAMPLE_ENTRY_BYTES` (`:55`) — `26`; `MAX_SAMPLE_ENTRIES` (`:57`) — `38`.
+- `sample bounds assertion` (`crates/crpg-net/src/movement_v4.rs:58–64`) — two `const` assertions pin 24 + 38 × 26 ≤ 1,024 < 24 + 39 × 26, so the entry and byte bounds change together.
+- `POLICY_MOVE_INTENTS_PER_SEC` (`crates/crpg-net/src/movement_v4.rs:67`) — `20`; `POLICY_MOVE_INTENT_BURST` (`:69`) — `40`; `POLICY_MOVE_IN_FLIGHT` (`:71`) — `8`; all "Policy, never wire".
+- `MAX_MOVE_UP_BYTES` (none found) — `grep` over `crates/` finds no such constant; an intent is capped by `MAX_INTENT_FRAME_BYTES` (4,096, `crates/crpg-net/src/protocol.rs:58`) at `crates/crpg-net/src/movement_v4.rs:229`, and the largest lane-1 intent is 54 bytes (`tasks/T026p.md:607`).
 - `MAX_MOVE_RECEIPT_BYTES` (none in `crpg-net`) — the 60-byte receipt bound is defined only by the T037 contract (`tasks/T037.md:459`), not in this crate.
-- `MoveBody` (`movement_v4.rs:76`) — `MoveTo { destination: Point }` (tag 0) and `Halt` (tag 1).
-- `MoveIntent` (`movement_v4.rs:89`) — `epoch: [u8; 16]`, `seq: u64`, `actor: NetId`, `body: MoveBody`; "there is no `observed_tick`".
-- `MoveOutcome` (`movement_v4.rs:102`) — `Accepted { start_tick }`, `Superseded`, `Rejected(RejectionCode)`.
-- `MoveReceipt` (`movement_v4.rs:116`) — `epoch`, `seq`, `actor`, `processed_tick`, `outcome`; "Exactly one receipt per admitted lane-1 intent, in `seq` order."
-- `SampleEntry` (`movement_v4.rs:131`) — `entity: NetId`, `point: Point`, `moving: bool`.
-- `MoveSample` (`movement_v4.rs:143`) — `server_tick`, `processed_seq`, `entries: Vec<SampleEntry>`.
-- `MoveDown` (`movement_v4.rs:154`) — `Receipt(MoveReceipt)` or `Sample(MoveSample)`.
-- `encode_intent` (`movement_v4.rs:207`) — encodes one intent, first byte `0xA1`.
-- `decode_intent` (`movement_v4.rs:228`) — refuses bytes over `MAX_INTENT_FRAME_BYTES` (`:229`), checks the version (`:234`) and the contract's field order.
-- `encode_down` (`movement_v4.rs:273`) — encodes a receipt or a sample.
-- `decode_down` (`movement_v4.rs:318`) — "Order: cap ([`MAX_MOVE_DOWN_BYTES`]), empty, version, lane, kind, the body" (`:316–319`).
-- `check_sample` (`movement_v4.rs:432`) — M-6's encode checks: `processed_seq` above `SEQ_LAST`, more than 38 entries, non-ascending entity, in that order.
-- `sample_datagrams` (`movement_v4.rs:447`) — M-7: cuts one tick's entries into chunks of 38, "Every datagram is at most 1,012 bytes" (`:440–446`).
-- `MoveOutbox` (`outbox_v4.rs:54`) — "The client's lane-1 sender state for one epoch": `epoch: [u8; 16]`, `next_seq`, `pending: Vec<MoveIntent>`, `processed_seq`.
-- `MoveOutbox::new` (`outbox_v4.rs:63`), `epoch` (`:73`), `next_seq` (`:78`), `processed_seq` (`:83`), `pending` (`:88`), `send` (`:93`), `receive` (`:113`).
-- `OutboxError` (`outbox_v4.rs:17`) — `Exhausted`, `Full`, `WrongEpoch`, `Unexpected { expected, got }`, `WrongActor { seq }`; `Display` is `"<Variant> at movement/outbox"` (`:38–48`).
+- `MoveBody` (`crates/crpg-net/src/movement_v4.rs:76`) — `MoveTo { destination: Point }` (tag 0) and `Halt` (tag 1).
+- `MoveIntent` (`crates/crpg-net/src/movement_v4.rs:89`) — `epoch: [u8; 16]`, `seq: u64`, `actor: NetId`, `body: MoveBody`; "there is no `observed_tick`".
+- `MoveOutcome` (`crates/crpg-net/src/movement_v4.rs:102`) — `Accepted { start_tick }`, `Superseded`, `Rejected(RejectionCode)`.
+- `MoveReceipt` (`crates/crpg-net/src/movement_v4.rs:116`) — `epoch`, `seq`, `actor`, `processed_tick`, `outcome`; "Exactly one receipt per admitted lane-1 intent, in `seq` order."
+- `SampleEntry` (`crates/crpg-net/src/movement_v4.rs:131`) — `entity: NetId`, `point: Point`, `moving: bool`.
+- `MoveSample` (`crates/crpg-net/src/movement_v4.rs:143`) — `server_tick`, `processed_seq`, `entries: Vec<SampleEntry>`.
+- `MoveDown` (`crates/crpg-net/src/movement_v4.rs:154`) — `Receipt(MoveReceipt)` or `Sample(MoveSample)`.
+- `encode_intent` (`crates/crpg-net/src/movement_v4.rs:207`) — encodes one intent, first byte `0xA1`.
+- `decode_intent` (`crates/crpg-net/src/movement_v4.rs:228`) — refuses bytes over `MAX_INTENT_FRAME_BYTES` (`:229`), checks the version (`:234`) and the contract's field order.
+- `encode_down` (`crates/crpg-net/src/movement_v4.rs:273`) — encodes a receipt or a sample.
+- `decode_down` (`crates/crpg-net/src/movement_v4.rs:318`) — "Order: cap ([`MAX_MOVE_DOWN_BYTES`]), empty, version, lane, kind, the body" (`:316–319`).
+- `check_sample` (`crates/crpg-net/src/movement_v4.rs:432`) — M-6's encode checks: `processed_seq` above `SEQ_LAST`, more than 38 entries, non-ascending entity, in that order.
+- `sample_datagrams` (`crates/crpg-net/src/movement_v4.rs:447`) — M-7: cuts one tick's entries into chunks of 38, "Every datagram is at most 1,012 bytes" (`:440–446`).
+- `MoveOutbox` (`crates/crpg-net/src/outbox_v4.rs:54`) — "The client's lane-1 sender state for one epoch": `epoch: [u8; 16]`, `next_seq`, `pending: Vec<MoveIntent>`, `processed_seq`.
+- `MoveOutbox::new` (`crates/crpg-net/src/outbox_v4.rs:63`), `epoch` (`:73`), `next_seq` (`:78`), `processed_seq` (`:83`), `pending` (`:88`), `send` (`:93`), `receive` (`:113`).
+- `OutboxError` (`crates/crpg-net/src/outbox_v4.rs:17`) — `Exhausted`, `Full`, `WrongEpoch`, `Unexpected { expected, got }`, `WrongActor { seq }`; `Display` is `"<Variant> at movement/outbox"` (`:38–48`).
 - `v4 subprotocol identifiers` (`crates/crpg-net/src/codec_v4.rs:6`) — "a first byte other than 4 (including 1, 2, 3, `0x81`, `0x82`, `0x91`, `0xA1`) is `UnsupportedVersion`".
 - `lane table` (`tasks/T026p.md:166`) — lane 1 is `0xA1`; `tasks/T026p.md:173` records that the earlier reading which put lane 1 under byte 4 was rejected by review.
-- `MAX_MOVE` grep (`crates/crpg-net/src/`) — the only matches are `MAX_MOVE_DOWN_BYTES` (`movement_v4.rs:50`) plus `MAX_MOVED_POINTS` (`protocol_v4.rs:41`, 64 points, lane 0's `Moved`), which is not a lane-1 constant.
+- `MAX_MOVE` grep (`crates/crpg-net/src/`) — the only matches are `MAX_MOVE_DOWN_BYTES` (`crates/crpg-net/src/movement_v4.rs:50`) plus `MAX_MOVED_POINTS` (`crates/crpg-net/src/protocol_v4.rs:41`, 64 points, lane 0's `Moved`), which is not a lane-1 constant.
 - `lane-1 policy constants are host-enforced` (`crates/crpg-net/AGENTS.md`, T026p2 entry) — "The policy constants are host-enforced and never wire."
 
 ## The host side
@@ -194,19 +194,19 @@ Module and wire facts. All items are implemented on this branch (T026p1–T026p5
 `crates/crpg-server/src/quic.rs` as built (T023b/T024h2):
 
 - `QuicHost` (`crates/crpg-server/src/quic.rs:430`) — "one [`Host`] plus one `crpg_net_quic::QuicServer`, driven by a synchronous, non-blocking [`QuicHost::pump`]" (`:1–3`).
-- `module invariants` (`quic.rs:21–26`) — "This module reads no clock, spawns no thread, opens no socket"; `now_ms` is injected; `wait`, `shutdown` and `Drop` are the only blocking calls.
-- `start` (`quic.rs:466`) — takes a host and a bound server; the server "must come from `QuicServer::bind` or `QuicServer::bind_dual`, never `QuicServer::bind_resumable`" (`:462–465`).
-- `pump` (`quic.rs:501`) — preconditions (`Poisoned`, then `TimeRegression`), then `run_phases`.
-- `run_phases` (`quic.rs:521–593`) — the seven phases: events, drain, admit (`host.pump`), reconcile epochs, deliver, retire closed peers, report.
-- `on_hello` (`quic.rs:596`) — credential match (`:613–617`), wire version (`:618–622`), supersession (`:623–630`), framing from the negotiated ALPN (`:634`), bind (`:650–671`), welcome (`:687–692`), `server.accept` (`:694`), `Bound` record (`:696–710`).
-- `bind by framing` (`quic.rs:650–659`) — `Framing::V2` calls `Host::bind_snapshot_peer`, `Framing::V1` calls `Host::bind_peer`; there is no other framing and no v4 branch.
-- `drain` (`quic.rs:768–837`) — a held frame is retried first (`:774–787`), then up to `MAX_DRAIN_PER_CONNECTION` frames (`:56–58`) via `server.try_recv_channel` (`:790`).
-- `channel routing` (`quic.rs:795–809`) — `Channel::Lane0` → `ingest_one`, `Channel::Transfer` → `ingest_transfer_one`, `Channel::Resume` → fence ("Unreachable (Q§8.2)").
-- `ingest_one` (`quic.rs:852`) — calls `self.host.ingest(peer, frame, now_ms)` (`:862`) and applies the B§6 step-3 disposition; `ingest_transfer_one` (`:891`) is the transfer twin.
-- `deliver` (`quic.rs:949`) — takes `host.take_delivery_entries(peer)` (`:958`), maps `DeliveryKind::Delta`/`Transfer` to `Channel::Lane0`/`Channel::Transfer` (`:994–997`) and writes with `server.try_send_channel` (`:998`).
-- `acknowledge` (`quic.rs:1062`) — acknowledges delivery by the last accepted entry's ordinal (`:1039`); a departed peer's entries are discarded and acknowledged (`:973–989`).
-- `closed` handling (`quic.rs:528–539`, `:567–585`) — `ServerEvent::Closed` marks the binding, then phase 6 unbinds and retires it once drained.
-- `Wire version today` (`crates/crpg-server/src/host.rs:1195–1202`) — `session_wire` returns `3` for a v3 session else `config.protocol.as_u8()` (1 or 2); `ProtocolSelection` has only `V1` and `V2` (`host.rs:104–111`).
+- `module invariants` (`crates/crpg-server/src/quic.rs:21–26`) — "This module reads no clock, spawns no thread, opens no socket"; `now_ms` is injected; `wait`, `shutdown` and `Drop` are the only blocking calls.
+- `start` (`crates/crpg-server/src/quic.rs:466`) — takes a host and a bound server; the server "must come from `QuicServer::bind` or `QuicServer::bind_dual`, never `QuicServer::bind_resumable`" (`:462–465`).
+- `pump` (`crates/crpg-server/src/quic.rs:501`) — preconditions (`Poisoned`, then `TimeRegression`), then `run_phases`.
+- `run_phases` (`crates/crpg-server/src/quic.rs:521–593`) — the seven phases: events, drain, admit (`host.pump`), reconcile epochs, deliver, retire closed peers, report.
+- `on_hello` (`crates/crpg-server/src/quic.rs:596`) — credential match (`:613–617`), wire version (`:618–622`), supersession (`:623–630`), framing from the negotiated ALPN (`:634`), bind (`:650–671`), welcome (`:687–692`), `server.accept` (`:694`), `Bound` record (`:696–710`).
+- `bind by framing` (`crates/crpg-server/src/quic.rs:650–659`) — `Framing::V2` calls `Host::bind_snapshot_peer`, `Framing::V1` calls `Host::bind_peer`; there is no other framing and no v4 branch.
+- `drain` (`crates/crpg-server/src/quic.rs:768–837`) — a held frame is retried first (`:774–787`), then up to `MAX_DRAIN_PER_CONNECTION` frames (`:56–58`) via `server.try_recv_channel` (`:790`).
+- `channel routing` (`crates/crpg-server/src/quic.rs:795–809`) — `Channel::Lane0` → `ingest_one`, `Channel::Transfer` → `ingest_transfer_one`, `Channel::Resume` → fence ("Unreachable (Q§8.2)").
+- `ingest_one` (`crates/crpg-server/src/quic.rs:852`) — calls `self.host.ingest(peer, frame, now_ms)` (`:862`) and applies the B§6 step-3 disposition; `ingest_transfer_one` (`:891`) is the transfer twin.
+- `deliver` (`crates/crpg-server/src/quic.rs:949`) — takes `host.take_delivery_entries(peer)` (`:958`), maps `DeliveryKind::Delta`/`Transfer` to `Channel::Lane0`/`Channel::Transfer` (`:994–997`) and writes with `server.try_send_channel` (`:998`).
+- `acknowledge` (`crates/crpg-server/src/quic.rs:1062`) — acknowledges delivery by the last accepted entry's ordinal (`:1039`); a departed peer's entries are discarded and acknowledged (`:973–989`).
+- `closed` handling (`crates/crpg-server/src/quic.rs:528–539`, `:567–585`) — `ServerEvent::Closed` marks the binding, then phase 6 unbinds and retires it once drained.
+- `Wire version today` (`crates/crpg-server/src/host.rs:1195–1202`) — `session_wire` returns `3` for a v3 session else `config.protocol.as_u8()` (1 or 2); `ProtocolSelection` has only `V1` and `V2` (`crates/crpg-server/src/host.rs:104–111`).
 - `Frozen` (`tasks/T037.md:1338`) — `crates/crpg-server/src/quic.rs` is a frozen source in T037, and `:1355` says "`quic.rs` is frozen here."
 
 The T037 surface the transport task must call. `tasks/T037.md` is an approved contract for code not yet written: `grep` finds no `bind_v4_peer`, `ingest_move`, `take_move_receipts` or `take_samples` in `crates/` today.
@@ -236,32 +236,33 @@ The T037 surface the transport task must call. `tasks/T037.md` is an approved co
 
 `support/quic_rig.rs` helpers:
 
-- `loopback` (`quic_rig.rs:35`), `identity_a` (`:39`), `pin_a` (`:43`), `pin_b` (`:47`).
-- `bind_server` (`quic_rig.rs:51`), `client_config` (`:60`), `credential` (`:68`), `hello` (`:72`), `epoch` (`:79`).
-- `connect_async` (`quic_rig.rs:85`), `until` (`:95`, a 30 s guard), `next_event` (`:104`), `next_hello` (`:116`), `next_closed` (`:128`), `connect_accepted` (`:136`), `server_recv` (`:162`), `client_recv` (`:176`).
-- `pattern` (`quic_rig.rs:191`), `cycling_size` (`:202`).
-- `RawRuntime` (`quic_rig.rs:212`), `RawClient` (`:310`), `raw_connect` (`:317`), `raw_lane` (`:349`), `frame_bytes` (`:353`) — a real quinn connection that bypasses the crate API.
-- `RelayConfig` (`quic_rig.rs:425`) — `drop_every`, `reorder_depth`, `seed`; `clean()` (`:432`).
-- `UdpRelay` (`quic_rig.rs:454`) — "A client ↔ server UDP relay"; `set_impaired` (`:671`) and `set_blackhole` (`:701`); its doc (`:449–453`) says it "forwards every datagram in order until `set_impaired(true)`, so a test can complete its handshake on a clean path and only then measure loss and reordering" (T098d).
-- `SplitMix64` (`quic_rig.rs:464`) and block rotation (`Direction::offer`, `:491`, `:517`) — "Block rotation: the first packet goes out last", so reorder depth stays bounded.
+- `loopback` (`crates/crpg-net-quic/tests/support/quic_rig.rs:35`), `identity_a` (`:39`), `pin_a` (`:43`), `pin_b` (`:47`).
+- `bind_server` (`crates/crpg-net-quic/tests/support/quic_rig.rs:51`), `client_config` (`:60`), `credential` (`:68`), `hello` (`:72`), `epoch` (`:79`).
+- `connect_async` (`crates/crpg-net-quic/tests/support/quic_rig.rs:85`), `until` (`:95`, a 30 s guard), `next_event` (`:104`), `next_hello` (`:116`), `next_closed` (`:128`), `connect_accepted` (`:136`), `server_recv` (`:162`), `client_recv` (`:176`).
+- `pattern` (`crates/crpg-net-quic/tests/support/quic_rig.rs:191`), `cycling_size` (`:202`).
+- `RawRuntime` (`crates/crpg-net-quic/tests/support/quic_rig.rs:212`), `RawClient` (`:310`), `raw_connect` (`:317`), `raw_lane` (`:349`), `frame_bytes` (`:353`) — a real quinn connection that bypasses the crate API.
+- `RelayConfig` (`crates/crpg-net-quic/tests/support/quic_rig.rs:425`) — `drop_every`, `reorder_depth`, `seed`; `clean()` (`:432`).
+- `UdpRelay` (`crates/crpg-net-quic/tests/support/quic_rig.rs:454`) — "A client ↔ server UDP relay"; `set_impaired` (`:671`) and `set_blackhole` (`:701`); its doc (`:449–453`) says it "forwards every datagram in order until `set_impaired(true)`, so a test can complete its handshake on a clean path and only then measure loss and reordering" (T098d).
+- `SplitMix64` (`crates/crpg-net-quic/tests/support/quic_rig.rs:464`) and block rotation (`Direction::offer`, `:491`, `:517`) — "Block rotation: the first packet goes out last", so reorder depth stays bounded.
 
 Impairment in the crate suite:
 
 - `impaired()` (`crates/crpg-net-quic/tests/quic.rs:1174–1178`) — `drop_every: 13`, `reorder_depth: 4`, `seed: 23`.
-- `connect_via_relay` (`quic.rs:1182`) — connect over the relay before impairment.
-- `ordered_exactly_once_through_impaired_relay` (`quic.rs:1200`) — case 14; the handshake runs clean (T098d), then `relay.set_impaired(true)` (`:1212`), with `dropped`/`reordered` as controls (`:1221–1222`).
-- `lane0_codec_frames_decode_after_impaired_delivery` (`quic.rs:1826`) — the impaired codec case, plus a clean positive control (`:1833–1834`).
-- `datagrams_and_connection_limit_fail_closed` (`quic.rs:1652`) — the case that pins DATAGRAM frames as unsupported today.
-- `transport_trait_round_trip` (`quic.rs:1708`) — `Transport` via `ServerLane`.
+- `connect_via_relay` (`crates/crpg-net-quic/tests/quic.rs:1182`) — connect over the relay before impairment.
+- `ordered_exactly_once_through_impaired_relay` (`crates/crpg-net-quic/tests/quic.rs:1200`) — case 14; the handshake runs clean (T098d), then `relay.set_impaired(true)` (`:1212`), with `dropped`/`reordered` as controls (`:1221–1222`).
+- `lane0_codec_frames_decode_after_impaired_delivery` (`crates/crpg-net-quic/tests/quic.rs:1826`) — the impaired codec case, plus a clean positive control (`:1833–1834`).
+- `datagrams_and_connection_limit_fail_closed` (`crates/crpg-net-quic/tests/quic.rs:1652`) — the case that pins DATAGRAM frames as unsupported today.
+- `transport_trait_round_trip` (`crates/crpg-net-quic/tests/quic.rs:1708`) — `Transport` via `ServerLane`.
 
 `crates/crpg-server/tests/`:
 
-- `host_quic.rs` (`crates/crpg-server/tests/host_quic.rs`, 2,441 lines, 11 tests) — the T023b acceptance suite over real loopback; oracles are a mirror `HistoryWorld`, a per-client replica from received bytes, and a trace replay (`:1–19`).
-- `host_quic_transfer.rs` (`crates/crpg-server/tests/host_quic_transfer.rs`, 1,901 lines, 9 tests) — the T024h2 `/2` adapter suite.
-- `support/quic_host_rig.rs` (`crates/crpg-server/tests/support/quic_host_rig.rs`) — entity/ability fixtures (`eid`, `a`, `b`, `c`, `strike`, `smite`, `whiff`, `encounter`), `fixture` (`:99`), grants (`:108–157`), frame builders (`intent_header` `:195`, `declare` `:206`, `end_turn` `:223`), `TestClock` (`:541`, `now` `:550`, `advance` `:554`), `start_dual` (`:319`), `connect_framed_async` (`:330`), `connect_raw` (`:347`), `register` (`:592`), `pump` (`:602`).
+- `host_quic.rs` (`crates/crpg-server/tests/host_quic.rs`, 2,441 lines, 11 `#[test]` functions) — the T023b acceptance suite over real loopback; oracles are a mirror `HistoryWorld`, a per-client replica from received bytes, and a trace replay (`:1–19`).
+- `host_quic_transfer.rs` (`crates/crpg-server/tests/host_quic_transfer.rs`, 1,901 lines, 9 `#[test]` functions) — the T024h2 `/2` adapter suite.
+- `support/quic_host_rig.rs` (`crates/crpg-server/tests/support/quic_host_rig.rs`) — entity/ability fixtures (`eid`, `a`, `b`, `c`, `strike`, `smite`, `whiff`, `encounter`), `fixture` (`:99`), grants (`:108–157`), frame builders (`intent_header` `:195`, `declare` `:206`, `end_turn` `:223`), `TestClock` (`:541`, `now` `:550`, `advance` `:554`), `pump_until` (`:596`).
+- `host_quic_transfer.rs helpers` (`crates/crpg-server/tests/host_quic_transfer.rs`) — `start_dual` (`:319`), `connect_framed_async` (`:330`), `connect_raw` (`:347`), `register` (`:592`), `pump` (`:602`), plus transfer-frame decoders and `bind_dual_server` (`:309`).
 - `fixtures/three_combatants.json` (`crates/crpg-server/tests/fixtures/three_combatants.json`) — the generated `HistoryWorld` fixture (seed 7, A/B/C health 10/10/3); `crates/crpg-server/AGENTS.md` warns it is generated, not hand-written.
-- `both_versions!` (`host_quic.rs:47`) — runs a case body under both `ProtocolSelection`s.
-- `exchange` (`host_quic.rs:144`), `mirror` (`:161`), `register` (`:170`), `settle` (`:198`), `replay` (`:701`), `three_clients` (`:813`), `lockstep_quic` (`:880`), `lockstep_memory` (`:910`), `IMPAIRED` (`:805–809`, the same 13/4/23 config).
+- `both_versions!` (`crates/crpg-server/tests/host_quic.rs:47`) — runs a case body under both `ProtocolSelection`s.
+- `exchange` (`crates/crpg-server/tests/host_quic.rs:144`), `mirror` (`:161`), `register` (`:170`), `settle` (`:198`), `replay` (`:701`), `three_clients` (`:813`), `lockstep_quic` (`:880`), `lockstep_memory` (`:910`), `IMPAIRED` (`:805–809`, the same 13/4/23 config).
 
 Known flakes:
 
