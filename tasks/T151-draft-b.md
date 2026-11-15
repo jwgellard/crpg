@@ -378,6 +378,28 @@ states its control and what failure looks like.
 
 ## What must not change
 
+- **Goldens**, byte for byte (none added), as T037 pins them
+  (`tasks/T037.md:1319–1330`):
+  `crpg-testkit/goldens/combat_basic_…`, `replay_basic_…`, `srd_lite_…` (both
+  targets each), `crpg-sim/tests/goldens/history_v1/v2/v3`, `movement_v1`,
+  `surface_v1` (both targets each).
+- **Every existing `crpg-godot` test file and case**, byte for byte and
+  passing: the 21 cases in `core/tests.rs`, 7 in `authority/tests.rs`, 12 in
+  `client/tests.rs`, 2 in `errors/tests.rs`, 3 in `link/tests.rs`
+  (`tasks/T151-facts.md:208–221`), plus `tests/bridge.rs` and
+  `tests/source_rules.rs` (`tasks/T151-facts.md:222–226`).
+- **Bytes and versions:** every v1, v2, v3, `0x81`, `0x82` byte a session
+  receives; checkpoint versions; `HISTORY_VERSION`; `World` and tick order
+  (`tasks/T037.md:1342–1344`).
+- **Public shapes:** every existing public item of `crpg-godot` and
+  `crpg-net`, every `Display` text, the 20-code `BridgeCode` table and
+  `is_fatal() == 50..=55`.
+- **The HUD contract:** the 14 getters the HUD may read
+  (`tasks/T151-facts.md:187`), the `load.gd` / `hud.gd` / `scene_sync.gd` /
+  `smoke.gd` exit codes (`tasks/T151-facts.md:190–198`), and the client-only
+  proxy layout (`tasks/T151-facts.md:25`).
+- **Existing-test edits: none**, in any part.
+
 ## Dependency edges
 
 ## Out of scope
