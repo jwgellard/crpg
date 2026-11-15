@@ -174,7 +174,120 @@ Design decisions this contract makes. Each needs approval with the contract.
 
 ## Interface
 
-<!-- TODO -->
+Additions only. Every public item has a doc comment (`#![warn(missing_docs)]`).
+No `HashMap`/`HashSet`, float, clock or sim state in `crpg-net-quic` (crate
+invariants 1–3, `crates/crpg-net-quic/AGENTS.md`). Bytes stay opaque: the
+lane-1 reader checks only the length prefix, never the `0xA1` payload.
+
+### T150a — `handshake.rs`, `close.rs`, `server.rs`, `client.rs`
+```rust
+// handshake.rs, after ALPN_LANE0_V2 (:16):
+/// ALPN identifier: lane framing version 3 = the `/2` channel framing on
+/// stream 1 plus the lane-1 stream and the DATAGRAM extension.
+pub const ALPN_LANE0_V3: &[u8] = b"crpg-lane0/3";
+
+// Framing gains (after V2, :74–76):
+    /// `crpg-lane0/3`: as `V2` (Lane0/Transfer/Resume channels on stream 1),
+    /// plus a second client-initiated bidi stream (lane 1) and the DATAGRAM
+    /// extension with a minimum of `MAX_MOVE_DOWN_BYTES`.
+    V3,
+// Framing::alpn (:81) returns ALPN_LANE0_V3 for V3; from_alpn (:89) matches it.
+```
+```rust
+// close.rs, after ChannelSendError (:159):
+/// Why `try_send_datagram` queued nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatagramSendError {
+    /// The peer did not negotiate DATAGRAM, or its advertised size is below
+    /// the datagram. Unreachable after the connect refusal, kept total.
+    UnsupportedByPeer,
+    /// The datagram is above the peer's advertised maximum.
+    TooLarge,
+    /// The retryable `try_send` refusal for the same frame.
+    Send(SendError),
+}
+```
+```rust
+// server.rs (QuicServer), beside try_recv_channel (:479) / try_send_channel (:549):
+    /// One lane-1 intent frame from the connection's lane-1 stream, in send
+    /// order; `None` when the queue is empty. `NotAccepted` before the hello.
+    pub fn try_recv_lane1(&mut self, conn: ConnectionId) -> Result<Option<Vec<u8>>, ServerError>;
+    /// Queues one lane-1 receipt frame on the lane-1 stream.
+    pub fn try_send_lane1(&mut self, conn: ConnectionId, bytes: &[u8]) -> Result<(), SendError>;
+    /// Queues one sample datagram; `TooLarge` above the peer's maximum,
+    /// `UnsupportedByPeer` when DATAGRAM was not negotiated (both unreachable
+    /// on an accepted `/3` connection).
+    pub fn try_send_datagram(&mut self, conn: ConnectionId, bytes: &[u8]) -> Result<(), DatagramSendError>;
+```
+```rust
+// client.rs (QuicClient), beside try_recv_channel (:386) / try_send_channel (:330):
+    /// One lane-1 receipt frame, in send order.
+    pub fn try_recv_lane1(&mut self) -> Result<Option<Vec<u8>>, CloseReason>;
+    /// Queues one lane-1 intent frame on the lane-1 stream.
+    pub fn try_send_lane1(&mut self, bytes: &[u8]) -> Result<(), SendError>;
+    /// One sample datagram, in send order; `None` when none is queued.
+    pub fn try_recv_datagram(&mut self) -> Result<Option<Vec<u8>>, CloseReason>;
+```
+
+### T150a — `tls.rs` (private), `limits.rs`
+The V3 transport parameters, reached only when `Framing::V3` is negotiated
+(the ALPN decides the config, as today
+`crates/crpg-net-quic/src/tls.rs:69–101`):
+- server (`:86–91`): `bidi_streams: 2` (was 1), `max_concurrent_uni_streams:
+  0`, `datagram_receive_buffer_size(None)`, `max_datagram_frame_size(None)`
+  (the server receives no datagram), `datagram_send_buffer_size(DATAGRAM_SEND_BUFFER_BYTES)`.
+- client (`:129–134`): `bidi_streams: 0` (unchanged),
+  `max_datagram_frame_size(Some(VarInt::from_u32(DATAGRAM_MIN_BYTES)))`,
+  `datagram_receive_buffer_size(Some(DATAGRAM_RECV_BUFFER_BYTES))`,
+  `datagram_send_buffer_size(0)`.
+
+```rust
+// limits.rs (private, beside the V1_* windows at :36–42):
+/// The datagram minimum the client advertises and the server enforces at
+/// accept: `crpg_net::movement_v4::MAX_MOVE_DOWN_BYTES`.
+const DATAGRAM_MIN_BYTES: u32 = 1_024;
+/// Server-side datagram send buffer (memory bound for samples awaiting send).
+const DATAGRAM_SEND_BUFFER_BYTES: usize = 65_536;
+/// Client-side datagram receive buffer (memory bound for samples awaiting read).
+const DATAGRAM_RECV_BUFFER_BYTES: usize = 262_144;
+const _: () = assert!(DATAGRAM_MIN_BYTES as usize == crpg_net::movement_v4::MAX_MOVE_DOWN_BYTES);
+```
+
+The lane-1 stream reuses `frame_header`/`parse_frame_header`
+(`crates/crpg-net-quic/src/handshake.rs:43–67`) with the upstream cap
+`crpg_net::protocol::MAX_INTENT_FRAME_BYTES` (4,096,
+`crates/crpg-net/src/protocol.rs:58`) and the downstream cap
+`DATAGRAM_MIN_BYTES` (1,024). Its inbound/outbound queues reuse the existing
+`QueueCaps` per connection (128 frames; `crates/crpg-net-quic/src/limits.rs:53–80`).
+
+### T150b — `quic.rs` (`crates/crpg-server/src/quic.rs`)
+```rust
+// Invitation (:76) gains, after `grants`:
+    /// What this v4 principal may learn of facts, at bind time (T037 B-1).
+    pub facts: crpg_server_fact::FactGrants,
+    /// This v4 principal's own pause rights (T037 B-1).
+    pub rights: crpg_net::protocol_v3::PauseRights,
+```
+`HostCall` (`:1`-area, the trace enum) gains, beside `BindSnapshotPeer` and
+`IngestTransfer`:
+```rust
+    /// `bind_v4_peer` for a `/3` hello naming wire version 4.
+    BindV4Peer { conn: ConnectionId, invitation: InvitationId, result: Result<PeerHandle, HostError> },
+    /// One `ingest_move` call, with its `MoveAdmission` result.
+    IngestMove { conn: ConnectionId, peer: PeerHandle, frame: u64, len: usize, result: Result<MoveAdmission, HostError> },
+    /// One `take_move_receipts` call.
+    TakeMoveReceipts { peer: PeerHandle, result: Result<usize, HostError> },
+    /// One `take_samples` call.
+    TakeSamples { peer: PeerHandle, result: Result<usize, HostError> },
+```
+`on_hello` (`:596`) gains a `Framing::V3` arm: the version check (`:619`)
+becomes framing-aware — `/3` requires `wire_version == 4`, else `VersionRefused`;
+the bind arm (`:650–659`) gains `Framing::V3 => host.bind_v4_peer(control,
+grants, facts, rights, now_ms)` and the trace `HostCall::BindV4Peer`; the
+welcome (`:689–692`) uses `session_wire(peer)` (4) as its `wire_version`.
+The `drain` phase (`:768`) reads `try_recv_lane1` and traces `HostCall::IngestMove`;
+the `deliver` phase (`:949`) writes `take_move_receipts` to `try_send_lane1`
+and `take_samples` to `try_send_datagram` (traced `TakeMoveReceipts`/`TakeSamples`).
 
 ## Behaviour
 
