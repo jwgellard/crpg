@@ -255,7 +255,79 @@ cap changes.
 
 ## Behaviour
 
-TODO (fill)
+Normative. Each item names the tests that prove it. "Refused" means the
+stated close or error and no state change. **First failure wins** in every
+list. B-1–B-8 are T150b, B-9 is T150a + T150b, B-10 is T150c.
+
+- **B-1. Lane-1 stream open order.** After `accept` writes the welcome
+  (`crates/crpg-server/src/quic.rs:687–694`), the client opens exactly one
+  additional client-initiated bidi stream; the server accepts exactly one
+  (`accept_bi` loop, `crates/crpg-net-quic/src/server.rs:936`). Lane-0
+  bytes never arrive on it and lane-1 bytes never arrive on the lane-0
+  stream. A second lane-1 open is closed with `ProtocolViolation` (2).
+  *Tests:* L1, L2.
+- **B-2. Datagram size negotiation and refusal at connect.** Both ends
+  advertise `max_datagram_frame_size`; if either side's value is below
+  `LANE1_DATAGRAM_FLOOR` (1,024), the connection closes with
+  `VersionRefused` (6) before any hello is read: no `HelloReceived`
+  event, no binding, `refused_handshakes` + 1, mirroring the
+  over-cap/hello-timeout path
+  (`docs/architecture/crpg-net-quic.md:165–177`). A floor of exactly
+  1,024 connects. *Tests:* L3, L4.
+- **B-3. Upstream order.** Lane-1 stream bytes arrive in order, exactly
+  once, while the connection lives — the same guarantee lane 0 gets from
+  QUIC (ADR-0026 item 5, `docs/adr/0026-quic-host-adapter.md:52–55`). The
+  transport never decodes intent payloads (cf. ADR-0025 item 3,
+  `docs/adr/0025-lane0-quic-mapping-and-pinned-trust.md:37–43): a
+  54-byte intent-shaped payload is opaque bytes. *Tests:* L5.
+- **B-4. Samples that do not fit never cross.** The codec emits at most
+  1,012 bytes per datagram (24 + 38 × 26, `tasks/T026p.md:607–609`); a
+  send of more than the advertised max fails at the API and nothing is
+  queued; a received datagram over the cap is impossible by QUIC framing.
+  *Tests:* L6.
+- **B-5. Late, repeated or reordered samples pass through; D23 absorbs
+  packet duplicates.** Application-level repeats are delivered (the
+  replica keeps the newest per entity, L4); QUIC-level duplicates of one
+  packet are absorbed by the widened window (effective 2049,
+  `docs/reviews/T030-quinn/README.md:14–15`) instead of dropping
+  genuinely new packets (the 129-packet bug,
+  `docs/adr/0004-quic-movement-spike.md:62–74`). *Tests:* L7.
+- **B-6. Backpressure and the lane-0 limits.** The lane-1 stream shares
+  the connection's `QueueCaps` (128 frames / 2 MiB host-wide scale,
+  `docs/architecture/crpg-net-quic.md:99–119`); `QueueFull` is retryable
+  and queues nothing. Datagram sends never stall stream sends in either
+  direction. No existing limit value moves, and the lane-0 suite's window
+  cases (T023c C§1.2–C§1.3, `docs/architecture/crpg-net-quic.md:157–159`)
+  pass unchanged. *Tests:* L8, every existing suite.
+- **B-7. Lane-0 bytes are untouched.** Framing, hello/welcome layout,
+  stream mapping, close codes and ALPN `crpg-lane0/1` behave byte for
+  byte as ADR-0025 items 1–7
+  (`docs/adr/0025-lane0-quic-mapping-and-pinned-trust.md:25–84`); a
+  lane-0-only connection advertises no DATAGRAM extension (addendum,
+  `:174–176`). *Tests:* every existing suite.
+- **B-8. Close and teardown with lane 1 open.** A `Flush` close flushes
+  the lane-1 stream first, then lane-0, and still delivers
+  `CONNECTION_CLOSE` inside `B`: stops flushing at `B − R`,
+  `R = min(200 ms, B / 4)`
+  (`crates/crpg-net-quic/src/teardown.rs:9–18`). At `B = 2,000 ms`,
+  `R = 200 ms`. `shutdown`/`Drop` close every connection with
+  `Shutdown` (`crates/crpg-net-quic/src/server.rs:703`,
+  `src/client.rs:451`). *Tests:* L9.
+- **B-9. T150a patch behaviour.** The vendored `Window` is `[u64; 32]`
+  with `WINDOW_BITS = 2048` (`docs/reviews/T030-quinn/dedup-window.patch:1–31`);
+  `Dedup` grows 32 → 264 bytes (+696 per connection, no heap,
+  `docs/reviews/T030-quinn/README.md:17`); the three rewritten unit tests
+  pass; the patch applies with `--dry-run` on top of `0001`
+  (`tasks/T023v.md:146`). *Tests:* P1.
+- **B-10. The `quic.rs` route.** A connection on the lane-1 ALPN binds by
+  `bind_v4_peer` (`tasks/T037.md:437–441`); every lane-1 stream frame is
+  offered to `ingest_move(peer, bytes, now_ms)` in arrival order with the
+  pump's injected `now_ms` (module rule,
+  `crates/crpg-server/src/quic.rs:21–26`); `take_move_receipts` bytes
+  leave on the lane-1 stream in release order; `take_samples` bytes leave
+  as datagrams; a closed connection drains received frames first, then
+  unbinds (drain-then-unbind, ADR-0026 items 9–10,
+  `docs/adr/0026-quic-host-adapter.md:73–80`). *Tests:* S1, S2.
 
 ## Errors
 
