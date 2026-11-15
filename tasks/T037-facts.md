@@ -437,6 +437,19 @@ All in `crates/crpg-nav/src/` unless stated.
 
 ## Dependency edges
 
+- **`crpg-server` row** (`tools/lint/deps.py:69`): `"crpg-server": (None,
+  {"crpg-godot", "crpg-edit"})`; `None` means every workspace crate is
+  allowed, so `crpg-nav` is allowed for `crpg-server` by the lint table, with
+  `crpg-godot` and `crpg-edit` the only exclusions (`:43`–`45`).
+- **`crpg-nav` row** (`tools/lint/deps.py:51`): `({"crpg-core"}, set())` — nav
+  may depend only on `crpg-core`; ADR-0036 H5 still asks for approval of the
+  `crpg-server`→`crpg-nav` edge at contract review
+  (`docs/adr/0036-movement-and-navigation.md:439`–`442`).
+- **`[dependencies]` today** (`crates/crpg-server/Cargo.toml:16`–`30`):
+  `crpg-core`, `crpg-net`, `crpg-net-quic`, `crpg-persist`, `crpg-sim`,
+  `serde`, `serde_json`, all path or workspace edges; no `crpg-nav`, and
+  there is no `[dev-dependencies]` section (`:30` is the last line).
+
 ## Tests and goldens that could move
 
 ## Agent log
