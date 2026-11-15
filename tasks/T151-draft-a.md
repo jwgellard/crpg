@@ -279,6 +279,105 @@ helper (`shell.rs:217`).
 
 ## Behaviour
 
+Normative. Each item names the tests that prove it. "Refused" means the stated
+error and no state change. **First failure wins** in every list.
+
+1. **B1. Session creation chooses v4.** `open` builds the host with
+   `HostConfig { protocol: ProtocolSelection::V2, incarnation: 1 }`
+   (unchanged, `crates/crpg-godot/src/core/mod.rs:301–304`) and binds the player
+   with `bind_v4_peer(ControlGrant { actors }, disclosure.clone(), FACTS, R1, 0)`
+   instead of `bind_snapshot_peer` (`:325–334`); the NPC keeps `bind_peer`
+   (`:335–338`). After open, `session_wire(player) == 4`
+   (`crates/crpg-server/src/host.rs:1195–1202`, T037 `:447–448`), the player's
+   epoch feeds `Client::new` as today (`crates/crpg-godot/src/core/mod.rs:345–349`),
+   and `replica_id` still resolves every bound entity (Reading 1). A `NotV4Peer`
+   or any bind failure is `StartFailed` (25). *Tests:* K1, K2.
+
+2. **B2. The first delivery is a snapshot then anchors, applied through the
+   pool.** The player's `take_delivery_entries` on a fresh v4 session is
+   `Transfer` (Begin), `Transfer` (Chunk), then `Delta` (T037 B1,
+   `tasks/T037.md:969–971`); `hand_off` forwards all three (Reading 2). The
+   client's first `step` offers the two `Transfer` bytes to
+   `pool.offer_transfer`, then the `Delta` to `pool.offer_delta`, and pops
+   `Snapshot` then `Delta`, applying each; the replica's `v3()` rows equal the
+   v2 session's rows (T037 B-2 `tasks/T037.md:981–990`), and `positions()` is
+   the three anchored `PositionState`s. *Tests:* K3.
+
+3. **B3. Positions reach GDScript as polled state.** After B2, `view.positions()`
+   is `3 × net_ids().len()` ints in `net_ids()` order: the raw `Fx16_16` point
+   of each disclosed position, `[0,0,0]` where none is disclosed;
+   `position_known()` is `1` per disclosed row; `moving()` is the row's route
+   flag (`crates/crpg-net/src/replica_v4.rs:30–39`). A `Position { Some }` op
+   updates the row, `Position { None }` clears it (known 0), a sample updates
+   the point and `moving` only when strictly newer (`:148–173`). No signal
+   fires; the view is read through `view()`. *Tests:* K4, K5.
+
+4. **B4. `Moved` reaches GDScript as an event.** A v4 `DeltaOp::Moved { entity,
+   points }` pushes `ViewEvent::Moved` into that revision's `events()`, with
+   `entries()` keys `kind="moved"`, `entity` (the `NetId` as `i64`), and
+   `points` (raw ints, 3 per point, in route order); the replica stores nothing
+   from it (`crates/crpg-net/src/replica_v4.rs:186`). A `DeltaOp::Position`
+   pushes no event. `DeltaOp::V3` recurses exactly as today, so
+   `ActionResolved`/`TurnStarted`/`Died`/`EncounterEnded` and v3 receipts keep
+   working. *Tests:* K6.
+
+5. **B5. A move request leaves GDScript.** `submit_move(actor, x, y, z)`
+   returns 0 and enqueues one lane-1 `MoveTo` intent: the core builds
+   `MoveOutbox::send(actor, MoveBody::MoveTo { destination: Point::new([x,y,z])
+   })`, encodes `movement_v4::encode_intent`, and sends it up the link; the next
+   authority `step` calls `ingest_move(player, bytes, now_ms)` (T037
+   `:483–484`). `halt_move(actor)` does the same for `MoveBody::Halt`. A `None`
+   from `Point::new` (a coordinate outside `COORD_LIMIT_RAW`,
+   `crates/crpg-net/src/protocol_v4.rs:38`) or a zero/negative `actor` returns 3
+   and sends nothing. `MoveOutbox::send` `Full` (8 in flight,
+   `crates/crpg-net/src/outbox_v4.rs:97–99`) returns 30. *Tests:* K7, K8.
+
+6. **B6. Accept, refuse, supersede reach GDScript.** After B5, the authority
+   `step` hands `take_move_receipts(player)` bytes to the link (Reading 2); the
+   client decodes `MoveDown::Receipt` and calls `outbox.receive`
+   (`crates/crpg-net/src/outbox_v4.rs:113`), which completes only the oldest
+   pending intent. Each completed receipt becomes a `ViewMoveReceipt` in that
+   revision's `move_receipts()` with `seq`, `accepted` (`MoveOutcome::Accepted`),
+   `superseded` (`Superseded`), and `code` (the `RejectionCode::as_u8()` for
+   `Rejected`, else 0). The view bumps at most once per poll (crate invariant
+   6). *Tests:* K9.
+
+7. **B7. Samples update positions, never fail.** The authority hands
+   `take_samples(player)` datagrams to the link; the client decodes
+   `MoveDown::Sample` and calls `replica.apply_sample` (never fails,
+   `crates/crpg-net/src/replica_v4.rs:148`), which moves `sample_clock` only to
+   a strictly newer `server_tick` and updates only disclosed, strictly-newer
+   positions. A stale, duplicated or unknown-entry datagram is ignored, not
+   fatal. *Tests:* K5.
+
+8. **B8. The lane-0 combat path keeps working on v4.** `submit_option`
+   still checks 3 → `Fenced` → 1 → 4 → 6 → 5 → send, but encodes
+   `protocol_v4::IntentFrame` with `codec_v4::encode_intent`
+   (`crates/crpg-net/src/codec_v4.rs:181`) and an `Offered.body` of
+   `protocol_v4::IntentBody` (Reading 7). A v2/v3 intent byte is never produced;
+   the v4 first byte is `4`. *Tests:* K10.
+
+9. **B9. v2/v3 and the HUD keep doing exactly what they did.** A host with the
+   NPC still on `bind_peer` (v2) and the player on v4 produces, for every
+   lane-0 script of combat intents, the same rows, names, sides, health, turn,
+   options, events and receipts in the view as today's all-v2 bridge (T037 B-2,
+   `tasks/T037.md:981–990`, restated for the bridge's own fixture). The
+   `apps/client` suite — `load.gd` E1 (`ClassDB.class_exists`, revision 1,
+   `net_ids == 2`, names), `scene_sync.gd` S1–S19, `hud.gd` H1–H19 and
+   `smoke.gd` E2/H20 — passes unchanged, because `SceneSync.gd` and
+   `CombatHud.gd` read only the existing 14 view getters
+   (`apps/client/tests/hud_cases.gd:25–33`) and the fixture never produces a
+   `Moved` or a lane-1 receipt. *Tests:* K11, K12, and every existing GDScript
+   suite re-run under the engine gates.
+
+10. **B10. Error mapping.** A frame that `codec_v4::decode_delta` refuses is
+    52; a `pool.offer_*`/`apply_*` refusal is 53; a bad `submit_move`
+    argument is 3; `MoveOutbox::send` `Full` or a full link is 30; an
+    `ingest_move`/`take_*` `HostError` maps through `host_fault`
+    (`crates/crpg-godot/src/core/errors.rs:106–110`) to 50/51. No new
+    `BridgeCode` value, `name()` text or `is_fatal` bound changes
+    (`crates/crpg-godot/src/core/errors.rs:12–91`). *Tests:* K13.
+
 ## Errors
 
 ## Tests
