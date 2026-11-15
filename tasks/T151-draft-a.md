@@ -380,7 +380,137 @@ error and no state change. **First failure wins** in every list.
 
 ## Errors
 
+No `BridgeCode` variant is added, renamed, renumbered or retexted
+(`crates/crpg-godot/src/core/errors.rs:12–91`); `is_fatal` stays exactly
+`50..=55` (`:88–90`). No new `ReplicaError` variant (T026p Errors,
+`tasks/T026p.md:1042`). New mapping table only:
+
+| Refusal | Result |
+|---|---|
+| `submit_move`/`halt_move` with zero or negative `actor` | 3 (`BAD_ARGUMENT`), nothing sent |
+| `Point::new` `None` (a coordinate outside `COORD_LIMIT_RAW`) | 3, nothing sent |
+| `MoveOutbox::send` `Full` (8 in flight) or the link is full | 30 (`INTENT_REFUSED`) |
+| v4 delta does not decode (`codec_v4::decode_delta`) | 52 (`FRAME_UNDECODABLE`) |
+| `pool.offer_transfer`/`offer_delta` or `apply_snapshot`/`apply_delta` refusal | 53 (`REPLICA_REJECTED`) |
+| `movement_v4::decode_down` failure or `outbox.receive` `Err` | 53 |
+| `ingest_move`/`take_move_receipts`/`take_samples` `HostError` | 50/51 through `host_fault` |
+
+`last_error` is `NAME` or `NAME: detail` and is never control flow
+(`crates/crpg-godot/src/core/errors.rs:4`).
+
 ## Tests
+
+Public API first, then unit cases in the named file's `#[cfg(test)]` module.
+The fixture is `campaigns/fixtures/combat_basic` (first-blood, 1 v 1:
+`Hero`/`Goblin`), opened with `("", "", 1)` unless stated; both placements stand
+at `[0,0,0]` (`campaigns/fixtures/combat_basic/areas/start/area.json`), so the
+v4 first delivery anchors both rows at raw `[0,0,0]`. v4 cases run after T037's
+host surface (`bind_v4_peer`, `ingest_move`, `take_move_receipts`,
+`take_samples`) is available; each is cited against it. `n(1)`/`n(2)` are the
+player's `NetId`s for `Hero`/`Goblin`; `P(x,y,z)` = `crpg_net::protocol_v4::Point::new([x,y,z])`
+raw.
+
+- **K1 `session_chooses_v4` (B1).** Open the fixture; through the test
+  accessors (`crates/crpg-godot/src/core/authority.rs:618–644`):
+  `session_wire(player) == Ok(4)` and `session_wire(npc) == Ok(2)`. Control: a
+  second bridge built the old way (player `bind_snapshot_peer`, NPC
+  `bind_peer`) reports `Ok(2)` for both, so the `4` is not a default. *Fails
+  if:* the player is not bound v4 or the NPC is dragged to v4.
+
+- **K2 `bind_failure_is_start_failed` (B1).** On a host whose `bind_v4_peer`
+  returns `Err(NotV4Peer)`-shaped error (a regressed `now_ms` or a ninth
+  binding), `open` returns 25 and leaves no `Live`. Control: the unmodified
+  fixture returns 0. *Fails if:* a v4 bind failure is not 25 or half-opens.
+
+- **K3 `first_delivery_snapshot_then_anchors` (B2).** After open, the player's
+  first `take_delivery_entries` is `[Transfer, Transfer, Delta]` in ordinal
+  order (T037 B1, `tasks/T037.md:969–971`); the client's first `step` applies
+  them and `view.net_ids() == [1, 2]` with `names() == ["Hero", "Goblin"]`,
+  both health `10/10`, and `position_known() == [1, 1]`. Control: the old
+  v2 bridge's first delivery is `[Delta]` only and has no positions. *Fails
+  if:* a `Transfer` entry is fenced (54) or the snapshot is not the first
+  update.
+
+- **K4 `positions_are_polled` (B3).** After K3: `positions() == [0, 0, 0, 0, 0,
+  0]` (2 rows × 3, both `[0,0,0]`), `position_known() == [1, 1]`,
+  `moving() == [0, 0]`. A crafted `DeltaOp::Position { n(2), None }` applied
+  through the pool makes `position_known() == [1, 0]` and `positions()`'s
+  second triple `[0,0,0]`. Control: `DeltaOp::Position { n(2),
+  Some(PositionFact { P(65536,0,0), true }) }` makes the second triple
+  `[65536, 0, 0]` and `moving() == [0, 1]`, so `[0,0,0]` is not a constant.
+  *Fails if:* a position is mis-sliced, withheld, or a withdrawn row still
+  reports `known 1`.
+
+- **K5 `samples_update_only_newer` (B7).** From K3, apply a `MoveSample {
+  server_tick: 1, processed_seq: 0, entries: [{ n(1), P(65536,0,0), true }] }`:
+  the first triple becomes `[65536,0,0]`, `moving() == [1,0]`, and
+  `replica.sample_clock()` is `Some({1, 0})`. Apply the same sample again
+  (duplicate, same tick): no change. Control: a sample with `server_tick: 2`
+  then one with `server_tick: 1` leaves the `2` values (strictly-newer wins).
+  *Fails if:* a sample updates an undisclosed row, moves the clock backward, or
+  fails.
+
+- **K6 `moved_is_an_event` (B4).** A crafted v4 delta `[Moved { n(1), [P(0,0,0),
+  P(32768,0,0)] }]` at the next `event_seq` produces `view.events() == [Moved {
+  entity: 1, points: [0,0,0,32768,0,0] }]` and `entries()` key `kind ==
+  "moved"`; `positions()` are unchanged (the replica stores nothing). Control:
+  a `DeltaOp::Position { n(1), Some(..) }` in the same frame pushes no event,
+  so the event is from `Moved`, not the position. *Fails if:* `Moved` is
+  dropped, mis-decoded, or stored as a position.
+
+- **K7 `submit_move_enqueues` (B5).** `submit_move(1, 1, 0, 1)` returns 0 and
+  the up-queue holds one frame whose first byte is `0xA1` and which
+  `movement_v4::decode_intent` reads as `MoveIntent { epoch, seq: 1, actor:
+  n(1), body: MoveTo { P(65536,0,65536) } }` (raw 1 m). Control:
+  `submit_move(1, COORD_LIMIT_RAW + 1, 0, 0)` returns 3 and enqueues nothing,
+  so a well-formed send is what returns 0. *Fails if:* the actor or
+  destination is mistyped, or a refused point still sends.
+
+- **K8 `halt_and_window` (B5).** `halt_move(1)` returns 0 and enqueues
+  `MoveBody::Halt` for `n(1)`. After eight `submit_move`s with no receipt
+  taken, the ninth returns 30 (`MoveOutbox::send` `Full`). Control: taking
+  eight receipts first (K9) lets the ninth return 0, so 30 is the window, not a
+  permanent error. *Fails if:* `Halt` encodes as `MoveTo`, or the window is not
+  8.
+
+- **K9 `receipts_reach_gdscript` (B6).** After K7, feed a `movement_v4::encode_down(MoveDown::Receipt(MoveReceipt { epoch, seq: 1, actor: n(1), processed_tick: 0, outcome: Accepted { start_tick: 1 } }))`
+  frame to the client: `move_receipts() == [{ seq: 1, accepted: true,
+  superseded: false, code: 0 }]` and the outbox's `processed_seq() == 1`.
+  Control: a `Rejected(RejectionCode::IllegalAction)` receipt gives
+  `accepted: false, superseded: false, code: 18`, and a `Superseded` gives
+  `superseded: true, code: 0`; each completes only the oldest pending intent.
+  *Fails if:* a receipt completes out of order, or its outcome/code is
+  mis-read.
+
+- **K10 `lane0_submits_v4` (B8).** `submit_option` of a valid option sends a
+  frame whose first byte is `4` and which `codec_v4::decode_intent` reads back
+  with `body: protocol_v4::IntentBody::EndTurn` (or `DeclareAction`). Control:
+  the pre-move bridge sent first byte `2` (`codec_v2`); a v4 session refuses
+  that byte, so the old encoder is exercised as the negative. *Fails if:* the
+  bridge still emits v2 bytes, or maps the option body to the wrong v4 variant.
+
+- **K11 `view_equals_v2_beside_v4` (B9).** For the fixture's lane-0 script
+  (open, poll, `EndTurn`, NPC strike, end), the v4 bridge's view — `net_ids`,
+  `names`, `sides`, `health`, `max_health`, `health_known`, `dead`, `active`,
+  `round`, `ended`, `option_labels`, `option_targets`, `events`, `receipts` —
+  equals the old all-v2 bridge's view field for field at every poll. Control:
+  the two bridges differ only in the three new position columns and in
+  `move_receipts`, which the v2 bridge does not have. *Fails if:* a v4 change
+  leaks into a v3/row/turn/option value.
+
+- **K12 `existing_gdscript_passes` (B9).** Under the engine gates
+  (`crates/crpg-godot/AGENTS.md:73–85`), `load.gd` exits 0, `scene_sync.gd`
+  exits 0, `hud.gd` exits 0, and `smoke.gd` exits 0 with its control exiting 3.
+  Control: the pre-move build runs the same suite green, so a red run is this
+  change's regression. *Fails if:* any existing engine test exits non-zero.
+
+- **K13 `error_mapping` (B10).** A `[0xff]` frame through the client link
+  fences 52; a `pool.offer_delta`/`apply_delta` refusal fences 53; a
+  `submit_move` with `actor 0` returns 3; the ninth unreceipted move returns 30;
+  an `ingest_move` `Err(HostError::Closed)` maps to 50. `BridgeCode::name()` and
+  `is_fatal()` are byte-identical to today (K1 of the existing errors suite).
+  Control: each bad input's otherwise-valid twin returns 0. *Fails if:* a new
+  code appears, a refusal changes state, or 52/53 are mis-assigned.
 
 ## What must not change
 
