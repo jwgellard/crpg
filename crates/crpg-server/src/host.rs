@@ -8648,4 +8648,110 @@ mod tests {
         closed.close();
         assert_eq!(throttle_of(&host, p), closed);
     }
+
+    // -- T037c: samples share the egress caps (C8) ---------------------------
+
+    /// Replaces a session's delivery log with `frames` one-byte frames, as if
+    /// the caps had let them through.
+    fn fill_log(host: &mut Host, peer: PeerHandle, frames: usize) {
+        let session = host.sessions.get_mut(&peer).expect("bound");
+        assert!(session.log.is_empty(), "drained before filling");
+        for index in 0..frames {
+            session.log.push_back(LoggedFrame {
+                ordinal: index as u64 + 1,
+                event_seq: Some(index as u64 + 1),
+                bytes: vec![0],
+            });
+        }
+        session.log_bytes = frames;
+        session.next_ordinal = frames as u64 + 1;
+        session.delivered = frames as u64;
+        host.egress_bytes = frames;
+    }
+
+    /// A drained v4 session on the turn-based fixture with `frames` logged.
+    fn v4_host_with_log(frames: usize) -> (Host, PeerHandle) {
+        let mut host = v2_host(false);
+        let peer = host
+            .bind_v4_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+            .expect("binds");
+        ack_all(&mut host, peer);
+        assert_eq!(host.egress_bytes, 0);
+        fill_log(&mut host, peer, frames);
+        (host, peer)
+    }
+
+    /// C8: sample datagrams count toward the session's egress frames and
+    /// bytes, and one that does not fit is dropped whole; taking them or
+    /// unbinding the session frees the room. A v3 session beside them counts
+    /// zero, so its checks are unchanged.
+    #[test]
+    fn c8_samples_share_egress() {
+        let (mut host, peer) = v4_host_with_log(127);
+        let caps = host.egress_caps;
+        // Two datagrams would make 129 frames: none is queued.
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(
+                session,
+                &mut host.egress_bytes,
+                &caps,
+                vec![vec![1u8; 10], vec![2u8; 10]],
+            );
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (0, 0)
+        );
+        assert_eq!(host.egress_bytes, 127);
+        // One fits exactly at 128 and is counted.
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![3u8; 10]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, 10)
+        );
+        assert_eq!(host.egress_bytes, 137);
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert!(!host.room_for(session, 1, 1));
+        }
+        // Taking the datagram frees its frame and bytes.
+        assert_eq!(host.take_samples(peer), Ok(vec![vec![3u8; 10]]));
+        assert_eq!(host.egress_bytes, 127);
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert!(host.room_for(session, 1, 1));
+        }
+        // Unbinding a session that holds a sample releases its bytes with it.
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![4u8; 7]]);
+        }
+        assert_eq!(host.egress_bytes, 134);
+        host.unbind_peer(peer);
+        assert_eq!(host.egress_bytes, 0);
+
+        // Control: a v3 session with 127 frames still has room for one more.
+        let (mut host, peer) = drained_v3_host();
+        fill_log(&mut host, peer, 127);
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.lane1_egress(), (0, 0));
+            assert!(host.room_for(session, 1, 1));
+        }
+    }
 }

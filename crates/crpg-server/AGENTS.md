@@ -56,6 +56,10 @@ T037b's additive `host` items: `HostError::NotV4Peer` and
 `Host::{bind_v4_peer, set_position_withheld}`. `V4State`, `position_rows` and
 the two outbox bounds are private in `src/host_v4.rs`.
 
+T037c's additive `host` items: `POLICY_SAMPLE_REFRESH_TICKS` and
+`Host::take_samples`. The sample queue, the lane-1 egress it counts toward
+and the two projection helpers are private in `src/host.rs` and `src/host_v4.rs`.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
@@ -355,11 +359,30 @@ git diff --check
   session alone, and an unchanged list sends no frame. A v3 session's `Moved`
   arm stays `None`.
 - **A refused v4 admission must not consume lane-0 state.** A v4 `DeclareMove`
-  is `Rejected(IllegalAction)` until T037c without touching
-  `last_combat_error`; the v4 codec refuses every other version byte with
+  is a move request whose refusals each consume exactly one lane-0 sequence
+  and log one receipt; only its step-1 turn refusal touches
+  `last_combat_error`. The v4 codec refuses every other version byte with
   `UnsupportedVersion`, and `bind_v4_peer` keeps `bind_v3_peer`'s precedence
   (`Closed`, `TimeRegression`, `InvalidGrants`, `ServerBusy`,
   `CounterExhausted`).
+- **The turn check precedes navigation (T037c).** A `DeclareMove` runs
+  `validate_action(EndTurn { actor })`, then `plan_route(.., RouteTag(seq))`,
+  then `validate_move`; reordering lets an out-of-turn player spend a query
+  and changes which error a client sees. Steps 2 and 3 leave
+  `last_combat_error` unchanged; step 1 sets it.
+- **Samples replace, never append (T037c).** Each committed tick's
+  `project_samples` result becomes the session's whole sample queue: free the
+  old queue's egress, then queue the new datagrams only if all of them fit
+  `room_for`'s room, else none. Do not append, do not keep a per-tick history,
+  and do not touch the 20-tick refresh (`POLICY_SAMPLE_REFRESH_TICKS`) or the
+  sample step runs after the tick's publication tail, so an `Invariant` there
+  still samples.
+- **Samples never enter a delivery log (T037c).** A sample is a lane-1
+  datagram: no `event_seq`, no ordinal, no reliable retry, and none of the
+  v3/v4 paging rules apply to it. It counts toward the session's lane-1 egress
+  (`V4State.egress`, beside the delivery log in `room_for` and pacing) and the
+  host's `egress_bytes`, and `take_samples` frees that room. A v1–v3 session
+  counts zero.
 
 ## Agent log
 
@@ -377,3 +400,4 @@ git diff --check
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing trap (throttled sessions lose notices and receipts, never state; gate every delta frame through `Throttle`; heartbeat only on a running tick) so the contract matches the throttle and heartbeat code.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Recorded the navigation surface (`NavBinding`, `HOST_ROUTE_TAG`, the four error variants, the seven `Host` calls), the approved `crpg-nav` edge and the four movement traps (one `plan_route`, an unpersisted mesh, tag 0, zero-event ops publish nothing), so the crate contract matches the host's navigation state.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037b · Recorded the v4 session surface (`bind_v4_peer`, `set_position_withheld`, `NotV4Peer`) and its traps (v4 as a v3 session plus state, `frame_spans` with one `event_seq` per frame and the v4 outbox bound, `Moved` under the page's position grant, and a refused `DeclareMove` consuming no lane-0 state), so the crate contract matches the v4 wire the host now speaks.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037c · Recorded `POLICY_SAMPLE_REFRESH_TICKS` and `Host::take_samples` in the surface, amended the interim `DeclareMove` trap, and added the three movement traps (the turn check precedes navigation; samples replace, never append; samples never enter a delivery log and count toward lane-1 egress), so the crate contract matches the turn-based move and the samples the host now produces.

@@ -472,8 +472,8 @@ staging page. `bind_v4_peer` is `bind_v3_peer` with the same precedence and
 errors, plus `V4State { positions: PositionView::new(SessionEpoch(epoch)),
 withheld: [] }`; `session_wire` is `4`. Lane-0 intents decode with
 `codec_v4::decode_intent` and are cached as `codec_v4::encode_intent` bytes; a
-decoded `DeclareMove` resolves its actor like any other v4 intent and is then
-`Rejected(IllegalAction)` until T037c replaces it. A v1/v2/v3 intent body maps
+decoded `DeclareMove` resolves its actor like any other v4 intent and is a
+move request (T037c). A v1/v2/v3 intent body maps
 into the v4 vocabulary in one `Frame`, so the pipeline below `decode` has one
 shape.
 
@@ -516,6 +516,60 @@ shape.
 - **Older wires unchanged (B-9).** A v1, v2 or v3 session has no `V4State`,
   receives no `Position` or `Moved` op and keeps byte-identical entries and
   capture views whether or not a v4 session shares the host.
+
+## The turn-based move and samples (T037c)
+
+`DeclareMove` is the turn-based player's move on lane 0 (H3, HM-9), and every
+committed tick publishes each v4 session's movement samples (H4, HM-5).
+Neither changes a v1–v3 session's bytes.
+
+- **Resolution and class (Readings 19).** A v4 `DeclareMove { destination }`
+  resolves its actor exactly as T141 D-2 (`InterestView`, `present &&
+  action_actor`, the control list; else `Rejected(NotAuthorized)`), then is a
+  move request for that actor with the raw `Fx16_16` destination. The class
+  checks run in order: `validate_action(EndTurn { actor })` (a refusal is
+  `code(e)` and sets `last_combat_error`), `plan_route(.., RouteTag(seq))`
+  (any refusal is `IllegalAction`, `last_combat_error` unchanged), then
+  `validate_move` (`Combat(e)` as the turn error, any other `MoveError`
+  `IllegalAction`). The turn check precedes navigation on purpose: an
+  out-of-turn player gets the turn error, not a spent query. Every terminal
+  refusal goes through the ordinary `reject` path, so the sequence is
+  consumed and one receipt is logged; lane 0's own rate window still applies
+  and the lane-1 per-window query cap does not.
+- **Execution (C-3).** An accepted move reserves the accepted class, runs
+  `history.perform_move` and ends in `commit_accepted` with evidence
+  `CombatAction::Stop { actor }` and no returned outcome: the
+  `CapturedRecord` carries `outcome: None` and the one `Moved` envelope,
+  `executions()` moves by one, the retry cache takes the lane-0 entry, and
+  every v3/v4 session gets its page (v1/v2 sessions get the permitted legacy
+  state ops only; `Moved` has no v2 form). The retry and dedup rules are lane
+  0's: identical bytes never move twice.
+- **Samples (C-5).** After every committed tick — `tick` step 4 and
+  `advance`'s tick, whether the record/publication tail returned `Ok` or an
+  `Invariant` — every v4 session, ascending by handle, computes
+  `position_rows` and `project_samples(view, positions, rows, refresh)` with
+  `refresh = server_tick % POLICY_SAMPLE_REFRESH_TICKS == 0` (20 ticks, one
+  second at 20 Hz), then `movement_v4::sample_datagrams(server_tick,
+  processed_seq, &entries)` (0 until T037d's lane). The queue **replaces**
+  the previous tick's datagrams: the old ones are discarded and their egress
+  freed first, and the new ones are queued only if all of them fit the
+  session's egress room; otherwise none is (datagram loss, repaired by the
+  next change or refresh). Only positions the viewer was anchored are
+  sampled, and a withheld or ungranted row is skipped, so revocation is
+  immediate. Samples never enter the delivery log and consume no
+  `event_seq`; a refused tick, a paused `advance` and every other operation
+  produce none.
+- **Reading them (C-6).** `take_samples(peer)` checks `UnknownPeer` then
+  `NotV4Peer` and returns the queue, emptying it and freeing its egress; a
+  closed host has no sessions, so it is `UnknownPeer`.
+- **Lane-1 egress (C-7, Reading 23).** `V4State.egress` counts the session's
+  lane-1 frames and bytes — its sample datagrams now, and receipts and
+  admission reservations from T037d — and the host's `egress_bytes` includes
+  those bytes. `room_for` and `pace_session` test `log.len() + lane1_frames`
+  and `log_bytes + lane1_bytes`; a v1–v3 session counts zero, so its checks
+  are unchanged. A fence, `unbind_peer` and `shutdown` release lane-1 egress
+  with the session. Lane 1 never fails on those caps after admission, and
+  taking a sample frees its room.
 
 ## Connections and bindings (T023b)
 
@@ -715,3 +769,4 @@ with T040/T041.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing section (the running-host `Clock` heartbeat and the in-flight throttle with its frame and byte budget, receipts and notices dropped during a download), so the doc matches the throttle and heartbeat the host now has.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Added the navigation and trusted movement section (binding steps, the one `plan_route`, `HOST_ROUTE_TAG`, the four trusted ops and their error order) and the `crpg-nav` edge to the diagram and edge paragraph, so the doc describes the mesh the host now keeps instead of a host with no navigation.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037b · Added the protocol v4 session section (v4 as a v3 session plus `V4State`, v4 lane-0 codec and receipts, `position_rows` and the withheld list, v4 pages and `Moved`, the anchoring staging page with its 94-entry/2,880,916-byte outbox bound, and the untouched v1–v3 wires), so the doc describes the v4 sessions the host now binds.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037c · Added "The turn-based move and samples (T037c)" (the resolution and class order, the `commit_accepted` execution, the per-tick samples with their 20-tick refresh and replacement queue, `take_samples`, and lane-1 egress in `room_for`/pacing) and amended the T037b note that `DeclareMove` was a placeholder rejection, so the doc describes the move and the samples the host now produces.
