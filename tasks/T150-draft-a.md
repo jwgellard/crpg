@@ -525,7 +525,35 @@ the largest sample 1,012 (24 + 38 × 26), and `DATAGRAM_MIN_BYTES` = 1,024.
 
 ## What must not change
 
-<!-- TODO -->
+- **Goldens**, byte for byte (none is added; the lane-1 transport writes no
+  hash golden):
+  - `crates/crpg-testkit/goldens/{combat_basic,replay_basic,srd_lite}_rust-1.98.0_{x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu}_test-default.golden`
+  - `crates/crpg-sim/tests/goldens/history_v1.*`, `history_v2.*`,
+    `history_v3.*`, `movement_v1.*`, `surface_v1.*` (two targets each)
+- **Every existing `crpg-net-quic` suite**, byte for byte and passing:
+  `tests/quic.rs` (32 cases), `tests/quic_gaps.rs`, `tests/channel.rs` (21
+  cases), `tests/close_budget.rs`, and every `#[cfg(test)]` case in `src/`.
+  The `datagrams_and_connection_limit_fail_closed` case
+  (`crates/crpg-net-quic/tests/quic.rs:1652`) keeps pinning `/1`//`/2` as
+  datagram-off; only `/3` enables them.
+- **Every existing `crpg-server` test file** byte for byte and passing, and
+  the frozen sources `quic.rs`'s pre-T150 paths, `save.rs`, `main.rs`,
+  `capture.rs`, `checkpoint.rs` (their lane-0 behaviour). T150b is additive
+  to `quic.rs`.
+- **Bytes and versions:** every v1, v2, v3, `0x81`, `0x82` byte a session
+  receives; `CloseCode` 0–9 and their names; the `/1` and `/2` ALPNs and
+  their stream mapping; the lane-1 wire bytes fixed by T026p
+  (`0xA1` intents, receipts, samples); the T037 host surface
+  (`bind_v4_peer`, `ingest_move`, `take_move_receipts`, `take_samples`); the
+  `MovementCodec`/`movement_v4` codec and every `crpg-net` type.
+- **Public shapes:** every existing public item of `crpg-net-quic` and
+  `crpg-server`, including `Framing::V1`/`V2`, `Channel`, `SendError`,
+  `ServerError`, `HostCall`, `DeliveryKind`, `QuicPumpReport`, `Invitation`
+  (its existing fields), and every `Display` text.
+- **Vendoring:** `0001-send-connection-close-when-congestion-blocked.patch`
+  and its effect (case 28 must keep passing); the `[patch.crates-io]` table
+  already in the root `Cargo.toml` (`Cargo.toml:33–42`) is not re-pointed.
+- **Existing-test edits: none**, in either part.
 
 ## Dependency edges
 
