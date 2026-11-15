@@ -76,7 +76,44 @@ yet written; its items are cited as the future surface and marked so.
 
 ## The bridge today
 
-(section pending)
+**Modules in `crates/crpg-godot/src/`**
+
+- `lib.rs` (`crates/crpg-godot/src/lib.rs:1`) — crate root: `#![allow(unsafe_code)]` for macro expansion, `#![warn(missing_docs)]`, `pub mod core` (`:12`), and `#[cfg(feature = "engine")] mod shell` (`:14–15`).
+- `core/mod.rs` (`crates/crpg-godot/src/core/mod.rs:1`) — `#![forbid(unsafe_code)]`; private `authority`, `client`, `errors`, `link` (`:8–11`); re-exports `SessionView`, `ViewEvent`, `ViewReceipt`, `ViewValue`, `BridgeCode` (`:33–34`); `BridgeCore` holds `State { Closed, Open(Box<Live>), Fenced }` (`:48–56`) and `Live { authority, client, link }` (`:59–65`).
+- `core/errors.rs` (`crates/crpg-godot/src/core/errors.rs:1`) — the closed `BridgeCode` table (`:12–53`), `name()` (`:62`), `is_fatal()` exactly `50..=55` (`:88–90`), `Fault` (`:95`), and `host_fault` (`:106`).
+- `core/link.rs` (`crates/crpg-godot/src/core/link.rs:1`) — `LocalLink` is two `Rc<RefCell<VecDeque<Vec<u8>>>>` queues (`:19–26`), `LINK_FRAMES = POLICY_EGRESS_FRAMES_PER_PEER` (`:17`), `authority_end`/`client_end` (`:50`, `:59`), and `Transport` for `LinkEnd` where a full queue is `LinkFull` and changes nothing (`:77–84`).
+- `core/client.rs` (`crates/crpg-godot/src/core/client.rs:1`) — `SessionView` with 16 members (`:28–45`), `Client::new` builds `ReplicaWorld::new(epoch)` (`:292`), `step` drains the link, decodes and applies, collects events/receipts (`:313–330`), `submit` encodes one intent (`:491`, `:523`).
+- `core/authority.rs` (`crates/crpg-godot/src/core/authority.rs:1`) — the campaign walk (`WalkFs`/`RealFs`/`collect_campaign`), `check_binding`, `Presentation`, `Authority` (`:462–474`), `hand_off` (`:55`), `npc_results` (`:83`), `choose_npc` (`:34`), `NpcPacer` (`:112`), and the open helpers.
+- `core/tests.rs` and `core/{authority,client,errors,link}/tests.rs` (`crates/crpg-godot/src/core/tests.rs:1`) — `#[cfg(test)]` suites: 21 cases in `core/tests.rs`, 7 in `authority/tests.rs`, 12 in `client/tests.rs`, 2 in `errors/tests.rs`, 3 in `link/tests.rs`.
+- `shell.rs` (`crates/crpg-godot/src/shell.rs:1`) — the gdext shell, compiled only with `engine`; `unsafe impl ExtensionLibrary` at `:26` under the `SAFETY:` block at `:19–24`.
+
+**How `link.rs`, `client.rs` and `authority.rs` use a reassembly pool and replica world**
+
+- `core/link.rs` (`crates/crpg-godot/src/core/link.rs:22–33`) — no reassembly pool and no replica: it stores whole `Vec<u8>` frames in two FIFOs and implements only `Transport`; `recv` returns `Option<Vec<u8>>` (`:86–88`).
+- `ReassemblyPool*` in `crates/crpg-godot` — none found: a search for `Reassembly`, `Pool` and `pool` over the crate returns no match, because a `DeliveryKind::Transfer` entry is a fatal fence instead (`crates/crpg-godot/src/core/authority.rs:62–67`).
+- `core/client.rs` (`crates/crpg-godot/src/core/client.rs:18`) — the client half holds one `crpg_net::replica::ReplicaWorld` (the v2 replica, `crates/crpg-net/src/replica.rs:121`), built at `:292`; it decodes with `crpg_net::codec_v2::decode_delta` (`:12`, `:322`), applies with `ReplicaWorld::apply_delta` (`:326`), and reads `entities()`/`turn()` to rebuild the view (`:398–438`). It submits with `codec_v2::encode_intent` (`:12`, `:523`).
+- `core/authority.rs` (`crates/crpg-godot/src/core/authority.rs:20–23`) — the trusted half owns the `Host`, both `PeerHandle`s and a `LinkEnd`; it calls `host.ingest` (`:513`, `:548`), `legal_intents` (`:525`, `:603`), `pump` (`:567`), `take_delivery_entries` (`:577`), `acknowledge_delivery` (`:581`, `:590`), `last_capture`/`acknowledge_captures` (`:595–597`).
+- `ProtocolSelection::V2` (`crates/crpg-godot/src/core/mod.rs:302`) — `Host::from_history` is called with `HostConfig { protocol: ProtocolSelection::V2, incarnation: 1 }`, so every session the bridge opens today is a v2 session; the link therefore carries v2 deltas and v2 intents (`crates/crpg-godot/src/core/client.rs:12–18`).
+
+**The `HostError` mapping**
+
+- `host_fault` (`crates/crpg-godot/src/core/errors.rs:106–110`) — `HostError::Closed` maps to `BridgeCode::HostClosed` (50) and every other `HostError` to `HostFailed` (51) through the wildcard arm; `error.to_string()` becomes `Fault::detail`.
+
+**The exhaustive `DeliveryKind` match**
+
+- `hand_off` (`crates/crpg-godot/src/core/authority.rs:61–75`) — matches `DeliveryKind::Transfer` (fatal `UnexpectedTransfer` 54 with the ordinal in the detail) and `DeliveryKind::Delta` (sends; a `LinkFull` breaks the loop), with no wildcard arm, so a new variant is a compile error.
+
+**GDExtension-exposed classes and their methods**
+
+- `CrpgSession` (`crates/crpg-godot/src/shell.rs:29–34`) — `#[derive(GodotClass)]`, `#[class(base = RefCounted, init)]`, holding `core: BridgeCore` and `opened_at: Option<Instant>`.
+- `CrpgSession` methods (`crates/crpg-godot/src/shell.rs:39–92`) — `#[func] open(campaign_dir, encounter_id, player_side, seed) -> i64` (`:39`), `poll() -> i64` (`:61`), `view() -> Gd<CrpgView>` (`:70`), `submit_option(revision, index) -> i64` (`:78`), `close()` (`:84`), `last_error() -> GString` (`:91`).
+- `CrpgView` (`crates/crpg-godot/src/shell.rs:98–104`) — `#[derive(GodotClass)]` with `no_init`, wrapping one `Rc<SessionView>`.
+- `CrpgView` methods (`crates/crpg-godot/src/shell.rs:107–202`) — 16 `#[func]` getters: `revision`, `net_ids`, `names`, `sides`, `placements`, `health`, `max_health`, `health_known`, `dead`, `active`, `round`, `ended`, `option_labels`, `option_targets`, `events`, `receipts` (the last two at `:191`/`:201`). No position getter exists.
+- Classes present (`crates/crpg-godot/src/shell.rs:17`) — `CrpgExtension`; `ClassDB.class_exists("CrpgSession")` is the load proof used by the tests (`apps/client/tests/load.gd:18`).
+
+**The `engine` feature**
+
+- `engine = ["dep:godot"]` (`crates/crpg-godot/Cargo.toml:10–11`) — off by default; `godot = { version = "=0.5.5", optional = true, features = ["api-4-7"] }` (`:19`); `[lib] crate-type = ["cdylib", "rlib"]` (`:7–8`).
 
 ## The v4 client types in crpg-net
 
