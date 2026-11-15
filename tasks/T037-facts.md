@@ -386,6 +386,55 @@ All in `crates/crpg-sim/src/`.
 
 ## Navigation to call
 
+All in `crates/crpg-nav/src/` unless stated.
+
+- **`bake_box`** (`bake.rs:89`): `(y: Fx16_16, outer: NavRect, holes:
+  &[NavRect]) -> Result<NavMesh, BakeError>`; sorts the distinct `x`/`z` edges
+  of the outer rectangle and holes, and emits every uncovered cell as one
+  unmerged 4-vertex rectangle (`:84`–`88`). `NavRect` (`:15`) holds `min_x`,
+  `min_z`, `max_x`, `max_z`; `MAX_BAKE_HOLES = 32` (`:11`).
+- **`BakeError`** (`bake.rs:35`): `TooManyHoles { count }`, `OutOfBounds`,
+  `EmptyOuter`, `EmptyHole { hole }`, `HoleOutside { hole }`,
+  `NoWalkableArea`, `Mesh(NavMeshError)`, checked in that order (`:33`).
+- **`NavMesh::to_canonical_bytes`** (`mesh.rs:310`): `(&self) -> Vec<u8>`;
+  `NAV_MAGIC` `CNAV` (`lib.rs:37`), `NAV_FORMAT_VERSION = 1` (`lib.rs:39`),
+  then vertex count, polygon count, vertices, polygons (`:309`–`328`).
+- **`NavMesh::from_canonical_bytes`** (`mesh.rs:331`): `(&[u8]) ->
+  Result<NavMesh, NavDecodeError>`; `NavDecodeError` (`:103`) is
+  `Truncated`, `BadMagic`, `UnsupportedVersion { version }`,
+  `TrailingBytes`, `Invalid(NavMeshError)`.
+- **`NavMesh`** (`mesh.rs:36`, fields private): `polygon(id)` (`:294`),
+  `polygon_y(id)` (`:299`), `neighbours(id)` (`:305`); `PolyId(pub u32)`
+  (`:32`); `NavMeshError` (`:44`).
+- **`NavRevision::of_bytes`: none found in `crates/crpg-nav/src/`** (no
+  `NavRevision` in the crate). The type is `crates/crpg-sim/src/movement.rs:51`
+  and `of_bytes` (`blake3::hash`) is `movement.rs:55`; nav supplies only
+  `to_canonical_bytes`.
+- **`snap`: none found in `crates/crpg-nav/src/`.** `snap(measure, point)` is
+  `crates/crpg-sim/src/movement.rs:384`, the identity for `Euclidean`.
+- **`nearest_on_mesh`** (`query.rs:92`): `(&self, p: [Fx16_16; 3]) ->
+  [Fx16_16; 3]`; on the mesh it returns `p` at the polygon's `y`, off it the
+  nearest edge candidate with the lowest polygon id, then lowest edge index,
+  winning a tie, so `locate` of the answer is `Some` (`:87`–`91`).
+- **`locate`** (`query.rs:80`): `(&self, p) -> Option<PolyId>`, the lowest
+  polygon containing `p` in `x`/`z`, boundary included (`:79`).
+- **`find_path`** (`path.rs:203`): `(&self, from: [Fx16_16; 3], to:
+  [Fx16_16; 3]) -> Result<NavPath, NavError>`; A* over polygons then an
+  integer funnel; the path starts at `from`, ends at `to` in `x`/`z` with the
+  goal polygon's height, and shortest paths are not promised (`:198`–`202`).
+- **`NavPath`** (`path.rs:15`): `points()` (`:22`), `into_points()` (`:27`,
+  "the host copies them into `MoveRoute`"), `length()` (`:32`); at least two
+  points and no zero-length segment (`:13`).
+- **`NavError`** (`path.rs:39`): `StartOffMesh`, `GoalOffMesh`,
+  `AlreadyThere`, `Unreachable`, `PathTooComplex { points }`, `TooLong {
+  length }`, checked in declaration order (`:37`).
+- **Limits** (`lib.rs:25`–`29`): `COORD_LIMIT_RAW: i32 = 1 << 29`,
+  `MAX_PATH_POINTS = 64`, `MAX_PATH_LENGTH_RAW: u64 = 1 << 28` — the same
+  values as sim's `COORD_LIMIT_RAW`, `MAX_ROUTE_POINTS`,
+  `MAX_ROUTE_LENGTH_RAW` (`crates/crpg-sim/src/movement.rs:43`–`47`).
+- **Dependencies** (`lib.rs:9`–`10`): "the only dependency is `crpg-core`";
+  no float anywhere (ADR-0036 V7).
+
 ## Dependency edges
 
 ## Tests and goldens that could move
