@@ -374,6 +374,67 @@ B-22. A host that never calls `load_area`, `decide_move_to`,
 
 ## Tests
 
+### Part 1 — area load
+- `area_load_bakes_revision` (control: 4x4 m box, one mover on the mesh at
+  `(0,0,0)`). Expects `load_area` returns `Some(rev)` and
+  `world.nav() == Some(rev)`; `rev == NavRevision::of_bytes(mesh.to_canonical_bytes())`.
+  Fails if the revision is computed before canonicalisation or bind is skipped.
+- `area_load_places_off_mesh_mover` (control: mover at `(100,0,100)` m off a
+  4x4 mesh). Expects `mover.position()` equals `nearest_on_mesh((100,0,100))`
+  and no route. Fails if `place` is skipped or the mover keeps its old position.
+- `area_load_clears_routes_on_rebake` (control: two movers with routes, reload
+  the same area). Expects `bind_nav` returns both cleared tags ascending and
+  both movers have `route() == None`. Fails if a rebake leaves a stale route.
+- `h5_constants_equal` (compile-time). Fails if any of the five asserts
+  in §Interface is removed.
+
+### Part 2 — decisions
+- `move_to_accepted_start_tick` (control: mover at origin, destination
+  `(1,0,0)` m, tick 7). Expects `MoveDecision::Accepted { start_tick: 8 }`
+  and `mover.route().is_some()` with `points[0] == origin`. Fails if
+  `start_tick` is `t` or `t + 2`.
+- `move_to_supersedes_same_actor` (control: two `MoveTo` for the same actor
+  queued in one tick). Expects the first returns `Accepted`, the second
+  `Superseded`, and exactly one `find_path` call. Fails if both run A*.
+- `move_to_rejects_off_mesh_goal` (control: destination 100 m off the mesh).
+  Expects `Rejected(IllegalAction)` and `route() == None`. Fails if a
+  `NavError` leaks as a host error.
+- `declare_move_spends_pool` (control: turn-based actor with pool 10, route
+  cost 3). Expects `MoveDecision::Accepted`, pool == 7,
+  `HistoryEvent::Moved` committed, turn retained. Fails if the turn ends or
+  the pool is not spent.
+- `declare_move_wrong_mode_rt` (control: real-time participant). Expects
+  `Rejected(WrongMode)`. Fails if `perform_move` runs in RT.
+- `control_check_first` (control: peer without control). Expects
+  `Rejected(NotAuthorized)` and no nav query. Fails if the gate runs first.
+
+### Part 3 — lane-1 and delivery
+- `lane1_admission_nine_steps` (control: a `SeqConflict` byte difference).
+  Expects step 3 refuses before freshness or mapping; receipt `Rejected(SeqConflict)`.
+  Fails if a later step runs.
+- `lane1_aggregates_shared` (control: 41 intents in one second). Expects the
+  41st returns `Rejected(RateLimited)` from `intent_frames`, not a new bucket.
+  Fails if lane-1 has its own bucket.
+- `lane1_receipt_processed_tick` (control: decision at tick 5). Expects
+  `MoveReceipt.processed_tick == 5` and `Accepted { start_tick: 6 }`.
+- `sample_refresh_at_interval` (control: stationary mover, ticks 0..6, refresh
+  4). Expects datagrams at ticks 0 and 4 only; tick 4's entry equals the
+  mover's position. Fails if a sample is sent every tick or the interval is
+  ignored.
+- `sample_moved_every_tick` (control: mover walking, ticks 0..3). Expects a
+  datagram each tick containing that entity. Fails if only refresh ticks send.
+- `moved_candidate_disclosure` (control: two viewers, one granted position).
+  Expects the granted viewer's page contains `DeltaOp::Moved`; the other's
+  does not. Fails if `disclose` is ignored.
+- `moved_candidate_omitted_on_bad_points` (control: `Moved` with 1 point).
+  Expects the candidate produces no op. Fails if `check_points` is skipped.
+- `position_row_granted_bit` (control: granted false). Expects no
+  `Position` op and no sample entry, regardless of point. Fails if a
+  withheld row leaks.
+- `v3_byte_identical_without_movement` (control: T141 host test fixture).
+  Expects `authority_hash` and checkpoint bytes unchanged. Fails if any
+  movement code path runs for a host that never calls the new methods.
+
 ## What must not change
 
 ## Out of scope
