@@ -9,6 +9,12 @@
 //! [`position_rows`] is HM-6 (B-4): one row per disclosed, present, live
 //! mover, `granted` exactly when the operator has not withheld that entity's
 //! position from this viewer. Nothing here reads a clock or mints an id.
+//!
+//! T037c adds the session's sample datagrams and the lane-1 egress they count
+//! toward (Reading 23): the queue replaces, never appends (C-5), and a frame
+//! or byte in it is one of the session's egress frames and bytes.
+
+use std::collections::VecDeque;
 
 use crpg_core::EntityId;
 use crpg_net::positions_v4::PositionRow;
@@ -39,6 +45,13 @@ pub(crate) struct V4State {
     /// Entities whose position this viewer is not told (Reading 16);
     /// ascending and unique.
     pub(crate) withheld: Vec<EntityId>,
+    /// The sample datagrams of the last committed tick not yet taken (C-5);
+    /// a new tick replaces them.
+    pub(crate) samples: VecDeque<Vec<u8>>,
+    /// The session's lane-1 egress: frames and encoded bytes counted beside
+    /// its delivery log (C-7, Reading 23). T037c counts samples; T037d adds
+    /// receipts and reservations.
+    pub(crate) egress: (usize, usize),
 }
 
 /// B-4 (HM-6): one row per granted, present, live mover, in the disclosure

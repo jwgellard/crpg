@@ -39,7 +39,8 @@ use crpg_net::facts_v3::{
     HostInput,
 };
 use crpg_net::interest::{EntityKey, InterestView};
-use crpg_net::positions_v4::{project_page_v4, project_snapshot_v4, PositionView};
+use crpg_net::movement_v4;
+use crpg_net::positions_v4::{project_page_v4, project_samples, project_snapshot_v4, PositionView};
 use crpg_net::projection_v2::{project_events, EventCandidate};
 use crpg_net::projection_v3::{
     project_events as project_events_v3, EventCandidate as EventCandidateV3,
@@ -111,6 +112,10 @@ pub const MAX_PEERS: usize = POLICY_PROOF_PEERS;
 /// never collides with it. It is hashed with the route, so it must be
 /// deterministic; a host counter would not survive a checkpoint.
 pub const HOST_ROUTE_TAG: RouteTag = RouteTag(0);
+
+/// Ticks between full position refreshes in samples (ADR-0036 H4, Reading
+/// 20; T037c). One second at 20 Hz (spec §2.5). Policy, never wire.
+pub const POLICY_SAMPLE_REFRESH_TICKS: u64 = 20;
 
 /// Segments packed into each snapshot-transfer chunk (S§7). Every valid v1
 /// body fits in one chunk, so a transfer is one `Begin` plus one `Chunk`.
@@ -699,6 +704,15 @@ impl Session {
     fn last_event_seq(&self) -> u64 {
         self.next_event_seq - 1
     }
+
+    /// The session's lane-1 egress, `(frames, bytes)` (C-7): samples now, and
+    /// from T037d receipts and reservations. A v1–v3 session counts zero.
+    fn lane1_egress(&self) -> (usize, usize) {
+        self.v3
+            .as_ref()
+            .and_then(|v3| v3.v4.as_ref())
+            .map_or((0, 0), |v4| v4.egress)
+    }
 }
 
 /// How an armed turn timer counts (B-9).
@@ -765,6 +779,8 @@ enum Intent {
     Unpause,
     /// `RequestMode`: needs the `pause` right.
     Mode(EncounterMode),
+    /// `DeclareMove`: a turn-based move to the raw destination (C-1).
+    Move([Fx16_16; 3]),
 }
 
 /// An intent resolved against one session: the acting entity and the request.
@@ -1271,6 +1287,8 @@ impl Host {
         v3.v4 = Some(Box::new(V4State {
             positions: PositionView::new(SessionEpoch(epoch)),
             withheld: Vec::new(),
+            samples: VecDeque::new(),
+            egress: (0, 0),
         }));
         session.v3 = Some(Box::new(v3));
         let stage = self.plan_stage(&session, &session.grants, SnapshotCause::Resync)?;
@@ -1402,7 +1420,9 @@ impl Host {
 
     fn fence(&mut self, peer: PeerHandle) {
         if let Some(session) = self.sessions.remove(&peer) {
-            self.egress_bytes -= session.log_bytes;
+            // A fence releases the session's lane-1 egress with it (C-7).
+            let (_, lane1_bytes) = session.lane1_egress();
+            self.egress_bytes -= session.log_bytes + lane1_bytes;
         }
     }
 
@@ -1860,6 +1880,37 @@ impl Host {
                 terminal = Some((refusal_code(v3, &error), Some(error)));
             }
         }
+        // C-2 (Reading 19): a `DeclareMove` checks the turn, then plans its
+        // route, then validates the move; steps 2 and 3 leave
+        // `last_combat_error` unchanged. Only an accepted class reaches the
+        // reservation with the route kept for execution.
+        let mut move_route: Option<MoveRoute> = None;
+        if let Some(Resolved {
+            actor,
+            intent: Intent::Move(destination),
+        }) = &resolved
+        {
+            let actor = *actor;
+            match validate_action(self.history.world(), &CombatAction::EndTurn { actor }) {
+                Err(error) => terminal = Some((code(&error), Some(error))),
+                Ok(()) => match plan_route(
+                    self.nav.as_ref(),
+                    self.history.world(),
+                    actor,
+                    *destination,
+                    RouteTag(frame.seq),
+                ) {
+                    Err(_) => terminal = Some((CodeV3::IllegalAction, None)),
+                    Ok(route) => match validate_move(self.history.world(), actor, &route) {
+                        Err(MoveError::Combat(error)) => {
+                            terminal = Some((code(&error), Some(error)))
+                        }
+                        Err(_) => terminal = Some((CodeV3::IllegalAction, None)),
+                        Ok(_) => move_route = Some(route),
+                    },
+                },
+            }
+        }
         // 6. Reservation, then 7–8 execution and commit.
         match (terminal, resolved) {
             (Some((code, error)), _) => {
@@ -1916,6 +1967,40 @@ impl Host {
                         }
                         Err(_) => return Ok(Step::Blocked),
                     },
+                    // C-3: an accepted turn-based move pays, journals its one
+                    // `Moved` and clears the route; the record carries no
+                    // returned outcome (`capture_outcome(None, ..)`).
+                    Intent::Move(_) => {
+                        let route = move_route.expect("a checked move keeps its route");
+                        match self.history.perform_move(resolved.actor, &route) {
+                            Ok(_) => None,
+                            Err(HistoryError::Move(MoveError::Combat(error))) => {
+                                let code = code(&error);
+                                return self.reject(
+                                    peer,
+                                    &frame,
+                                    canonical,
+                                    code,
+                                    Some(error),
+                                    now_ms,
+                                    false,
+                                );
+                            }
+                            Err(HistoryError::Move(_)) => {
+                                return self.reject(
+                                    peer,
+                                    &frame,
+                                    canonical,
+                                    CodeV3::IllegalAction,
+                                    None,
+                                    now_ms,
+                                    false,
+                                );
+                            }
+                            // Sim capacity failures commit nothing: retryable.
+                            Err(_) => return Ok(Step::Blocked),
+                        }
+                    }
                     // Pause and unpause cannot fail (D-5).
                     Intent::Pause => {
                         if self.paused.is_none() {
@@ -2443,10 +2528,13 @@ impl Host {
     }
 
     /// Check-only egress room for `count` frames of `bytes` encoded bytes.
+    /// A v4 session's lane-1 frames and bytes count beside its delivery log
+    /// (C-7, Reading 23); a v1–v3 session counts zero.
     fn room_for(&self, session: &Session, count: usize, bytes: usize) -> bool {
         let caps = self.egress_caps;
-        session.log.len() + count <= caps.per_peer_frames
-            && session.log_bytes + bytes <= caps.per_peer_bytes
+        let (lane1_frames, lane1_bytes) = session.lane1_egress();
+        session.log.len() + lane1_frames + count <= caps.per_peer_frames
+            && session.log_bytes + lane1_bytes + bytes <= caps.per_peer_bytes
             && self.egress_bytes + bytes <= caps.host_bytes
     }
 
@@ -2540,8 +2628,8 @@ impl Host {
             if count as u64 > ordinal_room {
                 return Err(HostError::CounterExhausted);
             }
-            if count > caps.per_peer_frames
-                || bytes > caps.per_peer_bytes
+            if count + session.lane1_egress().0 > caps.per_peer_frames
+                || bytes + session.lane1_egress().1 > caps.per_peer_bytes
                 || self.egress_bytes - session.log_bytes + bytes > caps.host_bytes
             {
                 return Err(HostError::QueueFull);
@@ -3457,6 +3545,61 @@ impl Host {
         }))
     }
 
+    // -- samples (T037c) -----------------------------------------------------
+
+    /// The sample datagrams of the last committed tick not yet taken (C-6).
+    ///
+    /// Precedence: [`UnknownPeer`](HostError::UnknownPeer), then
+    /// [`NotV4Peer`](HostError::NotV4Peer); taking them empties the queue and
+    /// frees its egress. A closed host has no sessions, so it is
+    /// `UnknownPeer`.
+    pub fn take_samples(&mut self, peer: PeerHandle) -> Result<Vec<Vec<u8>>, HostError> {
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        if !session.v3.as_ref().is_some_and(|v3| v3.v4.is_some()) {
+            return Err(HostError::NotV4Peer);
+        }
+        let session = self.sessions.get_mut(&peer).expect("checked above");
+        let v4 = session
+            .v3
+            .as_mut()
+            .and_then(|v3| v3.v4.as_mut())
+            .expect("checked above");
+        let frames = v4.samples.len();
+        let bytes: usize = v4.samples.iter().map(Vec::len).sum();
+        let taken: Vec<Vec<u8>> = v4.samples.drain(..).collect();
+        v4.egress = (
+            v4.egress.0.saturating_sub(frames),
+            v4.egress.1.saturating_sub(bytes),
+        );
+        self.egress_bytes -= bytes;
+        Ok(taken)
+    }
+
+    /// C-5: after one committed tick, every v4 session's sample queue becomes
+    /// this tick's datagrams, refreshed every
+    /// [`POLICY_SAMPLE_REFRESH_TICKS`] ticks. A projection failure empties the
+    /// queue (unreachable: rows are at most one per key, entries ascend).
+    fn project_tick_samples(&mut self) {
+        let tick = self.server_tick();
+        let refresh = tick.is_multiple_of(POLICY_SAMPLE_REFRESH_TICKS);
+        let handles: Vec<PeerHandle> = self.sessions.keys().copied().collect();
+        for handle in handles {
+            let world = self.history.world();
+            let Some(session) = self.sessions.get_mut(&handle) else {
+                continue;
+            };
+            let datagrams = project_session_samples(session, world, tick, refresh);
+            let Some(session) = self.sessions.get_mut(&handle) else {
+                continue;
+            };
+            queue_samples(
+                session,
+                &mut self.egress_bytes,
+                &self.egress_caps,
+                datagrams,
+            );
+        }
+    }
     /// One upstream transfer frame (S§9): `Published` or `Resync`, decoded by
     /// `crpg_net::codec_transfer::decode_up`. Refusals are a disposition and
     /// change nothing but the shared intent rate tokens; an honoured `Resync`
@@ -3730,7 +3873,11 @@ impl Host {
         self.history
             .tick()
             .map_err(|_| HostError::Invariant("tick refused by the history caps"))?;
-        self.complete_host_op(HostOp::Tick, before)
+        // C-5: the committed tick samples every v4 session, whether or not the
+        // tail that records and publishes it returned an `Invariant`.
+        let result = self.complete_host_op(HostOp::Tick, before);
+        self.project_tick_samples();
+        result
     }
 
     /// One trusted host action (T141a, A-2): the AI's decision for a
@@ -4633,10 +4780,12 @@ fn pace_session(egress_bytes: &mut usize, caps: &QueueCaps, session: &mut Sessio
     let Some(v3) = session.v3.as_mut() else {
         return;
     };
+    // Lane-1 frames and bytes count beside the delivery log (C-7).
+    let (lane1_frames, lane1_bytes) = v3.v4.as_ref().map_or((0, 0), |v4| v4.egress);
     while let Some(front) = v3.outbox.front() {
         let len = front.bytes.len();
-        let fits = session.log.len() < caps.per_peer_frames
-            && session.log_bytes + len <= caps.per_peer_bytes
+        let fits = session.log.len() + lane1_frames < caps.per_peer_frames
+            && session.log_bytes + lane1_bytes + len <= caps.per_peer_bytes
             && *egress_bytes + len <= caps.host_bytes;
         let Some(next) = session.next_ordinal.checked_add(1) else {
             break;
@@ -4654,6 +4803,65 @@ fn pace_session(egress_bytes: &mut usize, caps: &QueueCaps, session: &mut Sessio
         session.log_bytes += len;
         *egress_bytes += len;
     }
+}
+
+/// C-5: one v4 session's sample datagrams for `tick`, or none for a session
+/// that is not v4 or whose projection failed. Reads `World`, mutates only the
+/// position memory.
+fn project_session_samples(
+    session: &mut Session,
+    world: &World,
+    tick: u64,
+    refresh: bool,
+) -> Vec<Vec<u8>> {
+    let Session { grants, v3, .. } = session;
+    let Some(v3) = v3.as_mut() else {
+        return Vec::new();
+    };
+    let Some(v4) = v3.v4.as_mut() else {
+        return Vec::new();
+    };
+    let rows = position_rows(world, grants, &v4.withheld);
+    let Ok(entries) = project_samples(&v3.view, &mut v4.positions, &rows, refresh) else {
+        return Vec::new();
+    };
+    // T037d makes this the session's `MoveLane.processed_seq`; until then no
+    // lane-1 intent has been receipted.
+    movement_v4::sample_datagrams(tick, 0, &entries).unwrap_or_default()
+}
+
+/// C-5/C-7: replaces a v4 session's sample queue with `datagrams`, freeing the
+/// old queue's egress first and queueing the new datagrams only if all of them
+/// fit the session's egress room beside its delivery log and lane-1 bytes.
+fn queue_samples(
+    session: &mut Session,
+    egress_bytes: &mut usize,
+    caps: &QueueCaps,
+    datagrams: Vec<Vec<u8>>,
+) {
+    let (log_frames, log_bytes) = (session.log.len(), session.log_bytes);
+    let old: usize = session
+        .v3
+        .as_ref()
+        .and_then(|v3| v3.v4.as_ref())
+        .map_or(0, |v4| v4.samples.iter().map(Vec::len).sum());
+    *egress_bytes -= old;
+    let Some(v4) = session.v3.as_mut().and_then(|v3| v3.v4.as_mut()) else {
+        return;
+    };
+    v4.samples.clear();
+    v4.egress = (0, 0);
+    let frames = datagrams.len();
+    let bytes: usize = datagrams.iter().map(Vec::len).sum();
+    if log_frames + frames > caps.per_peer_frames
+        || log_bytes + bytes > caps.per_peer_bytes
+        || *egress_bytes + bytes > caps.host_bytes
+    {
+        return;
+    }
+    v4.samples = datagrams.into();
+    v4.egress = (frames, bytes);
+    *egress_bytes += bytes;
 }
 
 /// A fact-grant vector within its bound, sorted by entity, with no entity
@@ -4880,10 +5088,12 @@ fn resolve_v3(
         IntentBodyV4::Pause | IntentBodyV4::Unpause => return Err(CodeV3::NoPauseRight),
         IntentBodyV4::RequestMode { mode } if v3.rights.pause => Intent::Mode(sim_mode(mode)),
         IntentBodyV4::RequestMode { .. } => return Err(deny),
-        // B-2: `DeclareMove` resolves its actor like any other v4 intent and
-        // is then an `IllegalAction` rejection until T037c replaces it;
-        // `last_combat_error` stays unchanged.
-        IntentBodyV4::DeclareMove { .. } => return Err(CodeV3::IllegalAction),
+        // B-2: `DeclareMove` resolves its actor as any other v4 intent and is
+        // then a move request with the raw destination (C-1); a v3 session
+        // can never decode it.
+        IntentBodyV4::DeclareMove { destination } => {
+            Intent::Move(destination.raw().map(Fx16_16::from_raw))
+        }
     };
     Ok(Resolved { actor, intent })
 }
