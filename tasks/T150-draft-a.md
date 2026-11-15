@@ -291,7 +291,119 @@ and `take_samples` to `try_send_datagram` (traced `TakeMoveReceipts`/`TakeSample
 
 ## Behaviour
 
-<!-- TODO -->
+Normative. Each item names the tests that prove it. "Refused" means the
+stated error and no state change. **First failure wins** in every list.
+
+### T150a: the lane-1 transport
+
+A-1. **ALPN and framing.** `ALPN_LANE0_V3` is exactly the bytes
+   `crpg-lane0/3`; `Framing::from_alpn` maps it to `V3` and nothing else
+   does; `Framing::V3.alpn()` returns it; `/1` and `/2` are unchanged. `bind`
+   stays `/1`-only; `bind_dual` advertises
+   `[crpg-lane0/3, crpg-lane0/2, crpg-lane0/1]` in that order;
+   `bind_resumable` is unchanged (resume is out of scope, T025b). An accepted
+   `/3` connection reports `framing() == Framing::V3`. *Tests:* A1.
+
+A-2. **Stream open and close order.** On `/3` the client opens stream 1
+   (hello, welcome, then lane-0 frames, exactly as `/2`) and, after `connect`
+   returns, stream 2 (lane-1 intents upstream, receipts downstream). The
+   server accepts stream 1 first and, for `/3`, stream 2 second; lane-1
+   frames are read only from stream 2, and a lane-0 or `0x81`/`0x91` frame
+   never rides stream 2. *Tests:* A2.
+
+A-3. **Datagram negotiation and the refusal at connect.** The client
+   advertises `max_datagram_frame_size = Some(1_024)`. The server, before
+   writing the welcome to a `/3` connection, checks
+   `connection.max_datagram_size()`; if it is `None` or `Some(n)` with
+   `n < DATAGRAM_MIN_BYTES` (1,024), the connection is closed with
+   `CloseCode::ProtocolViolation` (2), no welcome is written and no lane-1
+   or lane-0 data is accepted. A `/1` or `/2` connection never enables
+   datagrams and is never refused for this reason. *Tests:* A3.
+
+A-4. **Lane-1 frames are opaque and ordered.** `try_recv_lane1` returns
+   intent frames in send order; `try_send_lane1` queues receipt frames in
+   call order. Each frame is `[len][payload]` with the upstream cap
+   `MAX_INTENT_FRAME_BYTES` (4,096) and the downstream cap `DATAGRAM_MIN_BYTES`
+   (1,024); a zero-length frame is `EmptyFrame`, an over-cap frame
+   `FrameTooLarge`. The lane-1 reader never inspects the `0xA1` payload.
+   *Tests:* A4.
+
+A-5. **Samples are datagrams only.** `try_send_datagram` sends one datagram
+   up to the peer's advertised maximum; above it is `TooLarge`, and
+   `UnsupportedByPeer` when DATAGRAM was not negotiated (unreachable on an
+   accepted `/3`). `try_recv_datagram` returns datagrams in send order. A
+   sample never rides the lane-1 stream and a receipt never rides a
+   datagram. *Tests:* A5.
+
+A-6. **Backpressure and the lane-0 limits.** The lane-1 stream queues are
+   bounded (the existing per-connection `QueueCaps`, 128 frames);
+   `try_send_lane1` returns `QueueFull` when full, changes nothing and is
+   retryable; a full inbound lane-1 queue parks one frame and stops reading
+   (flow control), as lane 0. `try_send_datagram` returns `Send(QueueFull)`
+   when the datagram send buffer is full; the adapter drops the sample and
+   does not retry it (A-7's refresh repairs). *Tests:* A6.
+
+A-7. **Close and teardown with lane 1 open.** A `Flush` close writes every
+   queued lane-1 receipt (then FIN on stream 2) and every queued sample
+   datagram before CONNECTION_CLOSE, inside the close budget
+   (`crates/crpg-net-quic/src/teardown.rs:9–42`); a `Discard` close drops
+   both at once. Datagrams have no FIN, so `Flush` sends what is queued then
+   closes; a lane-1 receipt queued after the flush deadline is not sent.
+   `CloseReason` stays first-wins. *Tests:* A7.
+
+A-8. **D23's dedup patch is applied (S-set).**
+   `third_party/quinn-proto/crate/src/connection/spaces.rs` holds
+   `WINDOW_BITS = 2048` and `WINDOW_SIZE = 2049` (no `type Window = u128`),
+   and `Dedup.window` is `[u64; 32]`; `VENDOR.md` lists the patch in the
+   table with the re-derived tree digest. The patch applies on top of 0001
+   with `patch --dry-run`, and the vendored crate's own suite (with the
+   widened-window unit tests) passes. *Tests:* A8 (unit) + the VENDOR
+   re-derivation script.
+
+A-9. **The impairment probe's pass criteria.** Re-run the T030 probe
+   (`docs/reviews/T030-quinn/probe/`, isolated, its own `[workspace]` and
+   `Cargo.lock`) on native Windows/MSVC with the vendored patch applied, at
+   the documented parameters: 1,000-byte payload, one DATAGRAM per packet,
+   rates 30/300/3,000 datagrams/s, `clean`/`reorder` (75 ms ± 15 ms)/
+   `impaired` (plus 3 % loss), `datagram_receive_buffer_size` 64 MiB,
+   `datagram_send_buffer_size` 16 MiB, patched and unpatched builds compared
+   through `--config patch.crates-io.quinn-proto.path=…`
+   (`docs/reviews/T030-quinn/README.md:148–166`). **Pass:** 0 dedup discards
+   in every run of the matrix on the patched build, with the Windows results
+   recorded under `docs/reviews/T030-quinn/results/` (closing the Windows gap
+   at `README.md:292–293`). *Tests:* A9 (a Definition-of-done step, not a
+   cargo test).
+
+### T150b: the `quic.rs` v4 route
+
+B-1. **v4 binding.** A `/3` hello naming wire version 4 is accepted and
+   `bind_v4_peer(control, grants, facts, rights, now_ms)` is called; the
+   welcome's `wire_version` is 4 (from `session_wire(peer)`); the trace
+   holds `BindV4Peer`. A `/3` hello naming version 1, 2 or 3, or a `/1`//`/2`
+   hello naming version 4, is refused `VersionRefused`. *Tests:* B1.
+
+B-2. **Lane-1 drain.** In the drain phase each lane-1 intent frame is
+   `host.ingest_move(peer, bytes, now_ms)` and traced `IngestMove`; the
+   `MoveAdmission` result is not fed into the lane-0 hold/disposition logic
+   (no hold for a `Refused`). A held lane-0 frame does not block lane-1
+   drain, and a lane-1 refusal does not fence the binding. *Tests:* B2.
+
+B-3. **Receipt and sample delivery.** In the deliver phase,
+   `take_move_receipts(peer)` bytes are sent in order via `try_send_lane1`
+   and `take_samples(peer)` bytes via `try_send_datagram`, both traced
+   `TakeMoveReceipts`/`TakeSamples`. A sample that does not fit
+   (`Send(QueueFull)`) is dropped whole and not retried; a receipt that does
+   not fit is retried next pump (the stream is reliable). *Tests:* B3.
+
+B-4. **Trace completeness.** Every lane-1 host call
+   (`BindV4Peer`, `IngestMove`, `TakeMoveReceipts`, `TakeSamples`) is in
+   `QuicPumpReport.calls` in call order, so a replay against an in-memory
+   host reproduces the authority hash. *Tests:* B4.
+
+B-5. **Lane 0 is unchanged on `/3`.** A v4 session's lane-0 deltas and `0x82`
+   transfers ride stream 1's channels, mapped from `DeliveryKind::Delta`/
+   `Transfer` as today (`crates/crpg-server/src/quic.rs:994–997`); the
+   lane-1 steps change no lane-0 byte. *Tests:* B5.
 
 ## Errors
 
