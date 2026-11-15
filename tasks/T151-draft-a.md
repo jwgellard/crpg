@@ -138,7 +138,7 @@ Design decisions this contract makes. Each needs approval with the contract.
    the acting `NetId`.** A move needs an actor and a destination, which ADR-0033
    §10's "submission is by option index only" does not cover (that rule is the
    combat `submit_option` surface, `docs/adr/0033-godot-bridge.md:304`; ADR-0033
-   has no v4 or lane-1 wording, `:27`). So `CrpgSession` gains two methods,
+   has no v4 or lane-1 wording, `tasks/T151-facts.md:27`). So `CrpgSession` gains two methods,
    `submit_move(actor, x, y, z) -> i64` and `halt_move(actor) -> i64`, where
    `actor` is a `net_ids()` entry (a `NetId`, never an `EntityId`, ADR §:236).
    The client encodes `MoveIntent { epoch, seq, actor, body }` with
@@ -175,9 +175,9 @@ Design decisions this contract makes. Each needs approval with the contract.
 Additions and replacements only. Every public item keeps a doc comment
 (`#![warn(missing_docs)]`, `crates/crpg-godot/src/lib.rs:12`). `core` stays
 `#![forbid(unsafe_code)]`; no float, `HashMap`/`HashSet`, clock or thread enters
-the core (crate invariants, `crates/crpg-godot/AGENTS.md:1–8`). Types from
+the core (crate invariant 8, `crates/crpg-godot/AGENTS.md:34`). Types from
 `crpg_net` are used by path, never re-exported; the one `unsafe` stays in
-`shell.rs` (`crates/crpg-godot/AGENTS.md:14`).
+`shell.rs` (`crates/crpg-godot/AGENTS.md:52`).
 
 ### T151a — `core/mod.rs`, `core/client.rs`, `core/authority.rs`
 
@@ -268,7 +268,7 @@ impl CrpgView {
 }
 ```
 
-Each `#[func]` makes exactly one core call (`crates/crpg-godot/AGENTS.md:15`).
+Each `#[func]` makes exactly one core call (`crates/crpg-godot/AGENTS.md:57`).
 `submit_move`/`halt_move` convert `actor` to a `NetId` via
 `NetId::new(actor as u64)` (zero/negative → `BadArgument` 3), build
 `MoveBody::MoveTo { destination: Point::new([x,y,z]) }` (a `None` →
@@ -530,7 +530,7 @@ raw.
   changes nothing. Only its callers route more frame kinds.
 - **The one `unsafe` and the engine pin.** `shell.rs` keeps exactly one
   hand-written `unsafe`; `godot = "=0.5.5"`, `engine` off by default
-  (`crates/crpg-godot/AGENTS.md:14`).
+  (`crates/crpg-godot/AGENTS.md:52`).
 - **The `apps/client` scripts and tests**, and `Main.tscn`/`project.godot`/
   `crpg.gdextension`: unchanged (Reading 4). `THIRD_PARTY_NOTICES` unchanged.
 - **`crpg-net` and `crpg-server` are frozen here**: no wire byte, codec,
@@ -552,7 +552,7 @@ No new crate or external dependency. Every type used is already a dependency of
 | `crpg-godot` → `crpg-server` (`Host`, `bind_v4_peer`, `ingest_move`, `take_move_receipts`, `take_samples`, `FactGrants`, `PauseRights`) | `[dependencies]` (normal, path, already present) | T151a | none (same row) |
 
 `crpg-godot` already depends on `crpg-net` and `crpg-server`
-(`crates/crpg-godot/Cargo.toml:129–130`); the v4 modules are inside `crpg-net`
+(`crates/crpg-godot/Cargo.toml:16–17`); the v4 modules are inside `crpg-net`
 and the v4 host surface is inside `crpg-server`, so no manifest, lock or
 `ALLOWED` edit is made. `deps.py`'s godot rule (`tools/lint/deps.py:12`) and
 unsafe rule (`:16–17`) are untouched; the crate stays the only godot/unsafe
