@@ -1,0 +1,570 @@
+# T056 — MVP AI: move to the nearest hostile and attack (`crpg-ai`)
+
+**Status: draft b (blind). Not approved.** Written blind from
+`tasks/T056-facts.md` by one model; another model is drafting the same
+contract blind. A Claude architect writes the final contract; the user
+approves it. Nothing here is approved.
+
+Citation convention: every `path:line` below was opened on branch
+`task/T056-draft-b-d1` (base `62b9860`). The fact sheet is
+`tasks/T056-facts.md`; a `path:line` quoted from it is cited as
+`tasks/T056-facts.md:NN`.
+
+## Task
+
+Spec §6.1 Stage 1 names the reactive MVP: "Aggro radius, line of sight,
+move to nearest hostile, use the first affordable ability. About 200 lines.
+Ship this." (`docs/CRPG_ENGINE_SPEC.md:698`). The MVP scope cut trims it to
+exactly "No AI beyond 'move to nearest hostile and attack'"
+(`docs/CRPG_ENGINE_SPEC.md:1531`), and D27f repeats that the MVP enemy AI is
+only that, in `crpg-ai`, consuming `legal_actions` (`tasks/DECISIONS-2026-10-04.md:93-95`,
+quoted at `tasks/T056-facts.md:36`). T056 opens the crate
+(`docs/IMPLEMENTATION_PLAN.md:278`); its prerequisites are T028 (the shared
+legality surface) and T036 (movement).
+
+The deliverable is one deterministic, read-only decision function in
+`crpg-ai`: given a `World`, an actor it controls, a navmesh, and the set of
+hostiles, it picks the nearest hostile, and returns either the legal action
+that attacks it, the route that moves toward it, or a pass. Attacks are
+chosen only from `crpg_sim::legal_actions` (`docs/CRPG_ENGINE_SPEC.md:723`);
+the AI never mutates the world, never invents an action, and never reaches
+`crpg-data`. The host applies the returned decision through the existing
+public verbs (`perform_action`, `perform_move`/`set_route`), which revalidate
+(`tasks/T028.md:20-30`).
+
+## Parts
+
+One part, one crate. Hostility is an *input* (Reading 1), so nothing here
+needs a second crate; the only place that could resolve faction data into a
+hostile set is the host, which is out of scope (see "Out of scope" and
+"Open questions").
+
+### T056 — `crpg-ai` (opens the crate)
+
+Owns (full repository paths):
+
+- `crates/crpg-ai/Cargo.toml` — add `[dependencies]` on `crpg-core`,
+  `crpg-sim`, `crpg-nav` (path deps), plus a `[dev-dependencies]` on
+  `serde_json` for the JSON world fixtures. `crpg-rules` is permitted by the
+  ALLOWED table (`tools/lint/deps.py:53`) but is not added: the MVP decision
+  uses no rule type.
+- `crates/crpg-ai/src/lib.rs` — the whole implementation (replace the
+  four-line skeleton at `crates/crpg-ai/src/lib.rs:1-4`).
+- `crates/crpg-ai/tests/decide.rs` — the implementer suite.
+- `crates/crpg-ai/tests/decide_contract.rs` — the two-keys writer suite,
+  written blind from this file.
+- `crates/crpg-ai/tests/fixtures/ai_tb.json`, `ai_rt.json` and
+  `ai_nomove.json` — checked-in `World` JSON fixtures (see Tests: fixture).
+- `docs/architecture/crpg-ai.md` (new) — the first task with real code
+  writes it (`docs/architecture/README.md`; root `AGENTS.md`).
+- `crates/crpg-ai/AGENTS.md` (new) — same rule.
+
+`goldens:` none. T056 adds no persisted state, no hash, no golden. The
+decision is a pure read of the world, so it changes no existing bytes; the
+existing goldens must not move (see "What must not change").
+
+## Readings
+
+Each needs the user's approval with the contract.
+
+1. **Hostility is an explicit input, never derived by the AI.** `crpg-ai`
+   may import only `crpg-core`, `crpg-rules`, `crpg-sim`, `crpg-nav`
+   (`tools/lint/deps.py:53`), so it cannot read `crpg-data`'s `Faction`
+   (`crates/crpg-data/src/document.rs:288`) or `Placement.faction`
+   (`crates/crpg-data/src/document.rs:125`). Sim, rules and core hold no
+   runtime sides, teams, hostility or allegiance (the fact sheet grep,
+   `tasks/T056-facts.md:88`); `Combatant` carries no faction
+   (`crates/crpg-sim/src/combat.rs:207-236`), and `Combatant.tags` is the
+   only group identity and nothing reads it (`crates/crpg-sim/src/combat.rs:224-227`).
+   So `decide` takes `hostiles: &[EntityId]`; the host computes the set from
+   faction `disposition` (`crates/crpg-data/src/document.rs:306-311`) and
+   quest state. *Rejected:* infer hostility from `Combatant.tags` (tags are
+   arbitrary author strings, not sides, and nothing defines "different tag
+   ⇒ hostile"); from `placement` (the `direct_fight` test's proxy,
+   `crates/crpg-cli/tests/play.rs:350-377`, is a fixture hack, not a side
+   model); or add runtime sides to sim now (a persisted-state change, its
+   own task, and the MVP has one hostile, `docs/CRPG_ENGINE_SPEC.md:1517`).
+
+2. **The AI never mutates; it returns a decision the host applies.** The
+   authority boundary is that clients cannot mutate authoritative state
+   directly, and "options confer no authorization … host always rechecks
+   execution" (`tasks/T028.md:20-30`). A read-only `decide(&World, ..)` keeps
+   the decision separate from execution, so `perform_action` /
+   `perform_move` / `set_route` revalidate whatever the AI proposes.
+   *Rejected:* `decide(&mut World, ..)` that calls `perform_action` itself
+   (mixes decision with execution and hides the revalidation from the host).
+
+3. **"Nearest" is horizontal `seg_len`, ties broken by full `EntityId`.**
+   Distance is `crpg_sim::seg_len(a, b)` — the horizontal
+   `ceil_sqrt(dx² + dz²)` over raw values, `y` ignored
+   (`crates/crpg-sim/src/movement.rs:310-315`) — the same measure `within_range`
+   uses, so "nearest" and "in range" agree. A pair without a mover on both
+   sides is unmeasurable and sorts after every measurable distance. The
+   nearest is the minimum of `(distance.unwrap_or(u64::MAX), EntityId)`
+   lexicographically, so equal distances break by ascending full `EntityId`
+   (index then generation; `crates/crpg-core/src/entity.rs:60`), independent
+   of `hostiles` order. *Rejected:* Euclidean-with-`y` (disagrees with the
+   range measure); tie-break by slice order (non-deterministic across
+   callers); `abs()`-based differences (overflows `i32::MIN`, which
+   `seg_len` avoids).
+
+4. **The move destination is the nearest hostile's own position.** "Move to
+   nearest hostile" is literal: the AI paths to the hostile's `Mover::position()`
+   (`crates/crpg-sim/src/movement.rs:116`), so once it arrives it is at
+   distance 0 and in range next turn. *Rejected:* path to a point *just
+   within* attack range (needs the range value, which the AI would have to
+   re-derive instead of trusting `legal_actions`, and adds a step for no
+   MVP gain); path to the target's cell centroid (also needs range, less
+   deterministic).
+
+5. **Only the nearest hostile is ever targeted, and the first affordable
+   ability is the first legal one.** The AI attacks iff `legal_actions`
+   lists a `UseAbility` whose `target` is the nearest hostile, and it picks
+   the *first* such action in `legal_actions` order — abilities in ascending
+   ULID × combatants in ascending `EntityId`
+   (`crates/crpg-sim/src/combat.rs:3715-3717`) — which is exactly "the first
+   affordable ability" (affordability is already inside `validate_action`,
+   so an unaffordable ability is omitted). *Rejected:* scoring abilities
+   (that is stage 2, `docs/CRPG_ENGINE_SPEC.md:700`, T080); attacking an
+   in-range non-nearest hostile when the nearest is out of range (the spec
+   says "nearest", and the MVP has one hostile so the fork is moot — kept
+   as Open question 1).
+
+6. **The AI is mode-agnostic; the closing action comes from `legal_actions`.** In
+   TB `legal_actions` closes with `EndTurn { actor }`, in RT with
+   `Stop { actor }` and never `EndTurn` (`crates/crpg-sim/src/combat.rs:3725-3727`).
+   `decide` reads no mode field; it returns the closing action verbatim for
+   `Pass`, and the host maps `Move` to `perform_move` (TB) or `set_route`
+   (RT). *Rejected:* branching the AI on `EncounterMode`
+   (`crates/crpg-sim/src/combat.rs:76-82`) — it duplicates what `legal_actions`
+   already encodes and adds a second source of truth.
+
+7. **The route is stamped with the bound revision and a constant tag.** The
+   AI reads `world.nav()` (`crates/crpg-sim/src/world.rs:1228`) for the
+   `MoveRoute.revision`, and `RouteTag(0)` for the tag (`RouteTag` is "the
+   host's request identity … never interpreted", `crates/crpg-sim/src/movement.rs:62`).
+   The host may overwrite the tag before applying. `nav` (the `NavMesh`
+   argument) is used only for `find_path` geometry; the host guarantees the
+   mesh's canonical bytes hash to `world.nav()` (sim never imports nav,
+   `tasks/T036.md` Task: "Sim never imports `crpg-nav` (A2)"). *Rejected:* the AI computing the revision
+   from the mesh (it has no `NavRevision::of_bytes` input and would
+   duplicate the host's binding); a per-decision tag generator (host
+   identity is not the AI's concern).
+
+8. **Movement failures and a missing navmesh are `Pass`, not errors.** A
+   `NavError` from `find_path` (`crates/crpg-nav/src/path.rs:39-58`), a
+   hostile without a mover, or `world.nav() == None` all mean "I cannot move
+   toward it this step", so the actor passes its turn. Only `legal_actions`
+   failing is an `AiError`. *Rejected:* surfacing `NavError` to the host
+   (the host has nothing to do about an unreachable target either, and the
+   brief's "unreachable target" is a defined Pass, not a failure).
+
+9. **`crpg-ai` stays integer-only and deterministic by contract.** The
+   determinism lint scans exactly `CRATES = ["crpg-core", "crpg-rules",
+   "crpg-sim", "crpg-nav"]` (`tools/lint/determinism.py:66`), so `crpg-ai` is
+   not linted. The spec's agent-task constraint is "Deterministic: same world
+   + seed → same decision" (`docs/CRPG_ENGINE_SPEC.md:1381`); this contract
+   therefore requires, in `crates/crpg-ai/AGENTS.md`: no `f32`/`f64` or
+   unsuffixed float literal, no `HashMap`/`HashSet` (use `BTreeMap`/`IndexMap`),
+   no wall clock, no thread, no external RNG, no `unsafe` (already
+   `#![forbid(unsafe_code)]`, `crates/crpg-ai/src/lib.rs:1`). `decide` draws
+   no RNG and interns nothing, so determinism is a pure-function property.
+   *Rejected:* relying on the lint alone (it does not scan the crate today;
+   adding `crpg-ai` to it is Open question 3).
+
+10. **Tests deserialize checked-in JSON worlds, because `crpg-ai` cannot
+    dev-depend on `crpg-data` or `crpg-testkit`.** The ALLOWED row
+    (`tools/lint/deps.py:53`) restricts every section, dev-dependencies
+    included, to core/rules/sim/nav, and `start_encounter`/`register_creature`
+    take `crpg-data`'s `Authored*` types (`crates/crpg-sim/src/combat.rs:882-897`,
+    `crates/crpg-sim/src/creature.rs:118-127`). The implementer therefore
+    materializes one TB and one RT world by running a crpg-sim-side helper
+    once (a scratch example, not shipped), checks the JSON in, and the tests
+    load it with `serde_json` and mutate only the fields a case needs (exactly
+    as T036 edits MOVE through JSON, `tasks/T036.md:421-435`). *Rejected:*
+    dev-depending on `crpg-data` or `crpg-testkit` (both violate `deps.py`);
+    hand-building a `World` through public mutators (there is no public way
+    to create a combatant outside `start_encounter`).
+
+## Interface
+
+Every public item has a doc comment (`#![warn(missing_docs)]`,
+`crates/crpg-ai/src/lib.rs:2`). The whole public surface is three items;
+`decide` is a pure function of its arguments.
+
+```rust
+//! MVP AI: move to the nearest hostile and attack (spec §6.1 Stage 1,
+//! cut to the MVP scope by spec §17.3). Read-only and deterministic.
+
+use crpg_core::EntityId;
+use crpg_nav::NavMesh;
+use crpg_sim::{CombatAction, LegalActionsError, MoveRoute, RouteTag, World};
+
+/// What the MVP AI wants an actor to do next. The host applies it through
+/// the existing public verbs, which revalidate (`Attack`/`Pass` via
+/// `perform_action`, `Move` via `perform_move` in TB or `set_route` in RT).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Attack with this exact legal action — always a
+    /// `CombatAction::UseAbility` targeting the nearest hostile
+    /// (`crates/crpg-sim/src/combat.rs:932-952`).
+    Attack(CombatAction),
+    /// Walk this whole route toward the nearest hostile
+    /// (`crates/crpg-sim/src/movement.rs:67-74`).
+    Move(MoveRoute),
+    /// Do nothing else; apply this closing action — `EndTurn { actor }` in
+    /// turn-based, `Stop { actor }` in real time.
+    Pass(CombatAction),
+}
+
+/// Why the AI could not produce a decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiError {
+    /// The actor cannot act at all: `legal_actions` failed
+    /// (`crates/crpg-sim/src/combat.rs:3678-3688`). Its text is the wrapped
+    /// error's text; `source()` is the wrapped error.
+    Legal(LegalActionsError),
+}
+// impl Display and std::error::Error for AiError, as LegalActionsError does
+// (delegate to the inner error).
+
+/// Choose one next step for `actor` (T056). Read-only and deterministic:
+/// it draws no RNG, interns nothing, and mutates nothing.
+///
+/// * `nav` is the navmesh whose canonical bytes hash to `world.nav()`; the
+///   host guarantees the match. It is consulted only when the AI decides to
+///   move (which needs `world.nav() == Some`), so with no bound navmesh any
+///   mesh may be passed and it is ignored.
+/// * `hostiles` is the set of entities hostile to `actor`, in any order; the
+///   result does not depend on that order. It must not contain `actor` (a
+///   hostile equal to `actor` is a candidate only by host error).
+pub fn decide(
+    world: &World,
+    actor: EntityId,
+    nav: &NavMesh,
+    hostiles: &[EntityId],
+) -> Result<Decision, AiError>;
+```
+
+`crates/crpg-ai/Cargo.toml` `[dependencies]`: `crpg-core`, `crpg-sim`,
+`crpg-nav` (workspace path deps). `[dev-dependencies]`: `serde_json` (for
+the fixtures). No other dependency is added; `crpg-rules` is permitted but
+unused.
+
+## Behaviour
+
+`decide` is the whole algorithm; the numbered items below are its only
+steps, in order. A `hostile` is *candidate* when it is a live combatant:
+`world.combatants().get(e)` is `Some(c)` with `!c.dead()`
+(`crates/crpg-sim/src/combat.rs:207-236`); anything else (absent, a bare
+entity, a record, or a dead combatant) is ignored. `close` is the last
+element of `legal_actions` (`EndTurn { actor }` in TB, `Stop { actor }` in
+RT; `crates/crpg-sim/src/combat.rs:3725-3727`).
+
+1. **B-1 (query first).** `decide` begins with
+   `legal_actions(world, actor)` (`crates/crpg-sim/src/combat.rs:3733-3736`);
+   `Err(e)` is returned as `AiError::Legal(e)` and nothing else is read or
+   computed. This covers `NoEncounter`, `NotParticipant`, `AbsentActor`,
+   `DeadActor`, `OutOfTurn`, a terminal encounter, and `TooManyOptions`.
+
+2. **B-2 (distance).** For a candidate `e`, the distance is
+   `Some(crpg_sim::seg_len(a.position(), m.position()))` when both
+   `world.movers().get(actor)` (`crates/crpg-sim/src/world.rs:1217`) and
+   `world.movers().get(e)` are `Some`, else `None`. `seg_len` is the
+   horizontal `ceil_sqrt(dx² + dz²)` over raw values, `y` ignored
+   (`crates/crpg-sim/src/movement.rs:310-315`). `None` (unmeasurable) orders
+   after every `Some` distance.
+
+3. **B-3 (nearest, deterministic).** The nearest candidate is the minimum of
+   `(distance.unwrap_or(u64::MAX), e)` lexicographically: smaller distance
+   wins; equal distances — including every `None` — break by ascending full
+   `EntityId` (`crates/crpg-core/src/entity.rs:60`), independent of
+   `hostiles` order.
+
+4. **B-4 (attack if in range).** If a nearest candidate exists and
+   `legal_actions` holds a `CombatAction::UseAbility { target: nearest, .. }`
+   (`crates/crpg-sim/src/combat.rs:932-952`), `decide` returns
+   `Decision::Attack(action)` with the *first* such action in `legal_actions`
+   order (ascending ability ULID, then ascending target `EntityId`;
+   `crates/crpg-sim/src/combat.rs:3715-3717`). Because `legal_actions` only
+   keeps what `validate_action` accepts, this is the first affordable
+   ability against the nearest hostile, and an out-of-range or unaffordable
+   candidate is simply absent from the list.
+
+5. **B-5 (move otherwise).** If a nearest candidate exists but B-4 did not
+   fire, `decide` attempts a move:
+   - `world.nav()` is `None` → `Pass(close)` (no bound navmesh, so
+     `validate_route` would fail `NavUnbound`);
+   - the nearest has no mover (`world.movers().get(nearest)` is `None`) →
+     `Pass(close)` (no destination);
+   - otherwise `nav.find_path(actor_pos, nearest_pos)`
+     (`crates/crpg-nav/src/path.rs:203`): `Ok(path)` →
+     `Decision::Move(MoveRoute { revision: world.nav().unwrap(), tag:
+     RouteTag(0), points: path.into_points() })`
+     (`crates/crpg-nav/src/path.rs:27`); any `Err(_)` (`StartOffMesh`,
+     `GoalOffMesh`, `AlreadyThere`, `Unreachable`, `PathTooComplex`,
+     `TooLong`; `crates/crpg-nav/src/path.rs:39-58`) → `Pass(close)`.
+
+6. **B-6 (pass).** With no candidate (empty `hostiles`, or every hostile
+   filtered out in B-1's sense), `decide` returns `Pass(close)`.
+
+7. **B-7 (priority).** A single call returns exactly one decision; the
+   order of preference is attack (B-4), then move (B-5), then pass (B-6).
+   "Move then attack" is the host's loop over repeated calls — `perform_move`
+   keeps the turn (`crates/crpg-sim/src/movement.rs:892-897`) — never two
+   actions in one decision. The AI never returns a `Decision` for a hostile
+   other than the nearest, and never a `CombatAction` that is not in
+   `legal_actions` (including for `Pass`, whose action is `legal_actions`'
+   own closing action).
+
+8. **B-8 (turn-based path).** In a TB encounter, `close` is
+   `EndTurn { actor }` and the host applies `Attack`/`Pass` through
+   `perform_action` and `Move` through `perform_move`. The AI itself makes
+   no mode branch; this item pins what the host does with the decision so
+   the TB path is testable end-to-end.
+
+9. **B-9 (real-time path).** In an RT encounter (`EncounterMode::RealTime`,
+   `crates/crpg-sim/src/combat.rs:76-82`), `close` is `Stop { actor }`
+   (`crates/crpg-sim/src/combat.rs:3725-3727`); the host applies `Attack`
+   through `perform_action` (storing a standing order, returning `Ok(None)`,
+   `crates/crpg-sim/src/combat.rs:3803-3808`) and `Move` through `set_route`
+   (`crates/crpg-sim/src/movement.rs:771-792`).
+
+10. **B-10 (purity and determinism).** `decide` draws no RNG (it never
+    touches `rng_mut`, `crates/crpg-sim/src/world.rs:1187`), interns nothing,
+    and mutates nothing: the world serializes to identical bytes before and
+    after every call, success or `AiError`. Two calls with the same
+    `(world, actor, nav, hostiles)` return the same `Decision`, whatever the
+    seed or the order of `hostiles`.
+
+11. **B-11 (actor without a mover).** If the actor is a combatant without a
+    mover (a movement-less ruleset), every distance is `None`, so B-3 picks
+    the lowest-`EntityId` candidate; B-4 may still attack it (an ability
+    with no `range` needs no mover; `crates/crpg-sim/AGENTS.md`, "Ability
+    range"), and B-5 always ends in `Pass` (no actor position to path from).
+    With no candidate, `Pass`.
+
+12. **B-12 (hostiles contains actor).** The contract does not guard against
+    `actor` appearing in `hostiles`; a host that passes it gets whatever
+    `legal_actions` allows (a self-target only when `allow_self_target` is
+    set), because B-4 still only returns actions from `legal_actions`. This
+    is a host error, not an `AiError`.
+
+## Errors
+
+| Value | Text |
+|---|---|
+| `AiError::Legal(e)` | `e`'s text unchanged (e.g. `NoEncounter at combat`, `OutOfTurn at combat/...`, `TooManyOptions at combat/options`; `crates/crpg-sim/src/combat.rs:3690-3698`) |
+
+`AiError` derives `Debug, Clone, PartialEq, Eq`, implements `Display`
+(delegating to the wrapped `LegalActionsError`) and `std::error::Error`
+(`source()` is the wrapped error), exactly as `HistoryError::Move` wraps
+`MoveError` (`crates/crpg-sim/src/movement.rs`, `tasks/T036.md` Errors
+table). No other error type is introduced. Movement and nav failures are
+not errors — they are `Pass` (Behaviour B-5, B-6).
+
+## Tests
+
+Integration tests only, `crates/crpg-ai/tests/decide.rs` and
+`decide_contract.rs`. No `f32`/`f64`; nothing writes to disk; worlds come
+from `serde_json` over the checked-in fixtures.
+
+### Fixture
+
+`p(x, z)` is `[Fx16_16::from_int(x), Fx16_16::ZERO, Fx16_16::from_int(z)]`;
+`rp(x, y, z)` is that raw point; `m = 65536`. `uid(103)` / `uid(104)` are
+the two ability ULIDs (cost 1 each, pool `uid(105)` max 1), `uid(103)`
+listed before `uid(104)` in the ruleset.
+
+- **`ai_tb.json`.** A started TB world (`World::new(7)`, no area). The
+  generator registers three creatures in order — placement 111/prefab 121
+  (A), 112/122 (B), 113/123 (C) — so the entities are A `{index 0,
+  generation 1}`, B `{1, 1}`, C `{2, 1}`, then `start_encounter` enters all
+  three (no spawn). Authored initiative A `9`, B `10`, C `11`, so A holds
+  the first turn (`active == A`). Movers: A at `p(0,0)`, B at `p(10,0)`, C
+  at `p(0,10)`; bound nav `rev` (see mesh); the two abilities have no
+  `range`.
+- **`ai_rt.json`.** The same world started `RealTime`
+  (`start_encounter_in_mode`, `active == None`, every key `0`).
+- **`ai_nomove.json`.** A TB world with **no** `movement` rules, no movers,
+  no bound nav, the two abilities with no `range`: A `{0,1}` at `p(0,0)`,
+  B `{1,1}` at `p(10,0)` (no movers, so no positions the AI can read).
+- **mesh.** `rev` is `NavRevision::of_bytes(&mesh.to_canonical_bytes())`
+  (`crates/crpg-sim/src/movement.rs:55`, `crates/crpg-nav/src/mesh.rs:310`)
+  where `mesh = bake_box(Fx16_16::ZERO, NavRect { min_x:
+  Fx16_16::from_int(-5), min_z: Fx16_16::from_int(-5), max_x:
+  Fx16_16::from_int(15), max_z: Fx16_16::from_int(15) }, &[])`
+  (`crates/crpg-nav/src/bake.rs:89`) — the axis-aligned box `x ∈ [-5 m, 15
+  m]`, `z ∈ [-5 m, 15 m]` at `y = 0`, no holes. The generator binds this
+  same `rev` into the two movers worlds; the tests re-bake the identical
+  box in code.
+
+`use(x, t)` is `CombatAction::UseAbility { actor: x, ability: uid(103),
+target: t }`; `close(x)` is `EndTurn { actor: x }` (TB) or `Stop { actor: x
+}` (RT). `ranged(r)` edits the ability `uid(103)`'s `range` to
+`Some(Fx16_16::from_raw(r))` in the fixture JSON before deserializing.
+Each rejection is also checked through the host verb on a clone (`bytes`
+unchanged).
+
+- **D-1 `nearest_by_distance` (B-2, B-3, B-4).** `ai_tb` with C's mover
+  position edited to `p(0,1)`. `decide(world, A, mesh, &[B, C])` is
+  `Attack(use(A, C))` — distances `seg_len(A,B) = 655360`, `seg_len(A,C) =
+  65536`, so C is nearer. *Control:* `&[C, B]` returns the same.
+  *Fails if:* it targets B, or the result depends on `hostiles` order.
+
+- **D-2 `tie_breaks_by_lowest_id` (B-3).** `ai_tb` unmodified: B and C are
+  both at `655360`. `decide(world, A, mesh, &[B, C])` is `Attack(use(A, B))`
+  — B `{1,1}` < C `{2,1}`. *Control:* `&[C, B]` still `use(A, B)`.
+  *Fails if:* it targets C, or follows slice order.
+
+- **D-3 `first_affordable_ability` (B-4).** `ai_tb`, both abilities
+  affordable, B repositioned in range (default range is unlimited).
+  `decide(world, A, mesh, &[B])` targets B with `uid(103)` (the lower ULID),
+  not `uid(104)`. *Fails if:* it chooses `uid(104)` or a non-nearest target.
+
+- **D-4 `move_when_out_of_range` (B-5, B-7).** `ai_tb` `ranged(131072)`
+  (2 m), actor A, hostiles `[B]` at `p(10,0)` (10 m, out of range). The
+  result is `Move(MoveRoute { revision: rev, tag: RouteTag(0), points:
+  [p(0,0), p(10,0)] })` — the straight one-segment funnel on a single-cell
+  box, exactly `[[0,0,0],[655360,0,0]]` raw. *Control:* the route's first
+  point equals A's position and `revision == world.nav()`.
+  *Fails if:* it passes, tags the route otherwise, stamps a different
+  revision, or adds a point.
+
+- **D-5 `unreachable_target_passes` (B-5).** `ai_tb` `ranged(131072)` with
+  B's mover edited to `p(20,0)` (off the 15 m box). `find_path` returns
+  `GoalOffMesh` → `Pass(EndTurn { actor: A })`. *Fails if:* it returns
+  `Move`, or an `Err` (nav failure is a Pass, not an error).
+
+- **D-6 `no_navmesh_passes` (B-5).** `ai_tb` `ranged(131072)` with `nav`
+  removed from the JSON (`world.nav() == None`). → `Pass(EndTurn { actor:
+  A })`. *Fails if:* it moves (no bound navmesh to stamp), or errors.
+
+- **D-7 `hostile_without_mover_passes` (B-5).** `ai_tb` `ranged(131072)`
+  with B's `movers` entry removed (B is a combatant with no mover; A keeps
+  its mover). B is out of range (no mover → `OutOfRange`, so B is not in
+  `legal_actions`) and there is no destination to path to →
+  `Pass(EndTurn { actor: A })`. *Fails if:* it moves, or attacks B.
+
+- **D-8 `no_hostile_passes` (B-6).** `ai_tb`, `hostiles == []` →
+  `Pass(EndTurn { actor: A })`. Also `hostiles == [<a bare non-combatant
+  entity>]` → filtered out → `Pass`. *Fails if:* it attacks or moves.
+
+- **D-9 `attack_preferred_over_move` (B-7).** `ai_tb` default range, actor
+  A, hostiles `[B]`: B is in range, so the result is `Attack(use(A, B))`,
+  never `Move`, even though a path exists. *Fails if:* it moves when it
+  can attack.
+
+- **D-10 `turn_based_path_end_to_end` (B-8).** On a clone of the D-4 world,
+  applying the returned `Move` through `perform_move(world, A, &route)`
+  (`crates/crpg-sim/src/movement.rs:892-897`) returns `Ok` and sets A's
+  position to `p(10,0)`; applying the D-8 `Pass` through
+  `perform_action` returns `Ok(None)` (an `EndTurn`). *Fails if:* the AI's
+  TB closing action is anything but `EndTurn { actor: A }`, or `perform_move`
+  rejects the AI's route.
+
+- **D-11 `real_time_path_end_to_end` (B-9).** `ai_rt`, `hostiles == []` →
+  `Pass(Stop { actor: A })`. With hostiles `[B]` → `Attack(use(A, B))`
+  (applied through `perform_action` it stores the order and returns
+  `Ok(None)`; `crates/crpg-sim/src/combat.rs:3803-3808`). `ranged(131072)`
+  → `Move`, and `set_route(world, A, route)` (`crates/crpg-sim/src/movement.rs:771-792`)
+  returns `Ok`. *Fails if:* the RT closing action is `EndTurn`, or the RT
+  move is refused.
+
+- **D-12 `purity_and_determinism` (B-10).** For `ai_tb` (default, and
+  `ranged(131072)`) and `ai_rt`: serialize the world to bytes, call
+  `decide`, serialize again — identical; call `decide` twice — equal; call
+  with `hostiles` reversed — equal. *Fails if:* any call changes world
+  bytes, or two equal calls differ.
+
+- **D-13 `actor_without_mover` (B-11).** `ai_nomove`: no movers, so every
+  distance is `None` and B-3 picks the lowest id. `decide(world, A, mesh,
+  &[B])` is `Attack(use(A, B))` (the ability has no range, so no mover is
+  needed). *Fails if:* it passes or moves instead of attacking the
+  lowest-id hostile.
+
+- **D-14 `hostiles_contains_actor` (B-12).** `ai_tb`, `hostiles == [A, B]`:
+  the nearest is A itself; the ability does not `allow_self_target`, so
+  `use(A, A)` is not legal, and `find_path(A, A)` is `AlreadyThere` →
+  `Pass(EndTurn { actor: A })`. *Fails if:* it returns a self-attack or an
+  `Err` (host error is tolerated, never surfaced as `AiError`).
+
+- **D-15 `legal_actions_errors` (B-1, Errors).** `decide` with `actor` a
+  bare live entity (not a combatant) returns
+  `AiError::Legal(LegalActionsError::Actor(CombatError::NotParticipant
+  { .. }))`; a world with no encounter returns `NoEncounter`. The text and
+  `source()` of `AiError::Legal(e)` equal `e`'s. *Fails if:* a host-error
+  input yields a `Decision` instead of `AiError::Legal`.
+
+## What must not change
+
+No persisted state, hash, event, replay, or golden changes. Byte for byte
+unchanged:
+
+- the six files in `crates/crpg-testkit/goldens/`
+  (`{combat_basic,replay_basic,srd_lite}_rust-1.98.0_<target>_test-default.golden`);
+- `history_v1.*`, `history_v2.*`, `surface_v1.*`, `movement_v1.*` and
+  `history_v3.*` (two targets each) in `crates/crpg-sim/tests/goldens/`;
+- every `crpg-cli` replay fixture and every `crpg-server`/`crpg-net` hash
+  assertion.
+
+Reason: T056 adds a new crate and one read-only function; it edits no line
+of `crpg-core`, `crpg-data`, `crpg-rules` or `crpg-sim`, adds no dependency
+to an existing crate, and its own tests deserialize worlds (they write no
+golden). `crates/crpg-ai/src/lib.rs` is rewritten from a four-line
+doc-only skeleton, which no other crate imports. A moved golden is a stop,
+not a re-bless. The existing goldens listed are the ones any movement- or
+combat-adjacent change could disturb; T056 does not.
+
+## Out of scope
+
+- **Utility scoring** (stage 2, `docs/CRPG_ENGINE_SPEC.md:700-717`) — T080.
+- **Behaviour trees for non-combat schedules** (stage 3) — T082.
+- **Party AI** — T083.
+- **The host driver that calls `decide`**: computing the hostile set from
+  `Faction.relations` disposition (`crates/crpg-data/src/document.rs:306-311`),
+  mapping `Decision` to `perform_action`/`perform_move`/`set_route`, looping
+  move-then-attack across a kept turn, and RT re-decide cadence are all
+  host behaviour. `crpg-ai` only returns one decision per call.
+- **Aggro radius and line of sight** (named in Stage 1,
+  `docs/CRPG_ENGINE_SPEC.md:698`, but cut by the MVP line
+  `docs/CRPG_ENGINE_SPEC.md:1531` and D27f `tasks/DECISIONS-2026-10-04.md:93-95`).
+- **The node budget and time-slice scheduler** (`docs/CRPG_ENGINE_SPEC.md:724`):
+  `decide` is one synchronous call bounded by `legal_actions`' output cap
+  (4096) and `find_path`'s polygon bound; the host owns *when* to call it.
+- **Any `crpg-data`, `crpg-rules`, `crpg-sim`, `crpg-core`, `crpg-nav` or
+  `tools/` change**, and any runtime hostility/sides/team model in sim.
+- **AI profiles as authored data** (`docs/CRPG_ENGINE_SPEC.md:1065`) — T081.
+
+## Open questions
+
+Each needs the user's answer; each recommendation is to keep the draft as
+written.
+
+1. **Target strictly the nearest hostile, or attack any in-range hostile?**
+   The spec says "move to nearest hostile and attack" and the MVP has
+   exactly one hostile (`docs/CRPG_ENGINE_SPEC.md:1517`), so the fork is
+   moot for shipping. This draft targets only the nearest (Behaviour B-4/B-7),
+   which is simpler and fully deterministic. *Recommend: keep strictly
+   nearest; revisit when a fight has more than one hostile.*
+
+2. **Who derives the hostile set, and where?** The draft makes `hostiles` an
+   input the host computes from `Faction.relations` disposition (Reading 1).
+   That derivation is host/tooling code outside `crpg-ai`, and needs no sim
+   change. If the user wants it shared rather than host-local, it should be
+   its own small task in `crpg-server` (which may import `crpg-data`).
+   *Recommend: leave derivation to the host for the MVP; open a follow-up
+   task if a shared resolver is wanted.*
+
+3. **Enforce `crpg-ai` determinism with the lint?** The determinism lint's
+   `CRATES` list does not include `crpg-ai` (`tools/lint/determinism.py:66`),
+   so the integer-only/no-`HashMap` rules here are contract rules, not
+   lint-enforced. Adding `crpg-ai` to both `CRATES` and `NO_FLOAT_CRATES`
+   would make the ban mechanical, at the cost of one `tools/` edit (a
+   separate, trivial change outside this task's crate). *Recommend: add
+   `crpg-ai` to the lint as a companion change with the manager's approval;
+   until then the contract rule stands.*
+
+## Agent log
+
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4-pro + T056 draft b · Wrote the blind MVP AI contract in `crpg-ai` (one read-only `decide` returning Attack/Move/Pass, hostility as an explicit host input, nearest by horizontal `seg_len` with `EntityId` tie-breaks, movement via `crpg-nav` with the bound revision), with exact-value tests and the fact-sheet findings carried into Readings, so the architect adjudicates a complete draft rather than re-deriving it.

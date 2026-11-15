@@ -249,6 +249,7 @@ name = "crpg-server"
 version = "0.1.0"
 dependencies = [
  "crpg-core",
+ "crpg-nav",
  "crpg-net",
  "crpg-net-quic",
  "crpg-persist",

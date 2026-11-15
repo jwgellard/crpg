@@ -38,15 +38,18 @@ integration; listen-server mixed mode; and the GM endpoint.
 crpg-core     ─┐
 crpg-sim      ─┤
 crpg-net      ─┼─> crpg-server (lib) ─> crpg-server (bin, thin)
-crpg-net-quic ─┤     + serde/serde_json (checkpoint JSON)
+crpg-nav      ─┤     + serde/serde_json (checkpoint JSON)
+crpg-net-quic ─┤
 crpg-persist  ─┘
 ```
 
 Edges are D20's: normal path dependencies on `crpg-core`, `crpg-sim` and
 `crpg-net` plus workspace `serde`/`serde_json`, and T039's path edge to
 `crpg-persist` (approved in [T039](../../tasks/T039.md) §8/Decisions; its
-`zstd` tree was already locked through T038), and T023b's path edge to
-`crpg-net-quic` (ADR-0024, T023 R12). That edge brings the transport's
+`zstd` tree was already locked through T038), T023b's path edge to
+`crpg-net-quic` (ADR-0024, T023 R12), and T037a's path edge to `crpg-nav`
+(ADR-0036 H1–H5, approved at T037 Question 1 (a)) for the mesh, its bake,
+queries and paths. That edge brings the transport's
 quinn/rustls/tokio tree in transitively, but `crpg-server` names none of
 those crates and has no direct edge to them. Nothing else. The host
 consumes T020's public `HistoryWorld` (`perform_action`, `read_after`,
@@ -390,6 +393,74 @@ receipt and a cache-hit receipt are single delta frames under the same gate, so 
 dropped one is recovered by the client's retry at an allowed tick. A new staging
 (`Resync`, narrowing, overflow) restarts the throttle; other sessions are unaffected.
 
+## Navigation and trusted movement (T037a)
+
+The host now owns a navigation mesh. `Host::bind_nav_mesh` pairs a validated
+`crpg_nav::NavMesh` with the revision sim validates routes against (H1);
+`bind_area_bounds(min, max)` bakes that mesh from an area's two bounds and
+`nav_revision()` reads the bound revision. Binding computes
+`NavRevision::of_bytes(mesh.to_canonical_bytes())`, calls `history.bind_nav`
+(H1, M4: a same-revision rebind changes nothing; a new revision clears every
+route in ascending `EntityId`), then places every mover whose position
+`locate`s to no polygon at its `nearest_on_mesh`, also ascending, and keeps
+`HostNav { mesh, revision }` as host state. `NavBinding` reports the revision,
+the cleared `(entity, tag)` pairs and the placed entities. The mesh is the
+host's, not the checkpoint's: sim saves the revision (so routes reload
+validated) but a restored host has `nav_revision() == None` until the
+embedding binds the mesh again, and until then every route request is
+refused.
+
+- **Mesh input (Reading 2).** A mesh, or the area's two bounds;
+  `area_mesh` is `bake_box(min[1], NavRect { min[0], min[2], max[0], max[2] },
+  &[])`, so the floor is `min.y`. A failed bake is
+  `HostError::NavBake(BakeError)` with nothing changed. There is no
+  `crpg-data` edge.
+- **One route computation (Reading 6).** `nav::plan_route` is the one
+  function behind `move_to`, `halt`'s sibling requests, `host_move` and (later)
+  `DeclareMove` and lane-1 `MoveTo`: a bound mesh (`NoNavMesh`), the actor's
+  presence (`Move(AbsentEntity)`), its mover (`Move(NotMover)`), then
+  `nearest_on_mesh(snap(measure, destination))` as the goal and
+  `find_path(mover.position(), goal)`; the path's points are copied whole.
+  `measure` is the encounter definition's `TurnMovement.measure` when it has
+  one, else `Measure::Euclidean`; `snap` is the identity in v1. It reads only.
+- **Off-mesh movers (Reading 5).** Only a binding places. A mover created
+  later (spawn, join, area transfer) is the caller's to `place` (M6), and a
+  route request from an off-mesh mover is refused (`StartOffMesh`), never
+  silently teleported.
+- **Route tags (Reading 7).** A trusted host route is `HOST_ROUTE_TAG =
+  RouteTag(0)`; lane-0 and lane-1 intents start at 1, so a peer's
+  `RouteTag(seq)` never collides with it. The tag is hashed with the route, so
+  it is a constant, not a counter a restore would lose.
+- **Trusted operations (Readings 8).** `move_to(actor, destination)` sets a
+  route and returns the tag it replaced; `halt(actor)` clears one and returns
+  its tag; `place(entity, position)` sets a position and clears the route; all
+  three are zero-event operations with no record and no publication.
+  `host_move(actor, destination)` is the turn-based move (W4, W7): it
+  reserves one host record (`CaptureFull`), runs the `EndTurn { actor }` turn
+  check (`Combat`), plans the route, runs `validate_move` (a `Combat` refusal
+  is `Combat`, any other `Move`), performs it and ends in the T141 host-record
+  tail with `HostOp::Action`, so its one `Moved` envelope is captured and
+  published to v3 sessions. It never moves `executions()` and sends nothing to
+  a v1/v2 session.
+- **The revision is not on the wire yet (Reading 4).** `nav_revision()` is
+  the trusted announcement until a `crpg-net` task adds one; no v4 op carries
+  it.
+
+Refusals are `HostError::NavBake(BakeError)`, `NoNavMesh`, `NoPath(NavError)`
+and `Move(MoveError)`, appended after `NotV3Peer` in that order with the
+usual `Display` (`<Variant> at host/admission`) and no `source()`. The two
+internal texts are `Invariant("nav binding refused")` and
+`Invariant("nav placement refused")`; both are unreachable for a live mover
+and a validated mesh.
+
+| Refusal | Result |
+|---|---|
+| bake of the area bounds fails | `Err(NavBake(e))`, nothing changes |
+| route request with no mesh bound (trusted) | `Err(NoNavMesh)` |
+| `find_path` fails (trusted) | `Err(NoPath(e))` |
+| sim refuses `place`, `set_route`, `clear_route`, `validate_move` (trusted) | `Err(Move(e))` |
+| `host_move` turn check | `Err(Combat(e))` |
+
 ## Connections and bindings (T023b)
 
 A QUIC connection has no gameplay identity until the adapter binds it. The
@@ -586,3 +657,4 @@ with T040/T041.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the protocol v3 sessions section (per-session wire, views read from `World` each call, atomic `0x82` staging, the paced outbox and its interim guards), so the doc matches `bind_v3_peer` and `host_v3.rs`.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Added the v3 publication section (intent pipeline and codes, the exact-status cache and its v1 projection, the page layout, candidates, room, overflow and per-session fencing) and replaced the T141c interim paragraph, so the doc matches the v3 intents and pages the host now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing section (the running-host `Clock` heartbeat and the in-flight throttle with its frame and byte budget, receipts and notices dropped during a download), so the doc matches the throttle and heartbeat the host now has.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Added the navigation and trusted movement section (binding steps, the one `plan_route`, `HOST_ROUTE_TAG`, the four trusted ops and their error order) and the `crpg-nav` edge to the diagram and edge paragraph, so the doc describes the mesh the host now keeps instead of a host with no navigation.

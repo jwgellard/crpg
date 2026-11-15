@@ -18,6 +18,9 @@ path = "src/main.rs"
 # the workspace serde/serde_json already in Cargo.lock. No crates.io crate is
 # added by this crate; see the T018a-style audit in tasks/T022.md.
 crpg-core = { path = "../crpg-core" }
+# T037a (ADR-0036 H1-H5, approved by the user 2026-11-15, T037 Question 1 (a)):
+# the navigation mesh, its bake, queries and paths. Path edge only.
+crpg-nav = { path = "../crpg-nav" }
 crpg-net = { path = "../crpg-net" }
 # T023b (ADR-0024, T023 R12): the lane-0 QUIC transport, as a path edge only.
 # No direct quinn, quinn-proto, rustls or tokio edge.
