@@ -90,7 +90,87 @@ to the transport API, so it is not S-set.
 
 ## Readings
 
-<!-- TODO -->
+Design decisions this contract makes. Each needs approval with the contract.
+
+1. **A new ALPN `crpg-lane0/3` = `Framing::V3`.** A second stream plus the
+   DATAGRAM extension is a stream-mapping and framing change, which ADR-0025
+   item 2 requires a new ALPN for
+   (`docs/adr/0025-lane0-quic-mapping-and-pinned-trust.md:31–34`), and the
+   crate trap forbids enabling either without one
+   (`crates/crpg-net-quic/AGENTS.md:125`). `Framing::V3`
+   (`crates/crpg-net-quic/src/handshake.rs:71`) pins: the `/2` channel
+   framing on stream 1 (Lane0, Transfer, Resume), the second client-initiated
+   bidi stream for lane 1, and the DATAGRAM extension with a minimum of
+   `MAX_MOVE_DOWN_BYTES`. *Rejected:* enabling datagrams under `/1` or `/2`
+   (the trap); a new `crpg-lane1/1` prefix (breaks the `crpg-lane0/N`
+   framing-version namespace, which already carries the snapshot and resume
+   channels under one ALPN, `:100–128`).
+2. **Lane 1 is a second client-initiated bidi stream, not a `/2` channel.**
+   `Channel` (`crates/crpg-net-quic/src/handshake.rs:103–128`) multiplexes
+   the lane-0 stream by a selector byte; lane 1 is its own sequence domain
+   per epoch (ADR-0036 L1,
+   `docs/adr/0036-movement-and-navigation.md:389–390`) and its frames start
+   with `0xA1` (`crates/crpg-net/src/movement_v4.rs:32`), not a selector.
+   *Rejected:* a `Channel::Movement = 0xA1` on stream 1 (would make the
+   selector depend on payload bytes, against the "never choose a channel from
+   payload bytes" trap, and would couple lane-1 order to lane-0's one queue).
+3. **The lane-1 stream reuses the 4-byte length framing.**
+   `frame_header`/`parse_frame_header`
+   (`crates/crpg-net-quic/src/handshake.rs:43–67`). Upstream cap
+   `MAX_INTENT_FRAME_BYTES` (4,096, the same cap `decode_intent` enforces,
+   `crates/crpg-net/src/movement_v4.rs:229`); downstream cap
+   `MAX_MOVE_DOWN_BYTES` (1,024, above the 60-byte largest receipt,
+   `tasks/T037.md:459`). *Rejected:* a channel-framed lane-1 stream (on its
+   own stream lane 1 needs no selector); a 65,536 downstream cap (a receipt
+   is ≤ 60 bytes; 1,024 keeps the two downstream shapes on one bound).
+4. **The datagram minimum is exactly `MAX_MOVE_DOWN_BYTES` (1,024).** The
+   client advertises `max_datagram_frame_size = Some(1_024)`; the server
+   refuses, before writing the welcome, a client whose advertised size is
+   absent or `< 1_024`, with `CloseCode::ProtocolViolation` (2). The largest
+   sample is 1,012 bytes (24 + 38 × 26,
+   `tasks/T026p.md:607–609`), so 1,024 admits every legal sample.
+   *Rejected:* a minimum below 1,024 (could refuse a legal sample); a new
+   close code (none is approved; 2 already means "the peer violated the
+   pinned framing", and the ALPN pins the minimum).
+5. **The dedup patch is `0002-widen-dedup-window.patch`**, applied after
+   0001 in file-name order by the vendoring mechanism
+   (`third_party/quinn-proto/VENDOR.md:3–9`, `:69–70`). It widens
+   `Dedup`'s window from 129 to 2,049 packets
+   (`docs/reviews/T030-quinn/README.md:14–15`, `:77–92`) so reordered-but-new
+   datagrams are not dropped (quinn#2710). *Rejected:* keeping the 129-bit
+   window (silent datagram loss under reordering; D23 requires the patch with
+   the first datagram lane, `tasks/DECISIONS-2026-09-30.md:83–88`).
+6. **Samples flow downstream only, as datagrams only.** The server advertises
+   `max_datagram_frame_size = None` (so a client `send_datagram` fails) and a
+   bounded `datagram_send_buffer_size`; the client advertises
+   `Some(MAX_MOVE_DOWN_BYTES)` and a bounded `datagram_receive_buffer_size`.
+   *Rejected:* the server advertising a receive size (accepts unsolicited
+   upstream datagrams lane 1 has no codec for, `movement_v4` has no upstream
+   datagram shape).
+7. **Datagram backpressure is drop-whole, repaired by refresh.** A
+   `try_send_datagram` that is `Blocked` (buffer full) or `Closed` is not
+   retried by the adapter; the host's 20-tick refresh
+   (`POLICY_SAMPLE_REFRESH_TICKS`, `tasks/T037.md:456`) replaces the lost
+   sample. Lane-1 stream backpressure reuses the lane-0 queue caps. The
+   datagram buffers are limits (below), not new unbounded queues.
+   *Rejected:* retrying a refused datagram (a stale sample is worse than
+   none, and ADR-0036 L4 makes samples lossy).
+8. **The lane-1 stream opens after the welcome.** The client opens stream 1
+   (hello) and, once the handshake completes, stream 2 (lane 1); the server's
+   accept loop expects a second `accept_bi` on `/3`. The server reads lane-1
+   intents only from a bound connection. *Rejected:* opening stream 2 before
+   the hello is accepted (the server cannot distinguish lane 1 from lane 0
+   traffic until the framing is fixed).
+9. **The `quic.rs` v4 route binds only wire version 4 on `/3`.** `on_hello`
+   (`crates/crpg-server/src/quic.rs:596`) gains a `Framing::V3` arm that
+   accepts wire version 4 and calls `bind_v4_peer`; `Invitation` gains
+   `facts: FactGrants` and `rights: PauseRights`, because `bind_v4_peer`
+   builds the first snapshot from them (`tasks/T037.md:437–441`) and
+   `FactGrants` has no `Default` (`crates/crpg-server/src/host.rs:244`).
+   v3-over-QUIC is not part of T150 (Out of scope). *Rejected:* empty
+   defaults plus post-bind `set_fact_grants`/`set_pause_rights` (the first
+   delivery is already staged at bind); a separate v4 invitation type (the
+   same principal binds once, so the fields belong on `Invitation`).
 
 ## Interface
 
