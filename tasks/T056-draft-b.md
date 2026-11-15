@@ -254,6 +254,103 @@ unused.
 
 ## Behaviour
 
+`decide` is the whole algorithm; the numbered items below are its only
+steps, in order. A `hostile` is *candidate* when it is a live combatant:
+`world.combatants().get(e)` is `Some(c)` with `!c.dead()`
+(`crates/crpg-sim/src/combat.rs:207-236`); anything else (absent, a bare
+entity, a record, or a dead combatant) is ignored. `close` is the last
+element of `legal_actions` (`EndTurn { actor }` in TB, `Stop { actor }` in
+RT; `crates/crpg-sim/src/combat.rs:3725-3727`).
+
+1. **B-1 (query first).** `decide` begins with
+   `legal_actions(world, actor)` (`crates/crpg-sim/src/combat.rs:3733-3736`);
+   `Err(e)` is returned as `AiError::Legal(e)` and nothing else is read or
+   computed. This covers `NoEncounter`, `NotParticipant`, `AbsentActor`,
+   `DeadActor`, `OutOfTurn`, a terminal encounter, and `TooManyOptions`.
+
+2. **B-2 (distance).** For a candidate `e`, the distance is
+   `Some(crpg_sim::seg_len(a.position(), m.position()))` when both
+   `world.movers().get(actor)` (`crates/crpg-sim/src/world.rs:1217`) and
+   `world.movers().get(e)` are `Some`, else `None`. `seg_len` is the
+   horizontal `ceil_sqrt(dx² + dz²)` over raw values, `y` ignored
+   (`crates/crpg-sim/src/movement.rs:310-315`). `None` (unmeasurable) orders
+   after every `Some` distance.
+
+3. **B-3 (nearest, deterministic).** The nearest candidate is the minimum of
+   `(distance.unwrap_or(u64::MAX), e)` lexicographically: smaller distance
+   wins; equal distances — including every `None` — break by ascending full
+   `EntityId` (`crates/crpg-core/src/entity.rs:60`), independent of
+   `hostiles` order.
+
+4. **B-4 (attack if in range).** If a nearest candidate exists and
+   `legal_actions` holds a `CombatAction::UseAbility { target: nearest, .. }`
+   (`crates/crpg-sim/src/combat.rs:932-952`), `decide` returns
+   `Decision::Attack(action)` with the *first* such action in `legal_actions`
+   order (ascending ability ULID, then ascending target `EntityId`;
+   `crates/crpg-sim/src/combat.rs:3715-3717`). Because `legal_actions` only
+   keeps what `validate_action` accepts, this is the first affordable
+   ability against the nearest hostile, and an out-of-range or unaffordable
+   candidate is simply absent from the list.
+
+5. **B-5 (move otherwise).** If a nearest candidate exists but B-4 did not
+   fire, `decide` attempts a move:
+   - `world.nav()` is `None` → `Pass(close)` (no bound navmesh, so
+     `validate_route` would fail `NavUnbound`);
+   - the nearest has no mover (`world.movers().get(nearest)` is `None`) →
+     `Pass(close)` (no destination);
+   - otherwise `nav.find_path(actor_pos, nearest_pos)`
+     (`crates/crpg-nav/src/path.rs:203`): `Ok(path)` →
+     `Decision::Move(MoveRoute { revision: world.nav().unwrap(), tag:
+     RouteTag(0), points: path.into_points() })`
+     (`crates/crpg-nav/src/path.rs:27`); any `Err(_)` (`StartOffMesh`,
+     `GoalOffMesh`, `AlreadyThere`, `Unreachable`, `PathTooComplex`,
+     `TooLong`; `crates/crpg-nav/src/path.rs:39-58`) → `Pass(close)`.
+
+6. **B-6 (pass).** With no candidate (empty `hostiles`, or every hostile
+   filtered out in B-1's sense), `decide` returns `Pass(close)`.
+
+7. **B-7 (priority).** A single call returns exactly one decision; the
+   order of preference is attack (B-4), then move (B-5), then pass (B-6).
+   "Move then attack" is the host's loop over repeated calls — `perform_move`
+   keeps the turn (`crates/crpg-sim/src/movement.rs:892-897`) — never two
+   actions in one decision. The AI never returns a `Decision` for a hostile
+   other than the nearest, and never a `CombatAction` that is not in
+   `legal_actions` (including for `Pass`, whose action is `legal_actions`'
+   own closing action).
+
+8. **B-8 (turn-based path).** In a TB encounter, `close` is
+   `EndTurn { actor }` and the host applies `Attack`/`Pass` through
+   `perform_action` and `Move` through `perform_move`. The AI itself makes
+   no mode branch; this item pins what the host does with the decision so
+   the TB path is testable end-to-end.
+
+9. **B-9 (real-time path).** In an RT encounter (`EncounterMode::RealTime`,
+   `crates/crpg-sim/src/combat.rs:76-82`), `close` is `Stop { actor }`
+   (`crates/crpg-sim/src/combat.rs:3725-3727`); the host applies `Attack`
+   through `perform_action` (storing a standing order, returning `Ok(None)`,
+   `crates/crpg-sim/src/combat.rs:3803-3808`) and `Move` through `set_route`
+   (`crates/crpg-sim/src/movement.rs:771-792`).
+
+10. **B-10 (purity and determinism).** `decide` draws no RNG (it never
+    touches `rng_mut`, `crates/crpg-sim/src/world.rs:1187`), interns nothing,
+    and mutates nothing: the world serializes to identical bytes before and
+    after every call, success or `AiError`. Two calls with the same
+    `(world, actor, nav, hostiles)` return the same `Decision`, whatever the
+    seed or the order of `hostiles`.
+
+11. **B-11 (actor without a mover).** If the actor is a combatant without a
+    mover (a movement-less ruleset), every distance is `None`, so B-3 picks
+    the lowest-`EntityId` candidate; B-4 may still attack it (an ability
+    with no `range` needs no mover; `crates/crpg-sim/AGENTS.md`, "Ability
+    range"), and B-5 always ends in `Pass` (no actor position to path from).
+    With no candidate, `Pass`.
+
+12. **B-12 (hostiles contains actor).** The contract does not guard against
+    `actor` appearing in `hostiles`; a host that passes it gets whatever
+    `legal_actions` allows (a self-target only when `allow_self_target` is
+    set), because B-4 still only returns actions from `legal_actions`. This
+    is a host error, not an `AiError`.
+
 ## Errors
 
 ## Tests
