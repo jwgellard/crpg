@@ -10,6 +10,29 @@ Every `path:line` was checked on `2aae6c9` (branch `task/T151-draft-a-d1`).
 
 ## Task
 
+Move the `crpg-godot` bridge from protocol v2 to protocol v4, so a Godot client
+sees positions and sends moves through the embedded single-player server. The
+three `crpg-net` client types replace the v2 ones: `ReassemblyPoolV4`
+(`crates/crpg-net/src/pool_v4.rs:102`) gates and reassembles delivery,
+`ReplicaWorldV4` (`crates/crpg-net/src/replica_v4.rs:55`) holds rows, positions
+and samples, and `MoveOutbox` (`crates/crpg-net/src/outbox_v4.rs:54`) is the
+lane-1 sender. The session is created choosing v4 with T037's `bind_v4_peer`
+(`tasks/T037.md:439–441`); positions and `Moved` reach GDScript as polled view
+state; a move request leaves GDScript as a lane-1 intent and its
+accept/refuse/supersede receipt is polled back. T049 interpolation (G1), T026
+prediction (G2) and T050 click-to-move (G3) are later tasks; this one leaves
+room for them without doing them.
+
+Today the bridge opens every session with `HostConfig { protocol:
+ProtocolSelection::V2, incarnation: 1 }` (`crates/crpg-godot/src/core/mod.rs:302`),
+decodes whole v2 frames itself into a v2 `ReplicaWorld`
+(`crates/crpg-godot/src/core/client.rs:18`, `:292`, `:321–329`), submits with
+`codec_v2::encode_intent` (`:523`), and treats a `DeliveryKind::Transfer` entry
+as a fatal fence (`crates/crpg-godot/src/core/authority.rs:61–75`). None of
+those survive the move. The GDExtension boundary is S-set
+(`docs/IMPLEMENTATION_PLAN.md:95`); only the part that adds FFI members touches
+it.
+
 ## Parts
 
 ## Readings
