@@ -461,6 +461,62 @@ and a validated mesh.
 | sim refuses `place`, `set_route`, `clear_route`, `validate_move` (trusted) | `Err(Move(e))` |
 | `host_move` turn check | `Err(Combat(e))` |
 
+## Protocol v4 sessions (T037b)
+
+A v4 session is a v3 session plus a v4 state (Reading 1): `V3Session` carries
+`v4: Option<Box<V4State>>` (`None` for a v3 session), and every v3 path —
+binding, staging, pacing, throttle, pages, receipts, the retry cache,
+`cached_status_v3` — serves it unchanged. Only the points that produce or read
+bytes branch on `v4`: the intent codec, the receipt frames, the page and the
+staging page. `bind_v4_peer` is `bind_v3_peer` with the same precedence and
+errors, plus `V4State { positions: PositionView::new(SessionEpoch(epoch)),
+withheld: [] }`; `session_wire` is `4`. Lane-0 intents decode with
+`codec_v4::decode_intent` and are cached as `codec_v4::encode_intent` bytes; a
+decoded `DeclareMove` resolves its actor like any other v4 intent and is then
+`Rejected(IllegalAction)` until T037c replaces it. A v1/v2/v3 intent body maps
+into the v4 vocabulary in one `Frame`, so the pipeline below `decode` has one
+shape.
+
+- **Positions (HM-6, Reading 16).** `V4State.positions` is the session's
+  `PositionView`, and `position_rows(world, grants, withheld)` is one
+  `PositionRow` per disclosure-grant entry, in stored order, whose entity is
+  present, live and has a mover: its key, `granted` exactly when the operator
+  has not withheld that entity from this viewer, its raw point and
+  `moving = mover.route().is_some()`. The withheld list is per session, empty
+  by default, so the default is HM-6's "presence minus nothing"; no authoring
+  setting or perception rule is implied.
+- **Pages (B-5, B-6).** A v4 page is the v3 layout built by
+  `project_page_v4` on clones of the interest, fact and position views, with
+  B-4's rows: `[V3(receipt)?] ++ enters ++ events ++ rest ++ [V3(Clock)?] ++
+  [V3(HostFacts)?]`, the `Position` ops being the page's tail, cut by
+  `codec_v4::frame_spans`. Committing the page installs all three clones; a
+  held page changes none. Each v3 event candidate is wrapped as
+  `EventCandidate::V4::V3`; a `HistoryEvent::Moved` becomes
+  `EventCandidate::Moved` with the post-page id, its raw points, and
+  `disclose` exactly when the same page's rows carry a granted row for that
+  entity. `Moved` never reaches a v3 session's page.
+- **Staging (HM-7, Reading 18).** A v4 staging projects the snapshot with
+  `project_snapshot_v4` on the same clones, then builds the anchoring page:
+  `project_page_v4` with B-4's rows followed by `[V3(Clock), V3(HostFacts)]`,
+  cut by `codec_v4::frame_spans`, one `event_seq` per frame. The whole plan
+  must fit `OUTBOX_MAX_ENTRIES_V4` (94) and `OUTBOX_MAX_BYTES_V4` (2,880,916),
+  else `Invariant("v4 plan exceeds the outbox bound")`; the commit queues
+  every frame after the transfer frames, moves `next_event_seq` past the last
+  and restarts the throttle with all of them counted. A v3 staging is still
+  the one `[Clock, HostFacts]` delta.
+- **Withholding (B-8).** `set_position_withheld(peer, entities)` checks
+  `Closed`, `UnknownPeer`, `NotV4Peer`, then `InvalidGrants` (more than
+  `MAX_GRANT_IDENTITIES` entries or a duplicate), stores the list sorted and
+  publishes to that session alone (`publish_v3(Some(peer), &[])`). Every
+  immediate consequence of the change is a `Position` op — a withdrawal for a
+  newly withheld entity, a fresh anchor for a re-granted one; an unchanged
+  list publishes a page with no ops and therefore no frame. `Moved` follows
+  the grant in the same page, so revoking after disclosure stops further
+  positions at once.
+- **Older wires unchanged (B-9).** A v1, v2 or v3 session has no `V4State`,
+  receives no `Position` or `Moved` op and keeps byte-identical entries and
+  capture views whether or not a v4 session shares the host.
+
 ## Connections and bindings (T023b)
 
 A QUIC connection has no gameplay identity until the adapter binds it. The
@@ -658,3 +714,4 @@ with T040/T041.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Added the v3 publication section (intent pipeline and codes, the exact-status cache and its v1 projection, the page layout, candidates, room, overflow and per-session fencing) and replaced the T141c interim paragraph, so the doc matches the v3 intents and pages the host now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing section (the running-host `Clock` heartbeat and the in-flight throttle with its frame and byte budget, receipts and notices dropped during a download), so the doc matches the throttle and heartbeat the host now has.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Added the navigation and trusted movement section (binding steps, the one `plan_route`, `HOST_ROUTE_TAG`, the four trusted ops and their error order) and the `crpg-nav` edge to the diagram and edge paragraph, so the doc describes the mesh the host now keeps instead of a host with no navigation.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037b · Added the protocol v4 session section (v4 as a v3 session plus `V4State`, v4 lane-0 codec and receipts, `position_rows` and the withheld list, v4 pages and `Moved`, the anchoring staging page with its 94-entry/2,880,916-byte outbox bound, and the untouched v1–v3 wires), so the doc describes the v4 sessions the host now binds.

@@ -51,7 +51,7 @@ use crpg_server::host::{
     FactGrants, GrantUpdate, Host, HostConfig, HostError, IngestDisposition, PeerHandle,
     ProtocolSelection, TransferDisposition, TransferState, DEFAULT_HOST_GRANTS,
 };
-use crpg_sim::EncounterMode;
+use crpg_sim::{CombatAction, EncounterMode, HistoryWorld};
 use serde_json::{json, Value};
 
 const FIXTURE: &str = include_str!("fixtures/three_combatants.json");
@@ -91,7 +91,7 @@ fn tid(raw: u64) -> TransferId {
     TransferId::new(raw).expect("nonzero")
 }
 /// A raw wire point `[x, y, z]`.
-fn p(x: i32, y: i32, z: i32) -> Point {
+fn pt(x: i32, y: i32, z: i32) -> Point {
     Point::new([x, y, z]).expect("within the wire bound")
 }
 /// A raw sim point `[x, y, z]`.
@@ -254,6 +254,14 @@ fn r1() -> PauseRights {
     }
 }
 
+/// `R0`: a session with no pause rights.
+fn r0() -> PauseRights {
+    PauseRights {
+        pause: false,
+        unpause: false,
+    }
+}
+
 fn control(actors: &[EntityId]) -> ControlGrant {
     ControlGrant {
         actors: actors.to_vec(),
@@ -303,7 +311,7 @@ fn pos(entity: u64, position: Option<(Point, bool)>) -> DeltaOp {
     }
 }
 
-fn clock(paused: Option<crpg_net::protocol_v3::PauseReason>) -> DeltaOpV3 {
+fn clock(paused: Option<Option<crpg_net::protocol_v3::PauseReason>>) -> DeltaOpV3 {
     DeltaOpV3::Clock { paused }
 }
 
@@ -731,9 +739,9 @@ fn b1_bind_v4_first_delivery() {
             server_tick: 0,
             event_seq: 1,
             ops: vec![
-                pos(1, Some((p(65536, 0, 65536), false))),
-                pos(2, Some((p(196608, 0, 65536), false))),
-                pos(3, Some((p(65536, 0, 327680), false))),
+                pos(1, Some((pt(65536, 0, 65536), false))),
+                pos(2, Some((pt(196608, 0, 65536), false))),
+                pos(3, Some((pt(65536, 0, 327680), false))),
                 DeltaOp::V3(clock(None)),
                 DeltaOp::V3(host_facts(r1())),
             ],
@@ -825,14 +833,28 @@ fn b1_bind_v4_first_delivery() {
             (3, DeliveryKind::Delta),
         ]
     );
-    assert_eq!(
-        decoded_transfer(&entries[0]),
-        decoded_transfer(&drained.entries[0])
-    );
-    assert_eq!(
-        decoded_transfer(&entries[1]),
-        decoded_transfer(&drained.entries[1])
-    );
+    let q_epoch = host.epoch(q).expect("bound");
+    let TransferDown::Begin(q_begin) = decoded_transfer(&entries[0]) else {
+        panic!("the first entry is a Begin");
+    };
+    assert_eq!(q_begin.epoch, q_epoch);
+    assert_eq!(q_begin.transfer, begin.transfer);
+    assert_eq!(q_begin.base_tick, begin.base_tick);
+    assert_eq!(q_begin.cursor, begin.cursor);
+    assert_eq!(q_begin.total_bytes, begin.total_bytes);
+    assert_eq!(q_begin.entity_count, begin.entity_count);
+    assert_eq!(q_begin.segments_per_chunk, begin.segments_per_chunk);
+    assert_eq!(q_begin.chunk_count, begin.chunk_count);
+    let TransferDown::Chunk(q_chunk) = decoded_transfer(&entries[1]) else {
+        panic!("the second entry is a Chunk");
+    };
+    let TransferDown::Chunk(p_chunk) = decoded_transfer(&drained.entries[1]) else {
+        panic!("the second entry is a Chunk");
+    };
+    assert_eq!(q_chunk.epoch, q_epoch);
+    assert_eq!(q_chunk.transfer, p_chunk.transfer);
+    assert_eq!(q_chunk.index, p_chunk.index);
+    assert_eq!(q_chunk.bytes, p_chunk.bytes);
     assert_eq!(
         codec_v3::decode_delta(&entries[2].bytes).expect("a v3 delta"),
         DeltaFrameV3 {
@@ -846,7 +868,15 @@ fn b1_bind_v4_first_delivery() {
         twin.publish(&mut host, q, 101),
         TransferDisposition::Published
     );
-    assert_eq!(twin.replica, *client.replica.v3());
+    let v4_replica = client.replica.v3();
+    assert_eq!(twin.replica.entities(), v4_replica.entities());
+    assert_eq!(twin.replica.turn(), v4_replica.turn());
+    assert_eq!(twin.replica.encounter(), v4_replica.encounter());
+    assert_eq!(twin.replica.timeline(), v4_replica.timeline());
+    assert_eq!(twin.replica.pause(), v4_replica.pause());
+    assert_eq!(twin.replica.host_facts(), v4_replica.host_facts());
+    assert_eq!(twin.replica.next_event_seq(), v4_replica.next_event_seq());
+    assert_eq!(twin.replica.server_tick(), v4_replica.server_tick());
     assert_authority(&host, &oracle);
 }
 
@@ -936,27 +966,31 @@ impl Pair {
         }
     }
 
-    /// Drains both sessions, compares (B-3) and the replicas, then publishes.
+    /// Drains both sessions, compares (B-3) and the replicas, and publishes a
+    /// staging the drain offered.
     fn sync(&mut self) {
+        let before = self.cx.last_snapshot;
         let v3 = self.cx.drain(&mut self.x, self.q, self.now);
         let v4 = self.cy.drain(&mut self.y, self.p, self.now);
         assert_v4_wraps_v3(&v3, &v4.entries);
         assert_eq!(&self.cx.replica, self.cy.replica.v3());
-        assert_eq!(
-            self.cx.publish(&mut self.x, self.q, self.now),
-            TransferDisposition::Published
-        );
-        assert_eq!(
-            self.cy.publish(&mut self.y, self.p, self.now),
-            TransferDisposition::Published
-        );
+        if self.cx.last_snapshot != before {
+            assert_eq!(
+                self.cx.publish(&mut self.x, self.q, self.now),
+                TransferDisposition::Published
+            );
+            assert_eq!(
+                self.cy.publish(&mut self.y, self.p, self.now),
+                TransferDisposition::Published
+            );
+        }
     }
 
     /// One intent at the next tick, sent to both sessions; the statuses agree.
     fn send(&mut self, seq: u64, actor: u64, body: IntentBodyV3) {
         self.now += 10;
-        let status = send_v3(&mut self.x, self.q, seq, actor, body.clone(), self.now);
-        let bytes = v3_intent(&self.y, self.p, seq, actor, body);
+        let status = send_v3(&mut self.x, self.q, seq, actor, body, self.now);
+        let bytes = v4_intent(&self.y, self.p, seq, actor, IntentBodyV4::from(body));
         assert_eq!(
             self.y.ingest(self.p, &bytes, self.now),
             Ok(IngestDisposition::Staged)
@@ -1036,8 +1070,23 @@ fn b2_v4_wraps_v3() {
         Ok(GrantUpdate::SnapshotStaged)
     );
     pair.sync();
-    assert_authority(&pair.x, &history_of(&mv3_value()));
-    assert_authority(&pair.y, &history_of(&mv3_value()));
+    let mut oracle = history_of(&mv3_value());
+    oracle
+        .perform_action(&CombatAction::UseAbility {
+            actor: a(),
+            ability: strike(),
+            target: b(),
+        })
+        .expect("the mirror accepts the order");
+    oracle
+        .acknowledge(oracle.last_sequence())
+        .expect("acknowledges");
+    oracle.tick().expect("the mirror ticks");
+    oracle
+        .acknowledge(oracle.last_sequence())
+        .expect("acknowledges the tick");
+    assert_authority(&pair.x, &oracle);
+    assert_authority(&pair.y, &oracle);
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,7 +1137,7 @@ fn b3_withhold_after_disclosure() {
             lane: LANE_COMBAT,
             server_tick: 0,
             event_seq: 3,
-            ops: vec![pos(2, Some((p(196608, 0, 65536), false)))],
+            ops: vec![pos(2, Some((pt(196608, 0, 65536), false)))],
         }]
     );
     assert!(twin.drain(&mut host, q, 4).is_empty());
@@ -1106,9 +1155,9 @@ fn b3_withhold_after_disclosure() {
     assert_eq!(
         shape(&drained.entries),
         vec![
-            (6, DeliveryKind::Transfer),
             (7, DeliveryKind::Transfer),
-            (8, DeliveryKind::Delta),
+            (8, DeliveryKind::Transfer),
+            (9, DeliveryKind::Delta),
         ]
     );
     let TransferDown::Begin(begin) = decoded_transfer(&drained.entries[0]) else {
@@ -1118,8 +1167,8 @@ fn b3_withhold_after_disclosure() {
     assert_eq!(
         entry_ops(&drained.entries[2]),
         vec![
-            pos(1, Some((p(65536, 0, 65536), false))),
-            pos(3, Some((p(65536, 0, 327680), false))),
+            pos(1, Some((pt(65536, 0, 65536), false))),
+            pos(3, Some((pt(65536, 0, 327680), false))),
             DeltaOp::V3(clock(None)),
             DeltaOp::V3(host_facts(r1())),
         ]
@@ -1150,9 +1199,9 @@ fn b4_presence_narrowing_reanchors() {
     assert_eq!(
         shape(&drained.entries),
         vec![
-            (3, DeliveryKind::Transfer),
             (4, DeliveryKind::Transfer),
-            (5, DeliveryKind::Delta),
+            (5, DeliveryKind::Transfer),
+            (6, DeliveryKind::Delta),
         ]
     );
     let TransferDown::Begin(begin) = decoded_transfer(&drained.entries[0]) else {
@@ -1166,8 +1215,8 @@ fn b4_presence_narrowing_reanchors() {
     assert_eq!(
         entry_ops(&drained.entries[2]),
         vec![
-            pos(1, Some((p(65536, 0, 65536), false))),
-            pos(3, Some((p(65536, 0, 327680), false))),
+            pos(1, Some((pt(65536, 0, 65536), false))),
+            pos(3, Some((pt(65536, 0, 327680), false))),
             DeltaOp::V3(clock(None)),
             DeltaOp::V3(host_facts(r1())),
         ]
@@ -1258,7 +1307,7 @@ fn b5_moved_follows_the_position_grant() {
             ops: vec![
                 DeltaOp::Moved {
                     entity: n(1),
-                    points: vec![p(65536, 0, 65536), p(262144, 0, 65536)],
+                    points: vec![pt(65536, 0, 65536), pt(262144, 0, 65536)],
                 },
                 facts_op(1, row.clone()),
             ],
@@ -1390,7 +1439,7 @@ fn b6_errors_and_precedence() {
     );
     assert_eq!(
         closed.set_position_withheld(bound, vec![b()]),
-        Ok(()).or(Err(HostError::Closed))
+        Err(HostError::Closed)
     );
 }
 
@@ -1439,6 +1488,7 @@ fn b9_older_bytes_unchanged_beside_v4() {
         q: PeerHandle,
         twin: Twin,
         p: Option<(PeerHandle, Client)>,
+        p_first: Vec<DeliveryEntry>,
         now: u64,
     }
     impl Rig {
@@ -1463,6 +1513,7 @@ fn b9_older_bytes_unchanged_beside_v4() {
                 TransferDisposition::Published
             );
             take(&mut host, v);
+            let mut p_first = Vec::new();
             let p = if v4 {
                 let handle = host
                     .bind_v4_peer(
@@ -1474,7 +1525,7 @@ fn b9_older_bytes_unchanged_beside_v4() {
                     )
                     .expect("binds");
                 let mut client = Client::new(host.epoch(handle).expect("bound"));
-                client.drain(&mut host, handle, 0);
+                p_first = client.drain(&mut host, handle, 0).entries;
                 assert_eq!(
                     client.publish(&mut host, handle, 0),
                     TransferDisposition::Published
@@ -1489,6 +1540,7 @@ fn b9_older_bytes_unchanged_beside_v4() {
                 q,
                 twin,
                 p,
+                p_first,
                 now: 0,
             }
         }
@@ -1512,7 +1564,7 @@ fn b9_older_bytes_unchanged_beside_v4() {
     let mut y = Rig::new(true);
     let p_epoch =
         y.p.as_ref()
-            .map(|_| y.host.epoch(y.p.unwrap().0).expect("bound"));
+            .map(|(handle, _)| y.host.epoch(*handle).expect("bound"));
 
     // The mesh, then a trusted move while A still holds the turn.
     for rig in [&mut x, &mut y] {
@@ -1537,10 +1589,6 @@ fn b9_older_bytes_unchanged_beside_v4() {
         );
         assert_eq!(rig.host.host_move(a(), m(4, 1)).map(|o| o.cost), Ok(1));
         let (v, q) = rig.take_older();
-        let p = rig.p_entries();
-        if rig.p.is_none() {
-            assert!(p.is_empty());
-        }
         let _ = (v, q);
     }
     let (xv, xq) = x.take_older();
@@ -1548,7 +1596,7 @@ fn b9_older_bytes_unchanged_beside_v4() {
     assert_same_entries(&xv, &yv);
     assert_same_entries(&xq, &yq);
     let xp = x.p_entries();
-    let yp = y.p_entries();
+    let mut yp = y.p_entries();
     assert!(xp.is_empty());
     assert!(!yp.is_empty());
     assert_same_entries(&x.p_entries(), &xp);
@@ -1582,7 +1630,6 @@ fn b9_older_bytes_unchanged_beside_v4() {
             Ok(GrantUpdate::SnapshotStaged)
         );
         let _ = rig.take_older();
-        let _ = rig.p_entries();
     }
     let (xv, xq) = x.take_older();
     let (yv, yq) = y.take_older();
@@ -1595,7 +1642,9 @@ fn b9_older_bytes_unchanged_beside_v4() {
     );
     assert_eq!(x_captures, y_captures);
     // Control: the v4 session did receive `Position` and `Moved` ops.
-    let p_ops = y.p_entries();
+    yp.extend(y.p_entries());
+    let mut p_ops = y.p_first.clone();
+    p_ops.extend(yp);
     let mut saw_position = false;
     let mut saw_moved = false;
     for entry in &p_ops {

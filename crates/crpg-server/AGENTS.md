@@ -52,6 +52,10 @@ T037a's additive `host` items: `NavBinding`, `HOST_ROUTE_TAG`,
 `Host::{bind_nav_mesh, bind_area_bounds, nav_revision, place, move_to, halt,
 host_move}`. The bound `HostNav` and `plan_route` are private in `src/nav.rs`.
 
+T037b's additive `host` items: `HostError::NotV4Peer` and
+`Host::{bind_v4_peer, set_position_withheld}`. `V4State`, `position_rows` and
+the two outbox bounds are private in `src/host_v4.rs`.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
@@ -332,6 +336,30 @@ git diff --check
   `bind_area_bounds`, `place`, `move_to` and `halt` log no frame for any
   session and append no capture entry; only `host_move` records (one
   `HostOp::Action` host record holding its `Moved` envelope).
+- **A v4 session is a v3 session with `v4: Some(V4State)` (T037b).** Every
+  `session.v3.is_some()` path (binding, staging, pacing, throttle, pages,
+  receipts, the cache, `cached_status_v3`) must keep serving it; only code
+  that produces or reads bytes branches on `v4`. The v4 branch points are
+  `decode`/`canonical`, `logged_frame`/`receipt_template_len`,
+  `plan_stage`/`plan_page` and `commit_v3_stage`'s `deltas`.
+- **The v4 page's `Position` ops are its tail, and one `event_seq` per
+  frame.** Cut v4 pages and staging anchors by `codec_v4::frame_spans` on the
+  whole op vector, never `ops.chunks`; the staging plan must fit
+  `outbox_fits_v4` (94 entries, 2,880,916 bytes) or the session is fenced with
+  `Invariant("v4 plan exceeds the outbox bound")`, and its throttle starts
+  with every staged delta frame counted.
+- **`Moved` follows the position grant in the same page (T037b/HM-8).** Its
+  entity is the post-page id (no v3 `after.or(before)` fallback) and its
+  `disclose` is a granted `PositionRow` for that entity in that page;
+  `set_position_withheld` publishes the withdrawal or fresh anchor to that
+  session alone, and an unchanged list sends no frame. A v3 session's `Moved`
+  arm stays `None`.
+- **A refused v4 admission must not consume lane-0 state.** A v4 `DeclareMove`
+  is `Rejected(IllegalAction)` until T037c without touching
+  `last_combat_error`; the v4 codec refuses every other version byte with
+  `UnsupportedVersion`, and `bind_v4_peer` keeps `bind_v3_peer`'s precedence
+  (`Closed`, `TimeRegression`, `InvalidGrants`, `ServerBusy`,
+  `CounterExhausted`).
 
 ## Agent log
 
@@ -348,3 +376,4 @@ git diff --check
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Replaced the interim v3 trap with the publication traps (frame_spans only, never-blocking v3 sessions with per-session fences, exact v3 codes behind `cached_status_v3`), so the contract matches the v3 pipeline.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing trap (throttled sessions lose notices and receipts, never state; gate every delta frame through `Throttle`; heartbeat only on a running tick) so the contract matches the throttle and heartbeat code.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Recorded the navigation surface (`NavBinding`, `HOST_ROUTE_TAG`, the four error variants, the seven `Host` calls), the approved `crpg-nav` edge and the four movement traps (one `plan_route`, an unpersisted mesh, tag 0, zero-event ops publish nothing), so the crate contract matches the host's navigation state.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037b · Recorded the v4 session surface (`bind_v4_peer`, `set_position_withheld`, `NotV4Peer`) and its traps (v4 as a v3 session plus state, `frame_spans` with one `event_seq` per frame and the v4 outbox bound, `Moved` under the page's position grant, and a refused `DeclareMove` consuming no lane-0 state), so the crate contract matches the v4 wire the host now speaks.

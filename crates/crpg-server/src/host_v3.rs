@@ -128,11 +128,13 @@ impl Throttle {
     }
 
     /// Delta frames logged since the staging, C-6's included (E-2).
+    #[cfg(test)]
     pub(crate) fn frames(&self) -> usize {
         self.frames
     }
 
     /// Encoded bytes of those frames (E-2).
+    #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
     }
