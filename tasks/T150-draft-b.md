@@ -164,7 +164,94 @@ Design decisions this draft takes. Each needs approval with the contract.
 
 ## Interface
 
-TODO (fill)
+Additions only, all proposed (the final architect pins them). Every public
+item carries a doc comment (`#![warn(missing_docs)]` holds crate-wide). No
+`HashMap`/`HashSet`, no `f32`/`f64`, no `unsafe`, no tokio/quinn/rustls
+type in a public signature (the crate rule,
+`crates/crpg-net-quic/AGENTS.md:47–53`), no new dependency.
+
+### T150a — no API
+
+The patch changes only `third_party/quinn-proto/crate/src/connection/spaces.rs`
+(`type Window`, `WINDOW_WORDS`, `WINDOW_BITS`, `WINDOW_SIZE`, `insert`,
+`smallest_missing_in_interval`, three unit tests rewritten
+width-generically, `docs/reviews/T030-quinn/README.md:77–92`). No public
+signature anywhere changes; the workspace `[patch.crates-io]` entry
+(`Cargo.toml:33–42`) already routes `quinn-proto` at the vendored path.
+
+### T150b — `lane1.rs` (new, `crpg-net-quic`)
+
+```rust
+/// ALPN for a connection carrying lane 1 (Reading 1). Lane-0-only peers
+/// keep `ALPN_LANE0_V1` (`crates/crpg-net-quic/src/handshake.rs:12`).
+pub const ALPN_LANE1_V1: &str = "crpg-lane1/1";
+/// Refused at connect unless the peer advertises at least this
+/// `max_datagram_frame_size` (Reading 3): `MAX_MOVE_DOWN_BYTES`
+/// (`crates/crpg-net/src/movement_v4.rs:50`).
+pub const LANE1_DATAGRAM_FLOOR: usize = 1_024;
+/// Caps for the lane-1 reliable stream (Reading 5): one maximal intent
+/// (54 bytes, `tasks/T026p.md:607–609`) plus the 4-byte header, rounded to
+/// the lane-0 intent cap.
+pub const LANE1_STREAM_READ_CAP: usize = 4_096;
+pub const LANE1_STREAM_SEND_CAP: usize = 4_096;
+
+/// What `QuicHost` (T150c) pumps on a lane-1 connection. Lane identity is
+/// the stream, so no new `Channel` arm: lane-1 bytes are `movement_v4`
+/// messages, never lane-0 frames.
+impl QuicServer {
+    /// Sends one lane-1 stream frame (an encoded intent upstream or receipt
+    /// downstream); `QueueFull` is retryable and queues nothing.
+    pub fn try_send_lane1(&self, conn: ConnectionId, bytes: &[u8]) -> Result<(), ChannelSendError>;
+    /// Receives one lane-1 stream frame, in order, exactly once.
+    pub fn try_recv_lane1(&self, conn: ConnectionId) -> Result<Vec<u8>, ServerError>;
+    /// Sends one sample datagram (at most `LANE1_DATAGRAM_FLOOR` bytes);
+    /// `QueueFull` is retryable and queues nothing, never blocking the
+    /// reliable streams.
+    pub fn try_send_sample(&self, conn: ConnectionId, bytes: &[u8]) -> Result<(), ChannelSendError>;
+    /// Receives one sample datagram, if one arrived.
+    pub fn try_recv_sample(&self, conn: ConnectionId) -> Result<Vec<u8>, ServerError>;
+}
+impl QuicClient {
+    pub fn try_send_lane1(&self, bytes: &[u8]) -> Result<(), ChannelSendError>;
+    pub fn try_recv_lane1(&self) -> Result<Vec<u8>, ServerError>;
+    pub fn try_send_sample(&self, bytes: &[u8]) -> Result<(), ChannelSendError>;
+    pub fn try_recv_sample(&self) -> Result<Vec<u8>, ServerError>;
+}
+```
+
+`ConnectionId` (`crates/crpg-net-quic/src/server.rs:37`),
+`ChannelSendError` (`crates/crpg-net-quic/src/close.rs:141`) and
+`ServerError` (`crates/crpg-net-quic/src/server.rs:106`) are reused; no
+new error enum. `ServerLimits`/`ClientLimits`
+(`crates/crpg-net-quic/src/limits.rs:53`, `:174`) each gain one
+tightening-only field `max_datagram_bytes: u64` (default: the floor;
+`validate`, `:105`, `:225`, rejects below it as `InvalidLimits`), and
+`tls.rs` advertises it as `max_datagram_frame_size` (today unadvertised,
+`:86–91`, `:129–134`).
+
+### T150c — `quic.rs` route (no new `Host` API)
+
+T150c calls only the approved T037 surface, unchanged:
+
+```rust
+// host.rs (T037d/T037b/T037c; called, not changed)
+pub fn bind_v4_peer(&mut self, control: ControlGrant, grants: DisclosureGrants,
+    facts: FactGrants, rights: crpg_net::protocol_v3::PauseRights, now_ms: u64)
+    -> Result<PeerHandle, HostError>;                                   // tasks/T037.md:437–441
+pub fn ingest_move(&mut self, peer: PeerHandle, bytes: &[u8], now_ms: u64)
+    -> Result<MoveAdmission, HostError>;                               // tasks/T037.md:483–484
+pub fn take_move_receipts(&mut self, peer: PeerHandle) -> Result<Vec<Vec<u8>>, HostError>;
+                                                                       // tasks/T037.md:487
+pub fn take_samples(&mut self, peer: PeerHandle) -> Result<Vec<Vec<u8>>, HostError>;
+                                                                       // tasks/T037.md:462
+```
+
+`quic.rs` gains a private `Lane1Binding { peer: PeerHandle }` per
+connection plus two private pump phases (drain lane-1 stream frames via
+`try_recv_channel`-analogous `try_recv_lane1` into `ingest_move`;
+deliver `take_move_receipts` via `try_send_lane1` and `take_samples`
+via `try_send_sample`). No `Host` signature, variant, `Display` text or
+cap changes.
 
 ## Behaviour
 
