@@ -53,9 +53,8 @@ Owns (full repository paths):
 - `crates/crpg-ai/tests/decide.rs` — the implementer suite.
 - `crates/crpg-ai/tests/decide_contract.rs` — the two-keys writer suite,
   written blind from this file.
-- `crates/crpg-ai/tests/fixtures/ai_tb.json` and
-  `crates/crpg-ai/tests/fixtures/ai_rt.json` — checked-in `World` JSON
-  fixtures (see Tests: fixture).
+- `crates/crpg-ai/tests/fixtures/ai_tb.json`, `ai_rt.json` and
+  `ai_nomove.json` — checked-in `World` JSON fixtures (see Tests: fixture).
 - `docs/architecture/crpg-ai.md` (new) — the first task with real code
   writes it (`docs/architecture/README.md`; root `AGENTS.md`).
 - `crates/crpg-ai/AGENTS.md` (new) — same rule.
@@ -353,7 +352,147 @@ RT; `crates/crpg-sim/src/combat.rs:3725-3727`).
 
 ## Errors
 
+| Value | Text |
+|---|---|
+| `AiError::Legal(e)` | `e`'s text unchanged (e.g. `NoEncounter at combat`, `OutOfTurn at combat/...`, `TooManyOptions at combat/options`; `crates/crpg-sim/src/combat.rs:3690-3698`) |
+
+`AiError` derives `Debug, Clone, PartialEq, Eq`, implements `Display`
+(delegating to the wrapped `LegalActionsError`) and `std::error::Error`
+(`source()` is the wrapped error), exactly as `HistoryError::Move` wraps
+`MoveError` (`crates/crpg-sim/src/movement.rs`, `tasks/T036.md` Errors
+table). No other error type is introduced. Movement and nav failures are
+not errors — they are `Pass` (Behaviour B-5, B-6).
+
 ## Tests
+
+Integration tests only, `crates/crpg-ai/tests/decide.rs` and
+`decide_contract.rs`. No `f32`/`f64`; nothing writes to disk; worlds come
+from `serde_json` over the checked-in fixtures.
+
+### Fixture
+
+`p(x, z)` is `[Fx16_16::from_int(x), Fx16_16::ZERO, Fx16_16::from_int(z)]`;
+`rp(x, y, z)` is that raw point; `m = 65536`. `uid(103)` / `uid(104)` are
+the two ability ULIDs (cost 1 each, pool `uid(105)` max 1), `uid(103)`
+listed before `uid(104)` in the ruleset.
+
+- **`ai_tb.json`.** A started TB world (`World::new(7)`, no area). The
+  generator registers three creatures in order — placement 111/prefab 121
+  (A), 112/122 (B), 113/123 (C) — so the entities are A `{index 0,
+  generation 1}`, B `{1, 1}`, C `{2, 1}`, then `start_encounter` enters all
+  three (no spawn). Authored initiative A `9`, B `10`, C `11`, so A holds
+  the first turn (`active == A`). Movers: A at `p(0,0)`, B at `p(10,0)`, C
+  at `p(0,10)`; bound nav `rev` (see mesh); the two abilities have no
+  `range`.
+- **`ai_rt.json`.** The same world started `RealTime`
+  (`start_encounter_in_mode`, `active == None`, every key `0`).
+- **`ai_nomove.json`.** A TB world with **no** `movement` rules, no movers,
+  no bound nav, the two abilities with no `range`: A `{0,1}` at `p(0,0)`,
+  B `{1,1}` at `p(10,0)` (no movers, so no positions the AI can read).
+- **mesh.** `rev` is `NavRevision::of_bytes(&mesh.to_canonical_bytes())`
+  (`crates/crpg-sim/src/movement.rs:55`, `crates/crpg-nav/src/mesh.rs:310`)
+  where `mesh = bake_box(Fx16_16::ZERO, NavRect { min_x: p(-5,0).into,
+  …})` — the axis-aligned box `x ∈ [-5 m, 15 m]`, `z ∈ [-5 m, 15 m]` at
+  `y = 0`, no holes (`crates/crpg-nav/src/bake.rs:89`). The generator binds
+  this same `rev` into the two movers worlds; the tests re-bake the
+  identical box in code.
+
+`use(x, t)` is `CombatAction::UseAbility { actor: x, ability: uid(103),
+target: t }`; `close(x)` is `EndTurn { actor: x }` (TB) or `Stop { actor: x
+}` (RT). `ranged(r)` edits the ability `uid(103)`'s `range` to
+`Some(Fx16_16::from_raw(r))` in the fixture JSON before deserializing.
+Each rejection is also checked through the host verb on a clone (`bytes`
+unchanged).
+
+- **D-1 `nearest_by_distance` (B-2, B-3, B-4).** `ai_tb` with C's mover
+  position edited to `p(0,1)`. `decide(world, A, mesh, &[B, C])` is
+  `Attack(use(A, C))` — distances `seg_len(A,B) = 655360`, `seg_len(A,C) =
+  65536`, so C is nearer. *Control:* `&[C, B]` returns the same.
+  *Fails if:* it targets B, or the result depends on `hostiles` order.
+
+- **D-2 `tie_breaks_by_lowest_id` (B-3).** `ai_tb` unmodified: B and C are
+  both at `655360`. `decide(world, A, mesh, &[B, C])` is `Attack(use(A, B))`
+  — B `{1,1}` < C `{2,1}`. *Control:* `&[C, B]` still `use(A, B)`.
+  *Fails if:* it targets C, or follows slice order.
+
+- **D-3 `first_affordable_ability` (B-4).** `ai_tb`, both abilities
+  affordable, B repositioned in range (default range is unlimited).
+  `decide(world, A, mesh, &[B])` targets B with `uid(103)` (the lower ULID),
+  not `uid(104)`. *Fails if:* it chooses `uid(104)` or a non-nearest target.
+
+- **D-4 `move_when_out_of_range` (B-5, B-7).** `ai_tb` `ranged(131072)`
+  (2 m), actor A, hostiles `[B]` at `p(10,0)` (10 m, out of range). The
+  result is `Move(MoveRoute { revision: rev, tag: RouteTag(0), points:
+  [p(0,0), p(10,0)] })` — the straight one-segment funnel on a single-cell
+  box, exactly `[[0,0,0],[655360,0,0]]` raw. *Control:* the route's first
+  point equals A's position and `revision == world.nav()`.
+  *Fails if:* it passes, tags the route otherwise, stamps a different
+  revision, or adds a point.
+
+- **D-5 `unreachable_target_passes` (B-5).** `ai_tb` `ranged(131072)` with
+  B's mover edited to `p(20,0)` (off the 15 m box). `find_path` returns
+  `GoalOffMesh` → `Pass(EndTurn { actor: A })`. *Fails if:* it returns
+  `Move`, or an `Err` (nav failure is a Pass, not an error).
+
+- **D-6 `no_navmesh_passes` (B-5).** `ai_tb` `ranged(131072)` with `nav`
+  removed from the JSON (`world.nav() == None`). → `Pass(EndTurn { actor:
+  A })`. *Fails if:* it moves (no bound navmesh to stamp), or errors.
+
+- **D-7 `hostile_without_mover_passes` (B-5).** `ai_tb` `ranged(131072)`
+  with B's `movers` entry removed (B is a combatant with no mover; A keeps
+  its mover). B is out of range (no mover → `OutOfRange`, so B is not in
+  `legal_actions`) and there is no destination to path to →
+  `Pass(EndTurn { actor: A })`. *Fails if:* it moves, or attacks B.
+
+- **D-8 `no_hostile_passes` (B-6).** `ai_tb`, `hostiles == []` →
+  `Pass(EndTurn { actor: A })`. Also `hostiles == [<a bare non-combatant
+  entity>]` → filtered out → `Pass`. *Fails if:* it attacks or moves.
+
+- **D-9 `attack_preferred_over_move` (B-7).** `ai_tb` default range, actor
+  A, hostiles `[B]`: B is in range, so the result is `Attack(use(A, B))`,
+  never `Move`, even though a path exists. *Fails if:* it moves when it
+  can attack.
+
+- **D-10 `turn_based_path_end_to_end` (B-8).** On a clone of the D-4 world,
+  applying the returned `Move` through `perform_move(world, A, &route)`
+  (`crates/crpg-sim/src/movement.rs:892-897`) returns `Ok` and sets A's
+  position to `p(10,0)`; applying the D-8 `Pass` through
+  `perform_action` returns `Ok(None)` (an `EndTurn`). *Fails if:* the AI's
+  TB closing action is anything but `EndTurn { actor: A }`, or `perform_move`
+  rejects the AI's route.
+
+- **D-11 `real_time_path_end_to_end` (B-9).** `ai_rt`, `hostiles == []` →
+  `Pass(Stop { actor: A })`. With hostiles `[B]` → `Attack(use(A, B))`
+  (applied through `perform_action` it stores the order and returns
+  `Ok(None)`; `crates/crpg-sim/src/combat.rs:3803-3808`). `ranged(131072)`
+  → `Move`, and `set_route(world, A, route)` (`crates/crpg-sim/src/movement.rs:771-792`)
+  returns `Ok`. *Fails if:* the RT closing action is `EndTurn`, or the RT
+  move is refused.
+
+- **D-12 `purity_and_determinism` (B-10).** For `ai_tb` (default, and
+  `ranged(131072)`) and `ai_rt`: serialize the world to bytes, call
+  `decide`, serialize again — identical; call `decide` twice — equal; call
+  with `hostiles` reversed — equal. *Fails if:* any call changes world
+  bytes, or two equal calls differ.
+
+- **D-13 `actor_without_mover` (B-11).** `ai_nomove`: no movers, so every
+  distance is `None` and B-3 picks the lowest id. `decide(world, A, mesh,
+  &[B])` is `Attack(use(A, B))` (the ability has no range, so no mover is
+  needed). *Fails if:* it passes or moves instead of attacking the
+  lowest-id hostile.
+
+- **D-14 `hostiles_contains_actor` (B-12).** `ai_tb`, `hostiles == [A, B]`:
+  the nearest is A itself; the ability does not `allow_self_target`, so
+  `use(A, A)` is not legal, and `find_path(A, A)` is `AlreadyThere` →
+  `Pass(EndTurn { actor: A })`. *Fails if:* it returns a self-attack or an
+  `Err` (host error is tolerated, never surfaced as `AiError`).
+
+- **D-15 `legal_actions_errors` (B-1, Errors).** `decide` with `actor` a
+  bare live entity (not a combatant) returns
+  `AiError::Legal(LegalActionsError::Actor(CombatError::NotParticipant
+  { .. }))`; a world with no encounter returns `NoEncounter`. The text and
+  `source()` of `AiError::Legal(e)` equal `e`'s. *Fails if:* a host-error
+  input yields a `Decision` instead of `AiError::Legal`.
 
 ## What must not change
 
