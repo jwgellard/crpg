@@ -17,7 +17,7 @@ Single-player uses the in-memory transport (ADR-0012: same protocol bytes, same 
 ## Open (each with the architect's recommendation; plain-language versions in the session 63 transcript)
 
 - **D65c (T151 Q1)** — network play for the Godot client in T151: recommend (a) not in T151; in-memory pipe now, QUIC client later. **Answered (a) by the user, 2026-11-16 ("Yes on that one").**
-- **D65d (T151 Q2)** — keep v2 beside v4: recommend (a) keep both; retiring v2 later needs approval to delete its tests.
+- **D65d (T151 Q2)** — keep v2 beside v4: recommend (a) keep both; retiring v2 later needs approval to delete its tests. **Answered (a) by the user, 2026-11-16: keep v2 beside v4.** New features target v4 only; each new protocol version extends the previous one on client and server (never a per-version copy); retiring v1/v2 is optional later cleanup, not planned work.
 - **D65e (T151 Q3)** — the game may name a destination (turn-based) and, in real time, the creature by NetId; the server decides: recommend (a) yes.
 - **D65f (T153 Q1)** — the `crpg-server` → `crpg-ai` edge (already in `ALLOWED`, `tools/lint/deps.py:69`; no new package): recommend (a) yes.
 - **D65g (T153 Q2)** — the AI acts while the host is paused (fights and loaded saves start paused): recommend (a) yes.
@@ -26,3 +26,4 @@ Single-player uses the in-memory transport (ADR-0012: same protocol bytes, same 
 ## Agent log
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65 · Recorded the user's answers on the server run loop and on joining a campaign, and the six T151/T153 questions still open.
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65c · Recorded the user's yes to D65c (in-memory pipe now, network client later).
+- 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65d · Recorded the user's answer to keep v2 beside v4, with new work on v4 only and versions built by extension.
