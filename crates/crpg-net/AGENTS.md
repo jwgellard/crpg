@@ -232,6 +232,16 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   not `Serialize`, has no restore constructor and is driven only through
   `project_page_v4`/`project_samples`/`project_snapshot_v4`; the position
   checks run before `project_page`'s, so a refusal never half-updates a view.
+- *2026-11-14 (UTC), T026p4:* **v4 receiver gate** (`pool_v4`; see
+  architecture §"T026p4"). **Supersedes the T140r1 two-pool wording above:
+  `pool_v3` and `pool_v4` are transliterations of `reassembly.rs`'s pool: a
+  fix to one is a fix to all three, in one task.** `pool_v4.rs` is
+  `pool_v3.rs` by the V-1 substitutions and nothing else; keep it so and run
+  V-1's `diff -B` check (it prints nothing) before changing either file.
+  `PublicationV3`, `ReceiverStatusV3` and the `0x82` path stay v3's and are
+  re-exported, never copied. The pool reads no op: never teach it
+  `Moved`, `Position` or any other op, and never add a `V4` arm to the v1/v3
+  types.
 
 ## Agent log
 
@@ -280,3 +290,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the protocol v4 lane-0 entry with its three traps (v4 wraps v3 ops and never moves a v3 tag; a v4 tag 0..=20 goes only through `codec_v3::take_op`/`extend_op`; no new rejection code without a new version) and superseded the "Spatial replication waits for the lane-1 movement channel" trap by that dated entry, leaving the old line unedited.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the protocol v4 lane-1 entry with its two traps (samples are datagrams only and never carry an `event_seq`; lane-1 intents have no `observed_tick`) and the bound and order rules for `movement_v4`.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the position-filter entry with its three traps (a position is sampled only after its anchor; `project_samples` reads the current grant so revocation is immediate; a snapshot empties the `PositionView` and the next page re-anchors).
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the v4 receiver-gate entry; its trap that a pool fix is a fix to all three pools supersedes the T140r1 two-pool wording by a new entry, not an edit.

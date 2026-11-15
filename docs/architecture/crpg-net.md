@@ -1204,6 +1204,58 @@ Order is the input's, with no sort and no deduplication. `disclose` is the
 host's position grant for the viewer, as `Joined`/`Left`'s is for notices.
 `tests/v4_positions.rs` (Q1..Q12 plus ordering and bound cases) is the suite.
 
+### T026p4: `pool_v4`, the v4 receiver gate
+
+`pool_v4` is `pool_v3` for one v4 session: `ReassemblyPoolV4` is
+`ReassemblyPoolV3` with the v4 delta decoder and nothing else changed. It
+re-exports, by path, everything the v3 pool already shares (`PublicationV3`,
+`ReceiverStatusV3`, `TransferLimitsV3`, `LimitsError`, `ResyncReason` and
+T024's outcome, error, status and mode types), so a v4 receiver's status and
+publications have exactly the v3 types. New are `ReceiverIdV4` (a separate
+id type with a private field, so a v3 receiver cannot be passed to a v4
+pool) and `ReplicaUpdateV4` (`Snapshot(PublicationV3)` or
+`Delta(protocol_v4::DeltaFrame)`, in FIFO order). The pool reads no op: a
+decoded v4 delta, `Moved` and `Position` included, is gated by `event_seq`
+alone and released as decoded.
+
+**Transliteration rule (V-1).** `pool_v4.rs` is `pool_v3.rs` with exactly
+these substitutions and nothing else:
+
+| In `pool_v3.rs` | In `pool_v4.rs` |
+|---|---|
+| `use crate::codec_v3::decode_delta;` | `use crate::codec_v4::decode_delta;` |
+| `use crate::protocol_v3::DeltaFrame;` | `use crate::protocol_v4::DeltaFrame;` |
+| the definitions of `PublicationV3` and `ReceiverStatusV3` | `pub use crate::pool_v3::{PublicationV3, ReceiverStatusV3};` |
+| `ReceiverIdV3`, `ReplicaUpdateV3`, `ReassemblyPoolV3` | `ReceiverIdV4`, `ReplicaUpdateV4`, `ReassemblyPoolV4` |
+
+`TransferAssemblyV3`, `TransferLimitsV3` and every `transfer_v3` call stay:
+the `0x82` snapshot is the v3 snapshot, so a v4 session transfers the v3
+body. Check order, saturating arithmetic, the clamp-then-sweep prologue,
+`BTreeMap` order and FIFO handling are unchanged. The check is runnable
+(contract T026p V-1, bash, repository root; it must print nothing, and the
+reviewer runs it): `diff -B` of `pool_v3.rs` after `sed` deletes lines 39-50
+and 72-95 and applies the five name substitutions, against `pool_v4.rs` less
+the one `pub use` line, both with whole-line `//` comments removed. Lines
+39-50 and 72-95 are the two re-exported definitions with their docs and
+derives, so a change to `pool_v3.rs` that moves them breaks the check on
+purpose.
+
+**Proved two ways.** `tests/v4_pool.rs` drives one script on a `ReassemblyPoolV3`
+and a `ReassemblyPoolV4` of the same limits (the same transfer bytes, each
+delta's v3 bytes with byte 0 changed from 3 to 4) and compares every result,
+every receiver's whole status, both pool totals and every popped update (a v4
+`Delta` against the v3 frame with its ops wrapped in `V3`), after every step.
+V1 is T140r's P8 script; V5 is one test each for its P2, P3, P4, P5, P9,
+P10 and P11. The v3 pool is the oracle, so a fix to one pool that is not made
+to the other fails the mirror.
+
+**Version isolation.** One pool holds one wire. `ReassemblyPoolV4` accepts
+`0x82` transfer frames and v4 delta frames only: v1, v2 and v3 delta bytes,
+the lane-1 `0xA1` sample bytes and `0x81` frames are
+`Codec(UnsupportedVersion)`; `ReassemblyPoolV3` refuses v4 delta bytes the
+same way. The host picks the pool per session; there is no fallback or
+negotiation.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Documented checked string-length overflow and transport-backed cache/retry conformance. These close malformed-length acceptance and replace codec-only redelivery evidence with actual dropped/duplicate delivery checks.
@@ -1229,3 +1281,4 @@ host's position grant for the viewer, as `Joined`/`Left`'s is for notices.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p1 · Added the "Protocol v4 (T026p, ADR-0036 L1–L6)" section for the new `protocol_v4`/`codec_v4` pair (lane table, `V3` wrapping and why, `Moved`, `Position`, `Point` and U3, `frame_spans`); no earlier section changed.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p2 · Added the lane-1 `movement_v4` subsection (the `0xA1` subprotocol, the four messages and their layouts, the 1,024-byte and 38-entry sample bounds and splitter, the decode order and the U7 policies) and marked lane 1 built in the lane table.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the `positions_v4`/`projection_v4` subsection (the anchor-then-samples disclosure, `PositionView`, the page, sample and snapshot rules, reconnect and `Moved` disclosure) and extended the op-owner table; no earlier section changed.
+- 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the `pool_v4` subsection (what is re-exported from `pool_v3`, the V-1 substitution table and its runnable `diff -B` check, the two-pool mirror proof and version isolation); no earlier section changed.

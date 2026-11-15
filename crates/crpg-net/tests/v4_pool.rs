@@ -1109,12 +1109,11 @@ fn v4_surface_and_receivers() {
         9
     );
     // The epoch a receiver was added with is its status's.
-    let other = ReassemblyPoolV4::new(l3())
-        .and_then(|mut p| {
-            let r = p.add_receiver([7; 16], GateMode::Live).expect("admitted");
-            Ok(p.status(r))
-        })
-        .expect("L3 validates");
+    let mut other_pool = ReassemblyPoolV4::new(l3()).expect("L3 validates");
+    let r = other_pool
+        .add_receiver([7; 16], GateMode::Live)
+        .expect("admitted");
+    let other = other_pool.status(r);
     assert_eq!(
         other,
         Ok(ReceiverStatusV3 {
