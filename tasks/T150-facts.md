@@ -150,7 +150,44 @@ Dependencies and lint row:
 
 ## The lane-1 codec in crpg-net
 
-(pending)
+Module and wire facts. All items are implemented on this branch (T026p1–T026p5).
+
+- `movement_v4` (`crates/crpg-net/src/movement_v4.rs:1`, declared `crates/crpg-net/src/lib.rs:50`) — "Lane-1 movement subprotocol (T026p2, ADR-0036 L1–L6, D13)".
+- `outbox_v4` (`crates/crpg-net/src/outbox_v4.rs:1`, declared `crates/crpg-net/src/lib.rs:51`) — "The client's lane-1 sender state (T026p5, ADR-0036 L2–L3)".
+- `subprotocol identity` (`movement_v4.rs:3–8`) — "Lane 1 is its own separately versioned subprotocol: every message starts with [`MOVEMENT_VERSION`] (`0xA1`)"; every lane-0 codec refuses lane-1 bytes with `UnsupportedVersion` and this codec refuses every other first byte the same way.
+- `upstream/downstream shape` (`movement_v4.rs:10–17`) — upstream `0xA1, epoch[16], lane (1), seq, actor, tag`; downstream `0xA1, lane (1), kind`; a sample is "one self-contained datagram of at most [`MAX_MOVE_DOWN_BYTES`] bytes and [`MAX_SAMPLE_ENTRIES`] entries, with no `event_seq` and no epoch".
+- `decode precedence` (`movement_v4.rs:19–21`) — "whole-message cap, empty input, version, header fields, body (each field checked when read), trailing-byte reject"; encode "never returns partial bytes".
+- `MOVEMENT_VERSION` (`movement_v4.rs:32`) — `0xA1`.
+- `LANE_MOVEMENT` (`movement_v4.rs:34`) — `1`.
+- `MOVE_TAG_MOVE_TO` (`movement_v4.rs:36`) — `0`; `MOVE_TAG_HALT` (`movement_v4.rs:38`) — `1`.
+- `DOWN_KIND_RECEIPT` (`movement_v4.rs:40`) — `0`; `DOWN_KIND_SAMPLE` (`movement_v4.rs:42`) — `1`.
+- `OUTCOME_TAG_ACCEPTED`/`_SUPERSEDED`/`_REJECTED` (`movement_v4.rs:44–48`) — `0`, `1`, `2`.
+- `MAX_MOVE_DOWN_BYTES` (`movement_v4.rs:50`) — `1_024`, "Largest lane-1 downstream message, receipt or sample".
+- `MAX_SAMPLE_HEADER_BYTES` (`movement_v4.rs:53`) — `24`; `MAX_SAMPLE_ENTRY_BYTES` (`:55`) — `26`; `MAX_SAMPLE_ENTRIES` (`:57`) — `38`.
+- `sample bounds assertion` (`movement_v4.rs:58–64`) — two `const` assertions pin 24 + 38 × 26 ≤ 1,024 < 24 + 39 × 26, so the entry and byte bounds change together.
+- `POLICY_MOVE_INTENTS_PER_SEC` (`movement_v4.rs:67`) — `20`; `POLICY_MOVE_INTENT_BURST` (`:69`) — `40`; `POLICY_MOVE_IN_FLIGHT` (`:71`) — `8`; all "Policy, never wire".
+- `MAX_MOVE_UP_BYTES` (none found) — `grep` over `crates/` finds no such constant; an intent is capped by `MAX_INTENT_FRAME_BYTES` (4,096, `crates/crpg-net/src/protocol.rs:58`) at `movement_v4.rs:229`, and the largest lane-1 intent is 54 bytes (`tasks/T026p.md:607`).
+- `MAX_MOVE_RECEIPT_BYTES` (none in `crpg-net`) — the 60-byte receipt bound is defined only by the T037 contract (`tasks/T037.md:459`), not in this crate.
+- `MoveBody` (`movement_v4.rs:76`) — `MoveTo { destination: Point }` (tag 0) and `Halt` (tag 1).
+- `MoveIntent` (`movement_v4.rs:89`) — `epoch: [u8; 16]`, `seq: u64`, `actor: NetId`, `body: MoveBody`; "there is no `observed_tick`".
+- `MoveOutcome` (`movement_v4.rs:102`) — `Accepted { start_tick }`, `Superseded`, `Rejected(RejectionCode)`.
+- `MoveReceipt` (`movement_v4.rs:116`) — `epoch`, `seq`, `actor`, `processed_tick`, `outcome`; "Exactly one receipt per admitted lane-1 intent, in `seq` order."
+- `SampleEntry` (`movement_v4.rs:131`) — `entity: NetId`, `point: Point`, `moving: bool`.
+- `MoveSample` (`movement_v4.rs:143`) — `server_tick`, `processed_seq`, `entries: Vec<SampleEntry>`.
+- `MoveDown` (`movement_v4.rs:154`) — `Receipt(MoveReceipt)` or `Sample(MoveSample)`.
+- `encode_intent` (`movement_v4.rs:207`) — encodes one intent, first byte `0xA1`.
+- `decode_intent` (`movement_v4.rs:228`) — refuses bytes over `MAX_INTENT_FRAME_BYTES` (`:229`), checks the version (`:234`) and the contract's field order.
+- `encode_down` (`movement_v4.rs:273`) — encodes a receipt or a sample.
+- `decode_down` (`movement_v4.rs:318`) — "Order: cap ([`MAX_MOVE_DOWN_BYTES`]), empty, version, lane, kind, the body" (`:316–319`).
+- `check_sample` (`movement_v4.rs:432`) — M-6's encode checks: `processed_seq` above `SEQ_LAST`, more than 38 entries, non-ascending entity, in that order.
+- `sample_datagrams` (`movement_v4.rs:447`) — M-7: cuts one tick's entries into chunks of 38, "Every datagram is at most 1,012 bytes" (`:440–446`).
+- `MoveOutbox` (`outbox_v4.rs:54`) — "The client's lane-1 sender state for one epoch": `epoch: [u8; 16]`, `next_seq`, `pending: Vec<MoveIntent>`, `processed_seq`.
+- `MoveOutbox::new` (`outbox_v4.rs:63`), `epoch` (`:73`), `next_seq` (`:78`), `processed_seq` (`:83`), `pending` (`:88`), `send` (`:93`), `receive` (`:113`).
+- `OutboxError` (`outbox_v4.rs:17`) — `Exhausted`, `Full`, `WrongEpoch`, `Unexpected { expected, got }`, `WrongActor { seq }`; `Display` is `"<Variant> at movement/outbox"` (`:38–48`).
+- `v4 subprotocol identifiers` (`crates/crpg-net/src/codec_v4.rs:6`) — "a first byte other than 4 (including 1, 2, 3, `0x81`, `0x82`, `0x91`, `0xA1`) is `UnsupportedVersion`".
+- `lane table` (`tasks/T026p.md:166`) — lane 1 is `0xA1`; `tasks/T026p.md:173` records that the earlier reading which put lane 1 under byte 4 was rejected by review.
+- `MAX_MOVE` grep (`crates/crpg-net/src/`) — the only matches are `MAX_MOVE_DOWN_BYTES` (`movement_v4.rs:50`) plus `MAX_MOVED_POINTS` (`protocol_v4.rs:41`, 64 points, lane 0's `Moved`), which is not a lane-1 constant.
+- `lane-1 policy constants are host-enforced` (`crates/crpg-net/AGENTS.md`, T026p2 entry) — "The policy constants are host-enforced and never wire."
 
 ## The host side
 
