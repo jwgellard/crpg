@@ -139,6 +139,98 @@ in `crpg-testkit` and are owned by the part whose behaviour they exercise.
 
 ## Interface
 
+Additions only. `HostError` gains `NavBake(crpg_nav::BakeError)` after
+`Invariant`. Every public item has a doc comment. No `HashMap`/`HashSet`,
+`f32`/`f64`, `unsafe`, clock, thread or filesystem call in `host.rs`.
+
+### Constants and H5 asserts (`crates/crpg-server/src/host.rs`)
+```rust
+/// Stationary-position refresh interval for `MoveSample` datagrams.
+pub const MOVE_SAMPLE_REFRESH_TICKS: u64 = 4;
+
+const _: () = assert!(crpg_nav::COORD_LIMIT_RAW == crpg_sim::movement::COORD_LIMIT_RAW);
+const _: () = assert!(crpg_nav::MAX_PATH_POINTS == crpg_sim::movement::MAX_ROUTE_POINTS);
+const _: () = assert!(crpg_nav::MAX_PATH_LENGTH_RAW == crpg_sim::movement::MAX_ROUTE_LENGTH_RAW);
+const _: () = assert!(crpg_net::protocol_v4::COORD_LIMIT_RAW == crpg_sim::movement::COORD_LIMIT_RAW);
+const _: () = assert!(crpg_net::protocol_v4::MAX_MOVED_POINTS == crpg_sim::movement::MAX_ROUTE_POINTS);
+```
+
+### Area load (Part 1)
+```rust
+impl Host {
+    /// Bakes nav from `area.bounds` (v1 `bake_box`), binds the revision,
+    /// places off-mesh movers at `nearest_on_mesh`, returns the revision.
+    pub fn load_area(&mut self, area: &crpg_data::Area)
+        -> Result<crpg_sim::movement::NavRevision, HostError>;
+    pub fn nav_revision(&self) -> Option<crpg_sim::movement::NavRevision>;
+}
+```
+
+### Movement decisions (Part 2)
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveDecision {
+    Accepted { start_tick: u64 },
+    Superseded,
+    Rejected(crpg_net::protocol_v3::RejectionCode),
+}
+
+impl Host {
+    /// Real-time: path compute + `set_route`. Turn-based callers use
+    /// `declare_move`. `peer` must control `actor`; control is checked first.
+    pub fn decide_move_to(
+        &mut self, peer: PeerHandle, actor: crpg_core::EntityId,
+        destination: [crpg_core::Fx16_16; 3], now_tick: u64,
+    ) -> Result<MoveDecision, HostError>;
+
+    pub fn declare_move(
+        &mut self, peer: PeerHandle, actor: crpg_core::EntityId,
+        destination: [crpg_core::Fx16_16; 3], now_tick: u64,
+    ) -> Result<MoveDecision, HostError>;
+}
+```
+
+### Lane-1 admission (Part 3)
+```rust
+impl Host {
+    pub fn ingest_move(&mut self, peer: PeerHandle, bytes: &[u8])
+        -> Result<Step, HostError>;
+    pub fn pump_moves(&mut self);
+}
+```
+`Step` is the existing `crates/crpg-server/src/host.rs` enum (`Step::Accepted`,
+`Step::Blocked`, …); lane-1 uses the same nine-step order (HM-2) with a
+separate `cache_move: VecDeque<CacheEntry>` and `next_move_seq` per session.
+
+### Position rows and samples (Part 3)
+```rust
+impl Host {
+    pub fn position_rows(&self, peer: PeerHandle)
+        -> Result<Vec<crpg_net::positions_v4::PositionRow>, HostError>;
+    pub fn take_datagrams(&mut self, peer: PeerHandle)
+        -> Result<Vec<Vec<u8>>, HostError>;
+}
+```
+
+### Session state additions
+```rust
+// In Session (host.rs:605-637):
+pub v4: Option<Box<V4Session>>,   // movement bookkeeping for a v4 session
+// V4Session (new, in host.rs):
+pub struct V4Session {
+    pub next_move_seq: u64,
+    pub cache_move: VecDeque<CacheEntry>,
+    pub cache_move_bytes: usize,
+    pub last_sample_tick: u64,
+    pub move_refresh_ticks: u64,   // == MOVE_SAMPLE_REFRESH_TICKS
+}
+```
+
+### Host-error mapping for nav
+`load_area` maps `BakeError` to `HostError::NavBake` and performs no sim
+mutation on failure. `decide_move_to`/`declare_move` never return a
+`HostError` for a nav refusal; the refusal is a `MoveDecision::Rejected`.
+
 ## Behaviour
 
 ## Errors
