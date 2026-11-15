@@ -139,18 +139,18 @@ yet written; its items are cited as the future surface and marked so.
 - `new(epoch: [u8; 16])` (`:63`) — next `seq` 1, nothing pending; `epoch()` (`:73`), `next_seq()` (`:78`), `processed_seq()` (`:83`), `pending() -> &[MoveIntent]` ascending, the resend list after a resume (`:88`).
 - `send(actor: NetId, body: MoveBody) -> Result<MoveIntent, OutboxError>` (`:93`) — refuses `Exhausted` above `SEQ_LAST` and `Full` at `POLICY_MOVE_IN_FLIGHT` (8) (`:94–99`).
 - `receive(&MoveReceipt) -> Result<(), OutboxError>` (`:113`) — completes only the oldest pending intent, whatever the outcome (`Accepted`, `Superseded`, `Rejected`), and checks epoch, `seq` and actor (`:114–131`); `OutboxError` has five variants (`:17–36`).
-- Related lane-1 wire types: `MoveBody` (`crates/crpg-net/src/movement_v4.rs:76`), `MoveIntent { epoch, seq, actor, body }` (`:89`), `MoveOutcome` (`:102`), `MoveReceipt { epoch, seq, processed_tick, actor, outcome }` (`:116`), `MoveSample` (`:143`), `encode_intent`/`decode_intent` (`:207`/`:228`), `encode_down`/`decode_down` (`:273`/`:318`), `sample_datagrams` (`:447`).
+- Related lane-1 wire types: `MoveBody` (`crates/crpg-net/src/movement_v4.rs:76`), `MoveIntent { epoch, seq, actor, body }` (`:89`), `MoveOutcome` (`:102`), `MoveReceipt { epoch, seq, actor, processed_tick, outcome }` (`:116`), `MoveSample` (`:143`), `encode_intent`/`decode_intent` (`:207`/`:228`), `encode_down`/`decode_down` (`:273`/`:318`), `sample_datagrams` (`:447`).
 
 **The v3 types they replace**
 
-- `ReassemblyPoolV3` (`crates/crpg-net/src/pool_v3.rs:139`) — same gate for v3 deltas; `pool_v4.rs` is "`pool_v3` with the delta decoder and frame type swapped and its own id and update types", and reuses `PublicationV3`/`ReceiverStatusV3` (`tasks/T026p.md:271–275`).
+- `ReassemblyPoolV3` (`crates/crpg-net/src/pool_v3.rs:139`) — same gate for v3 deltas; `ReassemblyPoolV4` "is `pool_v3` with the delta decoder and frame type swapped and its own id and update types", and `PublicationV3`/`ReceiverStatusV3` are reused unchanged (`tasks/T026p.md:271–275`).
 - `ReplicaWorldV3` (`crates/crpg-net/src/replica_v3.rs:56`) — rows, `turn()`, `encounter()`, `timeline()`, `pause()`, `host_facts()` (`:92–133`) but no positions; `ReplicaWorldV4` wraps it and applies every `V3` op through its `apply_op` (`crates/crpg-net/src/replica_v4.rs:178–184`).
 - `MoveOutbox` has no v3 counterpart: lane 1 is new in v4 (`crates/crpg-net/src/movement_v4.rs:32–34`).
 
 **Differences from the types the bridge uses now**
 
 - The bridge has no pool at all and decodes whole v2 frames itself (`crates/crpg-godot/src/core/client.rs:321–329`); a v4 client feeds `ReplicaUpdateV4` from `ReassemblyPoolV4::pop_update` and applies `Snapshot` via `apply_snapshot` / `Delta` via `apply_delta`.
-- The bridge's replica is `crpg_net::replica::ReplicaWorld` (v2, `crates/crpg-net/src/replica.rs:121`), whose `apply_delta` takes `protocol_v2::DeltaFrame` (`crates/crpg-net/src/replica.rs:19`) and which has no `position`, `positions`, `sample_clock` or `apply_sample`.
+- The bridge's replica is `crpg_net::replica::ReplicaWorld` (v2, `crates/crpg-net/src/replica.rs:121`), whose `apply_delta` takes `protocol_v2::DeltaFrame` (`crates/crpg-net/src/replica.rs:17`) and which has no `position`, `positions`, `sample_clock` or `apply_sample`.
 - The bridge's `Client` keeps one lane-0 `pending: Option<u64>` and `next_seq` (`crates/crpg-godot/src/core/client.rs:296–297`); `MoveOutbox` is the separate lane-1 sequence state, with a window of 8 and receipts taken in `seq` order.
 - `ReplicaWorldV4` exposes `Moved` only as the unchecked notice above; the bridge's view has no position member (`crates/crpg-godot/src/core/client.rs:28–45`), and the v1/v2 wire has "no transform op" (`crates/crpg-net/src/protocol.rs:305`).
 
@@ -162,7 +162,7 @@ yet written; its items are cited as the future surface and marked so.
 - `Host::from_history` (`crates/crpg-godot/src/core/mod.rs:299–309`) — the authority is the `HistoryWorld` the campaign walk started, wrapped with `HostConfig { protocol: ProtocolSelection::V2, incarnation: 1 }` and `now_ms` 0; a failure is `StartFailed` (25).
 - Peers (`crates/crpg-godot/src/core/mod.rs:325–338`) — the player binds with `bind_snapshot_peer(ControlGrant { actors }, disclosure, 0)` and the NPC with `bind_peer(ControlGrant { actors }, disclosure, 0)`; both feed the same `Host`.
 - Wiring (`crates/crpg-godot/src/core/mod.rs:345–357`) — `host.epoch(player)` becomes the client replica's `SessionEpoch`, `Client::new(epoch, table)` (`:349`), then `Authority::new(host, player, npc, link.authority_end(), npc_sides, bound)` (`:350`) and `Live { authority, client, link: link.client_end() }` (`:351–357`). The two ends are the only channel between the halves.
-- `Authority::step` (`crates/crpg-godot/src/core/authority.rs:508–607`) — drains the player's queue into `host.ingest` (`:512–519`), drives the NPC (`:522–548`), `host.pump` (`:567`), `take_delivery_entries` then `acknowledge_delivery` per peer (`:577–591`), `acknowledge_captures(last_capture())` (`:595–597`), then `legal_intents(player)` (`:603`). `Host::tick` is never called (`docs/adr/0033-godot-bridge.md:124`).
+- `Authority::step` (`crates/crpg-godot/src/core/authority.rs:508–616`) — drains the player's queue into `host.ingest` (`:512–519`), drives the NPC (`:522–548`), `host.pump` (`:567`), `take_delivery_entries` then `acknowledge_delivery` per peer (`:577–591`), `acknowledge_captures(last_capture())` (`:595–597`), then `legal_intents(player)` (`:603`). `Host::tick` is never called (`docs/adr/0033-godot-bridge.md:124`).
 
 **The T037 surface for v4 sessions** (approved contract, not yet implemented)
 
@@ -174,7 +174,7 @@ yet written; its items are cited as the future surface and marked so.
 - `take_samples` (`tasks/T037.md:456–462`) — `POLICY_SAMPLE_REFRESH_TICKS: u64 = 20` is "policy, never wire"; `take_samples(peer)` returns "the sample datagrams of the last committed tick not yet taken (C-6)".
 - `MoveAdmission` (`tasks/T037.md:468–481`) — four future outcomes of one lane-1 frame: `Admitted { seq }`, `Rejected { seq, code }`, `Duplicate { seq, resent }`, `Refused { seq: Option<u64>, code }`; `ingest_move` is `:483–484`.
 - `take_move_receipts` (`tasks/T037.md:485–487`) — "Every released lane-1 receipt not yet taken, in release order; taking them hands them to the reliable stream (D-9)."
-- Lane-1 state (`tasks/T037.md:490–496`) — `V4State.lane: MoveLane { next_seq, slots, cache, cache_bytes, bucket, receipts, processed_seq }` and `Host.next_move_order`; the v4 pool and replica on the client side are fed by these bytes.
+- Lane-1 state (`tasks/T037.md:490–496`) — `V4State.lane: MoveLane { next_seq, slots, cache, cache_bytes, bucket, receipts, processed_seq }` and `Host.next_move_order`; `MoveSlot`, `MoveCacheEntry` and the `MAX_MOVE_RECEIPT_BYTES` reservation are listed there (`:457–459`, `:493–495`).
 - What must not change (`tasks/T037.md:1412–1416`) — a wildcard `HostError` mapping and an exhaustive `DeliveryKind` match in `crpg-godot` must keep compiling; T037 adds `NotV4Peer` only (`:433–434`).
 
 ## The Godot client
@@ -184,7 +184,7 @@ yet written; its items are cited as the future surface and marked so.
 - `apps/client/scenes/Main.tscn` (`apps/client/scenes/Main.tscn:1`) — the only scene; `Main.gd` is its root script and it holds the `Proxies` and `Hud` children the scripts sync.
 - `scripts/Main.gd` (`apps/client/scripts/Main.gd:1`) — `extends Node3D`; `session = ClassDB.instantiate("CrpgSession")` (`:14`), `session.open(_campaign_dir(), "", "", OPEN_SEED)` (`:19`), one `session.poll()` per `_process` (`:29`), the revision gate `if next.revision() != seen: $Proxies.sync(next); $Hud.sync(next)` (`:40–43`), `choose(i)` → `session.submit_option(seen, i)` (`:45–48`), `session.close()` in `_exit_tree` (`:50–53`), and `CRPG_CAMPAIGN`/`ProjectSettings.globalize_path` for the fixture path (`:55–59`).
 - `scripts/SceneSync.gd` (`apps/client/scripts/SceneSync.gd:1`) — `plan(ids)` (`:17`), `sync(view)` (`:39`), `clear()` (`:68`), `proxy_count()` (`:73`); it names each node `proxy_<id>` (`:82`) and sets `proxy.position = Vector3(3.0 * side_index, 0.0, 1.5 * rank)` (`:61`), the label at `y = 1.2` (`:89`) and the mesh lift `mesh_instance.position.y = mesh_height / 2.0` (`:122`). These positions are derived from `net_ids()`/`sides()` only; the view has no position member.
-- `scripts/CombatHud.gd` (`apps/client/scripts/CombatHud.gd:1`) — `_ready` only sets `main = get_parent()` (`:60`), `sync(view)` (`:63`) writes round/turn/health/options/log/end, `clear()` (`:85`); it reads exactly the 14 view getters listed in `hud_cases.gd:25–28` and never `placements`/`option_targets` (`apps/client/tests/hud_cases.gd:29–33`).
+- `scripts/CombatHud.gd` (`apps/client/scripts/CombatHud.gd:1`) — `_ready` only sets `main = get_parent()` (`:60`), `sync(view)` (`:63`) writes round/turn/health/options/log/end, `clear()` (`:85`); it reads exactly the 14 view getters listed in `apps/client/tests/hud_cases.gd:25–28` and never `placements`/`option_targets` (`apps/client/tests/hud_cases.gd:29–33`).
 - `CrpgSession` readers (`apps/client/scripts/Main.gd:14`) — `Main.gd` is the only script that instantiates or calls the session; `SceneSync.gd` and `CombatHud.gd` take a view argument only.
 
 **The test runners and their exit codes**
@@ -194,7 +194,7 @@ yet written; its items are cited as the future surface and marked so.
 - `tests/hud.gd` (`apps/client/tests/hud.gd:1`) — runs the HUD cases: `quit(3)` when the case file fails to load (`:13`), `quit(6)` when `run` returns anything but the String `"PASS"` (`:17–19`), `quit(0)` on success (`:22`); its header says "H1-H19" and "H20 (the real session) runs in smoke.gd" (`:2–4`).
 - `tests/hud_cases.gd` (`apps/client/tests/hud_cases.gd:1`) — H1–H20 against a `FakeView` "that has exactly the 14 getters the HUD may read" (`:2–3`); `run(root)` returns `"PASS"` or `"H<n>: <detail>"` (`:73`, `:85`); a case returns the token `"ok"` and a crash (`""`) fails (`:4–5`, `:11`); its own H20 is the null-main press (`:6–7`).
 - `tests/smoke.gd` (`apps/client/tests/smoke.gd:2`) — E2 headless playthrough: `quit(6)` when a scene-sync case fails (`:28`), `quit(7)` when a HUD case or the end-of-play HUD check fails (`:33`, `:38`, `:75`), `quit(3)` on a failed scene load, open, poll or choose (`:43`, `:48`, `:59`, `:64`, `:89`), `quit(2)` when the class is missing (`:21`), `quit(4)` after 120 s (`:93`), `quit(5)` on a proxy-count mismatch (`:81`), `quit(0)` only on the ended view with `proxy_count() == net_ids().size() == 2` (`:69–78`).
-- `tests/scene_sync_cases.gd` (`apps/client/tests/scene_sync_cases.gd:1`) — S1–S18 against an inner `FakeView`; `run(host)` returns `"PASS"` or `"S<n>: detail"` and records the freed/kept nodes S14 checks.
+- `tests/scene_sync_cases.gd` (`apps/client/tests/scene_sync_cases.gd:1`) — the S1–S19 cases against an inner `FakeView` (`:2`, `:62–63`); `run(host)` returns `"PASS"` or `"S<n>: detail"`, and S14's deferred-free check runs in `scene_sync.gd` (`:2–7`).
 
 **How they are run**
 
@@ -214,10 +214,10 @@ yet written; its items are cited as the future surface and marked so.
 
 **Submodule suites**
 
-- `core/authority/tests.rs` (`crates/crpg-godot/src/core/authority/tests.rs:1`) — "K4-K7, K34 and the direct half of K35": `hand_off`, the NPC chooser and pacer, the pump result fold, the campaign walk and the start-order binding; 7 cases.
+- `core/authority/tests.rs` (`crates/crpg-godot/src/core/authority/tests.rs:1`) — "K4-K7, K34 and the direct half of K35": `hand_off`, the NPC chooser and pacer, the pump result fold, the campaign walk and the start-order binding; helpers `fixture_root` (`:29`), `fixture_authority(link)` (`:40`), `id`/`ull` (`:108`/`:112`), `entry(ordinal, kind, bytes)` (`:116`) and the `FakeFs` walker (`:316`); 7 cases.
 - `core/client/tests.rs` (`crates/crpg-godot/src/core/client/tests.rs:1`) — "K8-K14: the client half's rows, events, revisions, receipts, labels and frame refusals, plus the client-owned part of `submit_option`"; 12 cases.
 - `core/errors/tests.rs` (`crates/crpg-godot/src/core/errors/tests.rs:1`) — "K1-K2: the closed code table and the host-failure mapping"; 2 cases.
-- `core/link/tests.rs` (`crates/crpg-godot/src/core/link/tests.rs:1`) — "K3: the bounded two-ended link": a full direction refuses and changes nothing while FIFO order holds (`:8–10`); 3 cases.
+- `core/link/tests.rs` (`crates/crpg-godot/src/core/link/tests.rs:1`) — "K3: the bounded two-ended link": `LocalLink::new(cap)` with both ends (`:10–11`); a full direction refuses and changes nothing while FIFO order holds (`:8–10`); 3 cases.
 
 **`crates/crpg-godot/tests/`**
 
@@ -244,12 +244,11 @@ yet written; its items are cited as the future surface and marked so.
 - `deps.py testkit and server rows` (`tools/lint/deps.py:68–69`) — `crpg-testkit` excludes `crpg-godot`, and `crpg-server` excludes `crpg-godot` and `crpg-edit`, so no lower crate may import the bridge back.
 - `one unsafe in the shell` (`crates/crpg-godot/AGENTS.md:52–56`) — "The shell has exactly one hand-written `unsafe`: `unsafe impl ExtensionLibrary for CrpgExtension`, under a `SAFETY:` comment block (K32). … Any other `unsafe` needs an ADR-0033 amendment. `godot` stays optional behind `engine` (off by default) and is pinned `=0.5.5`; never turn `engine` on by default."
 - `one core call per #[func]` (`crates/crpg-godot/AGENTS.md:57–60`) — "Each `#[func]` makes exactly one core call. The shell does no indexing, `unwrap`/`expect` or arithmetic on GDScript values"; `shell.rs` "imports `crate::core::{..}` items, never the bare name `core`."
-- `T151's own S-set status` (`tasks/T037.md:14–15`) — T037 itself "No part is S-set (no wire byte, checkpoint version, `World` field, history version or tick order is fixed here)"; the bridge move's own classification is not stated in T026p or T037.
+- `S-set silence on the bridge task` (`tasks/T037.md:14–15`) — T037 itself "No part is S-set (no wire byte, checkpoint version, `World` field, history version or tick order is fixed here)"; neither T026p nor T037 states a classification for the bridge move itself.
 - `crpg-godot is not in the determinism lint` (`docs/adr/0033-godot-bridge.md:371–372`) — "`crpg-godot` stays outside `determinism.py`. It reads no rule from presentation values, and the slice needs no float."
 - `Do not modify contracts or the toolchain` (`AGENTS.md:53`) — "Do not modify `crpg-contracts` or `rust-toolchain.toml`."
 - `No HashMap/HashSet in core/rules/sim` (`AGENTS.md:43`) — the ban covers `crpg-core`, `crpg-rules` and `crpg-sim`; `crpg-godot` already uses `BTreeMap`/`BTreeSet` in its core (`crates/crpg-godot/src/core/authority.rs:9`).
 
 ## Agent log
 
-- 2026-11-15 (UTC) · deepseek-v4.1-flash + T151 facts · Skeleton with the
-  required section headings, so each section lands as its own reviewed commit.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T151 facts · Gathered the cited requirements, the bridge as it stands on v2, the v4 client types in `crpg-net`, the T037 future host surface, the `apps/client` scripts and runners, the existing tests and the binding lint rules, so the T151 contract can be written from checked `path:line` facts rather than re-reading the tree.
