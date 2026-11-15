@@ -352,7 +352,97 @@ no `HostError` variant.
 
 ## Tests
 
-TODO (fill)
+`crates/crpg-net-quic/tests/lane1.rs` (T150b), `host_quic_lane1.rs`
+(T150c); T150a is proven by P1 plus the matrix L10. Where a case names no
+separate control, its passing calls are the control. Each precedence list
+is tested at every adjacent pair with both faults present.
+
+- **P1 `vendored_window_is_2049`.** Applies
+  `patches/0002-dedup-window.patch` with `--dry-run` on top of `0001`
+  (control: `0001` alone still applies clean, `tasks/T023v.md:146`);
+  asserts the crate's `WINDOW_BITS == 2048` and `WINDOW_SIZE == 2049`
+  (was 129, `third_party/quinn-proto/crate/src/connection/spaces.rs:480–483`);
+  runs the three rewritten unit tests. *Fails if:* the patch overlaps
+  `0001`, or any constant differs.
+- **L1 `lane1_stream_pair_opens_after_welcome`.** Full connect on
+  `ALPN_LANE1_V1`; client opens the second bidi stream; server accepts
+  exactly one. Sends a 54-byte intent-shaped payload (the largest lane-1
+  intent, `tasks/T026p.md:607–609`) each way; expects exact bytes back in
+  order. Control: the lane-0 hello/welcome round trip on the same
+  connection first. *Fails if:* a second stream is needed, a byte is
+  reordered, or lane-0 bytes leak across streams.
+- **L2 `second_lane1_stream_is_refused`.** Control L1; client opens a
+  second lane-1 stream; expects close `ProtocolViolation` (2).
+  *Fails if:* the server accepts it or closes with another code.
+- **L3 `datagram_floor_refused_at_connect`.** Raw client (the
+  `RawClient`/`raw_connect` shape,
+  `crates/crpg-net-quic/tests/support/quic_rig.rs:212–353`) advertising
+  `max_datagram_frame_size = 512` on the lane-1 ALPN: expects close
+  `VersionRefused` (6), no `HelloReceived`, `refused_handshakes` + 1.
+  Control: the same client at 1,024 connects and is greeted. *Fails if:*
+  512 connects, or the refusal carries another code.
+- **L4 `datagram_floor_boundary`.** 1,023 refused exactly as L3; 1,024
+  accepted exactly as the control. *Fails if:* either side flips.
+- **L5 `lane1_stream_ordered_exactly_once_through_impaired_relay`.**
+  Handshake clean, then `set_impaired(true)` (the T098d shape,
+  `crates/crpg-net-quic/tests/quic.rs:1200–1212`); relay config
+  `drop_every = 13`, `reorder_depth = 4`, `seed = 23` (`:1174–1178`).
+  Sends 40 × 54-byte frames on the lane-1 stream; expects all 40 in
+  order, exactly once. Control: the same 40 on a clean path.
+  *Fails if:* any frame is lost, duplicated or reordered.
+- **L6 `oversize_sample_never_crosses`.** `try_send_sample` of 1,012
+  bytes (24 + 38 × 26, the largest sample, `tasks/T026p.md:607–609`)
+  succeeds; of 1,025 bytes fails at the API with nothing queued.
+  A 1,012-byte payload arrives whole. Control: a 0-byte... (no
+  empty-datagram special case: 0-length stream frames are violations, so
+  the control is the 1,012-byte success). *Fails if:* 1,025 is queued or
+  1,012 is truncated.
+- **L7 `duplicates_pass_through_dedup_holds`.** Sends one datagram 3
+  times plus an older-tick-shaped datagram: expects 4 deliveries in send
+  order at the receiver (application repeats are data; QUIC packet
+  duplicates die in the 2,049 window). Control: reorder depth ≤ 29 as
+  measured (`docs/reviews/T030-quinn/README.md:18`), far below both the
+  old 129 and the new 2,049. *Fails if:* fewer than 4 arrive (dedup
+  overreach) or order changes.
+- **L8 `sample_pressure_never_blocks_receipts`.** Fills the outbound
+  sample accounting to its cap; `try_send_lane1` of a 60-byte
+  receipt-shaped payload (the largest receipt,
+  `tasks/T037.md:459`) still succeeds immediately. Control: the same
+  send on an idle connection. *Fails if:* the stream send blocks or
+  fails while only datagram accounting is full.
+- **L9 `close_with_lane1_open_flushes_both`.** Lane 1 open with a queued
+  receipt and a queued sample; `close(Flush)` with `B = 2,000 ms`:
+  expects both payloads delivered, then `CONNECTION_CLOSE`; the flush
+  stops at `B − R = 1,800 ms` with `R = min(200, 2,000 / 4) = 200 ms`
+  (`crates/crpg-net-quic/src/teardown.rs:9–18`). Control: the same close
+  with lane 1 idle. *Fails if:* either payload is missing, the close
+  code is wrong, or the flush overruns into the reserve.
+- **L10 `windows_impairment_matrix_passes` (T150b acceptance, native
+  Windows/MSVC).** Re-runs the T030 matrix
+  (`docs/reviews/T030-quinn/README.md:148–166`: payload 1,000 bytes, one
+  DATAGRAM per packet, rates 30/300/3,000 datagrams/s, 64 MiB receive /
+  16 MiB send buffers, `clean` / `reorder` (75 ms ± 15 ms) / `impaired`
+  (+ 3% loss), patched vs unpatched): expects 0 window-attributable
+  discards at every rate (baseline: 0 in all 26 runs, `:179–201`), and
+  shortfall at ≥ 300/s at most the unpatched baseline (sender-side, which
+  the patch does not change). Results committed under
+  `docs/reviews/T030-quinn/results/`. *Fails if:* any run shows a dedup
+  discard, or the patched build underperforms the control.
+- **S1 `v4_session_binds_over_lane1_alpn` (T150c).** Connect on the
+  lane-1 ALPN with a registered invitation; expects `bind_v4_peer` to
+  succeed and `session_wire == 4` (`tasks/T037.md:447–450`); the same
+  credential on `crpg-lane0/1` binds a v3 session as today. Control: the
+  T023b `host_quic` suite passes unchanged. *Fails if:* the ALPN binds
+  the wrong version or the v3 path changes.
+- **S2 `move_round_trip_through_route` (T150c).** Sends one encoded
+  `MoveTo` (54 bytes at most) on the lane-1 stream; expects
+  `ingest_move` → `Admitted`, one receipt on the lane-1 stream in order,
+  and the next tick's `take_samples` bytes as datagrams; `Duplicate`
+  resend returns `resent` without a second decision
+  (`tasks/T037.md:758–764`). Control: mirror `HistoryWorld` with the
+  same sim calls and `authority_hash` equality after acknowledge (the
+  T037 test rule, `tasks/T037.md:844–857`). *Fails if:* a byte travels
+  the wrong channel, order breaks, or the mirror diverges.
 
 ## What must not change
 
