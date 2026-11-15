@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
-use crpg_core::{EntityId, Ulid};
+use crpg_core::{EntityId, Fx16_16, Ulid};
 use crpg_net::codec::{self, CodecError};
 use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
@@ -60,9 +60,10 @@ use crpg_net::protocol_v3::{
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_net::transfer_v3;
 use crpg_sim::{
-    history_hash, legal_actions, validate_action, CombatAction, CombatError, EncounterMode,
-    HistoryEnvelope, HistoryError, HistoryEvent, HistoryWorld, LegalActionsError, World,
-    MAX_HISTORY_EVENTS, MAX_HISTORY_PAGE,
+    history_hash, legal_actions, validate_action, validate_move, CombatAction, CombatError,
+    EncounterMode, HistoryEnvelope, HistoryError, HistoryEvent, HistoryWorld, LegalActionsError,
+    MoveError, MoveOutcome, MoveRoute, NavRevision, RouteTag, World, MAX_HISTORY_EVENTS,
+    MAX_HISTORY_PAGE,
 };
 
 use crate::capture::{
@@ -77,6 +78,7 @@ use crate::host_v3::{
     host_facts_image, key_of, net_mode, outbox_fits, read_world, sim_mode, Gate, OutboxEntry,
     PagePlan, Throttle, V3Session, V3Stage,
 };
+use crate::nav::{area_mesh, plan_route, HostNav, RouteRefusal};
 
 // ---------------------------------------------------------------------------
 // Constants (§2).
@@ -92,6 +94,13 @@ pub const MAX_GRANT_IDENTITIES: usize = MAX_VISIBLE_ENTITIES;
 /// Bound peers per host (aliases
 /// [`POLICY_PROOF_PEERS`](crpg_net::protocol::POLICY_PROOF_PEERS), 8).
 pub const MAX_PEERS: usize = POLICY_PROOF_PEERS;
+
+/// The tag of every route a trusted host operation sets (Reading 7).
+///
+/// Lane-0 and lane-1 intent sequences start at 1, so a peer's `RouteTag(seq)`
+/// never collides with it. It is hashed with the route, so it must be
+/// deterministic; a host counter would not survive a checkpoint.
+pub const HOST_ROUTE_TAG: RouteTag = RouteTag(0);
 
 /// Segments packed into each snapshot-transfer chunk (S§7). Every valid v1
 /// body fits in one chunk, so a transfer is one `Begin` plus one `Chunk`.
@@ -327,6 +336,18 @@ pub enum TransferRefusal {
     UnknownTransfer,
 }
 
+/// What one navigation binding did (H1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavBinding {
+    /// BLAKE3 of the mesh's canonical bytes (R2).
+    pub revision: NavRevision,
+    /// Routes the binding cleared, ascending `EntityId`; empty when the
+    /// revision was already bound.
+    pub cleared: Vec<(EntityId, RouteTag)>,
+    /// Movers placed at `nearest_on_mesh`, ascending `EntityId`.
+    pub placed: Vec<EntityId>,
+}
+
 /// A snapshot session's transfer ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferState {
@@ -514,6 +535,14 @@ pub enum HostError {
     InvalidSettings,
     /// The call needs a session bound with `bind_v3_peer`.
     NotV3Peer,
+    /// `bind_area_bounds` could not bake the bounds.
+    NavBake(crpg_nav::BakeError),
+    /// No navigation mesh is bound to this host.
+    NoNavMesh,
+    /// Navigation found no route.
+    NoPath(crpg_nav::NavError),
+    /// The sim refused a movement operation; nothing changed.
+    Move(MoveError),
 }
 
 impl fmt::Display for HostError {
@@ -537,6 +566,10 @@ impl fmt::Display for HostError {
             Self::Combat(_) => "Combat",
             Self::InvalidSettings => "InvalidSettings",
             Self::NotV3Peer => "NotV3Peer",
+            Self::NavBake(_) => "NavBake",
+            Self::NoNavMesh => "NoNavMesh",
+            Self::NoPath(_) => "NoPath",
+            Self::Move(_) => "Move",
         };
         write!(f, "{name} at host/admission")
     }
@@ -800,6 +833,9 @@ pub struct Host {
     paused: Option<PauseReason>,
     timer: Option<TurnTimer>,
     timer_epoch: u64,
+    /// The bound navigation mesh (T037a); `None` before a binding and after a
+    /// restore (Reading 3).
+    nav: Option<HostNav>,
 }
 
 impl Host {
@@ -848,6 +884,7 @@ impl Host {
             paused: None,
             timer: None,
             timer_epoch: 0,
+            nav: None,
         }
     }
 
@@ -3321,6 +3358,194 @@ impl Host {
         }
     }
 
+    // -- navigation and trusted movement (T037a) ---------------------------
+
+    /// Binds `mesh` as this host's navigation mesh (H1) and reports what the
+    /// binding did.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed). The revision is BLAKE3 of
+    /// the mesh's canonical bytes; [`HistoryWorld::bind_nav`] clears every
+    /// route computed on another revision (an `Err` is
+    /// `Invariant("nav binding refused")`), then every mover whose position
+    /// `locate`s to no polygon is placed at its `nearest_on_mesh`, ascending
+    /// [`EntityId`] (`Invariant("nav placement refused")`). The host keeps the
+    /// mesh and its revision, replacing any earlier one. Zero events: no
+    /// record and no publication (Reading 21).
+    pub fn bind_nav_mesh(&mut self, mesh: crpg_nav::NavMesh) -> Result<NavBinding, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let revision = NavRevision::of_bytes(&mesh.to_canonical_bytes());
+        let cleared = self
+            .history
+            .bind_nav(revision)
+            .map_err(|_| HostError::Invariant("nav binding refused"))?;
+        let mut off_mesh: Vec<(EntityId, [Fx16_16; 3])> = self
+            .history
+            .world()
+            .movers()
+            .iter()
+            .filter(|(_, mover)| mesh.locate(mover.position()).is_none())
+            .map(|(entity, mover)| (entity, mesh.nearest_on_mesh(mover.position())))
+            .collect();
+        off_mesh.sort_by_key(|(entity, _)| *entity);
+        let mut placed = Vec::with_capacity(off_mesh.len());
+        for (entity, position) in off_mesh {
+            self.history
+                .place(entity, position)
+                .map_err(|_| HostError::Invariant("nav placement refused"))?;
+            placed.push(entity);
+        }
+        self.nav = Some(HostNav { mesh, revision });
+        Ok(NavBinding {
+            revision,
+            cleared,
+            placed,
+        })
+    }
+
+    /// Binds the mesh H1 bakes from an area's two bounds (Reading 2).
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then
+    /// [`NavBake`](HostError::NavBake) for bounds that do not bake, refused
+    /// with nothing changed; then [`bind_nav_mesh`](Self::bind_nav_mesh).
+    pub fn bind_area_bounds(
+        &mut self,
+        min: [Fx16_16; 3],
+        max: [Fx16_16; 3],
+    ) -> Result<NavBinding, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let mesh = area_mesh(min, max).map_err(HostError::NavBake)?;
+        self.bind_nav_mesh(mesh)
+    }
+
+    /// The bound mesh's revision; `None` before a binding and after a restore
+    /// (Reading 3: the mesh is host state, never checkpointed).
+    pub fn nav_revision(&self) -> Option<NavRevision> {
+        self.nav.as_ref().map(|nav| nav.revision)
+    }
+
+    /// M6: a trusted placement (area arrival, a later spawn).
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then the sim's
+    /// `AbsentEntity`, `NotMover` and `OutOfBounds { index: 0 }` as
+    /// [`Move`](HostError::Move), refused; any other history refusal is
+    /// `Invariant("history refused a host operation")`. Clears the mover's
+    /// route and needs no mesh.
+    pub fn place(&mut self, entity: EntityId, position: [Fx16_16; 3]) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        match self.history.place(entity, position) {
+            Ok(()) => Ok(()),
+            Err(HistoryError::Move(error)) => Err(HostError::Move(error)),
+            Err(_) => Err(HostError::Invariant("history refused a host operation")),
+        }
+    }
+
+    /// W7: a trusted real-time or exploration route to `destination`.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then
+    /// [`plan_route`](crate::nav)'s refusals ([`NoNavMesh`](HostError::NoNavMesh),
+    /// [`Move`](HostError::Move), [`NoPath`](HostError::NoPath)), then the
+    /// sim's `set_route` refusals (`DeadCombatant`, `TurnBased`, a route
+    /// check) as [`Move`](HostError::Move); a refusal changes nothing. Returns
+    /// the tag of the route it replaced. Tagged [`HOST_ROUTE_TAG`]; zero
+    /// events, no record, no publication.
+    pub fn move_to(
+        &mut self,
+        actor: EntityId,
+        destination: [Fx16_16; 3],
+    ) -> Result<Option<RouteTag>, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let route = self.host_route(actor, destination)?;
+        match self.history.set_route(actor, route) {
+            Ok(replaced) => Ok(replaced),
+            Err(HistoryError::Move(error)) => Err(HostError::Move(error)),
+            Err(_) => Err(HostError::Invariant("history refused a host operation")),
+        }
+    }
+
+    /// W7: clears `actor`'s route and returns its tag.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then the sim's
+    /// `AbsentEntity` and `NotMover` as [`Move`](HostError::Move), refused.
+    /// Zero events, no record, no publication.
+    pub fn halt(&mut self, actor: EntityId) -> Result<Option<RouteTag>, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        match self.history.clear_route(actor) {
+            Ok(cleared) => Ok(cleared),
+            Err(HistoryError::Move(error)) => Err(HostError::Move(error)),
+            Err(_) => Err(HostError::Invariant("history refused a host operation")),
+        }
+    }
+
+    /// W7: a trusted turn-based move (W4), recorded as a `HostOp::Action`
+    /// host record.
+    ///
+    /// Checks in order: [`Closed`](HostError::Closed), the host-record
+    /// reservation ([`CaptureFull`](HostError::CaptureFull)), the turn through
+    /// `validate_action(EndTurn { actor })`
+    /// ([`Combat`](HostError::Combat)), [`plan_route`](crate::nav) as
+    /// [`move_to`](Self::move_to), `validate_move` (a `Combat(_)` refusal is
+    /// [`Combat`](HostError::Combat), any other [`Move`](HostError::Move)),
+    /// then `HistoryWorld::perform_move`. Steps 1 to 6 are refused on failure.
+    /// The T141 tail records the one `Moved` envelope as one host record and
+    /// publishes it to v3 sessions; the sim's outcome is returned. It never
+    /// moves `executions()` and delivers nothing to a v1/v2 session.
+    pub fn host_move(
+        &mut self,
+        actor: EntityId,
+        destination: [Fx16_16; 3],
+    ) -> Result<MoveOutcome, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.reserve_host_record()?;
+        validate_action(self.history.world(), &CombatAction::EndTurn { actor })
+            .map_err(HostError::Combat)?;
+        let route = self.host_route(actor, destination)?;
+        match validate_move(self.history.world(), actor, &route) {
+            Ok(_) => {}
+            Err(MoveError::Combat(error)) => return Err(HostError::Combat(error)),
+            Err(error) => return Err(HostError::Move(error)),
+        }
+        let before = self.history.last_sequence();
+        let outcome = match self.history.perform_move(actor, &route) {
+            Ok(outcome) => outcome,
+            Err(HistoryError::Move(error)) => return Err(HostError::Move(error)),
+            Err(_) => return Err(HostError::Invariant("history refused a host operation")),
+        };
+        self.complete_host_op(HostOp::Action, before)?;
+        Ok(outcome)
+    }
+
+    /// A-7 step 2: the one route computation with its refusals mapped.
+    fn host_route(
+        &self,
+        actor: EntityId,
+        destination: [Fx16_16; 3],
+    ) -> Result<MoveRoute, HostError> {
+        plan_route(
+            self.nav.as_ref(),
+            self.history.world(),
+            actor,
+            destination,
+            HOST_ROUTE_TAG,
+        )
+        .map_err(|refusal| match refusal {
+            RouteRefusal::NoNavMesh => HostError::NoNavMesh,
+            RouteRefusal::Move(error) => HostError::Move(error),
+            RouteRefusal::Nav(error) => HostError::NoPath(error),
+        })
+    }
+
     /// Whether the encounter is in real-time mode, the only mode whose ticks
     /// journal events.
     fn is_real_time(&self) -> bool {
@@ -3329,7 +3554,6 @@ impl Host {
             .combat()
             .is_some_and(|combat| combat.mode == EncounterMode::RealTime)
     }
-
     /// Check-only worst-case room for one host record (S-4 step 2).
     fn reserve_host_record(&self) -> Result<(), HostError> {
         if self.last_capture >= u64::MAX - 1 {

@@ -47,6 +47,11 @@ T141b's additive `host` items: `HostSettings`, `AdvanceReport`,
 `Host::{settings, set_settings, paused, pause, unpause, advance,
 turn_timer_remaining_ms}`. Signatures of existing items do not change.
 
+T037a's additive `host` items: `NavBinding`, `HOST_ROUTE_TAG`,
+`HostError::{NavBake, NoNavMesh, NoPath, Move}` and
+`Host::{bind_nav_mesh, bind_area_bounds, nav_revision, place, move_to, halt,
+host_move}`. The bound `HostNav` and `plan_route` are private in `src/nav.rs`.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
@@ -102,8 +107,10 @@ build authorities from the checked-in `HistoryWorld` fixture (below), and no
 field against the returned `ActionOutcome`. T023b adds the
 `crpg-net-quic` path edge (ADR-0024, T023 R12) and nothing else: there is no
 direct quinn, quinn-proto, rustls or tokio edge, because `crpg-net-quic`
-exposes none of their types. Anything else needs its own approval; never
-widen `deny.toml`.
+exposes none of their types. T037a adds the `crpg-nav` path edge (ADR-0036
+H1–H5, the user's approval at T037 Question 1 (a)) for the mesh, its bake,
+queries and paths; the crate names no other navigation type. Anything else
+needs its own approval; never widen `deny.toml`.
 
 ## Definition of done for any change
 
@@ -310,6 +317,21 @@ git diff --check
 - **Never print a credential.** `Invitation`'s `Debug` relies on
   `Credential`'s redaction; `QuicHost`'s `Debug` is hand-written. No error
   variant or report carries credential bytes.
+- **Never route without `plan_route` (T037a).** `move_to`, `host_move` and
+  every later lane-0/lane-1 route request go through `nav::plan_route`: a
+  bound mesh, the actor, then S3's snap, `nearest_on_mesh` and `find_path`.
+  Build no route by hand and never place an off-mesh mover implicitly.
+- **The mesh is not saved: a restored host must bind it again (T037a).**
+  Sim saves the revision, not the mesh, so `nav_revision()` is `None` after
+  `load_checkpoint` and every route request is `NoNavMesh` until the
+  embedding calls `bind_nav_mesh`; binding the same mesh then clears nothing.
+- **`HOST_ROUTE_TAG` is 0; peer routes carry their `seq` (T037a).** The tag
+  is hashed with the route, so it is a constant, never a counter a restore
+  would lose; lane sequences start at 1 and never collide with it.
+- **A zero-event movement op publishes nothing (T037a).** `bind_nav_mesh`,
+  `bind_area_bounds`, `place`, `move_to` and `halt` log no frame for any
+  session and append no capture entry; only `host_move` records (one
+  `HostOp::Action` host record holding its `Moved` envelope).
 
 ## Agent log
 
@@ -325,3 +347,4 @@ git diff --check
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141c · Added the v3-session trap (no stored map, atomic staging into a paced outbox, interim v3 guards) and named the `bind_v3_peer` family in the surface, so the contract matches the v3 session code.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Replaced the interim v3 trap with the publication traps (frame_spans only, never-blocking v3 sessions with per-session fences, exact v3 codes behind `cached_status_v3`), so the contract matches the v3 pipeline.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing trap (throttled sessions lose notices and receipts, never state; gate every delta frame through `Throttle`; heartbeat only on a running tick) so the contract matches the throttle and heartbeat code.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Recorded the navigation surface (`NavBinding`, `HOST_ROUTE_TAG`, the four error variants, the seven `Host` calls), the approved `crpg-nav` edge and the four movement traps (one `plan_route`, an unpersisted mesh, tag 0, zero-event ops publish nothing), so the crate contract matches the host's navigation state.
