@@ -443,4 +443,28 @@ edges. No lower crate imports the bridge back: `crpg-testkit` and
 
 ## Open questions
 
+1. **Should `open` keep a v2 fallback when the host has no v4 session?**
+   Recommendation: no. The embedded host is built in the same task, so a flag
+   would double every K-case for a configuration with no user.
+2. **Should `submit_move` take a `NetId` or a row index?** Draft takes the
+   `NetId` (an `i64`), since ids are the only thing GDScript may see
+   (`tasks/T151-facts.md:21). Recommendation: keep `NetId`; an index would rot
+   when rows reorder.
+3. **Should the bridge set a position-withholding default?** T037b's H-filter
+   items default to full disclosure in tests, and the bridge binds with full
+   disclosure today (`tasks/T151-facts.md:163`). Recommendation: disclose all,
+   expose no setter in T151c; withholding arrives with a later H-filter task.
+4. **Should samples flow even when GDScript never reads them?** Applying them
+   costs a map write per granted entity per tick. Recommendation: yes, always
+   apply (B8); the getters are the read path and staleness would break T049's
+   future buffer.
+5. **Is T151c's S-set classification agreed?** The GDExtension boundary is in
+   the serialized set (`docs/IMPLEMENTATION_PLAN.md:89–95`), and T151c adds
+   `#[func]`s to it. Recommendation: confirm S-set at contract review; if the
+   architect disagrees, fold C into B with a human gate.
+6. **Does T151d move proxies to granted positions, or only log them?**
+   Snapping proxies to positions without interpolation may visibly teleport.
+   Recommendation: T151d positions proxies exactly (no smoothing), and T049
+   owns making that pretty; the runner asserts exact points.
+
 ## Agent log
