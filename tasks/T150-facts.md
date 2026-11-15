@@ -191,7 +191,37 @@ Module and wire facts. All items are implemented on this branch (T026p1–T026p5
 
 ## The host side
 
-(pending)
+`crates/crpg-server/src/quic.rs` as built (T023b/T024h2):
+
+- `QuicHost` (`crates/crpg-server/src/quic.rs:430`) — "one [`Host`] plus one `crpg_net_quic::QuicServer`, driven by a synchronous, non-blocking [`QuicHost::pump`]" (`:1–3`).
+- `module invariants` (`quic.rs:21–26`) — "This module reads no clock, spawns no thread, opens no socket"; `now_ms` is injected; `wait`, `shutdown` and `Drop` are the only blocking calls.
+- `start` (`quic.rs:466`) — takes a host and a bound server; the server "must come from `QuicServer::bind` or `QuicServer::bind_dual`, never `QuicServer::bind_resumable`" (`:462–465`).
+- `pump` (`quic.rs:501`) — preconditions (`Poisoned`, then `TimeRegression`), then `run_phases`.
+- `run_phases` (`quic.rs:521–593`) — the seven phases: events, drain, admit (`host.pump`), reconcile epochs, deliver, retire closed peers, report.
+- `on_hello` (`quic.rs:596`) — credential match (`:613–617`), wire version (`:618–622`), supersession (`:623–630`), framing from the negotiated ALPN (`:634`), bind (`:650–671`), welcome (`:687–692`), `server.accept` (`:694`), `Bound` record (`:696–710`).
+- `bind by framing` (`quic.rs:650–659`) — `Framing::V2` calls `Host::bind_snapshot_peer`, `Framing::V1` calls `Host::bind_peer`; there is no other framing and no v4 branch.
+- `drain` (`quic.rs:768–837`) — a held frame is retried first (`:774–787`), then up to `MAX_DRAIN_PER_CONNECTION` frames (`:56–58`) via `server.try_recv_channel` (`:790`).
+- `channel routing` (`quic.rs:795–809`) — `Channel::Lane0` → `ingest_one`, `Channel::Transfer` → `ingest_transfer_one`, `Channel::Resume` → fence ("Unreachable (Q§8.2)").
+- `ingest_one` (`quic.rs:852`) — calls `self.host.ingest(peer, frame, now_ms)` (`:862`) and applies the B§6 step-3 disposition; `ingest_transfer_one` (`:891`) is the transfer twin.
+- `deliver` (`quic.rs:949`) — takes `host.take_delivery_entries(peer)` (`:958`), maps `DeliveryKind::Delta`/`Transfer` to `Channel::Lane0`/`Channel::Transfer` (`:994–997`) and writes with `server.try_send_channel` (`:998`).
+- `acknowledge` (`quic.rs:1062`) — acknowledges delivery by the last accepted entry's ordinal (`:1039`); a departed peer's entries are discarded and acknowledged (`:973–989`).
+- `closed` handling (`quic.rs:528–539`, `:567–585`) — `ServerEvent::Closed` marks the binding, then phase 6 unbinds and retires it once drained.
+- `Wire version today` (`crates/crpg-server/src/host.rs:1195–1202`) — `session_wire` returns `3` for a v3 session else `config.protocol.as_u8()` (1 or 2); `ProtocolSelection` has only `V1` and `V2` (`host.rs:104–111`).
+- `Frozen` (`tasks/T037.md:1338`) — `crates/crpg-server/src/quic.rs` is a frozen source in T037, and `:1355` says "`quic.rs` is frozen here."
+
+The T037 surface the transport task must call. `tasks/T037.md` is an approved contract for code not yet written: `grep` finds no `bind_v4_peer`, `ingest_move`, `take_move_receipts` or `take_samples` in `crates/` today.
+
+- `bind_v4_peer` (`tasks/T037.md:437–441`) — future: "Binds a protocol v4 session: `bind_v3_peer` with lane-0 version 4 and lane 1 (B-1)".
+- `session_wire = 4` (`tasks/T037.md:447–450`) — future: `session_wire` returns `4` for a v4 session, and `DeliveryKind` gains "or v4".
+- `ingest_move` (`tasks/T037.md:483–484`) — future: `pub fn ingest_move(&mut self, peer: PeerHandle, bytes: &[u8], now_ms: u64) -> Result<MoveAdmission, HostError>`.
+- `MoveAdmission` (`tasks/T037.md:470–481`) — future: `Admitted { seq }`, `Rejected { seq, code }`, `Duplicate { seq, resent }`, `Refused { seq: Option<u64>, code }`.
+- `ingest_move precedence` (`tasks/T037.md:710–717`, D-1) — future: closed, time, unbound, shared buckets, the 4,096-byte cap, ingress room, then HM-2 (`:719–741`); nothing is staged on a refusal.
+- `take_move_receipts` (`tasks/T037.md:487`, `:788–790`) — future: returns "every released lane-1 receipt not yet taken, in release order"; taking them "hands them to the reliable stream".
+- `take_samples` (`tasks/T037.md:462`, `:697–699`) — future: returns the queued sample datagrams and empties the queue.
+- `MAX_MOVE_RECEIPT_BYTES` (`tasks/T037.md:459`) — future: `60`, "the largest receipt".
+- `POLICY_SAMPLE_REFRESH_TICKS` (`tasks/T037.md:456`) — future: `20` ticks between full position refreshes.
+- `lane-1 egress` (`tasks/T037.md:701–707`) — future: `V4State.egress` counts lane-1 frames and bytes and the host's `egress_bytes` includes them.
+- `Transport obligations` (`tasks/T037.md:1351–1355`) — future, the T150 scope: "the `quic.rs` route that binds v4 sessions and moves `ingest_move`, `take_move_receipts` and `take_samples` bytes".
 
 ## Existing tests to copy
 
