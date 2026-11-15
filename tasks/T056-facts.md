@@ -53,7 +53,17 @@ From `tasks/T028.md`:
 
 ## legal_actions and actions in sim
 
-(filled in below)
+- `pub const MAX_LEGAL_ACTIONS: usize = 4096;` (`crates/crpg-sim/src/combat.rs:58`)
+- `pub enum CombatAction` — `Copy`, three variants: `UseAbility { actor, ability: Ulid, target: EntityId }`, `EndTurn { actor }`, `Stop { actor }` (`crates/crpg-sim/src/combat.rs:932-952`). There is no `ActionOption` wrapper: "The existing `CombatAction` is the complete executable option" (`tasks/T028.md:113`).
+- `pub fn validate_action(world: &World, action: &CombatAction) -> Result<(), CombatError>` — read-only admission, the only pre-mutation path; `perform_action` calls it first (`crates/crpg-sim/src/combat.rs:3453`; contract wording `tasks/T028.md:99-100`, doc wording `crates/crpg-sim/AGENTS.md` invariant 12).
+- `pub enum LegalActionsError` — `Actor(CombatError)` (the `EndTurn { actor }` failure; `Stop { actor }` in RT) and `TooManyOptions { limit: usize }` (no partial list) (`crates/crpg-sim/src/combat.rs:3678-3688`).
+- `pub fn legal_actions(world: &World, actor: EntityId) -> Result<Vec<CombatAction>, LegalActionsError>` — validates the closing action first, then keeps accepted `UseAbility` candidates over abilities in ascending ULID order × current combatants in ascending `EntityId` order, closing action last; each candidate's own failure excludes only that candidate; a target beyond ability range (or without a mover) fails the last admission stage `OutOfRange` and is omitted (`crates/crpg-sim/src/combat.rs:3733-3736`, doc comment `crates/crpg-sim/src/combat.rs:3711-3732`).
+- `pub fn perform_action(world: &mut World, action: &CombatAction) -> Result<Option<ActionOutcome>, CombatError>` — `Ok(Some(outcome))` for an attack, `Ok(None)` for `EndTurn` or an accepted RT `UseAbility` (stores the standing order) (`crates/crpg-sim/src/combat.rs:3803-3808`, doc comment `crates/crpg-sim/src/combat.rs:3800-3802`).
+- `pub enum EncounterMode` — `#[default] TurnBased`, `RealTime` (`crates/crpg-sim/src/combat.rs:76-82`); `RT_CLOCK_MAX = i32::MAX` (`crates/crpg-sim/src/combat.rs:86`).
+- `pub fn start_encounter(world: &mut World, spec: &EncounterSpec<'_>) -> Result<(), CombatError>` publishes TB (`crates/crpg-sim/src/combat.rs:1443-1445`); `pub fn start_encounter_in_mode(world, spec, mode)` publishes RT (every key `0`, no active turn) and fails `ModeUnsupported` on a ruleset without `round_ticks` (`crates/crpg-sim/src/combat.rs:1454-1457`, doc comment 1447-1453).
+- How an action is submitted: there is **no controller trait, `ActorController` or `submit` method anywhere in `crpg-sim`, `crpg-rules` or `crpg-core`** (grep found nothing). The submission path today is the free function `perform_action(&mut World, &CombatAction)` called by the host; T028 says "host disclosure filtering" and AI consumption belong to higher crates (`tasks/T028.md:41-42`).
+- Turn-based vs real-time paths: in TB, turn logic lives only in `perform_action` and `despawn` (tick knows nothing of combat); in RT, tick stage 2 runs the clock and stage 3 executes due stored orders through `validate_action` (`crates/crpg-sim/AGENTS.md`, "Encounter mode" section).
+- T028's own definition is in `tasks/T028.md`: exact surface at `tasks/T028.md:97-107`, one-validation-path rule at `tasks/T028.md:115-117` (extracted from `perform_action`, both public functions use it), "Options confer no authorization... host always rechecks execution" (`tasks/T028.md:20-30`).
 
 ## Movement and targets in sim
 
