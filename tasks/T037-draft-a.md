@@ -233,6 +233,129 @@ mutation on failure. `decide_move_to`/`declare_move` never return a
 
 ## Behaviour
 
+Normative. First failure wins in every list. "Refused" means the stated
+error and no state change.
+
+### Area load (H1)
+B-1. **Bake.** `load_area` calls `crpg_nav::bake_box` with
+    `area.bounds` as the outer rectangle and no holes (v1). `BakeError` is
+    returned as `HostError::NavBake` with no mutation.
+B-2. **Revision.** `NavRevision::of_bytes(mesh.to_canonical_bytes())`
+    (`crates/crpg-sim/src/movement.rs:53-58` for `of_bytes`,
+    `crates/crpg-nav/src/mesh.rs:310` for canonical bytes).
+B-3. **Bind.** `history.world_mut().bind_nav(revision)`; the returned cleared
+    `(EntityId, RouteTag)` pairs are logged at debug only. A changed
+    revision clears every route (M4).
+B-4. **Place.** For every mover whose `position()` in `x`/`z` is off the mesh
+    (`crpg_nav::locate(...) == None`), call `place(entity, nearest_on_mesh(position))`.
+    `place` failures are `Invariant` (a mover that cannot be placed is a
+    load-time defect).
+B-5. **Announce.** The revision is stored in the world and returned; the host
+    does not push a frame here. Publication happens on the next page
+    (`Clock`/`HostFacts` carry the revision only if the host chooses to
+    publish it; v1 has no nav-revision op, so it is held for T049).
+
+### `MoveTo` (H2, HM-4)
+B-6. **Control check first.** `peer` controls `actor` (D14), else
+    `MoveDecision::Rejected(NotAuthorized)`. No nav query.
+B-7. **Per-actor per-tick gate.** If a navigation query has already run for
+    `actor` this tick, the intent is `MoveDecision::Superseded` and no
+    `find_path` runs (H2). The gate is keyed by `(tick, actor)` in a
+    `BTreeSet` cleared at the start of `Host::tick`.
+B-8. **Path.** `find_path(mover.position(),
+    nearest_on_mesh(snap(measure, destination)))`. `measure` is the
+    encounter's `Measure` (Euclidean in v1) or `Measure::Euclidean` outside
+    an encounter. `snap` is `crpg_sim::movement::snap`
+    (`crates/crpg-sim/src/movement.rs:384`).
+B-9. **Set route.** On `Ok(path)`, copy `path.into_points()` into a
+    `MoveRoute { revision: world.nav().unwrap(), tag: RouteTag(next), points }`
+    and call `set_route(actor, route)`. Tag is a host counter, never
+    interpreted by sim (R3).
+B-10. **Outcome.** `Accepted { start_tick: now_tick + 1 }` on success;
+    `Rejected(IllegalAction)` on any `NavError` or `MoveError`, with the
+    specific code recorded in the host log. `set_route`'s `TurnBased` becomes
+    `WrongMode` when the actor is a turn-based participant (HM-4's
+    `WrongMode`).
+
+### `DeclareMove` (H3, HM-9)
+B-11. Same control check, gate, path computation and `set_route` as B-6..B-10,
+    then `perform_move(world, actor, &route)` (sim spends the pool and
+    journals `HistoryEvent::Moved`). `perform_move`'s `WrongMode` stays
+    `WrongMode`; `CannotAfford` stays `IllegalAction`. On success the host
+    builds `EventCandidate::Moved` at the history slot (HM-8).
+
+### Lane-1 admission (HM-2)
+B-12. **Nine steps**, in this order, mirroring
+    `crates/crpg-server/src/host.rs:1588` `admit`:
+    (1) decode with `movement_v4::decode_intent`;
+    (2) session epoch (no session or different epoch → `SessionExpired`);
+    (3) cache first — identical bytes re-send the retained receipt, different
+    bytes → `SeqConflict` and fence;
+    seq bounds `SeqExhausted`/`SeqGap`/`StaleSeq`;
+    (4) freshness against `POLICY_OBSERVED_TICK_WINDOW` (`FutureTick`/
+    `StaleTick`); lane-1 has no `observed_tick`, so freshness is checked
+    against the receipt's `processed_tick` window;
+    (5) mapping/control/disclosure resolution;
+    (6) `validate_action` only for `Halt` (a `MoveTo` is a movement verb, not
+    a combat action);
+    (7) reservation of `POLICY_MOVE_IN_FLIGHT` in-flight intents;
+    (8) execution/commit split;
+    (9) receipt construction.
+    First failure wins.
+
+### Aggregates (HM-3)
+B-13. Every admitted lane-1 intent spends `intent_frames`/`intent_bytes`,
+    counts toward `ingress_frames`/`ingress_bytes`, and on refusal spends a
+    failure bucket. The caps are the existing ones (`QueueCaps::v1`,
+    `RateCaps::v1()`); no new aggregate.
+
+### Receipts (HM-4)
+B-14. Exactly one `MoveReceipt` per admitted intent, in `seq` order, on the
+    lane-1 stream. `processed_tick` is the tick at which the decision runs.
+    `Accepted { start_tick: t + 1 }` matches B-10.
+B-15. `Superseded` is decided before `WrongMode`/`IllegalAction` (HM-4).
+
+### Samples (H4, HM-5, HM-6)
+B-16. **Each tick**, for every v4 session:
+    (a) collect granted entities that moved this tick (mover position changed
+    in stage 4, or `HistoryEvent::Moved` committed) into `SampleEntry`s;
+    (b) if `server_tick - last_sample_tick >= MOVE_SAMPLE_REFRESH_TICKS`,
+    collect every granted position (one `PositionRow` with `granted == true`)
+    into the same list, deduplicated by `NetId` (moved entries first, then
+    the refresh entries not already present);
+    (c) encode with `movement_v4::sample_datagrams(server_tick, processed_seq,
+    entries)` and send as datagrams via `take_datagrams`.
+B-17. `processed_seq` is the highest lane-1 `seq` receipted to that peer (0
+    before any).
+B-18. Samples never enter lane-0 `event_seq` and never use a stream.
+
+### `Moved` candidate (HM-8)
+B-19. At the history slot, for each `HistoryEvent::Moved { entity, points }`,
+    build `EventCandidate::Moved { entity: view.net_id(key_of(world, entity)),
+    points: points mapped to `Point` (raw `Fx16_16`), disclose: the viewer's
+    position grant for that entity }`. Points are converted with
+    `Fx16_16::to_raw` and validated by `check_points` before projection; a
+    failing candidate is omitted (T026p Behaviour Q-8).
+
+### Position rows (HM-6)
+B-20. One `PositionRow { key, granted, point, moving }` per visible entity
+    with a mover. `granted` true iff the viewer is granted presence for that
+    entity; `moving` true iff the mover has `route() == Some`. `point` is
+    `mover.position()` converted to `Point`. Rows for non-visible entities are
+    not built.
+
+### Pages (HM-7)
+B-21. Every v4 page is built by `project_page_v4` with the rows from B-20;
+    in the same tick as `project_snapshot_v4` for a staging, with `Clock` and
+    `HostFacts`. Position anchors follow T026p Q-4 (forget on revoke, resend
+    on `context.resend`).
+
+### v3 byte-identical
+B-22. A host that never calls `load_area`, `decide_move_to`,
+    `declare_move`, `ingest_move` or `pump_moves` writes byte-identical
+    checkpoints and delivers byte-identical frames to v1/v2/v3 sessions
+    (B-22 is the "What must not change" contract).
+
 ## Errors
 
 ## Tests
