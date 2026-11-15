@@ -156,7 +156,26 @@ yet written; its items are cited as the future surface and marked so.
 
 ## The host side the bridge talks to
 
-(section pending)
+**How the embedded single-player server is created from the bridge**
+
+- `BridgeCore::open` (`crates/crpg-godot/src/core/mod.rs:99`) — builds `&LocalLink::new(LINK_FRAMES)` (`:111`; `LINK_FRAMES` is the host's per-peer egress depth, `crates/crpg-godot/src/core/link.rs:17`) and passes it into `open_on` (`:168`), so tests can inspect both queues.
+- `Host::from_history` (`crates/crpg-godot/src/core/mod.rs:299–309`) — the authority is the `HistoryWorld` the campaign walk started, wrapped with `HostConfig { protocol: ProtocolSelection::V2, incarnation: 1 }` and `now_ms` 0; a failure is `StartFailed` (25).
+- Peers (`crates/crpg-godot/src/core/mod.rs:325–338`) — the player binds with `bind_snapshot_peer(ControlGrant { actors }, disclosure, 0)` and the NPC with `bind_peer(ControlGrant { actors }, disclosure, 0)`; both feed the same `Host`.
+- Wiring (`crates/crpg-godot/src/core/mod.rs:345–357`) — `host.epoch(player)` becomes the client replica's `SessionEpoch`, `Client::new(epoch, table)` (`:349`), then `Authority::new(host, player, npc, link.authority_end(), npc_sides, bound)` (`:350`) and `Live { authority, client, link: link.client_end() }` (`:351–357`). The two ends are the only channel between the halves.
+- `Authority::step` (`crates/crpg-godot/src/core/authority.rs:508–607`) — drains the player's queue into `host.ingest` (`:512–519`), drives the NPC (`:522–548`), `host.pump` (`:567`), `take_delivery_entries` then `acknowledge_delivery` per peer (`:577–591`), `acknowledge_captures(last_capture())` (`:595–597`), then `legal_intents(player)` (`:603`). `Host::tick` is never called (`docs/adr/0033-godot-bridge.md:124`).
+
+**The T037 surface for v4 sessions** (approved contract, not yet implemented)
+
+- `bind_v4_peer` (`tasks/T037.md:439–441`) — "Binds a protocol v4 session: `bind_v3_peer` with lane-0 version 4 and lane 1 (B-1)"; `HostError::NotV4Peer` is added for a call that needs such a session (`:434`).
+- `set_position_withheld` (`tasks/T037.md:443–444`) — "Replaces the entities whose position `peer` is not told (B-8)."
+- `position_rows` (`tasks/T037.md:420–421`) — HM-6's per-viewer rows, `PositionView` is stored in `V4State.positions` (`:412`) beside `withheld: Vec<EntityId>` (`:414`).
+- `session_wire` (`tasks/T037.md:447–448`) — "returns `4` for a v4 session"; `DeliveryKind`'s doc gains "or v4" (`:448`).
+- `DeclareMove` (`tasks/T037.md:1301–1302`) — the turn-based move rides lane 0 and its page carries `Moved { hero, […] }`; the future test K2 asserts `Applied` and the new replica position (`:1305–1306`).
+- `take_samples` (`tasks/T037.md:456–462`) — `POLICY_SAMPLE_REFRESH_TICKS: u64 = 20` is "policy, never wire"; `take_samples(peer)` returns "the sample datagrams of the last committed tick not yet taken (C-6)".
+- `MoveAdmission` (`tasks/T037.md:468–481`) — four future outcomes of one lane-1 frame: `Admitted { seq }`, `Rejected { seq, code }`, `Duplicate { seq, resent }`, `Refused { seq: Option<u64>, code }`; `ingest_move` is `:483–484`.
+- `take_move_receipts` (`tasks/T037.md:485–487`) — "Every released lane-1 receipt not yet taken, in release order; taking them hands them to the reliable stream (D-9)."
+- Lane-1 state (`tasks/T037.md:490–496`) — `V4State.lane: MoveLane { next_seq, slots, cache, cache_bytes, bucket, receipts, processed_seq }` and `Host.next_move_order`; the v4 pool and replica on the client side are fed by these bytes.
+- What must not change (`tasks/T037.md:1412–1416`) — a wildcard `HostError` mapping and an exhaustive `DeliveryKind` match in `crpg-godot` must keep compiling; T037 adds `NotV4Peer` only (`:433–434`).
 
 ## The Godot client
 
