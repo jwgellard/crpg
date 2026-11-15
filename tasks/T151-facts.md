@@ -205,7 +205,33 @@ yet written; its items are cited as the future surface and marked so.
 
 ## Existing tests to copy
 
-(section pending)
+**`crates/crpg-godot/src/core/tests.rs`** (`crates/crpg-godot/src/core/tests.rs:1`)
+
+- Scope (`:1`) — "K15-K30 and the open half of K35: the bridge lifecycle, the campaign errors, the revision/ack rules, the NPC driver and the panic fence"; 21 `#[test]` cases.
+- Fixture and session helpers (`:24`) — `fixture_root()` (`:24`), `live`/`live_mut` (`:33`, `:40`), `is_fenced` (`:47`), `copy_tree` (`:86`), `open_fixture` (`:100`), `open_and_poll` (`:108`), `open_side` (`:114`), `open_and_poll_side` (`:122`), `id` (`:128`), `ull` (`:132`).
+- Authority helpers (`:613`, `:702`) — `mirror_npc` drives an independent `HistoryWorld` oracle for the hash comparison; `crafted(host, player, seq, actor)` builds raw intent bytes with `codec_v2::encode_intent` (`:12`) for the rejection cases.
+- Named cases a v4 task can mirror — `fixture_view_is_exact_and_rows_use_the_player_replica_map` (`:139`), `open_failure_codes_and_precedence_leave_no_session` (`:185`), `npc_fires_once_at_the_delay_and_never_twice_in_a_poll` (`:253`), `idle_poll_changes_nothing` (`:328`), `a_full_link_defers_the_next_frame_until_it_is_read` (`:370`), `captures_are_acknowledged_every_poll` (`:481`), `the_authority_hash_matches_an_independent_oracle` (`:515`), `submit_precedence_and_a_successful_send` (`:644`), `corrupt_frame_fences_and_close_resets` (`:825`), `panics_are_caught_at_every_boundary` (`:928`).
+
+**Submodule suites**
+
+- `core/authority/tests.rs` (`crates/crpg-godot/src/core/authority/tests.rs:1`) — "K4-K7, K34 and the direct half of K35": `hand_off`, the NPC chooser and pacer, the pump result fold, the campaign walk and the start-order binding; 7 cases.
+- `core/client/tests.rs` (`crates/crpg-godot/src/core/client/tests.rs:1`) — "K8-K14: the client half's rows, events, revisions, receipts, labels and frame refusals, plus the client-owned part of `submit_option`"; 12 cases.
+- `core/errors/tests.rs` (`crates/crpg-godot/src/core/errors/tests.rs:1`) — "K1-K2: the closed code table and the host-failure mapping"; 2 cases.
+- `core/link/tests.rs` (`crates/crpg-godot/src/core/link/tests.rs:1`) — "K3: the bounded two-ended link": a full direction refuses and changes nothing while FIFO order holds (`:8–10`); 3 cases.
+
+**`crates/crpg-godot/tests/`**
+
+- `tests/bridge.rs` (`crates/crpg-godot/tests/bridge.rs:1`) — K15/BR-1 and K30/B21 "through the public bridge only": `fixture_opens_and_polls_to_the_expected_view` (`:21`) and `close_is_idempotent_through_the_public_api` (`:61`).
+- `tests/source_rules.rs` (`crates/crpg-godot/tests/source_rules.rs:1`) — K31/BR-10 "the core stays engine-free and clock-free, the two lower halves never name the authority, and `core` is never a bare path" (`:81–83`), and K32/BR-20 "the shell and root hold exactly one `unsafe`" (`:187–190`); the scanner strips `//` comments and compares whole tokens (`:5–9`).
+
+**The CI `client` job** (`.github/workflows/ci.yml:187`, read only)
+
+- Scope (`:199–223`) — "Classify the change (documentation-only pull requests skip the client gates)"; a documentation-only PR sets `rust=false`, otherwise every gate runs.
+- Build (`:225–227`) — `cargo clippy -p crpg-godot --features engine --all-targets --locked -- -D warnings`, then `cargo build -p crpg-godot --features engine --locked`.
+- Notice check (`:229–245`) — `apps/client/THIRD_PARTY_NOTICES` must name exactly the eight resolved godot-family packages.
+- Godot fetch (`:247–282`) — one exact 4.7.2 asset with SHA-256 and SHA-512 checked before unpacking; a version check against `4.7.2.stable.official.ed1daf0bf`; a seeded `.godot/extension_list.cfg`.
+- Gates (`:284–332`) — `--import` (`:284`), E1 `load.gd` (`:293`) and its missing-campaign control expecting 3 (`:302`), BR-22 `smoke.gd` (`:313`) and its control expecting 3 (`:322`).
+- Artifact (`:333–354`) — stages `target/debug/crpg_godot.dll`, the tracked `apps/client` files, the fixture campaign and both licences as `crpg-client-slice-windows-x86_64`; `scene_sync.gd` and `hud.gd` are local gates only, not CI steps.
 
 ## Rules that bind it
 
