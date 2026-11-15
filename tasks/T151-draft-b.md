@@ -152,6 +152,74 @@ Part D is GDScript only, a separate part per the brief, not S-set.
 
 ## Interface
 
+New and changed items only. Everything else keeps its shape, including the
+`BridgeCode` table (`crates/crpg-godot/src/core/errors.rs:12–53`) and the
+`CrpgSession::open/poll/view/submit_option/close` set
+(`tasks/T151-facts.md:109`).
+
+```rust
+// core/client.rs (T151a): the v4 client half. `client.rs` still names
+// neither `crpg_server` nor `crpg_sim` (tasks/T151-facts.md:16).
+pub(crate) struct Client {
+    pool: crpg_net::pool_v4::ReassemblyPoolV4,
+    replica: crpg_net::replica_v4::ReplicaWorldV4,
+    outbox: crpg_net::outbox_v4::MoveOutbox,
+    view: Rc<SessionView>,
+    offered: Vec<OfferedOption>,   // as today
+    pending: Option<u64>,          // lane-0 pending, as today
+    next_seq: u64,                 // lane-0 seq, as today
+}
+impl Client {
+    pub(crate) fn new(epoch: crpg_net::SessionEpoch, table: PresentationTable) -> Self;
+    /// Drain down queue: delivery entries -> pool -> replica; samples ->
+    /// `apply_sample`; lane-1 receipts -> `outbox.receive`. Rebuild view.
+    pub(crate) fn step(&mut self, down: &mut VecDeque<Vec<u8>>) -> Result<(), Fault>;
+    /// Lane-0 submit, unchanged rules.
+    pub(crate) fn submit(&mut self, revision: u64, index: usize, up: &mut VecDeque<Vec<u8>>) -> Result<(), Fault>;
+    /// Lane-1 submit: `outbox.send(actor, body)`, queue canonical bytes up.
+    /// `Full` maps to code 30 and changes nothing; success advances
+    /// `outbox.next_seq`.
+    pub(crate) fn submit_move(&mut self, actor: crpg_net::NetId, body: crpg_net::movement_v4::MoveBody,
+        up: &mut VecDeque<Vec<u8>>) -> Result<crpg_net::movement_v4::MoveIntent, Fault>;
+}
+
+// core/client.rs (T151a): view additions. Slices stay parallel by `NetId`.
+pub(crate) struct ViewMoveReceipt { pub seq: u64, pub outcome: MoveOutcomeView, pub processed_tick: u64 }
+pub(crate) enum MoveOutcomeView { Accepted, Superseded, Rejected { code: u8 } }
+impl SessionView {
+    /// Granted positions, ascending `NetId`: `(id, [x, y, z] raw ints, moving)`.
+    pub(crate) fn positions(&self) -> &[(crpg_net::NetId, [i32; 3], bool)];
+    /// This step's lane-1 receipts, oldest first.
+    pub(crate) fn move_receipts(&self) -> &[ViewMoveReceipt];
+}
+```
+
+```rust
+// core/authority.rs + core/mod.rs (T151b)
+impl Authority {
+    /// Player binds with `bind_v4_peer` (tasks/T037.md:439–441); NPC keeps
+    /// `bind_peer` (tasks/T151-facts.md:163).
+    pub(crate) fn new_v4(/* as Authority::new today, tasks/T151-facts.md:165 */) -> Self;
+    /// Each poll, after `pump`: `take_samples(player)` and
+    /// `take_move_receipts(player)` bytes are handed down the link;
+    /// up-queue bytes go to `ingest_move` (tasks/T037.md:483–487).
+    /// `DeliveryKind` needs no new arm: v4 pages arrive as `Delta`
+    /// (tasks/T037.md:447–448).
+}
+```
+
+```rust
+// shell.rs (T151c, S-set): one core call per #[func], as today
+// (tasks/T151-facts.md:246).
+#[func] fn submit_move(&mut self, actor: i64, x: i32, y: i32, z: i32) -> i64;
+#[func] fn submit_halt(&mut self, actor: i64) -> i64;
+// CrpgView getters, parallel arrays in ascending NetId order:
+#[func] fn position_ids(&self) -> PackedInt64Array;
+#[func] fn position_points(&self) -> PackedInt64Array;  // x, y, z per id
+#[func] fn position_moving(&self) -> PackedInt64Array; // 0 / 1 per id
+#[func] fn move_receipts(&self) -> Array<VarDictionary>; // seq, outcome, code, processed_tick
+```
+
 ## Behaviour
 
 ## Errors
