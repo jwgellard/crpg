@@ -912,7 +912,9 @@ fn c2_declare_move_refusals() {
         rig.assert_authority();
     }
 
-    // Already there, and unaffordable (`m(9, 9)` is cost 2 of 1).
+    // Already there, and unaffordable (`m(9, 9)` is cost 2 of 1). The pair
+    // "no mesh with an unaffordable destination" is named, not built: both
+    // read `IllegalAction` with `last_combat_error` unchanged.
     {
         let mut rig = Rig::new(&mv3_value());
         rig.bind_nav();
@@ -929,6 +931,32 @@ fn c2_declare_move_refusals() {
         assert_eq!(
             far.status,
             ReceiptStatus::Rejected(RejectionCode::IllegalAction)
+        );
+        assert_eq!(rig.host.last_combat_error(), None);
+        assert_unchanged(&mut rig.host, &before);
+        rig.assert_authority();
+    }
+
+    // A session controlling `[B]` only may not act as A.
+    {
+        let mut rig = Rig::new(&mv3_value());
+        rig.bind_nav();
+        let p = rig
+            .host
+            .bind_v4_peer(
+                control(&[b()]),
+                full_grants(&[a(), b(), c()]),
+                facts(),
+                r1(),
+                0,
+            )
+            .expect("binds");
+        drain(&mut rig.host, p);
+        let before = state_of(&mut rig.host, &[p]);
+        let result = rig.declare_move(p, 1, 1, (262144, 0, 65536));
+        assert_eq!(
+            result.status,
+            ReceiptStatus::Rejected(RejectionCode::NotAuthorized)
         );
         assert_eq!(rig.host.last_combat_error(), None);
         assert_unchanged(&mut rig.host, &before);

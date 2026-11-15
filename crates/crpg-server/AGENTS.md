@@ -374,7 +374,7 @@ git diff --check
   `project_samples` result becomes the session's whole sample queue: free the
   old queue's egress, then queue the new datagrams only if all of them fit
   `room_for`'s room, else none. Do not append, do not keep a per-tick history,
-  and do not touch the 20-tick refresh (`POLICY_SAMPLE_REFRESH_TICKS`) or the
+  and do not change the 20-tick refresh (`POLICY_SAMPLE_REFRESH_TICKS`). The
   sample step runs after the tick's publication tail, so an `Invariant` there
   still samples.
 - **Samples never enter a delivery log (T037c).** A sample is a lane-1
