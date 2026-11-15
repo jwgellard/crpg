@@ -172,6 +172,111 @@ Design decisions this contract makes. Each needs approval with the contract.
 
 ## Interface
 
+Additions and replacements only. Every public item keeps a doc comment
+(`#![warn(missing_docs)]`, `crates/crpg-godot/src/lib.rs:12`). `core` stays
+`#![forbid(unsafe_code)]`; no float, `HashMap`/`HashSet`, clock or thread enters
+the core (crate invariants, `crates/crpg-godot/AGENTS.md:1–8`). Types from
+`crpg_net` are used by path, never re-exported; the one `unsafe` stays in
+`shell.rs` (`crates/crpg-godot/AGENTS.md:14`).
+
+### T151a — `core/mod.rs`, `core/client.rs`, `core/authority.rs`
+
+```rust
+// mod.rs (open path, Reading 1)
+// HostConfig stays { protocol: ProtocolSelection::V2, incarnation: 1 }.
+// The player binds bind_v4_peer(ControlGrant { actors }, disclosure.clone(),
+//     FACTS, R1, 0); the NPC keeps bind_peer(ControlGrant { actors }, disclosure, 0).
+// FACTS and R1 are the bridge's full fact grants and default pause rights
+// (Reading 1; see Open question 3 for the exact FactGrants/PauseRights).
+
+// client.rs
+pub struct SessionView { /* existing 16 fields, unchanged, plus: */ }
+impl SessionView {
+    // existing getters unchanged, plus:
+    pub fn positions(&self) -> &[i64];       // 3 per row, net_ids() order, raw Fx16_16; 0,0,0 undisclosed
+    pub fn position_known(&self) -> &[u8];   // 1 per row
+    pub fn moving(&self) -> &[u8];           // 1 per row
+    pub fn move_receipts(&self) -> &[ViewMoveReceipt];
+}
+pub enum ViewEvent {
+    // existing four variants unchanged, plus:
+    Moved { entity: i64, points: Vec<i64> }, // raw Fx16_16, 3 per point, in order
+}
+pub enum ViewValue<'a> { Int(i64), Text(&'a str), Bool(bool), Ints(&'a [i64]) }
+pub struct ViewMoveReceipt { pub seq: i64, pub accepted: bool, pub superseded: bool, pub code: i64 }
+impl ViewMoveReceipt { pub fn entries(&self) -> Vec<(&'static str, ViewValue<'_>)>; }
+// entries() keys, "kind" first: Moved -> kind, entity, points(Ints);
+// move_receipt -> seq, accepted, superseded, code.
+
+pub(crate) struct Client { /* replica: ReplicaWorldV4, pool, receiver, outbox, … */ }
+impl Client {
+    pub(crate) fn new(epoch: SessionEpoch, table: PresentationTable) -> Self;
+    pub(crate) fn step(&mut self, link: &mut impl Transport, options: &[Offered],
+        refused: bool) -> Result<(), Fault>;
+    pub(crate) fn submit(&mut self, revision: i64, index: i64, link: &mut impl Transport)
+        -> Result<(), Fault>;
+    pub(crate) fn submit_move(&mut self, actor: NetId, body: MoveBody,
+        link: &mut impl Transport) -> Result<(), Fault>;
+    pub(crate) fn view(&self) -> Rc<SessionView>;
+}
+pub(crate) struct Offered { pub(crate) actor: NetId, pub(crate) body: protocol_v4::IntentBody }
+
+// authority.rs
+pub(crate) fn hand_off(entries: &[DeliveryEntry], link: &mut impl Transport)
+    -> Result<Option<u64>, Fault>;   // now forwards Transfer and Delta (Reading 2)
+impl Authority {
+    // step() gains, after hand_off and before the NPC delivery ack:
+    //   take_move_receipts(player) -> hand_off_bytes; take_samples(player) -> hand_off_bytes
+}
+```
+
+`Client::new` builds `ReplicaWorldV4::new(epoch)`
+(`crates/crpg-net/src/replica_v4.rs:63`), a `ReassemblyPoolV4::new(TransferLimitsV3::default())`
+with one `add_receiver(epoch.0, GateMode::AwaitSnapshot)` (`crates/crpg-net/src/pool_v4.rs:131`),
+and a `MoveOutbox::new(epoch.0)` (`crates/crpg-net/src/outbox_v4.rs:63`). The
+pool keeps one receiver for the session's lifetime; a session never rebinds or
+removes it (the bridge never resumes, `docs/adr/0033-godot-bridge.md:229–230`).
+
+`Client::step` drains the link and routes each frame by first byte
+(Reading 2): `0x82` → `pool.offer_transfer`, `4` → `pool.offer_delta`,
+`0xA1` → `movement_v4::decode_down` and either `MoveDown::Receipt` →
+`outbox.receive` (its error is fatal 53) or `MoveDown::Sample` →
+`replica.apply_sample` (never fails, `replica_v4.rs:148`). Then it pops every
+`pool.pop_update`: `Snapshot(p)` → `replica.apply_snapshot(&p)` (`:135`),
+`Delta(d)` → `replica.apply_delta(&d)` (`:96`), a refusal fatal 53. The
+event/receipt walk (`client.rs:330–390`) matches `DeltaOp::V3` (recurse as
+today) and `DeltaOp::Moved` (push `ViewEvent::Moved`); `DeltaOp::Position` is
+state only. The view rebuild (`:396–481`) gains the three position columns and
+`move_receipts` from the outbox's newly completed receipts.
+
+### T151b — `shell.rs`
+
+```rust
+#[godot_api]
+impl CrpgSession {
+    // existing six #[func]s unchanged, plus:
+    #[func] fn submit_move(&mut self, actor: i64, x: i64, y: i64, z: i64) -> i64;
+    #[func] fn halt_move(&mut self, actor: i64) -> i64;
+}
+#[godot_api]
+impl CrpgView {
+    // existing 16 getters unchanged, plus:
+    #[func] fn positions(&self) -> PackedInt64Array;
+    #[func] fn position_known(&self) -> PackedByteArray;
+    #[func] fn moving(&self) -> PackedByteArray;
+    #[func] fn move_receipts(&self) -> Array<VarDictionary>;
+}
+```
+
+Each `#[func]` makes exactly one core call (`crates/crpg-godot/AGENTS.md:15`).
+`submit_move`/`halt_move` convert `actor` to a `NetId` via
+`NetId::new(actor as u64)` (zero/negative → `BadArgument` 3), build
+`MoveBody::MoveTo { destination: Point::new([x,y,z]) }` (a `None` →
+`BadArgument` 3) or `MoveBody::Halt`, and return the core `submit_move`
+code. `positions` packs `3 × net_ids().len()` ints; `move_receipts` builds
+dictionaries from `ViewMoveReceipt::entries()` through the same `dictionary`
+helper (`shell.rs:217`).
+
 ## Behaviour
 
 ## Errors
