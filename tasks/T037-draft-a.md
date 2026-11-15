@@ -455,6 +455,14 @@ B-22. A host that never calls `load_area`, `decide_move_to`,
 
 ## Out of scope
 
+- The `crpg-net-quic` lane-1 transport task (stream and datagrams).
+- The `crpg-godot` bridge, client prediction (T026) and click-to-move (T050).
+- A `0x83` snapshot body with positions (T026p Reading 8).
+- Authoring `Area.bounds` holes beyond `bake_box`'s rectangle-minus-holes (v1).
+- Grid/hex snap variants (S5) and range checks (X1-X3).
+- AI policy and which combatants are AI-controlled (T141a).
+- `start_encounter` and encounter spawning (T040).
+
 ## Open questions (each with a recommendation)
 
 ## Agent log
