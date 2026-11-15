@@ -542,3 +542,4 @@ row, `docs/adr/0026-quic-host-adapter.md:106–110`).
 ## Agent log
 
 - 2026-11-15 (UTC) · opencode-go/muse-spark-1.3-contributor + T150 draft b · Opened the blind-draft skeleton with every contract section so each section can be filled and committed separately.
+- 2026-11-15 (UTC) · opencode-go/muse-spark-1.3-contributor + T150 draft b · Filled the draft: three serial parts (vendored D23 patch, lane-1 stream pair plus DATAGRAMs with a 1,024 floor refused at connect, the `quic.rs` v4 route over the T037 surface), ten readings, proposed interfaces, ten behaviours with named tests, and seven open questions with recommendations; nothing here is approved.
