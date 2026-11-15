@@ -179,7 +179,29 @@ yet written; its items are cited as the future surface and marked so.
 
 ## The Godot client
 
-(section pending)
+**Scenes and scripts that read the bridge**
+
+- `apps/client/scenes/Main.tscn` (`apps/client/scenes/Main.tscn:1`) — the only scene; `Main.gd` is its root script and it holds the `Proxies` and `Hud` children the scripts sync.
+- `scripts/Main.gd` (`apps/client/scripts/Main.gd:1`) — `extends Node3D`; `session = ClassDB.instantiate("CrpgSession")` (`:14`), `session.open(_campaign_dir(), "", "", OPEN_SEED)` (`:19`), one `session.poll()` per `_process` (`:29`), the revision gate `if next.revision() != seen: $Proxies.sync(next); $Hud.sync(next)` (`:40–43`), `choose(i)` → `session.submit_option(seen, i)` (`:45–48`), `session.close()` in `_exit_tree` (`:50–53`), and `CRPG_CAMPAIGN`/`ProjectSettings.globalize_path` for the fixture path (`:55–59`).
+- `scripts/SceneSync.gd` (`apps/client/scripts/SceneSync.gd:1`) — `plan(ids)` (`:17`), `sync(view)` (`:39`), `clear()` (`:68`), `proxy_count()` (`:73`); it names each node `proxy_<id>` (`:82`) and sets `proxy.position = Vector3(3.0 * side_index, 0.0, 1.5 * rank)` (`:61`), the label at `y = 1.2` (`:89`) and the mesh lift `mesh_instance.position.y = mesh_height / 2.0` (`:122`). These positions are derived from `net_ids()`/`sides()` only; the view has no position member.
+- `scripts/CombatHud.gd` (`apps/client/scripts/CombatHud.gd:1`) — `_ready` only sets `main = get_parent()` (`:60`), `sync(view)` (`:63`) writes round/turn/health/options/log/end, `clear()` (`:85`); it reads exactly the 14 view getters listed in `hud_cases.gd:25–28` and never `placements`/`option_targets` (`apps/client/tests/hud_cases.gd:29–33`).
+- `CrpgSession` readers (`apps/client/scripts/Main.gd:14`) — `Main.gd` is the only script that instantiates or calls the session; `SceneSync.gd` and `CombatHud.gd` take a view argument only.
+
+**The test runners and their exit codes**
+
+- `tests/load.gd` (`apps/client/tests/load.gd:2`) — E1 load proof: `quit(2)` when `ClassDB.class_exists("CrpgSession")` is false (`:18–20`), `quit(3)` on the first failed check (`:9`), `quit(0)` on success (`:72`); control `CRPG_CAMPAIGN` missing → open 20 → exit 3 (`:5`).
+- `tests/scene_sync.gd` (`apps/client/tests/scene_sync.gd:1`) — runs "the SceneSync cases (S1-S13 and S15-S19)" and checks S14 two frames later (`:2–3`): `quit(3)` when a script fails to load (`:19`, `:24`), `quit(6)` on a case failure (`:29`), `quit(7)` when "no freed proxy is still valid and every kept proxy is" fails (`:3`, `:42`, `:47`), `quit(0)` on success (`:50`).
+- `tests/hud.gd` (`apps/client/tests/hud.gd:1`) — runs the HUD cases: `quit(3)` when the case file fails to load (`:13`), `quit(6)` when `run` returns anything but the String `"PASS"` (`:17–19`), `quit(0)` on success (`:22`); its header says "H1-H19" and "H20 (the real session) runs in smoke.gd" (`:2–4`).
+- `tests/hud_cases.gd` (`apps/client/tests/hud_cases.gd:1`) — H1–H20 against a `FakeView` "that has exactly the 14 getters the HUD may read" (`:2–3`); `run(root)` returns `"PASS"` or `"H<n>: <detail>"` (`:73`, `:85`); a case returns the token `"ok"` and a crash (`""`) fails (`:4–5`, `:11`); its own H20 is the null-main press (`:6–7`).
+- `tests/smoke.gd` (`apps/client/tests/smoke.gd:2`) — E2 headless playthrough: `quit(6)` when a scene-sync case fails (`:28`), `quit(7)` when a HUD case or the end-of-play HUD check fails (`:33`, `:38`, `:75`), `quit(3)` on a failed scene load, open, poll or choose (`:43`, `:48`, `:59`, `:64`, `:89`), `quit(2)` when the class is missing (`:21`), `quit(4)` after 120 s (`:93`), `quit(5)` on a proxy-count mismatch (`:81`), `quit(0)` only on the ended view with `proxy_count() == net_ids().size() == 2` (`:69–78`).
+- `tests/scene_sync_cases.gd` (`apps/client/tests/scene_sync_cases.gd:1`) — S1–S18 against an inner `FakeView`; `run(host)` returns `"PASS"` or `"S<n>: detail"` and records the freed/kept nodes S14 checks.
+
+**How they are run**
+
+- Build first (`crates/crpg-godot/AGENTS.md:77`) — `cargo build -p crpg-godot --features engine -j 2`; the `.gdextension` points at `target/<profile>/crpg_godot.dll` (`docs/architecture/crpg-godot.md:137–141`).
+- Then, "from Git Bash (not PowerShell)" (`crates/crpg-godot/AGENTS.md:73–85`) — `Godot4 --headless --path apps/client --import`, then `Godot4 --headless --path apps/client -s res://tests/load.gd`, `-s res://tests/scene_sync.gd`, `-s res://tests/hud.gd`, and the control `CRPG_CAMPAIGN=/no/such/dir … -s res://tests/load.gd` (exit 3).
+- `Godot4` is a windowed program (`crates/crpg-godot/AGENTS.md:115–117`) — "PowerShell neither waits for it nor sees its exit code: run every `Godot4 ... -s` check from Git Bash."
+- `--import` first (`crates/crpg-godot/AGENTS.md:118–119`) — "Run `--import` before any `-s`"; "Its exit code is not a load proof; `load.gd`'s `ClassDB.class_exists` check is."
 
 ## Existing tests to copy
 
