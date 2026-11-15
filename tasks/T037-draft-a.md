@@ -437,6 +437,22 @@ B-22. A host that never calls `load_area`, `decide_move_to`,
 
 ## What must not change
 
+- v1, v2 and v3 sessions keep every byte, rule and delivery they have today
+  when no movement method is called: `authority_hash`, checkpoint JSON (version
+  1 or 2), `read_captures`, `take_delivery`, `legal_intents` (RT still
+  `Ok(vec![])`), and the v3 page layout including `Clock`/`HostFacts`.
+- `Host::tick` on a turn-based, TB-only or no-encounter host reserves no
+  host record and journals nothing (S-4); movement code must not run in that
+  path.
+- `crpg-sim` goldens (`movement_v1`, `history_v1/v2/v3`, `surface_v1`) and
+  all six `crpg-testkit` goldens are byte-identical.
+- `MAX_NEW_EVENTS_PER_COMMAND` keeps 3; only the RT path uses 4.
+- No change to `crpg-contracts`, `rust-toolchain.toml`, `tools/lint/deps.py`
+  `ALLOWED` (the `crpg-server` row already permits `crpg-nav`), or any
+  existing public signature.
+- `crpg-nav` stays dependent on `crpg-core` only (V1); the host's new edge
+  is the only dependency change, and it needs approval (Open question 1).
+
 ## Out of scope
 
 ## Open questions (each with a recommendation)
