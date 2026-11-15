@@ -281,8 +281,29 @@ The impairment probe:
 
 ## Platform and dependency rules that bind it
 
-(pending)
+- `Platform invariant` (`AGENTS.md:6–19`) — `x86_64-pc-windows-msvc` "is primary for development, product, release gates, and behavioural baselines (client, editor, embedded single-player server, dedicated server, CLI)"; `x86_64-unknown-linux-gnu` "is fully supported for dedicated server, headless CLI/tooling, server-side extensibility, and tests".
+- `Replay determinism` (`AGENTS.md:20–24`) — exact-build, target-scoped goldens, never cross-platform hashes; "no tolerance or missing-baseline skips".
+- `Never import upward` (`AGENTS.md:28–37`) — "core <- data <- rules <- sim <- {net, ai, script} <- server", the `ALLOWED` table in `tools/lint/deps.py` is authoritative, and a crate missing from it is itself a failure.
+- `unsafe` (`AGENTS.md:25–27`) — only `crpg-godot` may use it; every other crate root carries `#![forbid(unsafe_code)]` (`crates/crpg-net-quic/src/lib.rs:1` has it).
+- `One task = one crate` (`AGENTS.md:57`) — "If a task needs two crates, stop and say so." T150's stated scope names both `crpg-net-quic` and the `crpg-server` `quic.rs` route (`tasks/T037.md:1351–1355`).
+- `No new dependencies` (`AGENTS.md:52`) — "Do not add dependencies without being asked."
+- `ADR-0012 Windows primary` (`docs/adr/0012-windows-primary-platform.md:17–24`) — Windows/MSVC is primary for development, product, release gating and behavioural baselines; Linux/GNU is fully supported, and "Platform-specific failures are defects, not best effort."
+- `ADR-0012 one server` (`docs/adr/0012-windows-primary-platform.md:25–29`) — "One platform-neutral authoritative server implementation" serves Windows single-player and Windows/Linux dedicated hosts; OS-specific logic stays above core/rules/sim and "grants no dependency permission".
+- `ADR-0012 exact-build` (`docs/adr/0012-windows-primary-platform.md:33–36`) — Windows and Linux compare independently generated target-scoped results; "Cross-platform hash equality is not required."
+- `ADR-0012 targets` (`docs/adr/0012-windows-primary-platform.md:40–41`) — the gate targets are `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`.
+- `deps.py layering` (`tools/lint/deps.py:46–72`) — the `ALLOWED` table: `crpg-net-quic` may import only `crpg-net` (`:55–59`), and `crpg-server` may import any crate but `crpg-godot` and `crpg-edit` (`:69`).
+- `deps.py I/O-free` (`tools/lint/deps.py:13–15`, `:77–82`) — `crpg-core`, `crpg-data`, `crpg-rules`, `crpg-sim` and `crpg-net` "may not name tokio, quinn, quinn-proto, quinn-udp, rustls, ring, mio or socket2 in any section"; `IO_FREE_CRATES` and `IO_CRATES` hold the exact lists.
+- `deps.py scans every section` (`tools/lint/deps.py:22–34`) — `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, `[target.*]` blocks and renamed entries all count.
+- `crate I/O permission` (`crates/crpg-net-quic/AGENTS.md:47–49`) — "I/O is allowed here, crate-wide … and nowhere below it. `crpg-net` stays I/O-free."
+- `crate sync surface` (`crates/crpg-net-quic/AGENTS.md:50–53`) — every public call is non-blocking except `wait`, `connect`, `close`, `shutdown` and `Drop`, and no tokio, quinn or rustls type appears in a public signature.
+- `no DATAGRAM without a new ALPN` (`crates/crpg-net-quic/AGENTS.md:125`) — "Never enable DATAGRAM frames or more streams without a new ALPN."
+- `no dev-dependencies` (`crates/crpg-net-quic/AGENTS.md:85–87`) — "There are **no dev-dependencies** … Any new edge or feature needs a T018a-style record and approval."
+- `D23 pins` (`crates/crpg-net-quic/AGENTS.md:73–83`) — the four pins, default features off, `quinn-proto` "vendored with patches, `third_party/quinn-proto/VENDOR.md`".
+- `crate DoD` (`crates/crpg-net-quic/AGENTS.md:89–115`) — `clippy --all-targets --locked -D warnings`, the five test suites, `cargo deny check`, and the scope grep that "must print only the `#![forbid(unsafe_code)]` line"; run "on native Windows/MSVC (CI) and genuine Linux/GNU".
+- `server I/O fence` (`crates/crpg-server/AGENTS.md:82–85`) — "network I/O exists **only** in `quic.rs`, only through `crpg-net-quic`'s API, which owns the socket, runtime and thread"; "No `HashMap`/`HashSet`."
+- `server deps` (`crates/crpg-server/AGENTS.md:92–106`) — normal deps plus `crpg-persist` and the `crpg-net-quic` path edge, "and nothing else: there is no direct quinn, quinn-proto, rustls or tokio edge"; "never widen `deny.toml`."
+- `server DoD` (`crates/crpg-server/AGENTS.md:108–122`) — `cargo clippy -p crpg-server --all-targets --locked -D warnings`, `host_quic`, the whole crate, both lints, `cargo deny check` and `git diff --check`.
 
 ## Agent log
 
-- 2026-11-15 (UTC) · deepseek-v4.1-flash + T150 facts · Opened the sheet with its section headings so the architect has a stable skeleton to fill.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T150 facts · Recorded the lane-1 requirements, the as-built `crpg-net-quic` surface and lane-0 stream mapping, the vendored quinn-proto state and D23's dedup-patch/probe obligation, the `movement_v4`/`MoveOutbox` codec, the `quic.rs` adapter and T037's future calls, the test rigs and the binding platform rules, so the T150 architect cites existing lines instead of re-deriving them.
