@@ -161,16 +161,24 @@ Design decisions this contract makes. Each needs approval with the contract.
    intents only from a bound connection. *Rejected:* opening stream 2 before
    the hello is accepted (the server cannot distinguish lane 1 from lane 0
    traffic until the framing is fixed).
-9. **The `quic.rs` v4 route binds only wire version 4 on `/3`.** `on_hello`
+9. **The `quic.rs` v4 route binds only wire version 4 on `/3`, and facts and
+   rights ride a separate v4 registration.** `on_hello`
    (`crates/crpg-server/src/quic.rs:596`) gains a `Framing::V3` arm that
-   accepts wire version 4 and calls `bind_v4_peer`; `Invitation` gains
-   `facts: FactGrants` and `rights: PauseRights`, because `bind_v4_peer`
-   builds the first snapshot from them (`tasks/T037.md:437–441`) and
-   `FactGrants` has no `Default` (`crates/crpg-server/src/host.rs:244`).
-   v3-over-QUIC is not part of T150 (Out of scope). *Rejected:* empty
-   defaults plus post-bind `set_fact_grants`/`set_pause_rights` (the first
-   delivery is already staged at bind); a separate v4 invitation type (the
-   same principal binds once, so the fields belong on `Invitation`).
+   accepts wire version 4 and calls `bind_v4_peer`. Because `bind_v4_peer`
+   builds the first snapshot from `FactGrants` and `PauseRights`
+   (`tasks/T037.md:437–441`) and `FactGrants` has no `Default`
+   (`crates/crpg-server/src/host.rs:244`), they are supplied by a new
+   `register_v4_invitation` + `V4Invitation` (a `credential`, `control`,
+   `grants`, `facts`, `rights`), leaving the existing `Invitation`
+   (`crates/crpg-server/src/quic.rs:76`) and every struct-literal site
+   untouched; the internal `InvitationRecord` gains
+   `facts: Option<FactGrants>` and `rights: Option<PauseRights>` (`None` for
+   a `/1`//`/2`-only invitation), and a `/3` hello whose record lacks them is
+   refused `AuthRefused`. v3-over-QUIC is not part of T150 (Out of scope).
+   *Rejected:* adding the fields to `Invitation` (breaks the
+   `invitation()` helper and the `main.rs` wiring, an existing-test edit);
+   empty defaults plus post-bind setters (the first delivery is already
+   staged at bind).
 
 ## Interface
 
@@ -262,32 +270,55 @@ The lane-1 stream reuses `frame_header`/`parse_frame_header`
 
 ### T150b — `quic.rs` (`crates/crpg-server/src/quic.rs`)
 ```rust
-// Invitation (:76) gains, after `grants`:
-    /// What this v4 principal may learn of facts, at bind time (T037 B-1).
-    pub facts: crpg_server_fact::FactGrants,
-    /// This v4 principal's own pause rights (T037 B-1).
+// V4Invitation, beside Invitation (:76):
+/// An operator-provisioned v4 principal: the v1/v2 invitation plus the
+/// fact grants and pause rights `bind_v4_peer` builds the first snapshot
+/// from (T037 B-1). `Debug` redacts the credential as `Invitation` does.
+#[derive(Debug, Clone)]
+pub struct V4Invitation {
+    /// Exactly [`INVITATION_CREDENTIAL_BYTES`] bytes of operator secret.
+    pub credential: Credential,
+    /// The actors this principal may act as.
+    pub control: ControlGrant,
+    /// What this principal may learn.
+    pub grants: DisclosureGrants,
+    /// The v4 fact grants, used at bind time.
+    pub facts: FactGrants,
+    /// The v4 principal's own pause rights.
     pub rights: crpg_net::protocol_v3::PauseRights,
+}
+
+impl QuicHost {
+    /// As [`register_invitation`](Self::register_invitation), but the record
+    /// also carries `facts` and `rights` for a `/3` v4 binding. Same
+    /// precedence and errors.
+    pub fn register_v4_invitation(&mut self, invitation: V4Invitation)
+        -> Result<InvitationId, QuicHostError>;
+}
 ```
-`HostCall` (`:1`-area, the trace enum) gains, beside `BindSnapshotPeer` and
-`IngestTransfer`:
+`HostCall` (the trace enum, beside `BindSnapshotPeer` and `IngestTransfer`)
+gains:
 ```rust
     /// `bind_v4_peer` for a `/3` hello naming wire version 4.
     BindV4Peer { conn: ConnectionId, invitation: InvitationId, result: Result<PeerHandle, HostError> },
     /// One `ingest_move` call, with its `MoveAdmission` result.
     IngestMove { conn: ConnectionId, peer: PeerHandle, frame: u64, len: usize, result: Result<MoveAdmission, HostError> },
-    /// One `take_move_receipts` call.
+    /// One `take_move_receipts` call; the result is the count of receipts.
     TakeMoveReceipts { peer: PeerHandle, result: Result<usize, HostError> },
-    /// One `take_samples` call.
+    /// One `take_samples` call; the result is the count of datagrams.
     TakeSamples { peer: PeerHandle, result: Result<usize, HostError> },
 ```
 `on_hello` (`:596`) gains a `Framing::V3` arm: the version check (`:619`)
-becomes framing-aware — `/3` requires `wire_version == 4`, else `VersionRefused`;
-the bind arm (`:650–659`) gains `Framing::V3 => host.bind_v4_peer(control,
-grants, facts, rights, now_ms)` and the trace `HostCall::BindV4Peer`; the
-welcome (`:689–692`) uses `session_wire(peer)` (4) as its `wire_version`.
-The `drain` phase (`:768`) reads `try_recv_lane1` and traces `HostCall::IngestMove`;
+becomes framing-aware — `/3` requires `wire_version == 4`, else
+`VersionRefused`; the bind arm (`:650–659`) gains
+`Framing::V3 => host.bind_v4_peer(control, grants, facts, rights, now_ms)`
+with `facts`/`rights` taken from the record (a `/3` hello whose record lacks
+them is refused `AuthRefused`), traced `HostCall::BindV4Peer`; the welcome
+(`:689–692`) uses `session_wire(peer)` (4) as its `wire_version`. The
+`drain` phase (`:768`) reads `try_recv_lane1` and traces `HostCall::IngestMove`;
 the `deliver` phase (`:949`) writes `take_move_receipts` to `try_send_lane1`
-and `take_samples` to `try_send_datagram` (traced `TakeMoveReceipts`/`TakeSamples`).
+and `take_samples` to `try_send_datagram` (traced
+`TakeMoveReceipts`/`TakeSamples`).
 
 ## Behaviour
 
