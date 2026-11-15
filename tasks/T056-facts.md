@@ -65,6 +65,9 @@ From `tasks/T028.md`:
 - Turn-based vs real-time paths: in TB, turn logic lives only in `perform_action` and `despawn` (tick knows nothing of combat); in RT, tick stage 2 runs the clock and stage 3 executes due stored orders through `validate_action` (`crates/crpg-sim/AGENTS.md`, "Encounter mode" section).
 - T028's own definition is in `tasks/T028.md`: exact surface at `tasks/T028.md:97-107`, one-validation-path rule at `tasks/T028.md:115-117` (extracted from `perform_action`, both public functions use it), "Options confer no authorization... host always rechecks execution" (`tasks/T028.md:20-30`).
 
+- `pub struct CombatState` — encounter-level state: `definition`, `round: u32`, `active: Option<EntityId>` ("The entity whose turn it is, or `None` when terminal"), `mode`, `clock: Option<EncounterClock>`, `pending_mode`, `lifecycle`, `pending_joins` (`crates/crpg-sim/src/combat.rs:840-863`); bounds `MAX_COMBATANTS = 1024`, `MAX_COMBAT_STATS = 1024` (`crates/crpg-sim/src/combat.rs:54-56`).
+- `Combatant` readers an AI would call: `placement()`, `initiative()`, `health()` (`crates/crpg-sim/src/combat.rs:240-265`), `attributes()` (`crates/crpg-sim/src/combat.rs:250`).
+
 ## Movement and targets in sim
 
 - Positions are `[Fx16_16; 3]` (`[x, y, z]`, `y` up, metres); for a creature with a mover, `Transform` is the `f32` mirror written by movement code and read by no rule (`crates/crpg-sim/src/movement.rs` — module doc; mirror `to_f32(v) = raw/65536.0` at `crates/crpg-sim/src/movement.rs:391-393`).
@@ -78,6 +81,7 @@ From `tasks/T028.md`:
 - Range check (T149b): `pub fn within_range(measure, range: Fx16_16, from, to) -> bool` — true iff `route_measure(measure, [from, to])` is `Some(d)`, `range.to_raw() >= 0`, and `d <= raw` (`crates/crpg-sim/src/movement.rs:373-381`). `validate_action` ends with the range stage: a missing mover on either side or `!within_range` is `CombatError::OutOfRange`, so out-of-range targets are omitted from `legal_actions` and refused when issued (`crates/crpg-sim/src/combat.rs:3722-3723` doc; `crates/crpg-sim/AGENTS.md`, "Ability range" section). X3: in RT stage 3 a due order failing exactly `OutOfRange` is retained and retried every later tick; any other failure clears the order.
 - `Mover` is built at registration and for each *spawned* encounter participant from the ruleset's `movement` rules; without `movement` nothing is built, so a ruleset without `movement` creates no movers and a ranged ability can never be used there (`crates/crpg-sim/AGENTS.md`, "Movement state and operations" + "Ability range" traps).
 - `World` accessors: `movers()`, `nav`, `bind_nav(revision)`, `place(entity, position)`, `set_route`, `clear_route` (`crates/crpg-sim/src/movement.rs:713`, `:744`, `:771`).
+- Constants: `COORD_LIMIT_RAW = 1 << 29` (`crates/crpg-sim/src/movement.rs:43`), `MAX_ROUTE_POINTS = 64` (`crates/crpg-sim/src/movement.rs:45`), `MAX_ROUTE_LENGTH_RAW = 1 << 28` (`crates/crpg-sim/src/movement.rs:47`), `NavRevision(pub [u8; 32])` (`crates/crpg-sim/src/movement.rs:51`), and in data `MAX_SPEED_PER_TICK_RAW = 1 << 18` (`crates/crpg-data/src/combat.rs:54`).
 
 ## Hostility and factions
 
