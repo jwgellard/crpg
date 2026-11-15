@@ -33,14 +33,19 @@ use crpg_net::codec::{self, CodecError};
 use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
 use crpg_net::codec_v3;
+use crpg_net::codec_v4;
 use crpg_net::facts_v3::{
     clock_op, host_facts_op, project_page, project_snapshot_v3, EncounterGrants, HostGrants,
     HostInput,
 };
 use crpg_net::interest::{EntityKey, InterestView};
+use crpg_net::positions_v4::{project_page_v4, project_snapshot_v4, PositionView};
 use crpg_net::projection_v2::{project_events, EventCandidate};
 use crpg_net::projection_v3::{
     project_events as project_events_v3, EventCandidate as EventCandidateV3,
+};
+use crpg_net::projection_v4::{
+    project_events as project_events_v4, EventCandidate as EventCandidateV4,
 };
 use crpg_net::protocol::{
     self, IntentBody, IntentFrame, NetId, ReceiptStatus, RejectionCode, LANE_COMBAT, MAX_DELTA_OPS,
@@ -56,6 +61,10 @@ use crpg_net::protocol_v3::{
     AutoPauseToggles, AutoPauseTrigger, DeltaFrame as DeltaFrameV3, DeltaOp as DeltaOpV3,
     IntentBody as IntentBodyV3, IntentFrame as IntentFrameV3, PauseReason, PauseRights,
     ReceiptStatus as ReceiptV3, RejectionCode as CodeV3, POLICY_CLOCK_HEARTBEAT_TICKS,
+};
+use crpg_net::protocol_v4::{
+    DeltaFrame as DeltaFrameV4, DeltaOp as DeltaOpV4, IntentBody as IntentBodyV4,
+    IntentFrame as IntentFrameV4, Point, SessionEpoch,
 };
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_net::transfer_v3;
@@ -78,6 +87,7 @@ use crate::host_v3::{
     host_facts_image, key_of, net_mode, outbox_fits, read_world, sim_mode, Gate, OutboxEntry,
     PagePlan, Throttle, V3Session, V3Stage,
 };
+use crate::host_v4::{outbox_fits_v4, position_rows, V4State};
 use crate::nav::{area_mesh, plan_route, HostNav, RouteRefusal};
 
 // ---------------------------------------------------------------------------
@@ -543,6 +553,8 @@ pub enum HostError {
     NoPath(crpg_nav::NavError),
     /// The sim refused a movement operation; nothing changed.
     Move(MoveError),
+    /// The call needs a session bound with `bind_v4_peer`.
+    NotV4Peer,
 }
 
 impl fmt::Display for HostError {
@@ -570,6 +582,7 @@ impl fmt::Display for HostError {
             Self::NoNavMesh => "NoNavMesh",
             Self::NoPath(_) => "NoPath",
             Self::Move(_) => "Move",
+            Self::NotV4Peer => "NotV4Peer",
         };
         write!(f, "{name} at host/admission")
     }
@@ -705,15 +718,15 @@ struct TurnTimer {
     clock: TimerClock,
 }
 
-/// One decoded intent in the pipeline's common form: a v1/v2 verb maps into
-/// the v3 vocabulary (T141d D-1).
+/// One decoded intent in the pipeline's common form: a v1/v2/v3 verb maps
+/// into the v4 vocabulary (T141d D-1, T037b B-2).
 #[derive(Debug, Clone, Copy)]
 struct Frame {
     epoch: [u8; 16],
     seq: u64,
     observed_tick: u64,
     actor: NetId,
-    body: IntentBodyV3,
+    body: IntentBodyV4,
 }
 
 /// The two header fields the capture steps read from an intent, so that both
@@ -1212,7 +1225,7 @@ impl Host {
         let epoch = self.session_epoch(handle);
         let mut session = self.blank_session(epoch, control, grants, true);
         session.v3 = Some(Box::new(V3Session::new(epoch, facts, rights)));
-        let stage = self.plan_v3_stage(&session, &session.grants, SnapshotCause::Resync)?;
+        let stage = self.plan_stage(&session, &session.grants, SnapshotCause::Resync)?;
         commit_v3_stage(
             &mut self.egress_bytes,
             &self.egress_caps,
@@ -1226,12 +1239,108 @@ impl Host {
         Ok(handle)
     }
 
-    /// The wire version byte of `peer`'s session: `1`, `2` or `3`. Not checked
-    /// against shutdown: a closed host has no sessions, so it is
+    /// Binds a protocol v4 session (T037b B-1): [`bind_v3_peer`](Self::bind_v3_peer)
+    /// with lane-0 version 4 (the v4 codec) and lane 1, plus the session's
+    /// position state. The same precedence and errors; its first delivery is
+    /// the `0x82` transfer followed by the anchoring page.
+    pub fn bind_v4_peer(
+        &mut self,
+        control: ControlGrant,
+        grants: DisclosureGrants,
+        facts: FactGrants,
+        rights: PauseRights,
+        now_ms: u64,
+    ) -> Result<PeerHandle, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        let control = normalize_control(control)?;
+        let grants = normalize_grants(grants)?;
+        let facts = normalize_fact_grants(facts)?;
+        if self.sessions.len() >= MAX_PEERS {
+            return Err(HostError::ServerBusy);
+        }
+        if self.next_handle == u64::MAX {
+            return Err(HostError::CounterExhausted);
+        }
+        let handle = PeerHandle(self.next_handle);
+        let epoch = self.session_epoch(handle);
+        let mut session = self.blank_session(epoch, control, grants, true);
+        let mut v3 = V3Session::new(epoch, facts, rights);
+        v3.v4 = Some(Box::new(V4State {
+            positions: PositionView::new(SessionEpoch(epoch)),
+            withheld: Vec::new(),
+        }));
+        session.v3 = Some(Box::new(v3));
+        let stage = self.plan_stage(&session, &session.grants, SnapshotCause::Resync)?;
+        commit_v3_stage(
+            &mut self.egress_bytes,
+            &self.egress_caps,
+            &mut session,
+            stage,
+            None,
+        );
+        self.sessions.insert(handle, session);
+        self.next_handle += 1;
+        self.last_now_ms = now_ms;
+        Ok(handle)
+    }
+
+    /// Replaces the entities whose position `peer` is not told (T037b B-8).
+    ///
+    /// Precedence: [`Closed`](HostError::Closed),
+    /// [`UnknownPeer`](HostError::UnknownPeer),
+    /// [`NotV4Peer`](HostError::NotV4Peer), then
+    /// [`InvalidGrants`](HostError::InvalidGrants) for more than
+    /// [`MAX_GRANT_IDENTITIES`] entries or a duplicate; the list is stored
+    /// sorted and published to that session alone. An unchanged list publishes
+    /// a page with no ops (no frame).
+    pub fn set_position_withheld(
+        &mut self,
+        peer: PeerHandle,
+        entities: Vec<EntityId>,
+    ) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        if !session
+            .v3
+            .as_ref()
+            .is_some_and(|session| session.v4.is_some())
+        {
+            return Err(HostError::NotV4Peer);
+        }
+        let mut entities = entities;
+        if entities.len() > MAX_GRANT_IDENTITIES {
+            return Err(HostError::InvalidGrants);
+        }
+        entities.sort();
+        if entities.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(HostError::InvalidGrants);
+        }
+        let Some(blob) = self
+            .sessions
+            .get_mut(&peer)
+            .and_then(|session| session.v3.as_mut())
+            .and_then(|session| session.v4.as_mut())
+        else {
+            return Err(HostError::NotV4Peer);
+        };
+        blob.withheld = entities;
+        self.publish_v3(Some(peer), &[]);
+        Ok(())
+    }
+
+    /// The wire version byte of `peer`'s session: `1`, `2`, `3` or `4`. Not
+    /// checked against shutdown: a closed host has no sessions, so it is
     /// [`UnknownPeer`](HostError::UnknownPeer).
     pub fn session_wire(&self, peer: PeerHandle) -> Result<u8, HostError> {
         let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
-        Ok(if session.v3.is_some() {
+        Ok(if session.v3.as_ref().is_some_and(|v3| v3.v4.is_some()) {
+            4
+        } else if session.v3.is_some() {
             3
         } else {
             self.config.protocol.as_u8()
@@ -1403,7 +1512,7 @@ impl Host {
             self.publish_v3(Some(peer), &[]);
             return Ok(GrantUpdate::Unchanged);
         }
-        let stage = self.plan_v3_stage(session, &grants, SnapshotCause::Narrowed)?;
+        let stage = self.plan_stage(session, &grants, SnapshotCause::Narrowed)?;
         let session = self.sessions.get_mut(&peer).expect("checked above");
         commit_v3_stage(
             &mut self.egress_bytes,
@@ -1549,23 +1658,32 @@ impl Host {
         self.ingress.push_front(staged);
     }
 
-    /// Decodes with the session's codec: v3 for a session bound with
-    /// `bind_v3_peer`, else the host-wide v1/v2 (T141d D-1). A peer with no
-    /// session decodes with the host-wide codec (and is then `SessionExpired`).
+    /// Decodes with the session's codec: v4 for a session bound with
+    /// `bind_v4_peer`, v3 for `bind_v3_peer`, else the host-wide v1/v2
+    /// (T141d D-1, T037b B-2). A peer with no session decodes with the
+    /// host-wide codec (and is then `SessionExpired`).
     fn decode(&self, peer: PeerHandle, bytes: &[u8]) -> Result<Frame, CodecError> {
-        if self
-            .sessions
-            .get(&peer)
-            .is_some_and(|session| session.v3.is_some())
-        {
-            let frame = codec_v3::decode_intent(bytes)?;
-            return Ok(Frame {
-                epoch: frame.epoch,
-                seq: frame.seq,
-                observed_tick: frame.observed_tick,
-                actor: frame.actor,
-                body: frame.body,
-            });
+        if let Some(session) = self.sessions.get(&peer) {
+            if let Some(v3) = session.v3.as_ref() {
+                if v3.v4.is_some() {
+                    let frame = codec_v4::decode_intent(bytes)?;
+                    return Ok(Frame {
+                        epoch: frame.epoch,
+                        seq: frame.seq,
+                        observed_tick: frame.observed_tick,
+                        actor: frame.actor,
+                        body: frame.body,
+                    });
+                }
+                let frame = codec_v3::decode_intent(bytes)?;
+                return Ok(Frame {
+                    epoch: frame.epoch,
+                    seq: frame.seq,
+                    observed_tick: frame.observed_tick,
+                    actor: frame.actor,
+                    body: frame.body.into(),
+                });
+            }
         }
         let frame = match self.config.protocol {
             ProtocolSelection::V1 => codec::decode_intent(bytes),
@@ -1578,18 +1696,18 @@ impl Host {
             actor: frame.actor,
             body: match frame.body {
                 IntentBody::DeclareAction { ability, target } => {
-                    IntentBodyV3::DeclareAction { ability, target }
+                    IntentBodyV4::DeclareAction { ability, target }
                 }
-                IntentBody::EndTurn => IntentBodyV3::EndTurn,
+                IntentBody::EndTurn => IntentBodyV4::EndTurn,
             },
         })
     }
 
     /// The canonical bytes of `frame` in its session's codec (D-1); the raw
     /// bytes when the frame cannot be re-encoded.
-    fn canonical(&self, v3: bool, frame: &Frame, raw: &[u8]) -> Vec<u8> {
-        let encoded = if v3 {
-            codec_v3::encode_intent(&IntentFrameV3 {
+    fn canonical(&self, v3: bool, v4: bool, frame: &Frame, raw: &[u8]) -> Vec<u8> {
+        let encoded = if v4 {
+            codec_v4::encode_intent(&IntentFrameV4 {
                 epoch: frame.epoch,
                 lane: LANE_COMBAT,
                 seq: frame.seq,
@@ -1597,12 +1715,24 @@ impl Host {
                 actor: frame.actor,
                 body: frame.body,
             })
+        } else if v3 {
+            let Some(body) = body_v3(frame.body) else {
+                return raw.to_vec();
+            };
+            codec_v3::encode_intent(&IntentFrameV3 {
+                epoch: frame.epoch,
+                lane: LANE_COMBAT,
+                seq: frame.seq,
+                observed_tick: frame.observed_tick,
+                actor: frame.actor,
+                body,
+            })
         } else {
             let body = match frame.body {
-                IntentBodyV3::DeclareAction { ability, target } => {
+                IntentBodyV4::DeclareAction { ability, target } => {
                     IntentBody::DeclareAction { ability, target }
                 }
-                IntentBodyV3::EndTurn => IntentBody::EndTurn,
+                IntentBodyV4::EndTurn => IntentBody::EndTurn,
                 _ => return raw.to_vec(),
             };
             let legacy = IntentFrame {
@@ -1662,8 +1792,12 @@ impl Host {
             ));
         }
         let v3 = session.v3.is_some();
+        let v4 = session
+            .v3
+            .as_ref()
+            .is_some_and(|session| session.v4.is_some());
         // 3. Seq/cache, cache-first.
-        let canonical = self.canonical(v3, &frame, &staged.bytes);
+        let canonical = self.canonical(v3, v4, &frame, &staged.bytes);
         if let Some(entry) = session.cache.iter().find(|entry| entry.seq == frame.seq) {
             if entry.canonical == canonical {
                 return self.cache_hit(peer, frame.seq, now_ms);
@@ -1925,13 +2059,24 @@ impl Host {
         status: ReceiptV3,
     ) -> Result<LoggedFrame, HostError> {
         let bytes = if session.v3.is_some() {
-            codec_v3::encode_delta(&DeltaFrameV3 {
-                lane: LANE_COMBAT,
-                server_tick: self.server_tick(),
-                event_seq: session.next_event_seq,
-                ops: vec![receipt_op_v3(session.epoch, seq, processed_tick, status)],
-            })
-            .map_err(|_| HostError::Invariant(V3_ENCODE))?
+            let op = receipt_op_v3(session.epoch, seq, processed_tick, status);
+            if session.v3.as_ref().is_some_and(|v3| v3.v4.is_some()) {
+                codec_v4::encode_delta(&DeltaFrameV4 {
+                    lane: LANE_COMBAT,
+                    server_tick: self.server_tick(),
+                    event_seq: session.next_event_seq,
+                    ops: vec![DeltaOpV4::V3(op)],
+                })
+                .map_err(|_| HostError::Invariant(V3_ENCODE))?
+            } else {
+                codec_v3::encode_delta(&DeltaFrameV3 {
+                    lane: LANE_COMBAT,
+                    server_tick: self.server_tick(),
+                    event_seq: session.next_event_seq,
+                    ops: vec![op],
+                })
+                .map_err(|_| HostError::Invariant(V3_ENCODE))?
+            }
         } else {
             let ops = vec![receipt_op(
                 session.epoch,
@@ -1971,8 +2116,13 @@ impl Host {
             .sessions
             .get(&peer)
             .is_some_and(|session| session.v3.is_some());
+        let v4 = self
+            .sessions
+            .get(&peer)
+            .and_then(|session| session.v3.as_ref())
+            .is_some_and(|session| session.v4.is_some());
         let template =
-            self.receipt_template_len(v3, frame.epoch, frame.seq, processed_tick, status)?;
+            self.receipt_template_len(v3, v4, frame.epoch, frame.seq, processed_tick, status)?;
         let session = self.sessions.get_mut(&peer).expect("bound by caller");
         session.next_new_seq = frame.seq + 1;
         let mut entry = CacheEntry {
@@ -2166,8 +2316,14 @@ impl Host {
             .sessions
             .get(&peer)
             .is_some_and(|session| session.v3.is_some());
+        let v4_originator = self
+            .sessions
+            .get(&peer)
+            .and_then(|session| session.v3.as_ref())
+            .is_some_and(|session| session.v4.is_some());
         let template = self.receipt_template_len(
             v3_originator,
+            v4_originator,
             epoch,
             seq,
             processed_tick,
@@ -2214,23 +2370,34 @@ impl Host {
 
     /// The retry-cache receipt-only template length (event_seq = 0), in the
     /// session wire's codec (D-1).
+    #[allow(clippy::too_many_arguments)]
     fn receipt_template_len(
         &self,
         v3: bool,
+        v4: bool,
         epoch: [u8; 16],
         seq: u64,
         processed_tick: u64,
         status: ReceiptV3,
     ) -> Result<usize, HostError> {
         if v3 {
-            return Ok(codec_v3::encode_delta(&DeltaFrameV3 {
-                lane: LANE_COMBAT,
-                server_tick: processed_tick,
-                event_seq: 0,
-                ops: vec![receipt_op_v3(epoch, seq, processed_tick, status)],
-            })
-            .map_err(|_| HostError::Invariant(V3_ENCODE))?
-            .len());
+            let op = receipt_op_v3(epoch, seq, processed_tick, status);
+            let bytes = if v4 {
+                codec_v4::encode_delta(&DeltaFrameV4 {
+                    lane: LANE_COMBAT,
+                    server_tick: processed_tick,
+                    event_seq: 0,
+                    ops: vec![DeltaOpV4::V3(op)],
+                })
+            } else {
+                codec_v3::encode_delta(&DeltaFrameV3 {
+                    lane: LANE_COMBAT,
+                    server_tick: processed_tick,
+                    event_seq: 0,
+                    ops: vec![op],
+                })
+            };
+            return Ok(bytes.map_err(|_| HostError::Invariant(V3_ENCODE))?.len());
         }
         let ops = vec![receipt_op(
             epoch,
@@ -2426,9 +2593,24 @@ impl Host {
         }
     }
 
-    /// C-5 steps 1 to 4 for a v3 session: reads only, so a failure changes
-    /// nothing. `grants` are the disclosure grants the snapshot is cut under
-    /// (the session's own, or the narrower new ones).
+    /// C-5 steps 1 to 4 for one session: reads only, so a failure changes
+    /// nothing. Dispatches on the session's wire (B-7): a v4 session's staging
+    /// page anchors its positions after the transfer, a v3 session's is the
+    /// single `[Clock, HostFacts]` delta.
+    fn plan_stage(
+        &self,
+        session: &Session,
+        grants: &DisclosureGrants,
+        cause: SnapshotCause,
+    ) -> Result<V3Stage, HostError> {
+        if session.v3.as_ref().is_some_and(|v3| v3.v4.is_some()) {
+            self.plan_v4_stage(session, grants, cause)
+        } else {
+            self.plan_v3_stage(session, grants, cause)
+        }
+    }
+
+    /// C-5 steps 1 to 4 for a v3 session.
     fn plan_v3_stage(
         &self,
         session: &Session,
@@ -2506,10 +2688,133 @@ impl Host {
         Ok(V3Stage {
             view,
             facts,
+            positions: None,
             cancel,
             frames,
-            delta,
-            delta_seq,
+            deltas: vec![(delta_seq, delta)],
+            transfer,
+            tick,
+            clock,
+            image: host_facts_image(
+                v3.rights,
+                self.settings.auto_pause,
+                v3.fact_grants.host,
+                self.timer_epoch(),
+            ),
+        })
+    }
+
+    /// C-5 steps 1 to 4 for a v4 session (B-7, HM-7): the same transfer, then
+    /// the anchoring page on the same clones — `project_page_v4` with B-4's
+    /// rows, then `[V3(Clock), V3(HostFacts)]` — cut by
+    /// `codec_v4::frame_spans`, one `event_seq` per frame, within
+    /// [`outbox_fits_v4`].
+    fn plan_v4_stage(
+        &self,
+        session: &Session,
+        grants: &DisclosureGrants,
+        cause: SnapshotCause,
+    ) -> Result<V3Stage, HostError> {
+        const PAGE: &str = "v3 page projection failed";
+        let v3 = session.v3.as_ref().ok_or(HostError::NotV3Peer)?;
+        let blob = v3.v4.as_ref().ok_or(HostError::NotV4Peer)?;
+        // 1. Transfer-id counter sentinel.
+        if session.next_transfer == u64::MAX {
+            return Err(HostError::CounterExhausted);
+        }
+        let transfer = session.next_transfer;
+        let epoch = session.epoch;
+        let tick = self.server_tick();
+        // 2. Cancel the in-flight transfer first, if any.
+        let cancel = match session.in_flight {
+            Some(old) => Some(
+                transfer_v3::encode_down(&TransferDown::Cancel {
+                    epoch,
+                    transfer: TransferId::new(old).expect("in-flight id is nonzero"),
+                    reason: cause.cancel_reason(),
+                })
+                .map_err(|_| HostError::Invariant(V3_ENCODE))?,
+            ),
+            None => None,
+        };
+        // 3. The snapshot, projected on clones of the three views.
+        let read = read_world(
+            self.history.world(),
+            tick,
+            grants,
+            &v3.fact_grants,
+            &session.control,
+        );
+        let mut view = v3.view.clone();
+        let mut facts = v3.facts.clone();
+        let mut positions = blob.positions.clone();
+        let projection = project_snapshot_v4(
+            &mut view,
+            &mut facts,
+            &mut positions,
+            &read.viewer(epoch),
+            &read.fact_context(),
+        )
+        .map_err(|_| HostError::Invariant("v3 snapshot projection failed"))?;
+        let frames = transfer_v3::plan_transfer(
+            epoch,
+            TransferId::new(transfer).expect("nonzero by the step-1 check"),
+            tick,
+            session.last_event_seq(),
+            SNAPSHOT_SEGMENTS_PER_CHUNK,
+            &projection.body,
+        )
+        .map_err(|_| HostError::Invariant(V3_ENCODE))?;
+        // 4. The anchoring page, then C-6's two host ops.
+        let rows = position_rows(self.history.world(), grants, &blob.withheld);
+        let page = project_page_v4(
+            &mut view,
+            &mut facts,
+            &mut positions,
+            &read.viewer(epoch),
+            &read.fact_context(),
+            &rows,
+        )
+        .map_err(|_| HostError::Invariant(PAGE))?;
+        let input = self.host_input(v3.rights);
+        let clock = clock_op(&input, v3.fact_grants.host);
+        let mut ops: Vec<DeltaOpV4> = page.ops;
+        ops.push(DeltaOpV4::V3(clock.clone()));
+        ops.push(DeltaOpV4::V3(host_facts_op(&input, v3.fact_grants.host)));
+        let spans = codec_v4::frame_spans(&ops).map_err(|_| HostError::Invariant(V3_ENCODE))?;
+        let mut deltas: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut event_seq = session.next_event_seq;
+        for span in spans {
+            let bytes = codec_v4::encode_delta(&DeltaFrameV4 {
+                lane: LANE_COMBAT,
+                server_tick: tick,
+                event_seq,
+                ops: ops[span].to_vec(),
+            })
+            .map_err(|_| HostError::Invariant(V3_ENCODE))?;
+            deltas.push((event_seq, bytes));
+            event_seq = event_seq
+                .checked_add(1)
+                .ok_or(HostError::CounterExhausted)?;
+        }
+        let count = frames.len() + usize::from(cancel.is_some()) + deltas.len();
+        let bytes = frames.iter().map(Vec::len).sum::<usize>()
+            + cancel.as_ref().map_or(0, Vec::len)
+            + deltas.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
+        let ordinal_room = (u64::MAX - 1).saturating_sub(session.next_ordinal);
+        if count as u64 > ordinal_room {
+            return Err(HostError::CounterExhausted);
+        }
+        if !outbox_fits_v4(count, bytes) {
+            return Err(HostError::Invariant("v4 plan exceeds the outbox bound"));
+        }
+        Ok(V3Stage {
+            view,
+            facts,
+            positions: Some(positions),
+            cancel,
+            frames,
+            deltas,
             transfer,
             tick,
             clock,
@@ -2560,6 +2865,24 @@ impl Host {
     }
 
     // -- v3 publication (T141d) ----------------------------------------------
+
+    /// One session's page for one operation, dispatching on its wire (B-5):
+    /// a v3 session's is [`plan_v3_page`](Self::plan_v3_page), a v4 session's
+    /// is [`plan_v4_page`](Self::plan_v4_page).
+    fn plan_page(
+        &self,
+        session: &Session,
+        events: &[HistoryEnvelope],
+        receipt: Option<DeltaOpV3>,
+        involved: Option<&BTreeSet<EntityId>>,
+        heartbeat: bool,
+    ) -> Result<PagePlan, HostError> {
+        if session.v3.as_ref().is_some_and(|v3| v3.v4.is_some()) {
+            self.plan_v4_page(session, events, receipt, involved, heartbeat)
+        } else {
+            self.plan_v3_page(session, events, receipt, involved, heartbeat)
+        }
+    }
 
     /// One v3 session's page for one operation (D-7), built on clones of its
     /// two views and so reading only: `[receipt?] ++ enters ++ events ++ rest
@@ -2693,6 +3016,159 @@ impl Host {
         Ok(PagePlan {
             view,
             facts,
+            positions: None,
+            frames,
+            clock: send_clock.then_some(clock),
+            image: send_facts.then_some(image),
+            tick,
+            capture,
+        })
+    }
+
+    /// One v4 session's page for one operation (B-5, B-6): the v3 layout with
+    /// `project_page_v4` on clones of the three views and B-4's rows, so the
+    /// `Position` ops are the page's tail; a `Moved` event is disclosed only
+    /// when the same page carries a granted row for its entity (Reading 17).
+    fn plan_v4_page(
+        &self,
+        session: &Session,
+        events: &[HistoryEnvelope],
+        receipt: Option<DeltaOpV3>,
+        involved: Option<&BTreeSet<EntityId>>,
+        heartbeat: bool,
+    ) -> Result<PagePlan, HostError> {
+        const PAGE: &str = "v3 page projection failed";
+        let v3 = session.v3.as_ref().ok_or(HostError::NotV3Peer)?;
+        let blob = v3.v4.as_ref().ok_or(HostError::NotV4Peer)?;
+        let world = self.history.world();
+        let tick = self.server_tick();
+        let epoch = session.epoch;
+        let mut despawned: Vec<EntityKey> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                HistoryEvent::Despawned { entity }
+                    if lookup(&session.grants, *entity)
+                        .is_some_and(|grant| grant.present && grant.despawn) =>
+                {
+                    Some(key_of(world, *entity))
+                }
+                _ => None,
+            })
+            .collect();
+        despawned.sort();
+        despawned.dedup();
+        let read = read_world(
+            world,
+            tick,
+            &session.grants,
+            &v3.fact_grants,
+            &session.control,
+        )
+        .with_despawned(despawned);
+        // (2) The page, on clones of the three views.
+        let mut view = v3.view.clone();
+        let mut facts = v3.facts.clone();
+        let mut positions = blob.positions.clone();
+        let rows = position_rows(world, &session.grants, &blob.withheld);
+        let page = project_page_v4(
+            &mut view,
+            &mut facts,
+            &mut positions,
+            &read.viewer(epoch),
+            &read.fact_context(),
+            &rows,
+        )
+        .map_err(|_| HostError::Invariant(PAGE))?;
+        // (3) The event ops: the v3 candidates wrapped, and `Moved` under the
+        // post-page id and the page's position grant.
+        let ids = id_map(world, &session.grants, &view, Some(&v3.view));
+        let peer_view = PeerView {
+            grants: &session.grants,
+            map: &ids,
+        };
+        let candidates: Vec<EventCandidateV4> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                HistoryEvent::Moved { entity, points } => {
+                    let mapped: Option<Vec<Point>> = points
+                        .iter()
+                        .map(|point| Point::new(point.map(|component| component.to_raw())))
+                        .collect();
+                    let key = key_of(world, *entity);
+                    Some(EventCandidateV4::Moved {
+                        entity: view.net_id(key),
+                        points: mapped?,
+                        disclose: rows.iter().any(|row| row.key == key && row.granted),
+                    })
+                }
+                other => peer_view
+                    .candidate_v3(&session.control, v3.fact_grants.encounter.mode, other)
+                    .map(EventCandidateV4::V3),
+            })
+            .collect();
+        let mut event_ops: Vec<DeltaOpV4> = Vec::new();
+        for chunk in candidates.chunks(MAX_DELTA_OPS) {
+            event_ops.extend(project_events_v4(chunk).map_err(|_| HostError::Invariant(PAGE))?);
+        }
+        // (4) The host facts, current after auto-pause and the timer (D-12).
+        let input = self.host_input(v3.rights);
+        let clock = clock_op(&input, v3.fact_grants.host);
+        let image = host_facts_image(
+            v3.rights,
+            self.settings.auto_pause,
+            v3.fact_grants.host,
+            self.timer_epoch(),
+        );
+        let heartbeat_due =
+            heartbeat && tick.saturating_sub(v3.last_clock_tick) >= POLICY_CLOCK_HEARTBEAT_TICKS;
+        let send_clock = heartbeat_due || v3.sent_clock.as_ref() != Some(&clock);
+        let send_facts = v3.sent_host_facts != Some(image);
+        let mut ops: Vec<DeltaOpV4> = Vec::new();
+        ops.extend(receipt.map(DeltaOpV4::V3));
+        ops.extend_from_slice(&page.ops[..page.enters]);
+        ops.extend(event_ops);
+        ops.extend_from_slice(&page.ops[page.enters..]);
+        if send_clock {
+            ops.push(DeltaOpV4::V3(clock.clone()));
+        }
+        if send_facts {
+            ops.push(DeltaOpV4::V3(host_facts_op(&input, v3.fact_grants.host)));
+        }
+        // (5, 6) No ops: no frame. Else one frame per span.
+        let mut frames: Vec<(u64, Vec<u8>)> = Vec::new();
+        if !ops.is_empty() {
+            let spans = codec_v4::frame_spans(&ops).map_err(|_| HostError::Invariant(V3_ENCODE))?;
+            let mut event_seq = session.next_event_seq;
+            for span in spans {
+                let bytes = codec_v4::encode_delta(&DeltaFrameV4 {
+                    lane: LANE_COMBAT,
+                    server_tick: tick,
+                    event_seq,
+                    ops: ops[span].to_vec(),
+                })
+                .map_err(|_| HostError::Invariant(V3_ENCODE))?;
+                frames.push((event_seq, bytes));
+                event_seq = event_seq
+                    .checked_add(1)
+                    .ok_or(HostError::CounterExhausted)?;
+            }
+        }
+        let capture = involved.filter(|_| !frames.is_empty()).map(|involved| {
+            let after_ids = id_map(world, &session.grants, &view, None);
+            let after = PeerView {
+                grants: &session.grants,
+                map: &after_ids,
+            };
+            CapturedView {
+                epoch,
+                health: after.health_entries(world, involved),
+                turn: after.turn(world),
+            }
+        });
+        Ok(PagePlan {
+            view,
+            facts,
+            positions: Some(positions),
             frames,
             clock: send_clock.then_some(clock),
             image: send_facts.then_some(image),
@@ -2732,7 +3208,7 @@ impl Host {
         } else {
             (events, receipt)
         };
-        let Ok(plan) = self.plan_v3_page(session, events, receipt, involved, heartbeat) else {
+        let Ok(plan) = self.plan_page(session, events, receipt, involved, heartbeat) else {
             return V3Decision::Fence;
         };
         let bytes: usize = plan.frames.iter().map(|(_, bytes)| bytes.len()).sum();
@@ -2744,7 +3220,7 @@ impl Host {
         if self.room_for(session, plan.frames.len(), bytes) {
             return V3Decision::Deliver(plan);
         }
-        match self.plan_v3_stage(session, &session.grants, SnapshotCause::Resync) {
+        match self.plan_stage(session, &session.grants, SnapshotCause::Resync) {
             Ok(stage) => V3Decision::Restage(stage),
             Err(_) => V3Decision::Fence,
         }
@@ -2841,6 +3317,9 @@ impl Host {
                     .expect("a v3 decision needs a v3 session");
                 v3.view = plan.view;
                 v3.facts = plan.facts;
+                if let (Some(v4), Some(positions)) = (v3.v4.as_mut(), plan.positions) {
+                    v4.positions = positions;
+                }
                 if let Some(throttle) = v3.throttle.as_mut() {
                     throttle.record(plan.tick, logged_frames, logged_bytes);
                 }
@@ -3089,7 +3568,7 @@ impl Host {
             }
             Effect::ResyncV3 => {
                 let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
-                let stage = self.plan_v3_stage(session, &session.grants, SnapshotCause::Resync)?;
+                let stage = self.plan_stage(session, &session.grants, SnapshotCause::Resync)?;
                 let session = self.sessions.get_mut(&peer).expect("checked above");
                 commit_v3_stage(
                     &mut self.egress_bytes,
@@ -4081,8 +4560,9 @@ const V3_ENCODE: &str = "v3 frame failed to encode";
 /// C-5 step 5: installs a planned staging on a v3 session. It cannot fail.
 /// `grants`, when given, are a narrowing's new disclosure grants and are
 /// installed first. The log is discarded (and acknowledged, so the ordinals
-/// stay gapless), the outbox becomes `[Cancel?, Begin, Chunk..., Delta]`, and
-/// pacing (C-7) logs what the egress caps allow.
+/// stay gapless), the outbox becomes `[Cancel?, Begin, Chunk..., deltas...]`,
+/// and pacing (C-7) logs what the egress caps allow. A v4 staging's deltas are
+/// the anchoring page's frames, in order (B-7, B-8).
 fn commit_v3_stage(
     egress_bytes: &mut usize,
     caps: &QueueCaps,
@@ -4099,30 +4579,49 @@ fn commit_v3_stage(
     session.delivered = session.next_ordinal - 1;
     session.in_flight = Some(stage.transfer);
     session.next_transfer += 1;
-    session.next_event_seq = stage.delta_seq + 1;
+    if let Some((last, _)) = stage.deltas.last() {
+        session.next_event_seq = last.saturating_add(1);
+    }
+    let delta_frames = stage.deltas.len();
+    let delta_bytes: usize = stage.deltas.iter().map(|(_, bytes)| bytes.len()).sum();
+    let V3Stage {
+        view,
+        facts,
+        positions,
+        cancel,
+        frames,
+        deltas,
+        tick,
+        clock,
+        image,
+        ..
+    } = stage;
     let v3 = session
         .v3
         .as_mut()
         .expect("a v3 staging needs a v3 session");
-    v3.view = stage.view;
-    v3.facts = stage.facts;
+    v3.view = view;
+    v3.facts = facts;
+    if let (Some(v4), Some(positions)) = (v3.v4.as_mut(), positions) {
+        v4.positions = positions;
+    }
     v3.outbox.clear();
-    let transfer_frames = stage.cancel.into_iter().chain(stage.frames);
+    let transfer_frames = cancel.into_iter().chain(frames);
     v3.outbox.extend(transfer_frames.map(|bytes| OutboxEntry {
         event_seq: None,
         bytes,
     }));
-    let stage_delta_len = stage.delta.len();
-    v3.outbox.push_back(OutboxEntry {
-        event_seq: Some(stage.delta_seq),
-        bytes: stage.delta,
-    });
-    v3.sent_clock = Some(stage.clock);
-    v3.sent_host_facts = Some(stage.image);
-    v3.last_clock_tick = stage.tick;
-    // A staging restarts the throttle; C-6's frame counts toward the budget
-    // (E-2).
-    v3.throttle = Some(Throttle::new(stage.tick, 1, stage_delta_len));
+    v3.outbox
+        .extend(deltas.into_iter().map(|(event_seq, bytes)| OutboxEntry {
+            event_seq: Some(event_seq),
+            bytes,
+        }));
+    v3.sent_clock = Some(clock);
+    v3.sent_host_facts = Some(image);
+    v3.last_clock_tick = tick;
+    // A staging restarts the throttle; every staged delta frame counts toward
+    // the budget (E-2).
+    v3.throttle = Some(Throttle::new(tick, delta_frames, delta_bytes));
     pace_session(egress_bytes, caps, session);
 }
 
@@ -4317,7 +4816,7 @@ fn resolve_action(session: &Session, frame: &Frame) -> Option<Resolved> {
         return None;
     }
     let action = match frame.body {
-        IntentBodyV3::DeclareAction { ability, target } => {
+        IntentBodyV4::DeclareAction { ability, target } => {
             let target = *session.reverse.get(&target)?;
             let target_grant = lookup(&session.grants, target)?;
             if !(target_grant.present && target_grant.action_target) {
@@ -4329,7 +4828,7 @@ fn resolve_action(session: &Session, frame: &Frame) -> Option<Resolved> {
                 target,
             }
         }
-        IntentBodyV3::EndTurn => CombatAction::EndTurn { actor },
+        IntentBodyV4::EndTurn => CombatAction::EndTurn { actor },
         _ => return None,
     };
     Some(Resolved {
@@ -4362,7 +4861,7 @@ fn resolve_v3(
         return Err(deny);
     }
     let intent = match frame.body {
-        IntentBodyV3::DeclareAction { ability, target } => {
+        IntentBodyV4::DeclareAction { ability, target } => {
             let target = entity_of(target).ok_or(deny)?;
             let grant = lookup(&session.grants, target).ok_or(deny)?;
             if !(grant.present && grant.action_target) {
@@ -4374,13 +4873,17 @@ fn resolve_v3(
                 target,
             })
         }
-        IntentBodyV3::EndTurn => Intent::Action(CombatAction::EndTurn { actor }),
-        IntentBodyV3::Stop => Intent::Action(CombatAction::Stop { actor }),
-        IntentBodyV3::Pause if v3.rights.pause => Intent::Pause,
-        IntentBodyV3::Unpause if v3.rights.unpause => Intent::Unpause,
-        IntentBodyV3::Pause | IntentBodyV3::Unpause => return Err(CodeV3::NoPauseRight),
-        IntentBodyV3::RequestMode { mode } if v3.rights.pause => Intent::Mode(sim_mode(mode)),
-        IntentBodyV3::RequestMode { .. } => return Err(deny),
+        IntentBodyV4::EndTurn => Intent::Action(CombatAction::EndTurn { actor }),
+        IntentBodyV4::Stop => Intent::Action(CombatAction::Stop { actor }),
+        IntentBodyV4::Pause if v3.rights.pause => Intent::Pause,
+        IntentBodyV4::Unpause if v3.rights.unpause => Intent::Unpause,
+        IntentBodyV4::Pause | IntentBodyV4::Unpause => return Err(CodeV3::NoPauseRight),
+        IntentBodyV4::RequestMode { mode } if v3.rights.pause => Intent::Mode(sim_mode(mode)),
+        IntentBodyV4::RequestMode { .. } => return Err(deny),
+        // B-2: `DeclareMove` resolves its actor like any other v4 intent and
+        // is then an `IllegalAction` rejection until T037c replaces it;
+        // `last_combat_error` stays unchanged.
+        IntentBodyV4::DeclareMove { .. } => return Err(CodeV3::IllegalAction),
     };
     Ok(Resolved { actor, intent })
 }
@@ -4485,6 +4988,22 @@ fn receipt_op_v3(epoch: [u8; 16], seq: u64, processed_tick: u64, status: Receipt
         seq,
         processed_tick,
         status,
+    }
+}
+
+/// The v3 form of one v4 intent body; `None` for `DeclareMove`, which a v3
+/// session can never decode (B-2).
+fn body_v3(body: IntentBodyV4) -> Option<IntentBodyV3> {
+    match body {
+        IntentBodyV4::DeclareAction { ability, target } => {
+            Some(IntentBodyV3::DeclareAction { ability, target })
+        }
+        IntentBodyV4::EndTurn => Some(IntentBodyV3::EndTurn),
+        IntentBodyV4::Stop => Some(IntentBodyV3::Stop),
+        IntentBodyV4::Pause => Some(IntentBodyV3::Pause),
+        IntentBodyV4::Unpause => Some(IntentBodyV3::Unpause),
+        IntentBodyV4::RequestMode { mode } => Some(IntentBodyV3::RequestMode { mode }),
+        IntentBodyV4::DeclareMove { .. } => None,
     }
 }
 
@@ -6055,6 +6574,87 @@ mod tests {
             egress_bytes: host.egress_bytes,
             views: (v3.view.clone(), v3.facts.clone()),
         }
+    }
+
+    /// B8: a v4 staging queues every delta frame in order after the transfer
+    /// frames, moves `next_event_seq` past the last and restarts the throttle
+    /// with all of them counted; the v3 shape is one frame.
+    #[test]
+    fn b8_staging_counts_every_frame() {
+        fn stage_for(host: &Host, peer: PeerHandle, deltas: Vec<(u64, Vec<u8>)>) -> V3Stage {
+            let session = host.sessions.get(&peer).expect("bound");
+            let v3 = session.v3.as_ref().expect("v3");
+            let input = host.host_input(v3.rights);
+            V3Stage {
+                view: v3.view.clone(),
+                facts: v3.facts.clone(),
+                positions: v3.v4.as_ref().map(|v4| v4.positions.clone()),
+                cancel: None,
+                frames: vec![vec![0xA5; 3]],
+                deltas,
+                transfer: session.next_transfer,
+                tick: host.server_tick(),
+                clock: clock_op(&input, v3.fact_grants.host),
+                image: host_facts_image(
+                    v3.rights,
+                    host.settings.auto_pause,
+                    v3.fact_grants.host,
+                    host.timer_epoch(),
+                ),
+            }
+        }
+        fn commit(host: &mut Host, peer: PeerHandle, stage: V3Stage) {
+            // No egress room: pacing leaves the whole plan in the outbox, so
+            // its order is observable (C-7's own pattern).
+            host.egress_bytes = host.egress_caps.host_bytes;
+            let caps = host.egress_caps;
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            commit_v3_stage(&mut host.egress_bytes, &caps, session, stage, None);
+        }
+        // A v4 session: two deltas of 100 and 40 bytes.
+        let mut host = v2_host(false);
+        let peer = host
+            .bind_v4_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights::default(),
+                0,
+            )
+            .expect("binds");
+        ack_all(&mut host, peer);
+        let stage = stage_for(&host, peer, vec![(5, vec![1u8; 100]), (6, vec![2u8; 40])]);
+        commit(&mut host, peer, stage);
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            let v3 = session.v3.as_ref().expect("v3");
+            let outbox: Vec<(Option<u64>, usize)> = v3
+                .outbox
+                .iter()
+                .map(|entry| (entry.event_seq, entry.bytes.len()))
+                .collect();
+            assert_eq!(outbox, vec![(None, 3), (Some(5), 100), (Some(6), 40)]);
+            assert_eq!(session.next_event_seq, 7);
+            let throttle = v3.throttle.as_ref().expect("a staging restarts it");
+            assert_eq!((throttle.frames(), throttle.bytes()), (2, 140));
+        }
+        // The v3 shape: one delta gives one frame and its length.
+        let (mut host, peer) = drained_v3_host();
+        let stage = stage_for(&host, peer, vec![(5, vec![3u8; 100])]);
+        commit(&mut host, peer, stage);
+        let session = host.sessions.get(&peer).expect("bound");
+        let v3 = session.v3.as_ref().expect("v3");
+        let outbox: Vec<(Option<u64>, usize)> = v3
+            .outbox
+            .iter()
+            .map(|entry| (entry.event_seq, entry.bytes.len()))
+            .collect();
+        assert_eq!(outbox, vec![(None, 3), (Some(5), 100)]);
+        assert_eq!(session.next_event_seq, 6);
+        let throttle = v3.throttle.as_ref().expect("a staging restarts it");
+        assert_eq!((throttle.frames(), throttle.bytes()), (1, 100));
     }
 
     /// C-5 steps 1 and 4: a staging at a counter sentinel, or without ordinal
