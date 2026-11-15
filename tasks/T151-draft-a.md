@@ -35,6 +35,35 @@ it.
 
 ## Parts
 
+Two parts, one crate (`crpg-godot`), order **serial**: a → b. a is the
+Godot-free core; b is the gdext shell. `apps/client` GDScript is **not** changed
+(Reading 4), so no third part.
+
+| Part | Crate | Scope | S-set | Review |
+|---|---|---|---|---|
+| T151a | `crpg-godot` | v4 session creation, the pool + replica + outbox swap, positions in the internal view | no | Claude reviewer mutant run, one fix round |
+| T151b | `crpg-godot` | position and move FFI members on `CrpgView`/`CrpgSession` | **yes**: touches the GDExtension boundary (`docs/IMPLEMENTATION_PLAN.md:95`) | human-reviewed (S-set) |
+
+### T151a owns
+- `crates/crpg-godot/src/core/mod.rs`, `crates/crpg-godot/src/core/client.rs`,
+  `crates/crpg-godot/src/core/authority.rs`, `crates/crpg-godot/src/core/errors.rs`
+- `crates/crpg-godot/src/core/tests.rs`,
+  `crates/crpg-godot/src/core/{authority,client,errors,link}/tests.rs`
+- `crates/crpg-godot/tests/bridge.rs`, `crates/crpg-godot/tests/source_rules.rs`
+- `docs/architecture/crpg-godot.md`, `crates/crpg-godot/AGENTS.md`
+- goldens: none new, none moved.
+
+### T151b owns
+- `crates/crpg-godot/src/shell.rs`
+- `docs/architecture/crpg-godot.md`, `crates/crpg-godot/AGENTS.md`
+- goldens: none new, none moved.
+
+`core/link.rs` is owned by neither part unless T151a finds it must change; the
+link stays two byte FIFOs (`crates/crpg-godot/src/core/link.rs:19–26`) and only
+its callers learn to route more frame kinds (Reading 2). `Cargo.toml`,
+`Cargo.lock`, `apps/client/**`, `ci.yml`, `deny.toml` and `rust-toolchain.toml`
+are not in either part's owned list.
+
 ## Readings
 
 ## Interface
