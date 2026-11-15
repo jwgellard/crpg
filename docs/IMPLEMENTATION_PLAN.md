@@ -222,7 +222,9 @@ Each I row needs its C row approved first unless it says **ready**.
 | T036 | C → I, S | crpg-sim | T034, T148 | Authoritative movement; `World`/tick-order touch; new goldens (H-golden) |
 | T149 | C | `crpg-data`, `crpg-sim` | T036c, T149a | Range checks X1–X3 under D46d, after T036 |
 | T026p | C → I, S | crpg-net | T023, T036, T140 | Lane-1 movement and acknowledgments. Vendors the T030 dedup patch (D23); re-runs the impairment probe on native Windows |
-| T037 | C → I | crpg-server | T026p, T035, T036c | Movement host adapter. Split into T037a–e, serial (D60); T037e is the `crpg-testkit` part (tests only) |
+| T037 | C → I | crpg-server | T026p, T035, T036c | Movement host adapter. Split into T037a–e, serial (D60); T037e is the `crpg-testkit` part (tests only); T037a done on the session 60 batch (PR open), T037b next |
+| T150 | C → I | crpg-net-quic, then crpg-server | T037d | Lane-1 movement stream and datagram transport, plus the `crpg-server` `quic.rs` v4 route. Fact sheet `tasks/T150-facts.md`; blind drafts `tasks/T150-draft-a.md` and `tasks/T150-draft-b.md`; next an Opus architect contract |
+| T151 | C → I | crpg-godot | T037d | Protocol v4 movement bridge. Fact sheet `tasks/T151-facts.md`; blind drafts `tasks/T151-draft-a.md` and `tasks/T151-draft-b.md`; next an Opus architect contract |
 
 **4D — persistence**
 
@@ -275,7 +277,7 @@ something to show. Neither needs a build slot.
 | T052 | C → I, S | crpg-sim | D27f | Persisted continuation state for dialogue, quests and waits; `World` touch |
 | T053 | C → I | crpg-script | T029b, T052, T101 draft | Event IR interpreter with serializable `Wait` continuations (§19.2 #19) and D17 budgets. The IR must be authorable by people through M8's graph editor and by agents; its contract waits on the T101 draft's event-authoring section |
 | T054 | C → I | crpg-script | T053 | Dialogue engine and quest state machine over the existing `crpg-data` dialogue/quest documents |
-| T056 | C → I | crpg-ai | T028, T036 | MVP AI: move to nearest hostile and attack, consuming `legal_actions` only. Opens the crate |
+| T056 | C → I | crpg-ai | T028, T036 | MVP AI: move to nearest hostile and attack, consuming `legal_actions` only. Opens the crate. Contract written (`tasks/T056.md`; D62 answered: the caller passes `Sides` and the two test-only edges are approved); split T056a (`crpg-ai`) → T056b (`crpg-testkit`), serial, neither S-set; next a Sonnet contract review |
 | T057 | C → I | crpg-godot | T051, T054 | Dialogue UI and quest journal |
 
 ### M6-R — Authoring UX research (D28j; runs now, in parallel with M4)
@@ -459,3 +461,4 @@ estimates slip.
 - 2026-11-08 (UTC) · claude-code/haiku-5.5 (bookkeeper) + S44-bookkeeping · Marked T034 done with ADR-0036 Accepted, added T035v, T148 and T149 to §3 4C, and added T148 to T036's and T140 to T026p's prerequisites, so the plan matches the session 44 contracts.
 - 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + S46-bookkeeping · Added the T036c → T149b and T149a → T149b prerequisites on the T149 row and T036c → T037 on the T037 row, so the plan carries the session 46 contract split.
 - 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Noted on the T037 row that D60 splits it into T037a–e and that T037e exists as the `crpg-testkit` part, so the plan matches the approved contract.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + S60-bookkeeping · Added T150 and T151 beside T037, recorded T037a done on the session 60 batch with T037b next and the T056 contract with its D62 answers and split, so the plan matches the session's filed work.
