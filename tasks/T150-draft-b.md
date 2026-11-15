@@ -9,7 +9,24 @@ A Claude architect writes the final contract; the user approves it.
 
 ## Task
 
-TODO (fill)
+Carry lane 1 over QUIC. `crpg-net-quic` gains a second reliable ordered
+stream pair for lane-1 intents upstream (`MoveTo`/`Halt`) and receipts
+downstream, the QUIC DATAGRAM extension for `MoveSample`s with a negotiated
+floor of `MAX_MOVE_DOWN_BYTES` (1,024, refused at connect otherwise), D23's
+vendored dedup patch through the T023v mechanism, and the native Windows
+impairment-probe re-run as evidence. The `crpg-server` `quic.rs` route binds
+v4 sessions and pumps lane-1 bytes through the T037 surface it calls:
+`bind_v4_peer`, `ingest_move`, `take_move_receipts`, `take_samples`
+(`tasks/T037.md:437–441`, `:483–484`, `:487`, `:462`).
+
+Built after T037d, so the T037 Interface is the host surface it calls;
+`quic.rs` is otherwise frozen (`tasks/T037.md:1338`, `:1351–1355`). One task
+= one crate per part (`AGENTS.md:57`; the scope names two crates,
+`tasks/T037.md:1351–1355`), so three serial parts: **T150a** the vendored
+patch (S-set), **T150b** the transport (not S-set), **T150c** the server
+route (not S-set). S-set here is `docs/IMPLEMENTATION_PLAN.md:1.4`'s
+serialized set: a vendored dependency patch, `deny.toml` and the workspace
+`Cargo.toml` are S-set; nothing else in this draft is.
 
 ## Parts
 
