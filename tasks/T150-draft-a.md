@@ -82,8 +82,9 @@ to the transport API, so it is not S-set.
 - goldens: none new, none moved.
 
 ### T150b owns
-- `crates/crpg-server/src/quic.rs` (the `Framing::V3` arm, `Invitation`'s
-  two new fields, the lane-1 drain/deliver steps, the `HostCall` variants)
+- `crates/crpg-server/src/quic.rs` (the `Framing::V3` arm, the
+  `V4Invitation` type and `register_v4_invitation`, the lane-1 drain/deliver
+  steps, the `HostCall` variants)
 - `crates/crpg-server/tests/host_quic_move.rs` (new)
 - `docs/architecture/crpg-server.md`, `crates/crpg-server/AGENTS.md`
 - goldens: none new, none moved.
