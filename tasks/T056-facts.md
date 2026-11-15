@@ -89,7 +89,11 @@ From `tasks/T028.md`:
 
 ## Existing controllers to copy
 
-(filled in below)
+- **No scripted or automatic controller exists in any production crate.** Grep for `impl .*Controller`, `scripted`, `auto` over `crates/*/src` finds none: sim has no controller type at all (see §3), and no crate implements one.
+- The closest existing scripted driver is a test: `crates/crpg-cli/tests/play.rs::direct_fight` (`crates/crpg-cli/tests/play.rs:282-392`) — it loads a fixture campaign through production `crpg-data`, assembles `EncounterSpec` itself, calls `crpg_sim::start_encounter`, then loops while `world.combat().active` is `Some` (guard `< 1000` "the scripted fight must terminate"): the first participant's placement takes `options[0]` from `legal_actions`, every other placement picks the first listed `UseAbility` whose target is a living combatant of a *different placement*, falling back to `options[0]`, and applies it with `crpg_sim::perform_action` (`crates/crpg-cli/tests/play.rs:350-377`).
+- The `crpgc play` command's computer rule likewise "picks only from that list" — `crpg_sim::legal_actions` in returned order, performed through `crpg_sim::perform_action` (`crates/crpg-cli/AGENTS.md`, invariant 9).
+- `crpg-testkit`'s combat support (`crates/crpg-testkit/tests/support/combat.rs`) loads the fixture campaigns and drives `start_encounter` / `perform_action` through the public sim API (`crates/crpg-testkit/tests/support/combat.rs:19`, `:285`, `:555`); its replay harness (`play_and_verify`) plays recorded intent sequences (`crates/crpg-testkit/src/replay.rs:15`).
+- Fixtures an AI test could use: `rulesets/minimal-d6/` (`ruleset.json`, `strike.json`, `roll_under.json`), `rulesets/srd-lite/` (`ruleset.json`, two ability pairs with tables), `campaigns/fixtures/combat_basic/` and `campaigns/fixtures/combat_srd/` (both full campaign roots with `areas/`, `creatures/`, `encounters/`, `rulesets/`, …). The play acceptance tests run over exactly `["combat_basic", "combat_srd"]` (`crates/crpg-cli/tests/play.rs:20-21`), and note about those fixtures: "The fixtures are one combatant per side with distinct prefabs and no factions, so 'the first participant's side' and 'every other living combatant' are exactly the sides the command reports" (`crates/crpg-cli/tests/play.rs:278-281`).
 
 ## Determinism rules that bind it
 
