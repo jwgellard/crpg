@@ -225,7 +225,59 @@ The T037 surface the transport task must call. `tasks/T037.md` is an approved co
 
 ## Existing tests to copy
 
-(pending)
+`crates/crpg-net-quic/tests/`:
+
+- `quic.rs` (`crates/crpg-net-quic/tests/quic.rs`, 2,428 lines) — the 30-case endpoint suite (T023 1–23, T023c 24–27, T023v 28, T023d 29–30); 32 `#[test]` functions on this branch.
+- `quic_gaps.rs` (`crates/crpg-net-quic/tests/quic_gaps.rs`, 282 lines, 7 tests) — the post-T023 gap cases.
+- `channel.rs` (`crates/crpg-net-quic/tests/channel.rs`, 2,742 lines, 21 tests) — the T024q `/2` channel suite, including one impaired relay (`:1428`, `:1505`).
+- `close_budget.rs` (`crates/crpg-net-quic/tests/close_budget.rs`, 197 lines, 3 tests) — the T098g flush reserve.
+- `support/quic_rig.rs` (`crates/crpg-net-quic/tests/support/quic_rig.rs`) — shared helpers, `#[path]`-included by each suite.
+- `fixtures/` (`crates/crpg-net-quic/tests/fixtures/`) — `server_a.cert.der`, `server_a.key.pk8.der`, `server_b.*`; `.gitattributes:7` marks them binary and `crates/crpg-net-quic/AGENTS.md` says they are test-only.
+
+`support/quic_rig.rs` helpers:
+
+- `loopback` (`quic_rig.rs:35`), `identity_a` (`:39`), `pin_a` (`:43`), `pin_b` (`:47`).
+- `bind_server` (`quic_rig.rs:51`), `client_config` (`:60`), `credential` (`:68`), `hello` (`:72`), `epoch` (`:79`).
+- `connect_async` (`quic_rig.rs:85`), `until` (`:95`, a 30 s guard), `next_event` (`:104`), `next_hello` (`:116`), `next_closed` (`:128`), `connect_accepted` (`:136`), `server_recv` (`:162`), `client_recv` (`:176`).
+- `pattern` (`quic_rig.rs:191`), `cycling_size` (`:202`).
+- `RawRuntime` (`quic_rig.rs:212`), `RawClient` (`:310`), `raw_connect` (`:317`), `raw_lane` (`:349`), `frame_bytes` (`:353`) — a real quinn connection that bypasses the crate API.
+- `RelayConfig` (`quic_rig.rs:425`) — `drop_every`, `reorder_depth`, `seed`; `clean()` (`:432`).
+- `UdpRelay` (`quic_rig.rs:454`) — "A client ↔ server UDP relay"; `set_impaired` (`:671`) and `set_blackhole` (`:701`); its doc (`:449–453`) says it "forwards every datagram in order until `set_impaired(true)`, so a test can complete its handshake on a clean path and only then measure loss and reordering" (T098d).
+- `SplitMix64` (`quic_rig.rs:464`) and block rotation (`Direction::offer`, `:491`, `:517`) — "Block rotation: the first packet goes out last", so reorder depth stays bounded.
+
+Impairment in the crate suite:
+
+- `impaired()` (`crates/crpg-net-quic/tests/quic.rs:1174–1178`) — `drop_every: 13`, `reorder_depth: 4`, `seed: 23`.
+- `connect_via_relay` (`quic.rs:1182`) — connect over the relay before impairment.
+- `ordered_exactly_once_through_impaired_relay` (`quic.rs:1200`) — case 14; the handshake runs clean (T098d), then `relay.set_impaired(true)` (`:1212`), with `dropped`/`reordered` as controls (`:1221–1222`).
+- `lane0_codec_frames_decode_after_impaired_delivery` (`quic.rs:1826`) — the impaired codec case, plus a clean positive control (`:1833–1834`).
+- `datagrams_and_connection_limit_fail_closed` (`quic.rs:1652`) — the case that pins DATAGRAM frames as unsupported today.
+- `transport_trait_round_trip` (`quic.rs:1708`) — `Transport` via `ServerLane`.
+
+`crates/crpg-server/tests/`:
+
+- `host_quic.rs` (`crates/crpg-server/tests/host_quic.rs`, 2,441 lines, 11 tests) — the T023b acceptance suite over real loopback; oracles are a mirror `HistoryWorld`, a per-client replica from received bytes, and a trace replay (`:1–19`).
+- `host_quic_transfer.rs` (`crates/crpg-server/tests/host_quic_transfer.rs`, 1,901 lines, 9 tests) — the T024h2 `/2` adapter suite.
+- `support/quic_host_rig.rs` (`crates/crpg-server/tests/support/quic_host_rig.rs`) — entity/ability fixtures (`eid`, `a`, `b`, `c`, `strike`, `smite`, `whiff`, `encounter`), `fixture` (`:99`), grants (`:108–157`), frame builders (`intent_header` `:195`, `declare` `:206`, `end_turn` `:223`), `TestClock` (`:541`, `now` `:550`, `advance` `:554`), `start_dual` (`:319`), `connect_framed_async` (`:330`), `connect_raw` (`:347`), `register` (`:592`), `pump` (`:602`).
+- `fixtures/three_combatants.json` (`crates/crpg-server/tests/fixtures/three_combatants.json`) — the generated `HistoryWorld` fixture (seed 7, A/B/C health 10/10/3); `crates/crpg-server/AGENTS.md` warns it is generated, not hand-written.
+- `both_versions!` (`host_quic.rs:47`) — runs a case body under both `ProtocolSelection`s.
+- `exchange` (`host_quic.rs:144`), `mirror` (`:161`), `register` (`:170`), `settle` (`:198`), `replay` (`:701`), `three_clients` (`:813`), `lockstep_quic` (`:880`), `lockstep_memory` (`:910`), `IMPAIRED` (`:805–809`, the same 13/4/23 config).
+
+Known flakes:
+
+- `quic case 13` — `ordering_preserved_under_concurrent_traffic` (`crates/crpg-net-quic/tests/quic.rs:974`) is the case `tasks/T098.md` tracks; `tasks/T098.md:1–5` says "Status: **open, cause unknown**" and lists a Windows failure where a client's flush gave up with 8 frames undelivered.
+- `T098f` (`tasks/BACKLOG.md:248`) — measured as product-side: a `Flush` close that spends the whole budget dropped the I/O runtime before `CONNECTION_CLOSE` left.
+- `T098g`/`T098h` (`tasks/BACKLOG.md:249–250`) — the close reserve (R = min(200 ms, B/4)) and `FlushClose::flush_close` are the fixes; `crates/crpg-net-quic/AGENTS.md` forbids removing the exit yield.
+- `T098d` (`tasks/BACKLOG.md:174`) — the relay now starts unimpaired and `set_impaired(true)` runs after the handshake; 20/20 alone and 16/16 at 8× contention.
+- `host_quic quic_admitted_schedule_matches_in_memory` (`crates/crpg-server/tests/host_quic.rs:974`) — T147's measurement row (`tasks/BACKLOG.md:234`) records "deadline 7/30 on master, 4/30 on the batch; access violation 3 times under load, 0/60 quiet", and T147 is parked with temporary logging on `task/T147-m1` that "must not merge".
+
+The impairment probe:
+
+- `probe/` (`docs/reviews/T030-quinn/probe/`) — `Cargo.toml`, `Cargo.lock`, `src/main.rs`, `run-matrix.sh`; an isolated crate with its own `[workspace]` (`docs/reviews/T030-quinn/README.md:150–152`).
+- `README §6` (`docs/reviews/T030-quinn/README.md:148–204`) — harness, parameters, the five findings and the interpretation.
+- `README §10` (`docs/reviews/T030-quinn/README.md:290–302`) — the native Windows/MSVC blocker and the "end-to-end symptom … not reproduced" note.
+- `results/` (`docs/reviews/T030-quinn/results/`) — `linux-impairment-summary.md`, `linux-impairment-matrix.jsonl` and the suite logs referenced at `README.md:176–177`.
+- `grep impair` (`crates/`) — the only in-repo impairing relay is `UdpRelay` (`crates/crpg-net-quic/tests/support/quic_rig.rs:454`); the T030 probe is not part of the workspace and no `crpg-net-quic` test runs it.
 
 ## Platform and dependency rules that bind it
 
