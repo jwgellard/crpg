@@ -331,7 +331,24 @@ list. B-1–B-8 are T150b, B-9 is T150a + T150b, B-10 is T150c.
 
 ## Errors
 
-TODO (fill)
+No new close code and no new rejection code (R4; `tasks/T026p.md:185–193`).
+The connect-time floor refusal surfaces as `VersionRefused` (6) on the
+wire; every API error reuses the existing enums
+(`crates/crpg-net-quic/src/server.rs:106`,
+`src/client.rs:43`, `src/close.rs:108`, `:141`).
+
+| Condition | Result |
+|---|---|
+| peer `max_datagram_frame_size` < 1,024 at connect | close `VersionRefused` (6), no event, no binding |
+| second lane-1 stream opened on one connection | close `ProtocolViolation` (2) |
+| lane-1 stream frame over 4,096 bytes | close `FrameTooLarge` (3), no body read (R5) |
+| `try_send_lane1` / `try_send_sample` with a full queue | `QueueFull`, retryable, nothing queued |
+| datagram send over the advertised max | API refusal, nothing queued |
+| `ingest_move` / receipts / samples host refusals | exactly T037's table (`tasks/T037.md:828–841`) |
+| lane-0 violations | unchanged codes 0–9 paths |
+
+`Display`/`source()` of every existing variant are unchanged. T150c adds
+no `HostError` variant.
 
 ## Tests
 
