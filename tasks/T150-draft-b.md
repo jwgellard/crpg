@@ -503,7 +503,41 @@ row, `docs/adr/0026-quic-host-adapter.md:106–110`).
 
 ## Open questions (each with a recommendation)
 
-TODO (fill)
+1. **Which close code refuses a missed datagram floor?** Reading 4
+   proposes `VersionRefused` (6). *Recommend 6:* codes 0–9 are fixed and
+   a new code needs its own registry change, while the floor is a
+   version property the ALPN already versions.
+2. **The lane-1 ALPN string?** Reading 1 proposes `crpg-lane1/1`.
+   *Recommend it:* it sorts beside `crpg-lane0/1` and `/2`
+   (`crates/crpg-net-quic/src/handshake.rs:12`, `:16`) and cannot
+   collide with a future lane-0 version.
+3. **One second bidi stream, confirmed?** Reading 2 proposes sharing one
+   stream for intents up and receipts down. *Recommend yes:* one total
+   order per direction is what the receipt logic needs; anything wider
+   doubles the close paths.
+4. **Where does the native Windows probe run, and does it gate?**
+   Nothing in-repo has run on Windows (T030 gap,
+   `docs/reviews/T030-quinn/README.md:292–293`; T023v gap,
+   `tasks/T023v.md:177`). *Recommend:* re-run on a native Windows/MSVC
+   host with the pinned toolchain, results committed, and T150b does not
+   merge until L10 is green there; Linux/GNU is supporting evidence
+   only (platform invariant, `AGENTS.md:6–19`).
+5. **Sample queue caps: new values or mirrors?** The draft reuses the
+   connection's `QueueCaps` with datagram bytes in the same accounting.
+   *Recommend mirrors:* the host's lane-1 egress accounting already
+   bounds sessions (`tasks/T037.md:701–707`); a second set of numbers
+   needs its own T023c-style stall analysis.
+6. **Does lane 1 need a `ServerLane`-style `Transport` impl?** The
+   lane-0 path has one (`crates/crpg-net-quic/src/server.rs:799–813`,
+   proven by `transport_trait_round_trip`,
+   `crates/crpg-net-quic/tests/quic.rs:1708`). *Recommend yes:* the
+   T150c tests should drive lane 1 through the same trait the in-memory
+   fabric speaks.
+7. **Limits field or endpoint constant for the floor?** The Interface
+   proposes tightening-only `max_datagram_bytes` on both limits structs.
+   *Recommend the field:* it follows the T023c precedent
+   (`docs/adr/0025-lane0-quic-mapping-and-pinned-trust.md:152–176`) and
+   keeps `v1()` reproducing exactly today's behaviour.
 
 ## Agent log
 
