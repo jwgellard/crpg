@@ -358,6 +358,20 @@ B-22. A host that never calls `load_area`, `decide_move_to`,
 
 ## Errors
 
+- `HostError::NavBake(crpg_nav::BakeError)` — Display
+  `NavBake at host/admission` (wraps the bake error's own Display in the
+  source, `Error::source` is `Some`).
+- `MoveDecision::Rejected(code)` carries a `RejectionCode`, not a `HostError`;
+  the host log records the underlying `NavError`/`MoveError` Display as
+  `<Variant> at movement/host` (new log string, no new `HostError`).
+- `HostError::MoveQueueFull` is not added: lane-1 overflow uses the existing
+  `QueueFull` variant (HM-3).
+- No new `HostError` variant for an illegal move, a superseded intent or a
+  nav refusal; those are receipts, not host errors.
+- `crpg_nav::NavError` Display texts are unchanged and are cited only in
+  logs: `StartOffMesh`, `GoalOffMesh`, `AlreadyThere`, `Unreachable`,
+  `PathTooComplex { points }`, `TooLong { length }`.
+
 ## Tests
 
 ## What must not change
