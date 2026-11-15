@@ -446,7 +446,23 @@ is tested at every adjacent pair with both faults present.
 
 ## What must not change
 
-TODO (fill)
+- The 30-case endpoint suite (`crates/crpg-net-quic/tests/quic.rs`),
+  `quic_gaps.rs`, `channel.rs`, `close_budget.rs` and their
+  `support/quic_rig.rs` helpers pass unchanged; no existing expectation
+  moves. Lane-0 window cases keep their T023c values
+  (`docs/architecture/crpg-net-quic.md:153–159`).
+- The `crpg-server` suites `host_quic.rs` and `host_quic_transfer.rs`
+  pass unchanged; every other `crates/crpg-server/tests/` file is
+  untouched (the T037 frozen list, `tasks/T037.md:1408`).
+- No `crpg-net` byte moves: `movement_v4` layouts and the 54 / 60 /
+  1,012 bounds (`tasks/T026p.md:607–609`), and no T037 host signature,
+  variant, `Display` text or cap (`tasks/T037.md:324–335`, `:817–825`).
+- No `ALLOWED` change, no `deny.toml` change, no workspace
+  `Cargo.toml` change (Dependency edges); no new external crate; no
+  golden new or moved (brief Permissions: goldens none).
+- `quic.rs` lane-0, transfer and resume paths behave byte for byte as
+  today (`crates/crpg-server/src/quic.rs:768–809` drain/routing,
+  `:949–998` deliver).
 
 ## Dependency edges
 
