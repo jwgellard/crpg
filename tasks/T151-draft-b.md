@@ -310,6 +310,72 @@ foreign epoch are ignored without a code (B7).
 
 ## Tests
 
+In `core/tests.rs` / `client/tests.rs` style (21 + 12 cases today,
+`tasks/T151-facts.md:208–214`): fixture opens, crafted v4 bytes where the
+host cannot produce them yet, `open_and_poll`-shaped helpers. Each case
+states its control and what failure looks like.
+
+- **K1 `v4_session_binds`.** Open the fixture, poll once. Expected: the
+  player session reports `session_wire == 4`, the pool holds the v3 limits,
+  and the replica epoch equals `host.epoch(player)`. Control: the same open
+  on master reports wire 2. *Fails if:* wire is not 4.
+- **K2 `transfer_is_still_a_fence`.** Hand a `Transfer` entry to `hand_off`.
+  Expected: code 54 with the ordinal in the detail, state `Fenced(54)`.
+  Control: a `Delta` entry is sent. *Fails if:* the code is not 54 or a later
+  `poll` does not repeat 54.
+- **K3 `anchor_reaches_the_view`.** Feed one v4 delta page carrying
+  `Position { hero NetId 1: Some(P(32768,0,32768), moving true) }`, poll.
+  Expected: `position_ids == [1]`, `position_points == [32768, 0, 32768]`,
+  `position_moving == [1]`, revision bumped by exactly 1. Control: a page with
+  no `Position` op leaves all three arrays empty. *Fails if:* any array
+  differs or the revision moved twice.
+- **K4 `no_position_means_empty_arrays`.** Fresh open plus one poll on the
+  fixture (whose pages carry no anchors). Expected: all three arrays empty and
+  the same `Rc` kept when nothing else changed. Control: K3. *Fails if:* a
+  non-empty array or a rebuilt view.
+- **K5 `moved_is_an_unchecked_notice`.** Feed a delta with `Moved { NetId 99 }`
+  (no such row): no event. Then `Moved { hero }`: exactly one event with
+  `entries()["kind"] == "moved"`, oldest-first, in the same poll's revision.
+  Control: the unknown id. *Fails if:* the unknown id produces an event or the
+  known id produces zero or two.
+- **K6 `submit_move_sends_seq_1`.** `submit_move(hero, 65536, 0, 65536)` on a
+  fresh session. Expected: intent `seq == 1`, one frame queued up, `pending`
+  length 1, `next_seq == 2`; a second call sends `seq == 2`. Control: the
+  second call. *Fails if:* the first `seq` is not 1 or the queue gained zero
+  or two frames.
+- **K7 `submit_move_refusals_change_nothing`.** `submit_move(-1, …)` → code 3;
+  `submit_move(NetId 99, …)` → code 6; both leave `pending` empty and
+  `next_seq == 1`. Control: K6. *Fails if:* a refusal returns 0 or moves the
+  outbox.
+- **K8 `accept_advances_the_outbox`.** After K6, feed a lane-1 receipt
+  `Accepted { seq 1, processed_tick 101 }`, poll. Expected:
+  `move_receipts == [{seq 1, Accepted, tick 101}]`, `pending` empty,
+  `processed_seq == 1`. Control: no receipt leaves `move_receipts` empty.
+  *Fails if:* the receipt is missing or the intent is still pending.
+- **K9 `refuse_and_supersede_show`.** Two intents (`seq` 1, 2), then receipts
+  `Rejected(code)` for 1 and `Superseded` for 2. Expected: both shown
+  oldest-first with the exact code byte fed in, `pending` empty. Control: K8.
+  *Fails if:* order flips or the code byte differs.
+- **K10 `out_of_order_receipt_is_ignored`.** One pending intent (`seq` 1);
+  feed a receipt for `seq` 2. Expected: no view receipt, `pending` still length
+  1, `processed_seq == 0`. Control: the receipt for `seq` 1 completes (K8).
+  *Fails if:* anything completes or appears.
+- **K11 `sample_moves_the_exposed_point`.** Anchor hero at `P(0,0,0)`,
+  `moving == false`; apply sample `{server_tick 7, point P(46340,0,46340)}`
+  (the T037 K3 tick-1 shape, `tasks/T037.md:1310–1312`); then a sample for
+  undisclosed `NetId 2` at tick 8. Expected: getters show
+  `[46340, 0, 46340]`, clock 7; the second sample changes nothing. Control:
+  pre-sample getters show the anchor. *Fails if:* the point or clock differs.
+- **K12 `hud_and_proxies_keep_working`.** Full fixture playthrough to the ended
+  view: `proxy_count() == net_ids().size() == 2` (the smoke exit-0 condition,
+  `tasks/T151-facts.md:196`), the 14 HUD getters read, `hud.gd` and
+  `scene_sync.gd` pass. Control: the same run on master. *Fails if:* any
+  runner exits non-zero.
+- **K13 `corrupt_lane1_receipt_fences`.** Garbage receipt bytes for the oldest
+  pending intent. Expected: fence 52, view keeps its last revision, the next
+  `poll` repeats 52, `close` resets to `Closed`. Control: K8's valid receipt.
+  *Fails if:* the code is not 52 or a later `poll` returns 0.
+
 ## What must not change
 
 ## Dependency edges
