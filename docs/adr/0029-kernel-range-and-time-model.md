@@ -531,6 +531,10 @@ including the toggle-refresh count (T10).
 
 2026-11-09: T16's f32 positions are superseded by ADR-0036 U2/M3: authoritative positions are Fx16_16 and Transform is an f32 mirror the simulation writes.
 
+2026-11-15 (UTC): §3 (P1–P9) is implemented by the T141 host contract (`tasks/T141.md`): pause, rights, auto-pause and the turn timer in T141b (P1–P8), the v3 `Pause`, `Unpause` and `RequestMode` intents in T141d, and the `Clock` heartbeat in T141e. Two readings there sit beside §3: a mode request needs the `pause` right (T141 Reading 16, `tasks/T141.md:292–293`, the user's answer to its Question 3), and dialogue pauses (P9) are left to T054/T057 (`tasks/T141.md:1581`).
+
+2026-11-15 (UTC): Follow-on 10 (T143) gained a `crpg-data` part: T143a adds the ruleset's optional `preview` field before the two `crpg-sim` parts, T143b and T143c (`tasks/T143.md:18`, `:64–77`, `:1267`). The table row above is kept as written.
+
 ## Agent log
 
 - 2026-10-21 (UTC) · claude-code/opus-5.5 architect + T108 · Filed the proposed kernel-range, two-mode time model and ruleset-UI decision from the Beam and LongCat drafts and the R13/R14/R16 research, after checking each engine claim against the code. The main finding is that the kernel covers the five families except three named gaps, while the data/sim surface is the real limit; numbered 0029 because T024 reserves 0028.
@@ -538,3 +542,4 @@ including the toggle-refresh count (T10).
 - 2026-10-21 (UTC) · claude-code/opus-5.5 + D30c answered · Marked the ADR accepted with all nine open-question recommendations, as the user answered ("Accepted.").
 - 2026-10-21 (UTC) · opencode-go/muse-spark-1.3-contributor + S12-docs · Filled the follow-on table's Id column (T134–T143) and rewrote row-number dependencies as those IDs, per the session 12 assignment; no decision changed.
 - 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + ADR36-notes · Added the dated correction entry to "Supersession and corrections" so T16's `f32` positions point at ADR-0036 U2/M3; no prior entry changed.
+- 2026-11-15 (UTC) · claude-code/claude-opus-5-5 (architect) + T037 brief, notes owed by T141 and T143 · Added two dated entries to "Supersession and corrections": §3 now points at the T141 host contract, and Follow-on 10 records T143's added `crpg-data` part; no prior entry changed.

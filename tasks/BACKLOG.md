@@ -301,8 +301,8 @@ Exploding dice and glitch rules are deferred until a ruleset asks for them (ADR-
 
 | Task | Status | Merged | Summary |
 |---|---|---|---|
-| — | proposed | — | (crpg-net-quic) lane-1 movement stream and datagram transport for T026p. |
-| — | proposed | — | (crpg-godot) protocol v4 movement bridge, after T037. |
+| — | proposed | — | (crpg-net-quic) lane-1 movement stream and datagram transport for T026p; depends on T037d (D60). |
+| — | proposed | — | (crpg-godot) protocol v4 movement bridge, after T037; depends on T037d (D60). |
 | — | proposed | — | (crpg-server) T141: the bind-time host-facts delta reads the turn timer before `bind_v3_peer` records its `now_ms`; pin or change the order. |
 | — | proposed | — | (crpg-server) T141: host join/leave for v3 sessions. |
 | — | proposed | — | (crpg-script) T141: real-time proposals. |
@@ -311,6 +311,22 @@ Exploding dice and glitch rules are deferred until a ruleset asks for them (ADR-
 | — | proposed | — | (crpg-net, crpg-server, crpg-godot) T143 consumers: preview protocol message, host handler using `from_wire`, HUD; and a line in T141 that its host answers no preview. |
 | — | proposed | — | (crpg-data) T142 warning follow-up. |
 | — | proposed | — | (crpg-sim) `PreviewWire` also accepts the sequence form (like every crate wire struct); decide whether to refuse it. |
+
+---
+
+## Session 59 batch (mgr/session-59-batch, PR pending)
+
+| Task | Status | Merged | Summary |
+|---|---|---|---|
+| T037 | contract approved D60 (user, 2026-11-15; option a for the four dependency edges); split T037a → T037b → T037c → T037d → T037e, serial | — | `crpg-server` movement host adapter (`tasks/T037.md`; commits `5c9f1b8`, `fd86eb9`, review fixes `088bfa3`, `9ca5ec7`, cherry-picked onto the batch); fact sheet `tasks/T037-facts.md`; blind draft `tasks/T037-draft-a.md` |
+| T037a | ready | — | `crpg-server` nav binding, route computation, trusted ops |
+| T037b | blocked on the previous part | — | `crpg-server` v4 sessions, positions, pages, `Moved` |
+| T037c | blocked on the previous part | — | `crpg-server` `DeclareMove`, samples, lane-1 egress accounting |
+| T037d | blocked on the previous part | — | `crpg-server` lane-1 admission, decisions, receipts |
+| T037e | blocked on the previous part | — | `crpg-testkit` authored data through host and v4 client (tests only) |
+| T056 | facts and blind draft A landed (session 59: `tasks/T056-facts.md`, `tasks/T056-draft-a.md`); architect contract next | — | MVP AI in `crpg-ai`: move to nearest hostile and attack, consuming `legal_actions` only. Main open question: sim, rules and core have no hostility notion at runtime (faction is authored data only) |
+| — | proposed | — | (crpg-net) announce the nav revision to clients (T037 Reading 4), before T026 |
+| — | proposed | — | (crpg-server) T040: call `bind_area_bounds` at area load and `place` after transfers and spawns (T037 Reading 5). T040 has no row in this file yet |
 
 ---
 
@@ -504,6 +520,7 @@ Record it here, one line per week.
 | 2026-11-13 | — | Sessions 53–54 (mgr/session-53-batch): T140r contract (D54, D55, D56), T140r1, T140r2. Claude: Opus architect ×2 (session 53 contract + fixes; P9 check), Sonnet reviewer ×3 (contract; T140r1 219 mutants / 22 real survivors; T140r2 147 / 3; no code defect in either part), Sonnet two-keys ×1 (T140r2) + one fix round, Sonnet implementer ×1 (T140r1 survivor kill after free quota ran out). OpenCode: free DeepSeek V4.1 Flash implement ×3 (T140r1 a1 found the P9 contract defect, P9 a2, T140r2 first pass), free GLM-5.3-Flash two-keys ×1 (T140r1; hit its step limit before the last commit, manager committed). Two Sonnet reviews stopped twice on a 403 login error and were resumed after /login. |
 | 2026-11-14 | — | Sessions 55–57 (mgr/session-55-batch): T141/T143/T026p contracts (D57–D59); T141s, T141a–e, T143a–c, T137b-tests. Claude only (Go monthly quota out until about 2026-11-27): Sonnet implementer for every part; Sonnet reviewer mutant run on every non-S-set part, each followed by one test-only fix round on the resumed implementer; T141s had a two-keys writer as well (S-set). Session 57 counts: T141c (finisher after a stalled first run + 1 fix round; review 105 mutants / 29 real survivors), T141d (1 run + turn-cap resume + 1 fix round; 117 / 21), T141e (1 run + 1 authorised two-line test edit + 1 fix round; 92 / 26). No production defect found in any part. |
 | 2026-11-14 | — | Session 58 (mgr/session-58-batch): T026p1–T026p5. Claude only (Go monthly quota out until about 2026-11-27): Sonnet implementer for every part; T026p1 and T026p2 (S-set) each had a blind Sonnet two-keys writer (11 and 55 tests, no suspected defect) and a Sonnet reviewer mutant run; T026p3–p5 had a reviewer mutant run only. Mutants: p1 98 (3 real survivors, 1 fix round), p2 98 (0 real), p3 80 (0 real), p4 34 narrowed plus V-1 normaliser clean (1 real, 1 fix round), p5 76 (3 real, 1 fix round). No production defect in any part. T026p3 and T026p4 ran in parallel; their branches conflicted only in `lib.rs` and appended doc sections (kept both). |
+| 2026-11-15 | — | Session 59 (mgr/session-59-batch): T037 contract (D60) and its split T037a–e; T037 and T056 fact sheets; T037 and T056 blind drafts. Claude: Opus architect (contract plus two fix rounds), Sonnet reviewer (contract review, then a revision check: 7 test gaps, then 4 more, all closed; no Behaviour or citation defect), Haiku bookkeeper. OpenCode: DeepSeek V4.1 Flash free (T037 facts; hit its step limit, manager committed the last section), GLM-5.3-Flash free (T056 facts; a T037 draft stopped on quota, not landed), Beam (T037 draft, attempt 2 after the free-tier quota stop; T056 draft, first attempt). The free Zen tier hit quota on 2026-11-15 mid-run. |
 
 ---
 
@@ -652,3 +669,4 @@ Record it here, one line per week.
 - 2026-11-13 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S55-bookkeeping · Marked T140b–T140e merged in PR #91 and T140r1–T140r2 merged in PR #92, set T141, T143 and T026p to their contract slots, and updated the T137b-tests row to the k2 continuation on master.
 - 2026-11-14 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S57-bookkeeping · Recorded T141 (complete, s and a–e) and T143 (complete, a–c) with D57 and D58, T026p with D59 and its T026p1 next step, the T137b-tests batch commits, and the session 57 throughput row, all on `mgr/session-55-batch` with the PR still pending.
 - 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S58-bookkeeping · Recorded PR #93 as merged (`2c85ec6`) on the T137b-tests, T141 and T143 rows, marked T026p complete on the session 58 batch with its commits, and added the session 58 follow-up rows and the session 58 throughput row.
+- 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Recorded the T037 contract as approved (D60) and split into T037a–e (serial, T037a ready), added the T056 facts and draft-A status, the T037 Reading 4 and Reading 5 proposed rows, the T037d dependency on the lane-1 and v4 bridge rows, and the session 59 throughput row.

@@ -81,3 +81,28 @@ this slice's in-memory contract.
 **Accepted** as the T022 contract — approved by the user on 2026-09-30 ("Approved.", decision D19) after review of its eight corrections over ADR-0021. T022's implementation acceptance remains its own native gates. See [tasks/DECISIONS-2026-09-30.md](../../tasks/DECISIONS-2026-09-30.md).
 
 - 2026-09-30 (UTC) · claude-code + D19 status update · Appended the user-approved status change as a dated section instead of editing the original status line, per the E007 append-only policy.
+
+## Note — 2026-11-15 (UTC): host records and checkpoint version 2 (T141)
+
+Decision 4 describes captures of accepted commands. Since T141s (approved;
+Readings 1–3, `tasks/T141.md:182–209`), operations the host makes itself (a
+real-time tick, a host action such as the AI's, the turn timer's `EndTurn`)
+that journal at least one event are recorded too, as `HostRecord` entries in
+the same capture journal: one `capture_seq` numbers both kinds, one
+`acknowledge_captures` retires both, and the same entry and byte caps bound
+both (`crates/crpg-server/src/capture.rs:162–201`). The checkpoint's evidence
+rule, that each entry's history range starts where the previous one ended,
+now holds over both kinds. Checkpoint version 2 adds a `"host_records"` list
+and is written only while a host record is retained; otherwise the host
+writes exactly the version-1 bytes, and the loader reads both versions
+without migration (`crates/crpg-server/src/checkpoint.rs:12–21`, `:52–56`).
+A peer command may now journal four events, not three (T141 Reading 4,
+`tasks/T141.md:210–223`). The text above is kept as decided.
+
+- 2026-11-15 (UTC) · claude-code/claude-opus-5-5 (architect) + T037 brief, note owed by T141 · Appended the dated note that host operations are recorded as `HostRecord`s and saved in checkpoint version 2 (T141 Readings 1–3), so Decision 4 and the checkpoint description are not read as commands-only.
+
+## Note — 2026-11-15 (UTC): T037 additive host surface
+
+T037's additive host surface (nav binding, v4 sessions, lane 1) is recorded by `tasks/T037.md`'s Readings (D60). The contract's Manager edits list asked for this note (`tasks/T037.md`, "Manager edits this contract implies").
+
+- 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Appended the dated note that T037's additive host surface is recorded by its Readings (D60), as the T037 contract's Manager edits list asked.

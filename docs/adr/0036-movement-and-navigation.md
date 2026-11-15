@@ -612,6 +612,7 @@ rule.
   defined. Also per T026p: lane 1 is the separately versioned movement
   subprotocol `0xA1` (D13), beside lane-0 protocol version 4
   (`tasks/T026p.md` Readings 1, 7, 8).
+- 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + T037 contract (D60) · H1's announcement is the trusted `nav_revision()` until a `crpg-net` task carries it to clients, and H2's per-tick query bound is per `advance` window (`tasks/T037.md` Readings 4 and 12, D60).
 
 ## Agent log
 
@@ -619,3 +620,4 @@ rule.
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 D46 · Recorded the user's six answers as D46a-f in place of the open questions, and added section S so that grids and hexes plug into a `Measure` enum, a destination `snap` and a later nav query without changing the v1 core. Listed the five source conflicts as acceptance notes; the status stays Proposed.
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (manager) + user acceptance · Marked the ADR Accepted: the user accepted it on 2026-11-08 after reviewing D46 and the five acceptance notes.
 - 2026-11-14 (UTC) · claude-code/claude-opus-5-5 (architect) + T026p revision · Appended the dated L5 correction note after the user chose (a) for T026p Question 2, so the ADR says where reconnect positions travel and names lane 1's `0xA1` subprotocol.
+- 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Appended the dated Supersession note on H1's announcement and H2's per-`advance` query bound (T037 Readings 4 and 12, D60), so the ADR matches the approved contract.
