@@ -122,6 +122,11 @@ dependencies = [
 [[package]]
 name = "crpg-ai"
 version = "0.1.0"
+dependencies = [
+ "crpg-core",
+ "crpg-nav",
+ "crpg-sim",
+]
 
 [[package]]
 name = "crpg-cli"
