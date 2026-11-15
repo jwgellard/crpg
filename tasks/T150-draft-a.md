@@ -431,7 +431,97 @@ the existing `CloseCode`s exactly as `on_hello` maps `bind_peer`'s
 
 ## Tests
 
-<!-- TODO -->
+Public API only, except A8 (unit). The suites reuse
+`crates/crpg-net-quic/tests/support/quic_rig.rs` (`loopback`, `identity_a`,
+`bind_server`, `client_config`, `credential`, `hello`, `connect_accepted`,
+`RawRuntime`/`RawClient`/`raw_connect`, `UdpRelay` with
+`set_impaired`/`set_blackhole`) and `crates/crpg-server/tests/support/quic_host_rig.rs`
+(fixtures, `TestClock`, `pump_until`). Literal bytes below are the T026p wire
+layout (`tasks/T026p.md:596–609`), computed by hand: a seq-1 `Halt` by
+`n(1)` is 21 bytes (version 1 + epoch 16 + lane 1 + seq 1 + actor 1 + tag 1,
+`tasks/T037.md:1175–1176`), the largest intent 54, the largest receipt 60,
+the largest sample 1,012 (24 + 38 × 26), and `DATAGRAM_MIN_BYTES` = 1,024.
+
+### T150a: `crates/crpg-net-quic/tests/lane1.rs`, `lane1_datagram.rs`
+- **A1 `alpn_and_framing`.** `Framing::from_alpn(b"crpg-lane0/3") ==
+  Some(Framing::V3)`, `Framing::V3.alpn() == b"crpg-lane0/3"`,
+  `from_alpn(b"crpg-lane0/1") == Some(V1)`, `from_alpn(b"crpg-lane0/2") ==
+  Some(V2)`, `from_alpn(b"crpg-lane0/4") == None`. A `bind_dual` server
+  accepts a `/3` client and `framing(conn) == V3`; `bind` (`/1`-only)
+  refuses a `/3` client. Control: the existing `/1`/`/2` mapping tests.
+  *Fails if:* a wrong ALPN maps to `V3`, or `bind` accepts `/3`.
+- **A2 `stream_open_order`.** Connect `/3`; the client sends the hello on
+  stream 1 and, after `connect`, a 21-byte lane-1 `Halt` on stream 2; the
+  server reads `HelloReceived`, `accept`s, then `try_recv_lane1` returns the
+  21 bytes and `try_recv_channel` returns the lane-0 frames in order.
+  Control: a `/2` client's stream-1 traffic is unchanged. *Fails if:* a
+  lane-1 frame is read from stream 1, a lane-0 frame from stream 2, or the
+  intent bytes differ.
+- **A3 `datagram_refusal`.** `raw_connect` with
+  `max_datagram_frame_size(None)`: the server closes `ProtocolViolation`
+  (2), no welcome, the adapter sees `HelloOutcome::Lost`. `Some(1023)`:
+  same. `Some(1024)`: accepted, welcome written. Control: a `/1` client (no
+  datagram) is accepted normally. *Fails if:* a peer below 1,024 is
+  accepted, or a 1,024-byte peer is refused.
+- **A4 `lane1_frames_opaque_and_ordered`.** Client `try_send_lane1` three
+  intents (21, 54, 21 bytes); server `try_recv_lane1` returns them in order,
+  byte-identical. `try_send_lane1(&[0u8; 4097])` is `FrameTooLarge`;
+  `try_send_lane1(&[])` is `EmptyFrame`. Server `try_send_lane1` a 60-byte
+  receipt → client `try_recv_lane1` returns it. *Fails if:* order breaks, a
+  cap is off by one, or a byte is altered.
+- **A5 `samples_are_datagrams`.** Server `try_send_datagram` a 1,012-byte
+  sample → client `try_recv_datagram` returns it byte-identical; a
+  1,025-byte datagram is `TooLarge`. A sample never appears in
+  `try_recv_lane1` and a receipt never in `try_recv_datagram`. *Fails if:* a
+  sample rides the stream, a receipt rides a datagram, or the 1,024 bound is
+  wrong.
+- **A6 `backpressure`.** A server whose lane-1 outbound queue is full returns
+  `QueueFull` from `try_send_lane1` and queues nothing; after the client
+  drains it succeeds. A client with tightened windows makes
+  `try_send_datagram` return `Send(QueueFull)` after a computable number of
+  datagrams; the adapter drops and does not retry. Control: a `/2` session's
+  `try_send_channel` `QueueFull` behaviour is unchanged. *Fails if:* lane 1
+  escapes a cap or a `QueueFull` queues anything.
+- **A7 `close_with_lane1_open`.** Open `/3`, queue two 60-byte receipts and
+  one 1,012-byte sample, `close(Flush)`; the client receives both receipts
+  and the sample before `Closed`. `close(Discard)` sends none. Control: the
+  existing close-budget suite (`close_budget.rs`). *Fails if:* `Flush` drops
+  a queued receipt or sample, or `Discard` sends one.
+- **A8 `dedup_window` (unit).** The vendored `spaces.rs` defines
+  `WINDOW_SIZE == 2049` (no `type Window = u128`); `VENDOR.md`'s patch table
+  lists `0002-widen-dedup-window.patch` with a matching tree digest, and the
+  re-derivation script prints `vendored tree reproduced`. *Fails if:* the
+  patch is missing or the digest drifts.
+- **A9 `impairment_probe`.** Not a cargo test: the Definition-of-done step
+  runs `probe/run-matrix.sh` on native Windows/MSVC with the vendored patch
+  and records 0 dedup discards under `docs/reviews/T030-quinn/results/`.
+
+### T150b: `crates/crpg-server/tests/host_quic_move.rs`
+- **B1 `bind_v4_over_quic`.** A `/3` `QuicHost` with an invitation carrying
+  control/grants/facts/rights; a v4 client hello (wire version 4) binds
+  `bind_v4_peer` (`BindV4Peer` `Ok`, `session_wire` 4), and the first
+  delivery (a `Resync` plus the position page) reaches the client. A `/3`
+  hello naming version 3 is `VersionRefused`. Control: T037's in-memory
+  `bind_v4_peer` first delivery. *Fails if:* a v4 hello is refused or a
+  non-4 hello binds.
+- **B2 `lane1_drain`.** A v4 client sends one `MoveOutbox` `MoveTo` (54
+  bytes); the pump drains it as `ingest_move` (`IngestMove`, `Admitted { seq:
+  1 }`), then `advance`; the receipt reaches the client via
+  `try_send_lane1`. A malformed intent traces `Refused` and does not fence.
+  *Fails if:* an intent is not ingested or a refusal fences the binding.
+- **B3 `receipt_and_sample_delivery`.** After a move, `take_move_receipts`
+  and `take_samples` are drained each pump to the lane-1 stream and
+  datagrams (traced `TakeMoveReceipts`/`TakeSamples`); a sample that does
+  not fit (`Send(QueueFull)`) is dropped whole and not retried. *Fails if:*
+  a receipt is reordered or a sample is retried.
+- **B4 `trace_replay`.** Replaying `QuicPumpReport.calls` against the
+  in-memory host reproduces the authority hash (as `tests/host_quic.rs`
+  does for lane 0). *Fails if:* a lane-1 call is missing or mis-ordered in
+  the trace.
+- **B5 `lane0_unchanged_on_v3`.** A v4 session's lane-0 delta and `0x82`
+  transfer ride stream-1 channels byte-for-byte as a v3 twin (T037 B-3's
+  differential, `tasks/T037.md:981–990`). *Fails if:* a lane-1 change alters
+  a lane-0 byte.
 
 ## What must not change
 
