@@ -1377,3 +1377,100 @@ fn o4_outbox_error_text() {
         "WrongActor at movement/outbox"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review fix round: survivors of the mutant run.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r2_event_seq_above_last_wins_over_an_op_error() {
+    let mut replica = anchored();
+    // A publication at SEQ_LAST leaves `next_event_seq` at u64::MAX, so a frame
+    // at u64::MAX equals the expected sequence but is above SEQ_LAST.
+    assert_eq!(
+        replica.apply_snapshot(&snap(SEQ_LAST, 50, rows(&[1, 2]))),
+        Ok(())
+    );
+    assert_eq!(replica.v3().next_event_seq(), u64::MAX);
+    let expected = ReplicaError::EventSeq {
+        expected: u64::MAX,
+        got: u64::MAX,
+    };
+    // A faulty v4 op, a faulty v3 op and a valid op: all are EventSeq.
+    refused(
+        &mut replica,
+        &f(u64::MAX, 51, vec![pos(9, a(), false)]),
+        expected,
+    );
+    refused(&mut replica, &f(u64::MAX, 51, vec![forget(9)]), expected);
+    refused(&mut replica, &f(u64::MAX, 51, vec![leave(9)]), expected);
+    refused(
+        &mut replica,
+        &f(u64::MAX, 51, vec![pos(1, b(), true)]),
+        expected,
+    );
+    refused(&mut replica, &f(u64::MAX, 51, vec![]), expected);
+}
+
+#[test]
+fn r4_moved_changes_no_held_position() {
+    let mut replica = replica();
+    assert_eq!(
+        replica.apply_delta(&f(1, 100, vec![enter(1), pos(1, a(), false)])),
+        Ok(())
+    );
+    let held = state(100, a(), false);
+    assert_eq!(replica.position(id(1)), Some(&held));
+    // The route's last point is not the held point, and the route is a real
+    // move, so storing a point or flipping `moving` would show.
+    let far = p(3 * 65_536, 65_536, 7 * 65_536);
+    assert_eq!(
+        replica.apply_delta(&f(2, 101, vec![moved(1, vec![b(), far])])),
+        Ok(())
+    );
+    assert_eq!(replica.position(id(1)), Some(&held));
+    assert_eq!(replica.positions().len(), 1);
+    // The same in a frame that also carries a newer anchor for another row.
+    assert_eq!(
+        replica.apply_delta(&f(
+            3,
+            102,
+            vec![enter(2), moved(1, vec![far, b()]), pos(2, b(), true)]
+        )),
+        Ok(())
+    );
+    assert_eq!(replica.position(id(1)), Some(&held));
+    assert_eq!(replica.position(id(2)), Some(&state(102, b(), true)));
+}
+
+#[test]
+fn r4_only_leave_and_despawn_remove_a_position() {
+    let mut replica = anchored();
+    let v3health = V3Op::Health {
+        entity: id(1),
+        health: 3,
+        max_health: 10,
+        dead: false,
+    };
+    let held1 = state(100, a(), false);
+    let held2 = state(100, b(), true);
+    for (n, op) in [
+        v3(V3Op::Died { entity: id(1) }),
+        v3(V3Op::Spawned { entity: id(1) }),
+        v3(v3health),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let seq = 2 + n as u64;
+        assert_eq!(replica.apply_delta(&f(seq, 100 + seq, vec![op])), Ok(()));
+        assert_eq!(replica.position(id(1)), Some(&held1), "op {n}");
+        assert_eq!(replica.position(id(2)), Some(&held2), "op {n}");
+    }
+    // Controls: a despawn removes row 1's position and a leave row 2's.
+    assert_eq!(replica.apply_delta(&f(5, 105, vec![despawned(1)])), Ok(()));
+    assert_eq!(replica.position(id(1)), None);
+    assert_eq!(replica.position(id(2)), Some(&held2));
+    assert_eq!(replica.apply_delta(&f(6, 106, vec![leave(2)])), Ok(()));
+    assert_eq!(replica.positions(), &BTreeMap::new());
+}
