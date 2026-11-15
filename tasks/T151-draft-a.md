@@ -514,11 +514,105 @@ raw.
 
 ## What must not change
 
+- **No golden is added, moved or re-baselined** (this crate is outside
+  `determinism.py`, `docs/adr/0033-godot-bridge.md:371–372`). The
+  `crates/crpg-testkit` and `crates/crpg-sim` goldens listed in T037
+  (`tasks/T037.md:1319–1330`) are untouched.
+- **Every existing `crates/crpg-godot` test file**, byte for byte and passing,
+  except the specific case files in T151a's owned list that this contract
+  renames/repoints — and no existing assertion is weakened to make the build
+  pass (`AGENTS.md:54`).
+- **The closed code table and host-fault mapping** (`crates/crpg-godot/src/core/errors.rs:12–115`):
+  no variant, number, `name()` text, `is_fatal` bound or `host_fault` arm
+  changes.
+- **The link shape** (`crates/crpg-godot/src/core/link.rs`): two bounded
+  byte FIFOs, `LINK_FRAMES = POLICY_EGRESS_FRAMES_PER_PEER` (`:17`), `LinkFull`
+  changes nothing. Only its callers route more frame kinds.
+- **The one `unsafe` and the engine pin.** `shell.rs` keeps exactly one
+  hand-written `unsafe`; `godot = "=0.5.5"`, `engine` off by default
+  (`crates/crpg-godot/AGENTS.md:14`).
+- **The `apps/client` scripts and tests**, and `Main.tscn`/`project.godot`/
+  `crpg.gdextension`: unchanged (Reading 4). `THIRD_PARTY_NOTICES` unchanged.
+- **`crpg-net` and `crpg-server` are frozen here**: no wire byte, codec,
+  replica, pool, `Host` surface, `World` field, checkpoint version or tick
+  order is changed by this task (they are T026p/T037's). `cargo check
+  --workspace` proves `crpg-server` and `crpg-net` compile unchanged.
+- **`tools/lint/deps.py` `ALLOWED`, `determinism.py`'s crate list, `deny.toml`,
+  `Cargo.toml` (workspace and crate), `Cargo.lock`, `rust-toolchain.toml`,
+  `crpg-contracts` and `.github/workflows/`.**
+
 ## Dependency edges
+
+No new crate or external dependency. Every type used is already a dependency of
+`crpg-godot`:
+
+| Edge | Section | Part | `ALLOWED` change |
+|---|---|---|---|
+| `crpg-godot` → `crpg-net` (`pool_v4`, `replica_v4`, `outbox_v4`, `movement_v4`, `protocol_v4`, `codec_v4`, `protocol_v3`) | `[dependencies]` (normal, path, already present) | T151a | none: the `crpg-godot` row allows every workspace crate (`tools/lint/deps.py:71`) |
+| `crpg-godot` → `crpg-server` (`Host`, `bind_v4_peer`, `ingest_move`, `take_move_receipts`, `take_samples`, `FactGrants`, `PauseRights`) | `[dependencies]` (normal, path, already present) | T151a | none (same row) |
+
+`crpg-godot` already depends on `crpg-net` and `crpg-server`
+(`crates/crpg-godot/Cargo.toml:129–130`); the v4 modules are inside `crpg-net`
+and the v4 host surface is inside `crpg-server`, so no manifest, lock or
+`ALLOWED` edit is made. `deps.py`'s godot rule (`tools/lint/deps.py:12`) and
+unsafe rule (`:16–17`) are untouched; the crate stays the only godot/unsafe
+holder.
 
 ## Out of scope
 
+- **T049 interpolation (G1)** — `previous_positions()`, the per-entity sample
+  buffer, the U7 render delay and linear blend
+  (`docs/adr/0036-movement-and-navigation.md:446–451`).
+- **T026 prediction (G2)** — client-side route prediction for the controlled
+  actor, the mesh-revision gate (`:453–458`).
+- **T050 click-to-move (G3)** — camera, picking, ground snap, the `crpg-godot` →
+  `crpg-nav` edge, and any `SceneSync.gd`/`CombatHud.gd` change that consumes
+  `positions()` (`:460–463`).
+- **The `crpg-net-quic` lane-1 transport (T150)** (`tasks/T026p.md:1471–1475`);
+  the nav revision on the wire; any change to `crpg-net` or the T037 host
+  surface (`bind_v4_peer`, `ingest_move`, `take_*`, `DeclareMove`, samples).
+- **`legal_intents` gaining `DeclareMove`** (it keeps T047a's v1 vocabulary,
+  `tasks/T037.md:1366`); real-time or exploration play; a second human peer.
+- **Any code, any other file** beyond the two parts' owned lists.
+
 ## Open questions
+
+1. **Does this draft amend ADR-0033 decision 8 ("the link carries lane-0 frames
+   only", `docs/adr/0033-godot-bridge.md:108`)?** Reading 2 has the link carry
+   `0x82` transfer and `0xA1` lane-1 frames too, routed by first byte. The ADR's
+   "lane-0 only" sentence rests on "nothing sends Resync, so a Transfer entry is
+   unreachable" (`:229–230`), which v4 falsifies. *Recommend:* approve Reading 2
+   and record a dated supersession note on ADR-0033 decision 8 (the link
+   multiplexes by subprotocol first byte; the authority boundary is unchanged —
+   the client still sees only bytes).
+
+2. **Does T151 own `positions()` on `CrpgView`, or does T049?** ADR-0033
+   `:519` says T049 "later adds `positions()` and `previous_positions()` to
+   `CrpgView`"; this brief requires T151 to say how positions reach GDScript.
+   Reading 4 gives T151 the newest-position columns (named `positions()`,
+   `position_known()`, `moving()`) and leaves T049 `previous_positions()` + the
+   buffer. *Recommend:* T151 owns the newest-position surface; T049's ADR note
+   is superseded to say T049 adds `previous_positions()` and interpolation only.
+
+3. **Which `FactGrants` and `PauseRights` does the bridge pass to
+   `bind_v4_peer`?** T037's signature (`tasks/T037.md:439–441`) needs both; the
+   bridge's `grants()` today builds only `DisclosureGrants`
+   (`crates/crpg-godot/src/core/authority.rs:647–675`). *Recommend:* full fact
+   grants mirroring the full `DisclosureGrants` (every bound entity, encounter,
+   host facts) and `PauseRights { pause: false, unpause: false }` — the
+   single-player slice never pauses from the wire — but the exact
+   `FactGrants`/`PauseRights` construction is a detail the final contract must
+   pin from T037d's as-built surface.
+
+4. **Is `submit_move(actor, x, y, z)` the right lane-1 surface, or should the
+   actor be implicit until T050?** A move needs an actor; ADR §:236 only bans
+   `EntityId`, not `NetId`. *Recommend:* keep the explicit `NetId` actor, so
+   T050's click-to-move maps a picked proxy to it without a new bridge method.
+
+5. **Does `Moved` belong in `events()` (Reading 5) or a dedicated polled
+   getter?** `ViewValue` gains an `Ints` arm either way. *Recommend:* `events()`
+   (the HUD already consumes it; the fixture produces no `Moved`, so no HUD case
+   changes).
 
 ## Agent log
 
