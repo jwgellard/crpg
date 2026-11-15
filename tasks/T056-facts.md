@@ -46,7 +46,10 @@ From `tasks/T028.md`:
 
 ## The crate today
 
-(filled in below)
+- `crates/crpg-ai/Cargo.toml` exists with `name = "crpg-ai"`, `version = "0.1.0"`, workspace edition/license, and **no dependencies at all** (empty `[dependencies]`).
+- `crates/crpg-ai/src/lib.rs` is the whole source: `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`, and the module doc `AI logic: utility-scoring combat decisions, behaviour-tree schedules for non-combat, and (later) influence-map tactical positioning.` — no public items, no code (`crates/crpg-ai/src/lib.rs:1-4`).
+- `ALLOWED` table entry: `"crpg-ai": ({"crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"}, set())` — it may import core, rules, sim and nav, with an empty dev-dependency allowance (`tools/lint/deps.py:53`).
+- `docs/architecture/crpg-ai.md` does **not** exist; `crates/crpg-ai/AGENTS.md` does **not** exist. (Per AGENTS.md, the first task with real code writes both.)
 
 ## legal_actions and actions in sim
 
