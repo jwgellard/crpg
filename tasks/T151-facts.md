@@ -235,7 +235,19 @@ yet written; its items are cited as the future surface and marked so.
 
 ## Rules that bind it
 
-(section pending)
+- `GDExtension boundary is serialized` (`docs/IMPLEMENTATION_PLAN.md:86–98`) — §1.4 lists "the GDExtension boundary in `crpg-godot`" among the things to "Serialize … one at a time and human-reviewed" (`:89–95`), and "Packages marked **S** in §3 are in this serialized set" (`:98`).
+- `§§1.3–1.4 replaced` (`docs/IMPLEMENTATION_PLAN.md:83–84`) — "adopted by D28a"; "§§1.3–1.4 are replaced by `docs/AGENT_TEAM_PLAN.md` §§4–6; the rest of §1 stands."
+- `Only crpg-godot may use unsafe` (`AGENTS.md:25–26`) — "Only `crpg-godot` may depend on `godot`. Only `crpg-godot` may use `unsafe`; every other crate root carries `#![forbid(unsafe_code)]` and `deps.py` fails if one does not."
+- `deps.py godot rule` (`tools/lint/deps.py:12`) — "**godot.** Only `crpg-godot` may depend on it, in any section."
+- `deps.py unsafe rule` (`tools/lint/deps.py:16–17`) — "**unsafe.** Only `crpg-godot` may use it. Every other crate root must carry `#![forbid(unsafe_code)]`."; `FORBID_UNSAFE` is `tools/lint/deps.py:88` and `check_unsafe` skips only `GODOT_CRATE` (`:267`, `:279`).
+- `deps.py crpg-godot row` (`tools/lint/deps.py:71`) — `"crpg-godot": (None, set())`: it may depend on every workspace crate and excludes none.
+- `deps.py testkit and server rows` (`tools/lint/deps.py:68–69`) — `crpg-testkit` excludes `crpg-godot`, and `crpg-server` excludes `crpg-godot` and `crpg-edit`, so no lower crate may import the bridge back.
+- `one unsafe in the shell` (`crates/crpg-godot/AGENTS.md:52–56`) — "The shell has exactly one hand-written `unsafe`: `unsafe impl ExtensionLibrary for CrpgExtension`, under a `SAFETY:` comment block (K32). … Any other `unsafe` needs an ADR-0033 amendment. `godot` stays optional behind `engine` (off by default) and is pinned `=0.5.5`; never turn `engine` on by default."
+- `one core call per #[func]` (`crates/crpg-godot/AGENTS.md:57–60`) — "Each `#[func]` makes exactly one core call. The shell does no indexing, `unwrap`/`expect` or arithmetic on GDScript values"; `shell.rs` "imports `crate::core::{..}` items, never the bare name `core`."
+- `T151's own S-set status` (`tasks/T037.md:14–15`) — T037 itself "No part is S-set (no wire byte, checkpoint version, `World` field, history version or tick order is fixed here)"; the bridge move's own classification is not stated in T026p or T037.
+- `crpg-godot is not in the determinism lint` (`docs/adr/0033-godot-bridge.md:371–372`) — "`crpg-godot` stays outside `determinism.py`. It reads no rule from presentation values, and the slice needs no float."
+- `Do not modify contracts or the toolchain` (`AGENTS.md:53`) — "Do not modify `crpg-contracts` or `rust-toolchain.toml`."
+- `No HashMap/HashSet in core/rules/sim` (`AGENTS.md:43`) — the ban covers `crpg-core`, `crpg-rules` and `crpg-sim`; `crpg-godot` already uses `BTreeMap`/`BTreeSet` in its core (`crates/crpg-godot/src/core/authority.rs:9`).
 
 ## Agent log
 
