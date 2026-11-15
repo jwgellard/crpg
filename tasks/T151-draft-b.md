@@ -29,6 +29,51 @@ later tasks: this one exposes the data and the send path without doing them
 
 ## Parts
 
+Order: **serial** A → B → C → D. Each part is one crate (or client) and one
+implementer run. Parts A and B stay below the GDExtension boundary and are
+not S-set (no wire byte, version or tick order is fixed here; v4 bytes are
+T026p's). Part C touches the GDExtension boundary
+(`docs/IMPLEMENTATION_PLAN.md:86–98`, "the GDExtension boundary in
+`crpg-godot`" at `:89–95`) and is S-set: one at a time and human-reviewed.
+Part D is GDScript only, a separate part per the brief, not S-set.
+
+| Part | Scope | Size (source + tests) | S-set | Review |
+|---|---|---|---|---|
+| T151a | `crpg-godot` core client half: pool, replica, outbox, view, submit | ~200 + ~400 | no | reviewer, one fix round |
+| T151b | `crpg-godot` core authority half: v4 bind, samples, receipts, hand-off | ~150 + ~350 | no | same |
+| T151c | gdext shell: new `#[func]`s and view getters | ~80 + ~120 | **yes** (boundary) | same + human |
+| T151d | `apps/client` GDScript: read positions, send moves, runner cases | GDScript + cases only | no | same |
+
+### T151a owns
+
+- `crates/crpg-godot/src/core/client.rs`
+- `crates/crpg-godot/src/core/client/tests.rs`
+- `crates/crpg-godot/src/core/tests.rs` (new v4 cases only)
+- `docs/architecture/crpg-godot.md`, `crates/crpg-godot/AGENTS.md`
+- goldens: none new, none moved.
+
+### T151b owns
+
+- `crates/crpg-godot/src/core/authority.rs`
+- `crates/crpg-godot/src/core/mod.rs` (bind + wiring only)
+- `crates/crpg-godot/src/core/authority/tests.rs`
+- `docs/architecture/crpg-godot.md`, `crates/crpg-godot/AGENTS.md`
+- goldens: none new, none moved.
+
+### T151c owns
+
+- `crates/crpg-godot/src/shell.rs` (new `#[func]`s and getters only)
+- `crates/crpg-godot/tests/bridge.rs` (public-API cases only)
+- `docs/architecture/crpg-godot.md`
+- goldens: none new, none moved.
+
+### T151d owns
+
+- `apps/client/scripts/Main.gd`, `apps/client/scripts/SceneSync.gd`
+- `apps/client/tests/scene_sync_cases.gd`, `apps/client/tests/smoke.gd`
+- `docs/architecture/crpg-godot.md`
+- goldens: none new, none moved.
+
 ## Readings
 
 ## Interface
