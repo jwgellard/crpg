@@ -811,6 +811,24 @@ fn v2_version_isolation() {
     })
     .expect("encodes");
     assert_eq!(pool.offer_delta(a, &last, 0), Ok(DeltaOutcome::Buffered));
+    // One past the last legal sequence, and `u64::MAX`, are `DeltaSequence`
+    // (the codec reads `event_seq` as a plain `u64`, so the pool refuses).
+    for event_seq in [SEQ_LAST + 1, u64::MAX] {
+        let bytes = encode_delta_v4(&DeltaFrame {
+            lane: 0,
+            server_tick: 1,
+            event_seq,
+            ops: vec![],
+        })
+        .expect("encodes");
+        let before = pool.clone();
+        assert_eq!(
+            pool.offer_delta(a, &bytes, 0),
+            Err(TransferError::DeltaSequence),
+            "event_seq {event_seq}"
+        );
+        assert_eq!(pool, before, "a refusal changed the pool");
+    }
     assert_eq!(
         pool.offer_delta(a, &V4_EMPTY, 0),
         Ok(DeltaOutcome::Released { count: 1 })
