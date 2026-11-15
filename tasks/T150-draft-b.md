@@ -466,7 +466,22 @@ is tested at every adjacent pair with both faults present.
 
 ## Dependency edges
 
-TODO (fill)
+| Edge | Section | Part | `ALLOWED` change |
+|---|---|---|---|
+| (vendored patch: no manifest edge; `[patch.crates-io]` already routes `quinn-proto` at the vendored path, `Cargo.toml:33–42`) | — | T150a | none |
+| `crpg-net-quic` → `crpg-net` (unchanged; datagrams use the pinned `quinn` 0.11 already in the graph, `crates/crpg-net-quic/Cargo.toml:7–19`) | `[dependencies]` | T150b | none: the row stays `({"crpg-net"}, set())` (`tools/lint/deps.py:55–59`) |
+| `crpg-server` → `crpg-net-quic` (unchanged path edge) | `[dependencies]` | T150c | none: the row already allows every crate but `crpg-godot` and `crpg-edit` (`tools/lint/deps.py:69`) |
+
+No new external crate and no new lockfile package in any part: the
+DATAGRAM extension is a transport parameter of the pinned `quinn`, and
+the patch reuses the T023v vendoring mechanism
+(`third_party/quinn-proto/VENDOR.md:3–9`). `deps.py` and `ALLOWED` are
+not edited. The I/O-free rule still holds below `crpg-net-quic`
+(`tools/lint/deps.py:13–15`); `crpg-net` stays I/O-free
+(`crates/crpg-net-quic/AGENTS.md:47–49`); `crpg-server` gains no direct
+quinn/quinn-proto/rustls/tokio edge (ADR-0024 item 5,
+`docs/adr/0024-separate-crpg-net-quic-crate.md:39–41`; ADR-0026 edge
+row, `docs/adr/0026-quic-host-adapter.md:106–110`).
 
 ## Out of scope
 
