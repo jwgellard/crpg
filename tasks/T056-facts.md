@@ -97,4 +97,17 @@ From `tasks/T028.md`:
 
 ## Determinism rules that bind it
 
-(filled in below)
+- Root `AGENTS.md` bans that would apply to new `crpg-ai` code: "No `HashMap`/`HashSet` in `crpg-core`, `crpg-rules` or `crpg-sim` — use `IndexMap`/`BTreeMap`" and "No `f32`/`f64` in `crpg-core` or `crpg-rules`" (`AGENTS.md`, "Non-negotiable"). Note the wording scopes these two bans to those three crates; `crpg-ai` is not named.
+- `tools/lint/determinism.py` scans exactly `CRATES = ["crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"]` — `crpg-ai` is **not** in the scan list today (`tools/lint/determinism.py:66`). Its rules for scanned crates: `no-hashmap`/`no-hashset` (`\bHashMap\b`, `\bHashSet\b`), `no-wallclock` (`SystemTime|Instant|std::time::`), `no-thread` (`std::thread`), `no-external-rng` (`rand::|thread_rng`) in all four; `no-float` (f32/f64 and unsuffixed float literals) in core/rules/nav; `no-f64` in sim (`tools/lint/determinism.py:71-100`). Doctests count as code; `text`/`ignore` fences do not; the escape hatch is a line ending `// determinism-ok: <reason>` (`tools/lint/determinism.py:24-54`).
+- Root `AGENTS.md`: "The two bans above apply to doctests as well as to `tests/` and `#[cfg(test)]` modules. A doctest is compiled and run; `determinism.py` scans inside doc fences for exactly that reason." (`AGENTS.md`, "Non-negotiable").
+- Spec task-template constraint for agents: `Deterministic: same world + seed → same decision.` (`docs/CRPG_ENGINE_SPEC.md:1381`).
+- How sim exposes its RNG: `World` owns a `rng: DeterministicRng` seeded at construction (`World::new(seed)`, `Default` = `new(0)`), reachable only as `pub fn rng_mut(&mut self) -> &mut DeterministicRng` (`crates/crpg-sim/src/world.rs:75`, `:946`, `:1187`); deterministic access is "explicit stream names" — `DeterministicRng::stream(name) -> &mut Pcg32`, plus `has_stream`, `stream_names`, `seed`, `from_seed` (`crates/crpg-core/src/rng.rs:149-180`), and `rand::/thread_rng` is banned (`tools/lint/determinism.py:76`).
+- Combat draws on one named stream: `COMBAT_ROLL_STREAM: &str = "combat.roll"` with tag `COMBAT_ROLL_TAG: &str = "roll"` (`crates/crpg-sim/src/combat.rs:60-62`); draws are `world.rng_mut()` + `evaluate(.., COMBAT_ROLL_STREAM)` (`crates/crpg-sim/src/combat.rs:2281`).
+- Legality queries draw nothing: `validate_action`/`legal_actions` "make no mutation/RNG stream/event/turn change" (`tasks/T028.md:26-31`), so an AI that only consumes `legal_actions` performs its draws through `perform_action`.
+- Movement draws no RNG and enqueues no event (`crates/crpg-sim/src/movement.rs:886-891` turn-based move doc; stage 4 "touches no pool, order, timeline, RNG or event queue" per `crates/crpg-sim/AGENTS.md`).
+- Determinism scope is ADR-0009: same binary + same inputs ⇒ same hashes; cross-platform/cross-build sameness not owed (`crates/crpg-sim/AGENTS.md`, "Known traps").
+- `crpg-ai` today has no dependencies, so the RNG path it could reach is whatever it imports from `crpg-core` (its `ALLOWED` row permits core/rules/sim/nav, `tools/lint/deps.py:53`).
+
+## Agent log
+
+- 2026-11-15 (UTC) · opencode/glm-5.3-flash-free + T056 facts · Wrote the seven-section fact sheet (requirements, crate today, legality/actions, movement, hostility, controllers/fixtures, determinism) with verified `path:line` citations, so the T056 contract architect designs from as-built facts.
