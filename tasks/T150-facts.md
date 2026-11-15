@@ -49,7 +49,82 @@ Facts gathered for the T150 contract. Sources only; no design.
 
 ## crpg-net-quic today
 
-(pending)
+Public surface, one line per item (`lib.rs:40–53` re-exports these with no glob):
+
+- `QuicServer` (`crates/crpg-net-quic/src/server.rs:200`) — the server endpoint handle; `bind` (`:224`), `bind_dual` (`:230`), `bind_resumable` (`:237`), `local_addr` (`:316`), `poll_event` (`:325`), `poll_notice` (`:354`), `wait` (`:378`), `accept` (`:396`), `accept_resume` (`:424`), `refuse` (`:449`), `try_recv` (`:471`), `try_recv_channel` (`:479`), `try_send` (`:532`), `try_send_channel` (`:549`), `framing` (`:586`), `close` (`:598`), `stats` (`:644`), `totals` (`:657`), `lane` (`:687`), `shutdown` (`:703`).
+- `ConnectionId` (`server.rs:37`) — opaque `u64` connection id; `get` (`:41`).
+- `ServerEvent` (`server.rs:52`) — `HelloReceived { conn, remote, hello }` (`:54–61`) and `Closed { conn, reason }` (`:64–69`).
+- `ResumeReceived` (`server.rs:76`) — a resume opening's `conn`, `remote` and opaque `request` bytes.
+- `ServerNotice` (`server.rs:97`) — the `poll_notice` resume-notice enum.
+- `ServerError` (`server.rs:106`) — the server API error enum.
+- `BindError` (`server.rs:139`) — bind/identity failure.
+- `QueueTotals` (`server.rs:166`) — host-wide counters: `connections`, `pending`, inbound/outbound frames and bytes, `refused_handshakes`, `refused_at_limit`.
+- `ShutdownReport` (`server.rs:189`) — what `shutdown` did.
+- `ServerLane<'a>` (`server.rs:799`) — one connection as the net-local `Transport`; `send` (`:808`) and `recv` (`:813`) forward to `try_send`/`try_recv`.
+- `QuicClient` (`crates/crpg-net-quic/src/client.rs:103`) — the client handle; `connect` (`:115`), `connect_framed` (`:125`), `connect_resume` (`:209`), `framing` (`:295`), `welcome` (`:302`), `local_addr` (`:307`), `try_send` (`:313`), `try_send_channel` (`:330`), `try_recv` (`:365`), `try_recv_channel` (`:386`), `wait` (`:400`), `stats` (`:416`), `close_reason` (`:440`), `close` (`:451`).
+- `ConnectError` (`client.rs:43`) — the connect failure enum.
+- `CloseReport` (`client.rs:95`) — `close`'s report of what was flushed.
+- `CloseCode` (`crates/crpg-net-quic/src/close.rs:10`) — the ten codes 0–9 `Normal`..`SessionFenced` (`:12–31`); `as_u32` (`:36`), `from_u64` (`:41`), `name` (`:58`).
+- `CloseMode` (`close.rs:76`), `CloseReason` (`close.rs:88`) — close modes and the recorded reason enum.
+- `SendError` (`close.rs:108`), `ChannelSendError` (`close.rs:141`) — send failures, with the channel variant.
+- `ConnectionStats` (`close.rs:163`) — per-connection inbound/outbound frames and bytes, `reader_parked`, `keepalive_pings_sent`.
+- `ALPN_LANE0_V1` (`crates/crpg-net-quic/src/handshake.rs:12`), `ALPN_LANE0_V2` (`:16`) — `crpg-lane0/1` and `crpg-lane0/2`.
+- `TLS_SERVER_NAME` (`handshake.rs:18`), `FRAME_HEADER_BYTES` (`:20`), `MIN_CREDENTIAL_BYTES` (`:22`), `MAX_CREDENTIAL_BYTES` (`:24`), `MAX_HELLO_BYTES` (`:26`), `WELCOME_BYTES` (`:28`).
+- `frame_header` (`handshake.rs:43`), `parse_frame_header` (`:55`) — the 4-byte big-endian length prefix.
+- `FrameError` (`handshake.rs:32`) — `Empty`, `TooLarge`, `UnknownChannel`.
+- `Framing` (`handshake.rs:71`) — `V1`/`V2`; `alpn` (`:81`), `from_alpn` (`:89`).
+- `Channel` (`handshake.rs:103`) — `Lane0`, `Transfer`, `Resume`; `as_u8` (`:115`), `from_u8` (`:120`).
+- `channel_frame_header` (`handshake.rs:134`), `parse_channel_frame_header` (`:156`) — the `/2` header with the channel selector.
+- `Credential` (`handshake.rs:186`) — opaque invitation bytes, redacted `Debug`; `new` (`:190`), `as_bytes` (`:201`), `ct_eq` (`:208`).
+- `CredentialError` (`handshake.rs:228`), `HandshakeError` (`handshake.rs:319`) — format and handshake errors.
+- `Hello` (`handshake.rs:237`) — `wire_version` + credential; `encode` (`:246`), `decode` (`:261`).
+- `Welcome` (`handshake.rs:285`) — `wire_version` + 16-byte epoch; `encode` (`:294`), `decode` (`:303`).
+- `CertificatePin` (`crates/crpg-net-quic/src/identity.rs:14`) — SHA-256 of the DER; `from_sha256` (`:18`), `of_certificate` (`:23`), `as_bytes` (`:28`), `to_hex` (`:33`), `from_hex` (`:44`).
+- `ServerIdentity` (`identity.rs:76`) — certificate/key DER; `new` (`:83`), `pin` (`:91`).
+- `ServerLimits` (`crates/crpg-net-quic/src/limits.rs:53`) — `v1` (`:87`), `validate` (`:105`).
+- `ClientLimits` (`limits.rs:174`) — `v1` (`:207`), `validate` (`:225`).
+- `ServerConfig` (`limits.rs:289`) — `bind`, `identity`, `limits`.
+- `ClientConfig` (`limits.rs:300`) — `bind`, `pin`, `limits`.
+- `ConfigError` (`limits.rs:311`) — an invalid limit or pin.
+
+How lane 0 maps to streams:
+
+- `lib.rs:6–12` — "One client-initiated bidirectional QUIC stream per connection carries a hello, a welcome, and then every lane-0 frame in both directions"; "There are no other streams and no DATAGRAM frames."
+- `tls.rs:86–91` — the server's transport parameters are `bidi_streams: 1`, zero uni streams, plus the three windows; the client's are `bidi_streams: 0` (`:129–134`).
+- `client.rs:747` — the client's connect calls `.open_bi()`; `server.rs:936` — the server's accept loop calls `.accept_bi()`.
+- `queue.rs:800` `lane_reader` reads `[len][payload]` into the inbound queue; `queue.rs:876` `lane_writer` drains the outbound queue to `SendStream`; `queue.rs:928` `lane_control` runs the close/flush path; `queue.rs:734` `read_lane_frame` parses a header and checks the cap first.
+- `server.rs:1180–1205` and `client.rs:652–676` spawn one reader, one writer and one control task per connection on the endpoint's current-thread runtime.
+
+Limits (`limits.rs`):
+
+- `ServerLimits` fields (`:53–80`): `idle_timeout_ms`, `keep_alive_ms`, `hello_timeout_ms`, `decision_timeout_ms`, `close_flush_timeout_ms`, `max_connections`, `inbound`/`outbound` (`QueueCaps`), and the three windows `stream_window_bytes`, `connection_window_bytes`, `send_window_bytes`.
+- `ClientLimits` fields (`:174–201`): `idle_timeout_ms`, `keep_alive_ms`, `connect_timeout_ms`, `close_flush_timeout_ms`, four queue fields and the three windows.
+- `validate` (`:105`, `:225`) checks fields in declaration order, `InvalidLimits` before `LoosensPolicy`; every limit is tightening-only.
+- The v1 window values are `V1_SERVER_*`/`V1_CLIENT_*` at `:36–42`; the frame floors are `MIN_INTENT_WINDOW = 4_100` (`:44`) and `MIN_DELTA_WINDOW = 65_540` (`:46`), asserted against `MAX_INTENT_FRAME_BYTES`/`MAX_DELTA_FRAME_BYTES` plus the header (`:48–49`).
+- No limit field exists for a datagram size, a datagram queue or a stream count other than the fixed `bidi_streams` in `tls.rs` (none found).
+
+Close and teardown path:
+
+- `close.rs:10–32` — codes 0–9, sent as QUIC varints with `name()` as the reason phrase.
+- `queue.rs:108` `close_quinn` sends the application `CONNECTION_CLOSE`; `queue.rs:778` `local_close` records first and then calls it.
+- `queue.rs:114` `Phase`, `queue.rs:160` `FlushClose` and `queue.rs:299` `Stop` hold the close state; `queue.rs:928` `lane_control` applies requested closes and maps `connection.closed()` to a `CloseReason`.
+- `teardown.rs:9` `CLOSE_RESERVE_CAP_MS = 200`, `:12` `close_reserve_ms` (`R = min(200 ms, B / 4)`), `:18` `CloseDeadlines`, `:26` `close_deadlines`, `:42` `finish_endpoint_close` (yield, then `wait_idle` bounded by `overall`).
+- `server.rs:703` `shutdown` and `Drop` close every connection with `Shutdown`; `client.rs:451` `close` takes `CloseMode`.
+- The architecture doc states the close budget at `docs/architecture/crpg-net-quic.md:120–129` and the fixed transport parameters at `:141–147`.
+
+Architecture doc:
+
+- `docs/architecture/crpg-net-quic.md:43` — the T026p row: "The movement DATAGRAM lane, and with it D23's vendored dedup patch and the native impairment probe".
+- `docs/architecture/crpg-net-quic.md:142` — "no DATAGRAM extension, no migration".
+- `docs/architecture/crpg-net-quic.md:47–64` — the module flow (`lib`, `handshake`, `identity`, `limits`, `close`, `tls`, `queue`, `server`, `client`, `teardown`).
+- `docs/architecture/crpg-net-quic.md:66–78` — the one-connection server flow: admit, TLS, `accept_bi`, hello, welcome, reader/writer/control tasks.
+- `docs/architecture/crpg-net-quic.md:99–119` — the bounds table (read/send caps, queue caps, connections, timeouts, windows).
+- `docs/architecture/crpg-net-quic.md:21–33` — what T023/T023c/T023v/T023d built and the 30-case count.
+
+Dependencies and lint row:
+
+- `crates/crpg-net-quic/Cargo.toml:7–19` — `crpg-net` (path) plus `quinn =0.11.12`, `quinn-proto =0.11.19`, `rustls =0.23.46`, `tokio =1.53.3`, all with default features off; no dev-dependencies.
+- `tools/lint/deps.py:55–59` — the `crpg-net-quic` row is `({"crpg-net"}, set())`, commented as the real QUIC transport reachable only through `crpg-net`'s public byte protocol.
 
 ## The vendored quinn-proto and D23
 
