@@ -117,7 +117,42 @@ yet written; its items are cited as the future surface and marked so.
 
 ## The v4 client types in crpg-net
 
-(section pending)
+**`ReassemblyPoolV4`** (`crates/crpg-net/src/pool_v4.rs:102`)
+
+- `new(limits: TransferLimitsV3) -> Result<Self, LimitsError>` (`:113`) — validates the v3 limits; `limits()` returns them (`:126`).
+- `add_receiver(epoch: [u8; 16], start: GateMode) -> Result<ReceiverIdV4, TransferError>` (`:131`), `remove_receiver(id)` (`:165`), `rebind_receiver(id, now_ms) -> Result<Rebound, TransferError>` (`:723`).
+- `offer_transfer(id, bytes, now_ms) -> Result<TransferOutcome, TransferError>` (`:227`) — accepts `0x82` v3 transfer frames for a v4 receiver; `offer_delta(id, bytes, now_ms) -> Result<DeltaOutcome, TransferError>` (`:534`) — decodes v4 delta bytes with `codec_v4::decode_delta` (`:22`, `:546`) and gates them by `event_seq` only (`:550`).
+- What it yields: `pop_update(id) -> Option<ReplicaUpdateV4>` (`:656`), where `ReplicaUpdateV4` is `Snapshot(PublicationV3)` or `Delta(DeltaFrame)` (`:42–47`); `status(id) -> Result<ReceiverStatusV3, TransferError>` (`:673`); `poll(now_ms) -> Vec<ReceiverIdV4>` returns expired receivers (`:647`).
+- v4 only: it "refuses v1, v2 and v3 delta bytes and `0x81` transfer frames with `Codec(UnsupportedVersion)`" (`:15–17`); it reads no op, so `Moved`/`Position` pass through unread (`:11–13`).
+
+**`ReplicaWorldV4`** (`crates/crpg-net/src/replica_v4.rs:55`)
+
+- `new(epoch: SessionEpoch)` (`:63`) — empty rows, positions and sample clock; `v3() -> &ReplicaWorldV3` (`:72`) answers every v3 query.
+- `apply_delta(&DeltaFrame) -> Result<(), ReplicaError>` (`:96`) — checks lane, op count and `event_seq` (`:97–111`), applies on a clone and commits only on success (`:113–127`); `apply_snapshot(&PublicationV3)` (`:135`) empties positions (the next page re-anchors them) and keeps the sample clock.
+- Positions: `position(entity: NetId) -> Option<&PositionState>` (`:77`) and `positions() -> &BTreeMap<NetId, PositionState>` ascending (`:83`); `PositionState { tick, point, moving }` (`:32–39`).
+- Samples: `apply_sample(&MoveSample) -> usize` (`:148`) never fails, stores an entry only for an entity that already has a disclosed position and only when strictly newer (`:144–147`), and moves `sample_clock() -> Option<SampleClock>` (`:88`) only to a strictly newer `server_tick` (`:149–158`).
+- `Moved` (`:186`) — an unchecked notice: "the replica stores nothing from it" (`:8`); a presenter pairs the id with `v3().entity()` and treats a miss as "not visible" (`tasks/T026p.md:266–267`).
+- `DeltaOp::Position { entity, position }` (`:187–213`) — `Some(fact)` replaces unless the stored tick is newer; `None` removes the position; an unknown entity is `ReplicaError::UnknownEntity` (`:188–190`).
+
+**`MoveOutbox`** (`crates/crpg-net/src/outbox_v4.rs:54`)
+
+- `new(epoch: [u8; 16])` (`:63`) — next `seq` 1, nothing pending; `epoch()` (`:73`), `next_seq()` (`:78`), `processed_seq()` (`:83`), `pending() -> &[MoveIntent]` ascending, the resend list after a resume (`:88`).
+- `send(actor: NetId, body: MoveBody) -> Result<MoveIntent, OutboxError>` (`:93`) — refuses `Exhausted` above `SEQ_LAST` and `Full` at `POLICY_MOVE_IN_FLIGHT` (8) (`:94–99`).
+- `receive(&MoveReceipt) -> Result<(), OutboxError>` (`:113`) — completes only the oldest pending intent, whatever the outcome (`Accepted`, `Superseded`, `Rejected`), and checks epoch, `seq` and actor (`:114–131`); `OutboxError` has five variants (`:17–36`).
+- Related lane-1 wire types: `MoveBody` (`crates/crpg-net/src/movement_v4.rs:76`), `MoveIntent { epoch, seq, actor, body }` (`:89`), `MoveOutcome` (`:102`), `MoveReceipt { epoch, seq, processed_tick, actor, outcome }` (`:116`), `MoveSample` (`:143`), `encode_intent`/`decode_intent` (`:207`/`:228`), `encode_down`/`decode_down` (`:273`/`:318`), `sample_datagrams` (`:447`).
+
+**The v3 types they replace**
+
+- `ReassemblyPoolV3` (`crates/crpg-net/src/pool_v3.rs:139`) — same gate for v3 deltas; `pool_v4.rs` is "`pool_v3` with the delta decoder and frame type swapped and its own id and update types", and reuses `PublicationV3`/`ReceiverStatusV3` (`tasks/T026p.md:271–275`).
+- `ReplicaWorldV3` (`crates/crpg-net/src/replica_v3.rs:56`) — rows, `turn()`, `encounter()`, `timeline()`, `pause()`, `host_facts()` (`:92–133`) but no positions; `ReplicaWorldV4` wraps it and applies every `V3` op through its `apply_op` (`crates/crpg-net/src/replica_v4.rs:178–184`).
+- `MoveOutbox` has no v3 counterpart: lane 1 is new in v4 (`crates/crpg-net/src/movement_v4.rs:32–34`).
+
+**Differences from the types the bridge uses now**
+
+- The bridge has no pool at all and decodes whole v2 frames itself (`crates/crpg-godot/src/core/client.rs:321–329`); a v4 client feeds `ReplicaUpdateV4` from `ReassemblyPoolV4::pop_update` and applies `Snapshot` via `apply_snapshot` / `Delta` via `apply_delta`.
+- The bridge's replica is `crpg_net::replica::ReplicaWorld` (v2, `crates/crpg-net/src/replica.rs:121`), whose `apply_delta` takes `protocol_v2::DeltaFrame` (`crates/crpg-net/src/replica.rs:19`) and which has no `position`, `positions`, `sample_clock` or `apply_sample`.
+- The bridge's `Client` keeps one lane-0 `pending: Option<u64>` and `next_seq` (`crates/crpg-godot/src/core/client.rs:296–297`); `MoveOutbox` is the separate lane-1 sequence state, with a window of 8 and receipts taken in `seq` order.
+- `ReplicaWorldV4` exposes `Moved` only as the unchecked notice above; the bridge's view has no position member (`crates/crpg-godot/src/core/client.rs:28–45`), and the v1/v2 wire has "no transform op" (`crates/crpg-net/src/protocol.rs:305`).
 
 ## The host side the bridge talks to
 
