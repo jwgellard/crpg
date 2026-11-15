@@ -146,7 +146,7 @@ Each needs the user's approval with the contract.
    The host may overwrite the tag before applying. `nav` (the `NavMesh`
    argument) is used only for `find_path` geometry; the host guarantees the
    mesh's canonical bytes hash to `world.nav()` (sim never imports nav,
-   `tasks/T036.md` Reading A2). *Rejected:* the AI computing the revision
+   `tasks/T036.md` Task: "Sim never imports `crpg-nav` (A2)"). *Rejected:* the AI computing the revision
    from the mesh (it has no `NavRevision::of_bytes` input and would
    duplicate the host's binding); a per-decision tag generator (host
    identity is not the AI's concern).
@@ -391,11 +391,13 @@ listed before `uid(104)` in the ruleset.
   B `{1,1}` at `p(10,0)` (no movers, so no positions the AI can read).
 - **mesh.** `rev` is `NavRevision::of_bytes(&mesh.to_canonical_bytes())`
   (`crates/crpg-sim/src/movement.rs:55`, `crates/crpg-nav/src/mesh.rs:310`)
-  where `mesh = bake_box(Fx16_16::ZERO, NavRect { min_x: p(-5,0).into,
-  …})` — the axis-aligned box `x ∈ [-5 m, 15 m]`, `z ∈ [-5 m, 15 m]` at
-  `y = 0`, no holes (`crates/crpg-nav/src/bake.rs:89`). The generator binds
-  this same `rev` into the two movers worlds; the tests re-bake the
-  identical box in code.
+  where `mesh = bake_box(Fx16_16::ZERO, NavRect { min_x:
+  Fx16_16::from_int(-5), min_z: Fx16_16::from_int(-5), max_x:
+  Fx16_16::from_int(15), max_z: Fx16_16::from_int(15) }, &[])`
+  (`crates/crpg-nav/src/bake.rs:89`) — the axis-aligned box `x ∈ [-5 m, 15
+  m]`, `z ∈ [-5 m, 15 m]` at `y = 0`, no holes. The generator binds this
+  same `rev` into the two movers worlds; the tests re-bake the identical
+  box in code.
 
 `use(x, t)` is `CombatAction::UseAbility { actor: x, ability: uid(103),
 target: t }`; `close(x)` is `EndTurn { actor: x }` (TB) or `Stop { actor: x
@@ -496,8 +498,73 @@ unchanged).
 
 ## What must not change
 
+No persisted state, hash, event, replay, or golden changes. Byte for byte
+unchanged:
+
+- the six files in `crates/crpg-testkit/goldens/`
+  (`{combat_basic,replay_basic,srd_lite}_rust-1.98.0_<target>_test-default.golden`);
+- `history_v1.*`, `history_v2.*`, `surface_v1.*`, `movement_v1.*` and
+  `history_v3.*` (two targets each) in `crates/crpg-sim/tests/goldens/`;
+- every `crpg-cli` replay fixture and every `crpg-server`/`crpg-net` hash
+  assertion.
+
+Reason: T056 adds a new crate and one read-only function; it edits no line
+of `crpg-core`, `crpg-data`, `crpg-rules` or `crpg-sim`, adds no dependency
+to an existing crate, and its own tests deserialize worlds (they write no
+golden). `crates/crpg-ai/src/lib.rs` is rewritten from a four-line
+doc-only skeleton, which no other crate imports. A moved golden is a stop,
+not a re-bless. The existing goldens listed are the ones any movement- or
+combat-adjacent change could disturb; T056 does not.
+
 ## Out of scope
+
+- **Utility scoring** (stage 2, `docs/CRPG_ENGINE_SPEC.md:700-717`) — T080.
+- **Behaviour trees for non-combat schedules** (stage 3) — T082.
+- **Party AI** — T083.
+- **The host driver that calls `decide`**: computing the hostile set from
+  `Faction.relations` disposition (`crates/crpg-data/src/document.rs:306-311`),
+  mapping `Decision` to `perform_action`/`perform_move`/`set_route`, looping
+  move-then-attack across a kept turn, and RT re-decide cadence are all
+  host behaviour. `crpg-ai` only returns one decision per call.
+- **Aggro radius and line of sight** (named in Stage 1,
+  `docs/CRPG_ENGINE_SPEC.md:698`, but cut by the MVP line
+  `docs/CRPG_ENGINE_SPEC.md:1531` and D27f `tasks/DECISIONS-2026-10-04.md:93-95`).
+- **The node budget and time-slice scheduler** (`docs/CRPG_ENGINE_SPEC.md:724`):
+  `decide` is one synchronous call bounded by `legal_actions`' output cap
+  (4096) and `find_path`'s polygon bound; the host owns *when* to call it.
+- **Any `crpg-data`, `crpg-rules`, `crpg-sim`, `crpg-core`, `crpg-nav` or
+  `tools/` change**, and any runtime hostility/sides/team model in sim.
+- **AI profiles as authored data** (`docs/CRPG_ENGINE_SPEC.md:1065`) — T081.
 
 ## Open questions
 
+Each needs the user's answer; each recommendation is to keep the draft as
+written.
+
+1. **Target strictly the nearest hostile, or attack any in-range hostile?**
+   The spec says "move to nearest hostile and attack" and the MVP has
+   exactly one hostile (`docs/CRPG_ENGINE_SPEC.md:1517`), so the fork is
+   moot for shipping. This draft targets only the nearest (Behaviour B-4/B-7),
+   which is simpler and fully deterministic. *Recommend: keep strictly
+   nearest; revisit when a fight has more than one hostile.*
+
+2. **Who derives the hostile set, and where?** The draft makes `hostiles` an
+   input the host computes from `Faction.relations` disposition (Reading 1).
+   That derivation is host/tooling code outside `crpg-ai`, and needs no sim
+   change. If the user wants it shared rather than host-local, it should be
+   its own small task in `crpg-server` (which may import `crpg-data`).
+   *Recommend: leave derivation to the host for the MVP; open a follow-up
+   task if a shared resolver is wanted.*
+
+3. **Enforce `crpg-ai` determinism with the lint?** The determinism lint's
+   `CRATES` list does not include `crpg-ai` (`tools/lint/determinism.py:66`),
+   so the integer-only/no-`HashMap` rules here are contract rules, not
+   lint-enforced. Adding `crpg-ai` to both `CRATES` and `NO_FLOAT_CRATES`
+   would make the ban mechanical, at the cost of one `tools/` edit (a
+   separate, trivial change outside this task's crate). *Recommend: add
+   `crpg-ai` to the lint as a companion change with the manager's approval;
+   until then the contract rule stands.*
+
 ## Agent log
+
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4-pro + T056 draft b · Wrote the blind MVP AI contract in `crpg-ai` (one read-only `decide` returning Attack/Move/Pass, hostility as an explicit host input, nearest by horizontal `seg_len` with `EntityId` tie-breaks, movement via `crpg-nav` with the bound revision), with exact-value tests and the fact-sheet findings carried into Readings, so the architect adjudicates a complete draft rather than re-deriving it.
