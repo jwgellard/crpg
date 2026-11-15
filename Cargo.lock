@@ -282,6 +282,7 @@ dependencies = [
 name = "crpg-testkit"
 version = "0.1.0"
 dependencies = [
+ "crpg-ai",
  "crpg-core",
  "crpg-data",
  "crpg-nav",

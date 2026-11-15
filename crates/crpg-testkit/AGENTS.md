@@ -140,7 +140,11 @@ its v4 client and the mesh the area bounds bake; approved at T037 Question 1
 (a), 2026-11-15, see [tasks/T037.md](../../tasks/T037.md); all three are
 workspace members, so the lock grows by edge entries only). The three host
 edges reach `crpg-net-quic`'s tokio and quinn through `crpg-server` in
-testkit's test build only, which is not I/O-restricted.
+testkit's test build only, which is not I/O-restricted; and `crpg-ai` + `crpg-nav` (path, dev-only
+for the T056b MVP AI behaviour suite in `tests/ai_mvp.rs` — the decision
+under test and the mesh the host routes on; approved in D62 (Question 2),
+see [tasks/T056.md](../../tasks/T056.md); both already workspace members, so
+the lock grows by edge entries only).
 No workspace crate beyond those — later helpers add their edges with their
 tasks, each justified in the task file. No external crate beyond what the
 workspace already holds; anything else needs approval.
@@ -309,3 +313,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the contract with the as-built replay (seed 285, K = 9, 13-test srd_replay suite, per-target goldens, combat_basic untouched); no commit/push/PR.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T139g · Re-baselined the four `combat_basic`/`srd_lite` goldens under T139 D5 and the D40c (b) approval, each target regenerated natively by the temporary `t139g_regenerate.rs` (deleted before commit) with the pinned Rust 1.98.0 on Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU. Only hash lines moved; the tag carriage changed no outcome, draw or event, and the unedited oracle tests still pass.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite (`K1`–`K4` over `combat_basic`), its in-memory ruleset edit and the three tests-only host edges, so later suites extend the real-data host proof instead of re-inventing it; no source, fixture or golden changed.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the two approved dev-only edges (`crpg-ai`, `crpg-nav`) for the MVP AI behaviour suite, so a later suite can reuse the fixture without re-justifying the dependency direction.

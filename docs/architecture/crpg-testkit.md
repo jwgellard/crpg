@@ -189,6 +189,37 @@ the same sim calls, with every route computed by calling `crpg_nav` directly.
 The three host-side edges (`crpg-server`, `crpg-net`, `crpg-nav`) are
 `[dev-dependencies]` only; no normal edge changed.
 
+## MVP AI decision suite (T056b, tests-only)
+
+`crpg-ai` may not read `crpg-data`, so its own U1-U8 suite cannot start an
+encounter (T056 Reading 13); the behaviour suite lives here instead.
+`tests/ai_fixture/mod.rs` is a private fixture module included by
+`tests/ai_mvp.rs` through `mod ai_fixture;` (in a subdirectory, so it is not
+a test target of its own). Its first line is `#![allow(dead_code)]` because
+each includer uses only part of it. The fixture re-authors sim's own
+documents value for value — `Fixture::standard()` from
+`crates/crpg-sim/tests/support/mod.rs` and `move_fixture()` from
+`tests/support/movement_schedule.rs` — parsed through `crpg-data`'s
+production types, then edits them with typed functions (`ranged`, `far`,
+`near`, `trio`, `lethal`, `shared`, `twin`, `tune`), plus the contract's
+`m()`/`ms()` bakes, `rev`/`bind`, `sides`, and `apply_move` (turn-based
+`perform_move` over `host_route`'s route; real-time `set_route`).
+`start`/`start_rt` start the encounter from those documents and assert B
+acts first in turn-based play.
+
+`tests/ai_mvp.rs` is G1-G22: each decision is pinned to the contract's
+hand-computed destination, balance or `Decision` variant, applied through
+`perform_action`, `perform_move` and `set_route`, and every case carries a
+control that changes one input and flips the expectation. The suite proves
+M-1 to M-9 over real turn-based and real-time encounters with a real bound
+mesh; M-8's two validation calls stay declared defence in depth, because no
+fixture can reach them.
+
+The two dev-only edges this suite adds are `crpg-ai` (the decision under
+test) and `crpg-nav` (the mesh the host routes on), approved in D62;
+`ALLOWED` already permits testkit -> anything but `crpg-godot`. No `src/`
+change, no public export, and no golden.
+
 ## What consumers inherit
 
 - **Comparable sequences.** Same interleaving everywhere means a hash at
@@ -220,3 +251,4 @@ The three host-side edges (`crpg-server`, `crpg-net`, `crpg-nav`) are
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e crate opening · Recorded the tests-only srd adapter, extended grammar with the end op, per-attack trace shape, and independent native golden ownership before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the module with the as-built srd replay (seed 285, K = 9, per-target goldens, combat_basic untouched).
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite and its three tests-only host edges (`crpg-server`, `crpg-net`, `crpg-nav`), so the crate doc names what `host_movement.rs` proves and why no normal edge moved. No source, fixture, or golden changed.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the tests-only MVP AI decision suite: the private fixture's provenance and typed edits, the G1-G22 shape with its controls, and the two dev-only edges, so the crate doc names the suite's owner and its boundary.
