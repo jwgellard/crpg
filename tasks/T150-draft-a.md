@@ -636,7 +636,34 @@ No new edge, no new lockfile package, no `ALLOWED` change.
 
 ## Open questions
 
-<!-- TODO -->
+Each with a recommendation; nothing below is approved.
+
+1. **Datagram buffer sizes.** `DATAGRAM_SEND_BUFFER_BYTES = 65_536`
+   (server) and `DATAGRAM_RECV_BUFFER_BYTES = 262_144` (client) are picked
+   to bound memory under congestion while absorbing the ~27 KB/s sample rate
+   (worst case 27 × 1,024 B/s, `tasks/T037.md:292`). *Recommend:* these
+   values, as fixed constants (not limits); a later task may promote them to
+   tightening-only limits if operators need to tune them.
+2. **Where the connect-time datagram refusal surfaces.** A-3 closes with
+   `ProtocolViolation` in the server's accept path, so the adapter's
+   `on_hello` sees `ServerError::Closed` and reports `HelloOutcome::Lost`
+   (not a `Refused` code). *Recommend:* this path (it reuses the existing
+   `Lost` handling and needs no new `CloseCode`); the alternative — a
+   pre-hello refusal with no `HelloReceived` — is equally sound but touches
+   more of the server loop.
+3. **The v4 facts/rights registration.** Reading 9 adds
+   `register_v4_invitation` + `V4Invitation` so the existing `Invitation`
+   and its struct-literal sites are untouched. *Recommend:* the separate
+   registration; the alternative (fields on `Invitation`) forces an
+   existing-test edit, which this contract's "What must not change" forbids.
+4. **`bind_dual` ALPN list order.** `[crpg-lane0/3, crpg-lane0/2,
+   crpg-lane0/1]` keeps `/1` and `/2` clients working and prefers `/3`.
+   *Recommend:* that order; `bind` stays `/1`-only and `bind_resumable` is
+   unchanged.
+5. **No new `CloseCode` for the datagram refusal.** A-3 reuses
+   `ProtocolViolation` (2) because the ALPN pins the datagram minimum.
+   *Recommend:* reuse; adding a `MovementUnsupported` code is an ADR-level
+   wire change this contract deliberately avoids.
 
 ## Agent log
 
