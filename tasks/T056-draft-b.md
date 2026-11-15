@@ -189,6 +189,69 @@ Each needs the user's approval with the contract.
 
 ## Interface
 
+Every public item has a doc comment (`#![warn(missing_docs)]`,
+`crates/crpg-ai/src/lib.rs:2`). The whole public surface is three items;
+`decide` is a pure function of its arguments.
+
+```rust
+//! MVP AI: move to the nearest hostile and attack (spec §6.1 Stage 1,
+//! cut to the MVP scope by spec §17.3). Read-only and deterministic.
+
+use crpg_core::EntityId;
+use crpg_nav::NavMesh;
+use crpg_sim::{CombatAction, LegalActionsError, MoveRoute, RouteTag, World};
+
+/// What the MVP AI wants an actor to do next. The host applies it through
+/// the existing public verbs, which revalidate (`Attack`/`Pass` via
+/// `perform_action`, `Move` via `perform_move` in TB or `set_route` in RT).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Attack with this exact legal action — always a
+    /// `CombatAction::UseAbility` targeting the nearest hostile
+    /// (`crates/crpg-sim/src/combat.rs:932-952`).
+    Attack(CombatAction),
+    /// Walk this whole route toward the nearest hostile
+    /// (`crates/crpg-sim/src/movement.rs:67-74`).
+    Move(MoveRoute),
+    /// Do nothing else; apply this closing action — `EndTurn { actor }` in
+    /// turn-based, `Stop { actor }` in real time.
+    Pass(CombatAction),
+}
+
+/// Why the AI could not produce a decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiError {
+    /// The actor cannot act at all: `legal_actions` failed
+    /// (`crates/crpg-sim/src/combat.rs:3678-3688`). Its text is the wrapped
+    /// error's text; `source()` is the wrapped error.
+    Legal(LegalActionsError),
+}
+// impl Display and std::error::Error for AiError, as LegalActionsError does
+// (delegate to the inner error).
+
+/// Choose one next step for `actor` (T056). Read-only and deterministic:
+/// it draws no RNG, interns nothing, and mutates nothing.
+///
+/// * `nav` is the navmesh whose canonical bytes hash to `world.nav()`; the
+///   host guarantees the match. It is consulted only when the AI decides to
+///   move (which needs `world.nav() == Some`), so with no bound navmesh any
+///   mesh may be passed and it is ignored.
+/// * `hostiles` is the set of entities hostile to `actor`, in any order; the
+///   result does not depend on that order. It must not contain `actor` (a
+///   hostile equal to `actor` is a candidate only by host error).
+pub fn decide(
+    world: &World,
+    actor: EntityId,
+    nav: &NavMesh,
+    hostiles: &[EntityId],
+) -> Result<Decision, AiError>;
+```
+
+`crates/crpg-ai/Cargo.toml` `[dependencies]`: `crpg-core`, `crpg-sim`,
+`crpg-nav` (workspace path deps). `[dev-dependencies]`: `serde_json` (for
+the fixtures). No other dependency is added; `crpg-rules` is permitted but
+unused.
+
 ## Behaviour
 
 ## Errors
