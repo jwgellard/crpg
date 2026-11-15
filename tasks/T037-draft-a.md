@@ -214,7 +214,7 @@ impl Host {
 
 ### Session state additions
 ```rust
-// In Session (host.rs:605-637):
+// In Session (crates/crpg-server/src/host.rs:605-637):
 pub v4: Option<Box<V4Session>>,   // movement bookkeeping for a v4 session
 // V4Session (new, in host.rs):
 pub struct V4Session {
@@ -509,3 +509,5 @@ B-22. A host that never calls `load_area`, `decide_move_to`,
    position wins over the refresh snapshot in the same datagram.
 
 ## Agent log
+
+- 2026-11-15 (UTC) · opencode-go/beam-free + T037 draft a · Blind draft of the T037 host movement adapter contract (area load, MoveTo/DeclareMove receipts, lane-1 admission and aggregates, datagram samples, H5 asserts), split into three serialized parts; nothing approved.
