@@ -468,3 +468,5 @@ edges. No lower crate imports the bridge back: `crpg-testkit` and
    owns making that pretty; the runner asserts exact points.
 
 ## Agent log
+
+- 2026-11-15 (UTC) · opencode-go/muse-spark-1.3-contributor + T151 draft b · Blind-drafted the v4 bridge contract (v4 session, positions and Moved as polled view data, lane-1 send path, four serial parts with the shell part S-set) from the facts sheet, so the architect can adjudicate it against the sibling draft.
