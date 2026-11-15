@@ -194,9 +194,10 @@ pub fn decide(
         let Some(movement) = combat.definition.movement else {
             return Ok(fallback);
         };
-        let Some(combatant) = world.combatants().get(actor) else {
-            return Ok(fallback);
-        };
+        let combatant = world
+            .combatants()
+            .get(actor)
+            .expect("legal_actions validated the actor is a live combatant");
         let balance = pool_balance(combatant, movement.pool);
         let reserve = reserved_cost(entry, movement.pool);
         let units = balance.saturating_sub(reserve) / movement.step_cost;
@@ -206,9 +207,7 @@ pub fn decide(
     if d == 0 {
         return Ok(fallback);
     }
-    let Some(destination) = point_along(path.points(), d) else {
-        return Ok(fallback);
-    };
+    let destination = point_along(path.points(), d).expect("a nav path has at least two points");
 
     // M-8: verify with the host's own route and the movement validation.
     let Ok(walk) = host_route(nav, world, actor, destination) else {
