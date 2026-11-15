@@ -407,7 +407,27 @@ B-5. **Lane 0 is unchanged on `/3`.** A v4 session's lane-0 deltas and `0x82`
 
 ## Errors
 
-<!-- TODO -->
+One new error type and one re-used close code; no new `CloseCode` variant,
+no new codec error, no new `RejectionCode`.
+
+| Refusal | Result |
+|---|---|
+| `/3` peer did not advertise `max_datagram_frame_size ≥ 1_024` | closed `CloseCode::ProtocolViolation` (2) before the welcome; the adapter reports `HelloOutcome::Lost` |
+| `try_send_datagram` above the peer's maximum | `DatagramSendError::TooLarge` |
+| `try_send_datagram` when DATAGRAM was not negotiated | `DatagramSendError::UnsupportedByPeer` |
+| `try_send_datagram` buffer full / closed / unknown / empty | `DatagramSendError::Send(SendError::QueueFull | Closed | UnknownConnection | EmptyFrame | …)` |
+| `try_send_lane1` zero-length / over-cap / full / closed | `SendError::EmptyFrame` / `FrameTooLarge` / `QueueFull` / `Closed` (unchanged texts) |
+| `try_recv_lane1` / `try_recv_datagram` on a closed connection | the existing `ServerError::Closed(reason)` / `CloseReason` |
+
+`DatagramSendError`'s `Display` follows the crate pattern
+(`crates/crpg-net-quic/src/close.rs:149–158`):
+`"UnsupportedByPeer at quic/datagram"`, `"TooLarge at quic/datagram"`,
+`"Send at quic/datagram"` (delegating to `SendError`); `source()` is `None`.
+Every existing `SendError`, `ServerError`, `ChannelSendError`, `CloseCode`
+and `CloseReason` text and variant is unchanged. `HostError` gains no variant
+(the v4 route reuses the T037 host surface; a `bind_v4_peer` refusal maps to
+the existing `CloseCode`s exactly as `on_hello` maps `bind_peer`'s
+`crates/crpg-server/src/quic.rs:674–685`).
 
 ## Tests
 
