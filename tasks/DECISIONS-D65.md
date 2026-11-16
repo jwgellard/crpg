@@ -1,6 +1,6 @@
 # Decision D65 — session 63: who ticks the world, joining a campaign, and the T151/T153 questions
 
-Status: **D65a and D65b answered by the user, 2026-11-16 (UTC). D65c–D65h open.** Drafted by the manager in session 63. T151 and T153 wait on these; nothing in flight does.
+Status: **D65a–D65h answered by the user, 2026-11-16 (UTC); D65i open until an ADR before T080/T081.** Drafted by the manager in session 63. T151 and T153 wait on these; nothing in flight does.
 
 ## D65a — the server run loop owns the clock in both modes (answered)
 
@@ -21,7 +21,7 @@ Single-player uses the in-memory transport (ADR-0012: same protocol bytes, same 
 - **D65e (T151 Q3)** — the game may name a destination (turn-based) and, in real time, the creature by NetId; the server decides: recommend (a) yes. **Answered (a) by the user, 2026-11-16: "move requests need to be sent."**
 - **D65f (T153 Q1)** — the `crpg-server` → `crpg-ai` edge (already in `ALLOWED`, `tools/lint/deps.py:69`; no new package): recommend (a) yes. **Answered (a) by the user, 2026-11-16.**
 - **D65g (T153 Q2)** — the AI acts while the host is paused (fights and loaded saves start paused): recommend (a) yes. **Answered by the user, 2026-11-16: "it can still determine and queue its actions".** Rule for the contract: while paused the AI decides and submits like a human player, and its actions are handled exactly as a human player's are under pause (turn-based actions as a human's would be; real-time moves wait for the clock). The AI gets no pause rule of its own.
-- **D65h** — file a small `crpg-cli` task so `crpgc play` uses `crpg_ai::decide` for enemy turns (fastest terminal AI demo; needs a `crpg-cli` → `crpg-ai` edge): recommend yes.
+- **D65h** — file a small `crpg-cli` task so `crpgc play` uses `crpg_ai::decide` for enemy turns (fastest terminal AI demo; needs a `crpg-cli` → `crpg-ai` edge): recommend yes. **Answered (b) by the user, 2026-11-16: not filed** ("I don't think I care about seeing the AI, unless it is going to fail"); AI correctness rests on the T056 and T153 suites and their mutant reviews.
 
 - **D65i (raised by the user, 2026-11-16)** — at what level is AI rule-definable? The engine needs an AI authoring surface, not only built-in behaviour. Plan (spec §6.1, `docs/IMPLEMENTATION_PLAN.md` T080–T084): ruleset/creature data sets AI profiles and consideration weights (T080, T081), behaviour trees are data (T082), considerations themselves are engine code. Open for the user, to be settled by an ADR before the T080/T081 contracts: may rulesets define their own considerations (e.g. expressions over ruleset stats) or script hooks via `crpg-script`, and where do faction/hostility relations live as data (today T056's caller passes `Sides`, D62)?
 
@@ -33,3 +33,4 @@ Single-player uses the in-memory transport (ADR-0012: same protocol bytes, same 
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65f · Recorded the user's yes to the `crpg-server` → `crpg-ai` edge.
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65i · Recorded the user's question on the AI authoring level as an ADR item before T080/T081.
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65g · Recorded the user's answer: the AI decides and queues while paused, under the same pause rules as a human player.
+- 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65h · Recorded the user's no to the terminal AI demo task and updated the status line.
