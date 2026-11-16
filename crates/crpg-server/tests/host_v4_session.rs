@@ -29,14 +29,14 @@ use crpg_net::pool_v4::{
     TransferOutcome,
 };
 use crpg_net::protocol::LANE_COMBAT;
-use crpg_net::protocol::{IntentBody as IntentBodyV1, NetId};
+use crpg_net::protocol::{IntentBody as IntentBodyV1, NetId, ReceiptStatus, RejectionCode};
 use crpg_net::protocol_transfer::{
     CancelReason, HealthFact, ResyncReason, TransferDown, TransferId, TransferUp, TurnFact,
 };
 use crpg_net::protocol_v3::{
     AutoPauseToggles, DeltaFrame as DeltaFrameV3, DeltaOp as DeltaOpV3, FactSet, HostFacts,
-    IntentBody as IntentBodyV3, IntentFrame as IntentFrameV3, OrderFact, PauseRights, PoolFact,
-    ReceiptStatus as ReceiptV3, StatFact, StatValue,
+    IntentBody as IntentBodyV3, IntentFrame as IntentFrameV3, OrderFact, PauseReason, PauseRights,
+    PoolFact, ReceiptStatus as ReceiptV3, StatFact, StatValue,
 };
 use crpg_net::protocol_v4::{
     DeltaFrame, DeltaOp, IntentBody as IntentBodyV4, IntentFrame as IntentFrameV4, Point,
@@ -45,11 +45,14 @@ use crpg_net::protocol_v4::{
 use crpg_net::replica_v3::{ReplicaEntityV3, ReplicaWorldV3};
 use crpg_net::replica_v4::{PositionState, ReplicaWorldV4};
 use crpg_net::transfer_v3;
-use crpg_server::capture::{CaptureEntry, CapturedRecord};
+use crpg_server::capture::{
+    CaptureEntry, CapturedHealth, CapturedRecord, CapturedTurn, CapturedView,
+};
 use crpg_server::host::{
-    ControlGrant, DeliveryEntry, DeliveryKind, DisclosureGrants, EntityDisclosure, EntityFactGrant,
-    FactGrants, GrantUpdate, Host, HostConfig, HostError, IngestDisposition, PeerHandle,
-    ProtocolSelection, TransferDisposition, TransferState, DEFAULT_HOST_GRANTS, HOST_ROUTE_TAG,
+    AdmissionResult, ControlGrant, DeliveryEntry, DeliveryKind, DisclosureGrants, EntityDisclosure,
+    EntityFactGrant, FactGrants, GrantUpdate, Host, HostConfig, HostError, IngestDisposition,
+    PeerHandle, ProtocolSelection, TransferDisposition, TransferState, DEFAULT_HOST_GRANTS,
+    HOST_ROUTE_TAG,
 };
 use crpg_sim::{CombatAction, EncounterMode, HistoryWorld};
 use serde_json::{json, Value};
@@ -2457,4 +2460,271 @@ fn b16_v4_stage_counters_and_bound() {
         .map(|entry| entry.bytes.len())
         .sum();
     assert!(big_bytes <= 2_880_916);
+}
+
+// ---------------------------------------------------------------------------
+// T037b fix round 2, gaps 11–13.
+// ---------------------------------------------------------------------------
+
+/// Gap 11 (p17 p19 p20 p25): the running-host `Clock` heartbeat fires at
+/// exactly `last_clock_tick + POLICY_CLOCK_HEARTBEAT_TICKS` (100), not one
+/// tick before or after, and a rights change publishes a `HostFacts` delta.
+/// An unchanged rights call publishes nothing.
+#[test]
+fn b17_heartbeat_clock_at_exactly_the_interval_and_host_facts_on_rights_change() {
+    let mut host = host_of(&mv3_value());
+    let p = bind_p(&mut host, 0);
+    let _client = drained_v4(&mut host, p, 0);
+
+    // Ticks 1–99 publish nothing: the heartbeat is not due one tick early.
+    for _ in 0..99 {
+        host.tick().expect("ticks");
+    }
+    assert_eq!(host.server_tick(), 99);
+    assert!(take(&mut host, p).is_empty());
+
+    // Tick 100 is exactly the due boundary: one delta with only the `Clock`.
+    host.tick().expect("tick 100");
+    assert_eq!(host.server_tick(), 100);
+    let hundredth = take(&mut host, p);
+    assert_eq!(hundredth.len(), 1);
+    assert_eq!(
+        codec_v4::decode_delta(&hundredth[0].bytes).expect("a v4 delta"),
+        DeltaFrame {
+            lane: LANE_COMBAT,
+            server_tick: 100,
+            event_seq: 2,
+            ops: vec![DeltaOp::V3(clock(None))],
+        }
+    );
+
+    // Tick 101 sends nothing: the heartbeat already fired, and the `Clock`
+    // is unchanged.
+    host.tick().expect("tick 101");
+    assert!(take(&mut host, p).is_empty());
+
+    // A rights change publishes exactly the new `HostFacts`, no `Clock`.
+    assert_eq!(host.set_pause_rights(p, r0()), Ok(()));
+    let rights_page = take(&mut host, p);
+    assert_eq!(rights_page.len(), 1);
+    assert_eq!(
+        codec_v4::decode_delta(&rights_page[0].bytes).expect("a v4 delta"),
+        DeltaFrame {
+            lane: LANE_COMBAT,
+            server_tick: 101,
+            event_seq: 3,
+            ops: vec![DeltaOp::V3(host_facts(r0()))],
+        }
+    );
+
+    // Control: the same rights again publish nothing.
+    assert_eq!(host.set_pause_rights(p, r0()), Ok(()));
+    assert!(take(&mut host, p).is_empty());
+    let mut oracle = history_of(&mv3_value());
+    for _ in 0..101 {
+        oracle.tick().expect("the mirror ticks");
+        oracle
+            .acknowledge(oracle.last_sequence())
+            .expect("acknowledges");
+    }
+    assert_authority(&host, &oracle);
+}
+
+/// The disclosure grants of a session that is told nothing: every entity
+/// flag denied, so no event, state op or frame ever reaches it.
+fn denied_grants() -> DisclosureGrants {
+    let denied = |entity: EntityId| EntityDisclosure {
+        entity,
+        present: false,
+        health: false,
+        spawn: false,
+        despawn: false,
+        died: false,
+        action_actor: false,
+        action_target: false,
+        action_outcome: false,
+        action_damage: false,
+        turn_start: false,
+    };
+    DisclosureGrants {
+        entities: vec![denied(a()), denied(b()), denied(c())],
+        abilities: vec![strike(), smite(), whiff()],
+        encounters: vec![Ulid::from_u128(601)],
+        turn_round: false,
+        encounter_end: false,
+        turn_state: false,
+    }
+}
+
+/// Gap 12 (p22): `P`'s own `CapturedView` is captured with its exact health
+/// and turn, while a session that receives no frames for the command gets no
+/// view. The v3 twin's view agrees field by field.
+#[test]
+fn b18_v4_capture_view_present_and_absent_with_frames() {
+    let value = mv3_value();
+    let mut host = host_of(&value);
+    let mut oracle = history_of(&value);
+    let p = bind_p(&mut host, 0);
+    let mut client = drained_v4(&mut host, p, 0);
+    let q = bind_q(&mut host, 1);
+    let mut twin = drained_v3(&mut host, q, 1);
+    let r = host
+        .bind_v4_peer(control(&[]), denied_grants(), facts(), r1(), 2)
+        .expect("binds");
+    let r_epoch = host.epoch(r).expect("bound");
+    let mut denied_client = Client::new(r_epoch);
+    denied_client.drain(&mut host, r, 2);
+    assert_eq!(
+        denied_client.publish(&mut host, r, 2),
+        TransferDisposition::Published
+    );
+
+    // The strike is accepted for `P` (and seen by `Q`); `R` is told nothing.
+    let bytes = v4_intent(
+        &host,
+        p,
+        1,
+        1,
+        IntentBodyV4::DeclareAction {
+            ability: strike(),
+            target: n(2),
+        },
+    );
+    assert_eq!(host.ingest(p, &bytes, 10), Ok(IngestDisposition::Staged));
+    let summary = host.pump(10).expect("pump");
+    assert_eq!(summary.results.len(), 1);
+    assert_eq!(summary.results[0].status, ReceiptStatus::Applied);
+    assert!(!summary.results[0].cached);
+    oracle
+        .perform_action(&CombatAction::UseAbility {
+            actor: a(),
+            ability: strike(),
+            target: b(),
+        })
+        .expect("the mirror accepts the order");
+    oracle
+        .acknowledge(oracle.last_sequence())
+        .expect("acknowledges");
+    assert_authority(&host, &oracle);
+
+    // `R` receives nothing for the strike, while `P` and `Q` each take one frame.
+    assert!(take(&mut host, r).is_empty());
+    assert_eq!(client.drain(&mut host, p, 11).deltas.len(), 1);
+    assert_eq!(twin.drain(&mut host, q, 11).len(), 1);
+
+    // The capture holds exactly `P`'s and `Q`'s views, with `P`'s exact
+    // post-strike health and turn; nothing names `R`'s epoch.
+    let entries = host.read_capture_entries(0, 256).expect("reads");
+    assert_eq!(entries.len(), 1);
+    let CaptureEntry::Command(record) = &entries[0] else {
+        panic!("the first entry is the strike");
+    };
+    let p_epoch = host.epoch(p).expect("bound");
+    let q_epoch = host.epoch(q).expect("bound");
+    assert_eq!(record.views.len(), 2);
+    assert_eq!(
+        record.views[0],
+        CapturedView {
+            epoch: p_epoch,
+            health: vec![
+                CapturedHealth {
+                    entity: n(1),
+                    health: 10,
+                    max_health: 10,
+                    dead: false,
+                },
+                CapturedHealth {
+                    entity: n(2),
+                    health: 7,
+                    max_health: 10,
+                    dead: false,
+                },
+            ],
+            turn: Some(CapturedTurn {
+                active: Some(n(2)),
+                round: 0,
+            }),
+        }
+    );
+    assert_eq!(record.views[1].epoch, q_epoch);
+    assert_eq!(record.views[1].health, record.views[0].health);
+    assert_eq!(record.views[1].turn, record.views[0].turn);
+    assert!(!record.views.iter().any(|view| view.epoch == r_epoch));
+}
+
+/// A fresh host with one drained and published v3 session, for one retry case.
+fn fresh_published_v3(now: u64) -> (Host, PeerHandle, Twin) {
+    let mut host = host_of(&mv3_value());
+    let q = bind_q(&mut host, now);
+    let mut twin = Twin::new(host.epoch(q).expect("bound"));
+    twin.drain(&mut host, q, now);
+    assert_eq!(
+        twin.publish(&mut host, q, now),
+        TransferDisposition::Published
+    );
+    (host, q, twin)
+}
+
+/// Gap 13 (d05 d06 d07): on a v3 session, retrying one `seq` with a different
+/// `Stop`, `Pause`, `Unpause` or `RequestMode` body is `SeqConflict` and
+/// fences the session, while the identical bytes are a cached `Duplicate`.
+/// Each pair pins one arm of the v4→v3 canonical-body mapping.
+#[test]
+fn b19_v3_retry_with_different_control_body_is_seq_conflict() {
+    let conflict = |first: IntentBodyV3, second: IntentBodyV3| {
+        let (mut host, q, _twin) = fresh_published_v3(0);
+        let first_result = send_v3(&mut host, q, 1, 1, first, 10);
+        assert_eq!(first_result.seq, Some(1));
+        assert!(!first_result.cached);
+        let retry = send_v3(&mut host, q, 1, 1, second, 20);
+        assert_eq!(
+            retry,
+            AdmissionResult {
+                peer: q,
+                seq: Some(1),
+                status: ReceiptStatus::Rejected(RejectionCode::SeqConflict),
+                cached: false,
+                retained_in_ingress: false,
+            }
+        );
+        assert_eq!(host.epoch(q), Err(HostError::UnknownPeer));
+        (host, first_result)
+    };
+    let duplicate = |first: IntentBodyV3| {
+        let (mut host, q, _twin) = fresh_published_v3(0);
+        let first_result = send_v3(&mut host, q, 1, 1, first, 10);
+        let retry = send_v3(&mut host, q, 1, 1, first, 20);
+        assert_eq!(
+            retry,
+            AdmissionResult {
+                peer: q,
+                seq: Some(1),
+                status: first_result.status,
+                cached: true,
+                retained_in_ingress: false,
+            }
+        );
+    };
+
+    // `Stop` maps to `Stop`, not `EndTurn` (d05).
+    conflict(IntentBodyV3::EndTurn, IntentBodyV3::Stop);
+    duplicate(IntentBodyV3::EndTurn);
+    // `Pause` maps to `Pause`, not `Unpause` (d06); the refused `Pause`
+    // changes nothing.
+    let (host, _) = conflict(IntentBodyV3::Unpause, IntentBodyV3::Pause);
+    assert_eq!(host.paused(), None);
+    duplicate(IntentBodyV3::Unpause);
+    // The reverse direction pins the same arm: a first `Pause` collides only
+    // with a retry `Pause`.
+    let (host, _) = conflict(IntentBodyV3::Pause, IntentBodyV3::Unpause);
+    assert_eq!(host.paused(), Some(PauseReason::Player));
+    duplicate(IntentBodyV3::Pause);
+    // `RequestMode` maps to `RequestMode`, not `Stop` (d07).
+    conflict(
+        IntentBodyV3::Stop,
+        IntentBodyV3::RequestMode {
+            mode: crpg_net::protocol_v3::EncounterMode::TurnBased,
+        },
+    );
+    duplicate(IntentBodyV3::Stop);
 }
