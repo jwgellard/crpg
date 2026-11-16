@@ -60,6 +60,12 @@ T037c's additive `host` items: `POLICY_SAMPLE_REFRESH_TICKS` and
 `Host::take_samples`. The sample queue, the lane-1 egress it counts toward
 and the two projection helpers are private in `src/host.rs` and `src/host_v4.rs`.
 
+T037d's additive `host` items: `MoveAdmission` and
+`Host::{ingest_move, take_move_receipts}`. The lane-1 state (`MoveLane`,
+`MoveSlot`, `MoveCacheEntry`, `MAX_MOVE_RECEIPT_BYTES`) is private in
+`src/host_v4.rs`; the window, release and duplicate helpers are private in
+`src/host.rs`.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
@@ -380,9 +386,29 @@ git diff --check
 - **Samples never enter a delivery log (T037c).** A sample is a lane-1
   datagram: no `event_seq`, no ordinal, no reliable retry, and none of the
   v3/v4 paging rules apply to it. It counts toward the session's lane-1 egress
-  (`V4State.egress`, beside the delivery log in `room_for` and pacing) and the
-  host's `egress_bytes`, and `take_samples` frees that room. A v1–v3 session
-  counts zero.
+  (`V4State::lane1_egress`, beside the delivery log in `room_for` and pacing)
+  and the host's `egress_bytes`, and `take_samples` frees that room. A v1–v3
+  session counts zero.
+- **Lane 1 keeps its own state (T037d, HM-10).** A v4 session's `MoveLane`
+  (`next_seq`, slots, cache, move bucket, receipts, `processed_seq`) is
+  separate from lane 0's sequence, cache, log and bucket; only the shared
+  intent and failure buckets are common. Never answer a lane-1 duplicate from
+  the lane-0 cache, and never read lane 1's sequence in a lane-0 path.
+- **Decisions happen only in `advance` (T037d, Reading 12).** `ingest_move`
+  decides nothing: it admits (and resolves the actor) synchronously, and the
+  next `advance` decides every pending slot after recording `now_ms` and before
+  the timer, paused or running. `tick` never decides, and a decision makes no
+  capture record and publishes no lane-0 frame.
+- **Steps 1–8 never consume a sequence (T037d).** A `Refused` lane-1 frame
+  leaves `next_seq`, the slots and the receipt queue as they were; only the
+  buckets it spent stay spent. A `SeqConflict` fences the session. Step 9's
+  `Rejected(NotAuthorized)` does consume the sequence — and every consumed
+  sequence gets exactly one receipt.
+- **A lane-1 receipt is never dropped (T037d, Reading 15).** A slot's
+  one-frame/60-byte egress reservation is taken at admission, so the release
+  always has room; a `Rejected` receipt spends the shared failure buckets and
+  is queued anyway, unlike a lane-0 rejection. Only the egress caps bound the
+  queue (128 frames), and a resend that does not fit is `resent: false`.
 
 ## Agent log
 
@@ -401,3 +427,4 @@ git diff --check
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Recorded the navigation surface (`NavBinding`, `HOST_ROUTE_TAG`, the four error variants, the seven `Host` calls), the approved `crpg-nav` edge and the four movement traps (one `plan_route`, an unpersisted mesh, tag 0, zero-event ops publish nothing), so the crate contract matches the host's navigation state.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037b · Recorded the v4 session surface (`bind_v4_peer`, `set_position_withheld`, `NotV4Peer`) and its traps (v4 as a v3 session plus state, `frame_spans` with one `event_seq` per frame and the v4 outbox bound, `Moved` under the page's position grant, and a refused `DeclareMove` consuming no lane-0 state), so the crate contract matches the v4 wire the host now speaks.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037c · Recorded `POLICY_SAMPLE_REFRESH_TICKS` and `Host::take_samples` in the surface, amended the interim `DeclareMove` trap, and added the three movement traps (the turn check precedes navigation; samples replace, never append; samples never enter a delivery log and count toward lane-1 egress), so the crate contract matches the turn-based move and the samples the host now produces.
+- 2026-11-16 (UTC) · opencode-go/deepseek-v4.1-flash + T037d · Recorded the lane-1 surface (`MoveAdmission`, `Host::ingest_move`, `Host::take_move_receipts`) and its four traps (lane 1 keeps its own state, decisions happen only in `advance`, steps 1–8 never consume a sequence, a lane-1 receipt is never dropped), and corrected the T037c egress trap to `V4State::lane1_egress`, so the crate contract matches the lane the host now admits and decides.

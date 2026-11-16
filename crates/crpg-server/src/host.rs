@@ -40,6 +40,7 @@ use crpg_net::facts_v3::{
 };
 use crpg_net::interest::{EntityKey, InterestView};
 use crpg_net::movement_v4;
+use crpg_net::movement_v4::{MoveBody, MoveDown, MoveOutcome as MoveVerdict, MoveReceipt};
 use crpg_net::positions_v4::{project_page_v4, project_samples, project_snapshot_v4, PositionView};
 use crpg_net::projection_v2::{project_events, EventCandidate};
 use crpg_net::projection_v3::{
@@ -88,7 +89,10 @@ use crate::host_v3::{
     host_facts_image, key_of, net_mode, outbox_fits, read_world, sim_mode, Gate, OutboxEntry,
     PagePlan, Throttle, V3Session, V3Stage,
 };
-use crate::host_v4::{outbox_fits_v4, position_rows, V4State};
+use crate::host_v4::{
+    outbox_fits_v4, position_rows, MoveCacheEntry, MoveLane, MoveSlot, V4State,
+    MAX_MOVE_RECEIPT_BYTES,
+};
 use crate::nav::{area_mesh, plan_route, HostNav, RouteRefusal};
 
 // ---------------------------------------------------------------------------
@@ -491,6 +495,40 @@ pub struct AdvanceReport {
     pub paused: Option<PauseReason>,
 }
 
+/// What [`Host::ingest_move`] did with one lane-1 frame (D-1, D-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveAdmission {
+    /// Admitted: the sequence is consumed; the receipt follows the next
+    /// decision window.
+    Admitted {
+        /// The consumed lane-1 sequence.
+        seq: u64,
+    },
+    /// Admitted and refused at once (HM-2 step 9): the sequence is consumed
+    /// and a `Rejected(code)` receipt is queued.
+    Rejected {
+        /// The consumed lane-1 sequence.
+        seq: u64,
+        /// The receipt's refusal code.
+        code: CodeV3,
+    },
+    /// Identical bytes of an intent already admitted: nothing new is decided;
+    /// `resent` is true when its released receipt was queued again.
+    Duplicate {
+        /// The repeated lane-1 sequence.
+        seq: u64,
+        /// Whether the cached receipt was queued again (D-4).
+        resent: bool,
+    },
+    /// Refused before admission: no sequence consumed, no receipt.
+    Refused {
+        /// The frame's sequence, when decoding got that far.
+        seq: Option<u64>,
+        /// The refusal code.
+        code: CodeV3,
+    },
+}
+
 /// Every trusted host API failure. `Display` is `<VariantName> at
 /// host/admission`; there is no source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -705,13 +743,14 @@ impl Session {
         self.next_event_seq - 1
     }
 
-    /// The session's lane-1 egress, `(frames, bytes)` (C-7): samples now, and
-    /// from T037d receipts and reservations. A v1–v3 session counts zero.
+    /// The session's lane-1 egress, `(frames, bytes)` (C-7): samples, released
+    /// receipts and one reservation per unreleased lane-1 slot (T037d). A
+    /// v1–v3 session counts zero.
     fn lane1_egress(&self) -> (usize, usize) {
         self.v3
             .as_ref()
             .and_then(|v3| v3.v4.as_ref())
-            .map_or((0, 0), |v4| v4.egress)
+            .map_or((0, 0), |v4| v4.lane1_egress())
     }
 }
 
@@ -865,6 +904,9 @@ pub struct Host {
     /// The bound navigation mesh (T037a); `None` before a binding and after a
     /// restore (Reading 3).
     nav: Option<HostNav>,
+    /// The host-wide lane-1 admission order (T037d Reading 13): the next slot
+    /// to admit takes it and it never repeats.
+    next_move_order: u64,
 }
 
 impl Host {
@@ -914,6 +956,7 @@ impl Host {
             timer: None,
             timer_epoch: 0,
             nav: None,
+            next_move_order: 0,
         }
     }
 
@@ -1288,7 +1331,7 @@ impl Host {
             positions: PositionView::new(SessionEpoch(epoch)),
             withheld: Vec::new(),
             samples: VecDeque::new(),
-            egress: (0, 0),
+            lane: MoveLane::new(),
         }));
         session.v3 = Some(Box::new(v3));
         let stage = self.plan_stage(&session, &session.grants, SnapshotCause::Resync)?;
@@ -3564,15 +3607,492 @@ impl Host {
             .as_mut()
             .and_then(|v3| v3.v4.as_mut())
             .expect("checked above");
-        let frames = v4.samples.len();
-        let bytes: usize = v4.samples.iter().map(Vec::len).sum();
         let taken: Vec<Vec<u8>> = v4.samples.drain(..).collect();
-        v4.egress = (
-            v4.egress.0.saturating_sub(frames),
-            v4.egress.1.saturating_sub(bytes),
-        );
+        let bytes: usize = taken.iter().map(Vec::len).sum();
         self.egress_bytes -= bytes;
         Ok(taken)
+    }
+
+    // -- lane 1 (T037d) -------------------------------------------------------
+
+    /// One lane-1 intent frame (HM-2, HM-3; D-1, D-2).
+    ///
+    /// Order: [`Closed`](HostError::Closed),
+    /// [`TimeRegression`](HostError::TimeRegression) (then `now_ms` is
+    /// recorded), an unbound handle (`Refused { None, Unauthenticated }`), both
+    /// shared intent buckets (`RateLimited`), the frame cap (`FrameTooLarge`),
+    /// then per-peer and host ingress room (`QueueFull`; nothing is staged).
+    /// After that the session must be v4 (`UnsupportedVersion`), the frame must
+    /// decode, its epoch must match (`SessionExpired`), it must not repeat an
+    /// admitted or cached `seq` with different bytes (a fence and `SeqConflict`,
+    /// D-4) and its `seq` must be next (`SeqExhausted`, `SeqGap`, `StaleSeq`).
+    /// The lane-1 move bucket (`RateLimited`) and the in-flight window with the
+    /// session's egress reservation (`QueueFull`) come last, then actor
+    /// resolution: without one the sequence is consumed and a
+    /// `Rejected(NotAuthorized)` slot is queued ([`MoveAdmission::Rejected`]);
+    /// otherwise the slot waits for the next decision window
+    /// ([`MoveAdmission::Admitted`]).
+    ///
+    /// Steps 1 to 8 consume no sequence and queue no receipt; the buckets of
+    /// step 4 and the move bucket keep what they spent.
+    pub fn ingest_move(
+        &mut self,
+        peer: PeerHandle,
+        bytes: &[u8],
+        now_ms: u64,
+    ) -> Result<MoveAdmission, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        self.last_now_ms = now_ms;
+        // D-1: byte-level admission, before the lane-1 header is read.
+        let Some(session) = self.sessions.get_mut(&peer) else {
+            return Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::Unauthenticated,
+            });
+        };
+        // Both budgets deduct per attempt, like lane 0's `ingest`.
+        let frames_ok = session.intent_frames.consume(now_ms, 1);
+        let bytes_ok = session.intent_bytes.consume(now_ms, bytes.len() as u64);
+        if !frames_ok || !bytes_ok {
+            return Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::RateLimited,
+            });
+        }
+        if bytes.len() > MAX_INTENT_FRAME_BYTES {
+            return Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::FrameTooLarge,
+            });
+        }
+        let caps = self.ingress_caps;
+        if session.ingress_frames + 1 > caps.per_peer_frames
+            || session.ingress_bytes + bytes.len() > caps.per_peer_bytes
+            || self.ingress.len() + 1 > caps.host_frames
+            || self.ingress_bytes + bytes.len() > caps.host_bytes
+        {
+            return Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::QueueFull,
+            });
+        }
+        // D-2 step 1: only a v4 session speaks lane 1.
+        if !session.v3.as_ref().is_some_and(|v3| v3.v4.is_some()) {
+            return Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::UnsupportedVersion,
+            });
+        }
+        let intent = match movement_v4::decode_intent(bytes) {
+            Ok(intent) => intent,
+            Err(error) => {
+                return Ok(MoveAdmission::Refused {
+                    seq: None,
+                    code: move_codec_code(error),
+                });
+            }
+        };
+        let seq = intent.seq;
+        let canonical = movement_v4::encode_intent(&intent)
+            .map_err(|_| HostError::Invariant("lane-1 intent failed to encode"))?;
+        // D-2 step 2.
+        if intent.epoch != session.epoch {
+            return Ok(MoveAdmission::Refused {
+                seq: Some(seq),
+                code: CodeV3::SessionExpired,
+            });
+        }
+        // D-2 step 3: duplicates are answered before the sequence range, so a
+        // resend below `next_seq` is never `StaleSeq`.
+        if let Some(identical) = self.move_duplicate_kind(peer, seq, &canonical) {
+            if identical {
+                return self.move_duplicate(peer, seq, now_ms);
+            }
+            self.fence(peer);
+            return Ok(MoveAdmission::Refused {
+                seq: Some(seq),
+                code: CodeV3::SeqConflict,
+            });
+        }
+        // D-2 steps 4 to 6.
+        {
+            let session = self.sessions.get(&peer).expect("bound above");
+            let lane = lane_of(session).expect("v4 session");
+            let code = if lane.next_seq > SEQ_LAST {
+                Some(CodeV3::SeqExhausted)
+            } else if seq > lane.next_seq {
+                Some(CodeV3::SeqGap)
+            } else if seq < lane.next_seq {
+                Some(CodeV3::StaleSeq)
+            } else {
+                None
+            };
+            if let Some(code) = code {
+                return Ok(MoveAdmission::Refused {
+                    seq: Some(seq),
+                    code,
+                });
+            }
+        }
+        // D-2 step 7.
+        {
+            let session = self.sessions.get_mut(&peer).expect("bound above");
+            let lane = lane_of_mut(session).expect("v4 session");
+            if !lane.bucket.consume(now_ms, 1) {
+                return Ok(MoveAdmission::Refused {
+                    seq: Some(seq),
+                    code: CodeV3::RateLimited,
+                });
+            }
+        }
+        // D-2 step 8: the in-flight window and the receipt reservation.
+        {
+            let session = self.sessions.get(&peer).expect("bound above");
+            let lane = lane_of(session).expect("v4 session");
+            if lane.unreceipted() + 1 > movement_v4::POLICY_MOVE_IN_FLIGHT
+                || !self.room_for(session, 1, MAX_MOVE_RECEIPT_BYTES)
+            {
+                return Ok(MoveAdmission::Refused {
+                    seq: Some(seq),
+                    code: CodeV3::QueueFull,
+                });
+            }
+        }
+        // D-2 step 9: the actor rule of T141 D-2.
+        let actor = {
+            let session = self.sessions.get(&peer).expect("bound above");
+            resolve_move_actor(self.history.world(), session, intent.actor)
+        };
+        let tick = self.server_tick();
+        let order = self.next_move_order;
+        self.next_move_order = self.next_move_order.saturating_add(1);
+        let Some(actor) = actor else {
+            let session = self.sessions.get_mut(&peer).expect("bound above");
+            let lane = lane_of_mut(session).expect("v4 session");
+            lane.next_seq = seq + 1;
+            lane.slots.push_back(MoveSlot {
+                seq,
+                order,
+                canonical,
+                actor_net: intent.actor,
+                actor: None,
+                body: intent.body,
+                decided: Some((MoveVerdict::Rejected(CodeV3::NotAuthorized), tick)),
+            });
+            self.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+            // The slot is decided, so a decided front releases at once (D-3);
+            // behind an undecided slot its receipt waits for the window.
+            self.release_move_receipts(peer);
+            return Ok(MoveAdmission::Rejected {
+                seq,
+                code: CodeV3::NotAuthorized,
+            });
+        };
+        let session = self.sessions.get_mut(&peer).expect("bound above");
+        let lane = lane_of_mut(session).expect("v4 session");
+        lane.next_seq = seq + 1;
+        lane.slots.push_back(MoveSlot {
+            seq,
+            order,
+            canonical,
+            actor_net: intent.actor,
+            actor: Some(actor),
+            body: intent.body,
+            decided: None,
+        });
+        self.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+        Ok(MoveAdmission::Admitted { seq })
+    }
+
+    /// Every released lane-1 receipt not yet taken, in release order; taking
+    /// them hands them to the reliable stream and frees their egress (D-9).
+    ///
+    /// Precedence: [`UnknownPeer`](HostError::UnknownPeer), then
+    /// [`NotV4Peer`](HostError::NotV4Peer). A closed host has no sessions, so
+    /// it is `UnknownPeer`.
+    pub fn take_move_receipts(&mut self, peer: PeerHandle) -> Result<Vec<Vec<u8>>, HostError> {
+        let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+        if !session.v3.as_ref().is_some_and(|v3| v3.v4.is_some()) {
+            return Err(HostError::NotV4Peer);
+        }
+        let session = self.sessions.get_mut(&peer).expect("checked above");
+        let v4 = session
+            .v3
+            .as_mut()
+            .and_then(|v3| v3.v4.as_mut())
+            .expect("checked above");
+        let taken: Vec<Vec<u8>> = v4
+            .lane
+            .receipts
+            .drain(..)
+            .map(|(_, bytes)| bytes)
+            .collect();
+        let bytes: usize = taken.iter().map(Vec::len).sum();
+        self.egress_bytes -= bytes;
+        Ok(taken)
+    }
+
+    /// D-4: whether `seq` is a slot or a cache entry, and whether its canonical
+    /// bytes are `canonical`. `None` when the sequence is new here.
+    fn move_duplicate_kind(&self, peer: PeerHandle, seq: u64, canonical: &[u8]) -> Option<bool> {
+        let session = self.sessions.get(&peer)?;
+        let lane = lane_of(session)?;
+        if let Some(slot) = lane.slots.iter().find(|slot| slot.seq == seq) {
+            return Some(slot.canonical == canonical);
+        }
+        lane.cache
+            .iter()
+            .find(|entry| entry.seq == seq)
+            .map(|entry| entry.canonical == canonical)
+    }
+
+    /// D-4: one identical resend. A pending or held slot, or a cached entry
+    /// whose receipt is still queued, resends nothing; a cached entry's receipt
+    /// is queued again when the egress room holds it, spending the failure
+    /// buckets for a rejection but never dropped by them.
+    fn move_duplicate(
+        &mut self,
+        peer: PeerHandle,
+        seq: u64,
+        now_ms: u64,
+    ) -> Result<MoveAdmission, HostError> {
+        let session = self.sessions.get(&peer).expect("bound by caller");
+        let lane = lane_of(session).expect("v4 session");
+        if lane.slots.iter().any(|slot| slot.seq == seq) {
+            return Ok(MoveAdmission::Duplicate {
+                seq,
+                resent: false,
+            });
+        }
+        let Some(receipt) = lane
+            .cache
+            .iter()
+            .find(|entry| entry.seq == seq)
+            .map(|entry| entry.receipt.clone())
+        else {
+            return Ok(MoveAdmission::Duplicate {
+                seq,
+                resent: false,
+            });
+        };
+        if lane.receipts.iter().any(|(released, _)| *released == seq) {
+            return Ok(MoveAdmission::Duplicate {
+                seq,
+                resent: false,
+            });
+        }
+        if !self.room_for(session, 1, receipt.len()) {
+            return Ok(MoveAdmission::Duplicate {
+                seq,
+                resent: false,
+            });
+        }
+        let rejected = matches!(
+            movement_v4::decode_down(&receipt),
+            Ok(MoveDown::Receipt(MoveReceipt {
+                outcome: MoveVerdict::Rejected(_),
+                ..
+            }))
+        );
+        let len = receipt.len();
+        let session = self.sessions.get_mut(&peer).expect("bound by caller");
+        if rejected {
+            let _ = try_consume_failure(session, now_ms, len);
+        }
+        let lane = lane_of_mut(session).expect("v4 session");
+        lane.receipts.push_back((seq, receipt));
+        self.egress_bytes += len;
+        Ok(MoveAdmission::Duplicate { seq, resent: true })
+    }
+
+    /// D-5 to D-7: the decision window of one `advance` call, at
+    /// `server_tick()`. Every pending slot of every v4 session is taken in
+    /// host-wide admission order; for each actor only the last wins and every
+    /// earlier one is `Superseded` (Reading 13).
+    fn decide_move_window(&mut self) {
+        let mut pending: Vec<(u64, PeerHandle, u64)> = Vec::new();
+        for (handle, session) in &self.sessions {
+            let Some(lane) = lane_of(session) else {
+                continue;
+            };
+            for slot in &lane.slots {
+                if slot.decided.is_none() {
+                    pending.push((slot.order, *handle, slot.seq));
+                }
+            }
+        }
+        if pending.is_empty() {
+            return;
+        }
+        pending.sort_unstable();
+        let mut winners: BTreeMap<EntityId, u64> = BTreeMap::new();
+        for (order, handle, seq) in &pending {
+            if let Some(actor) = self.move_slot_actor(*handle, *seq) {
+                winners.insert(actor, *order);
+            }
+        }
+        let tick = self.server_tick();
+        let mut touched: Vec<PeerHandle> = Vec::new();
+        for (order, handle, seq) in pending {
+            let winner = self
+                .move_slot_actor(handle, seq)
+                .is_some_and(|actor| winners.get(&actor) == Some(&order));
+            self.decide_move_slot(handle, seq, winner, tick);
+            if !touched.contains(&handle) {
+                touched.push(handle);
+            }
+        }
+        for handle in touched {
+            self.release_move_receipts(handle);
+        }
+    }
+
+    /// The resolved actor of one queued slot.
+    fn move_slot_actor(&self, handle: PeerHandle, seq: u64) -> Option<EntityId> {
+        let session = self.sessions.get(&handle)?;
+        let lane = lane_of(session)?;
+        lane.slots
+            .iter()
+            .find(|slot| slot.seq == seq)
+            .and_then(|slot| slot.actor)
+    }
+
+    /// D-7: one slot's outcome, applied to the world (a winner only).
+    fn decide_move_slot(&mut self, handle: PeerHandle, seq: u64, winner: bool, tick: u64) {
+        let Some(session) = self.sessions.get(&handle) else {
+            return;
+        };
+        let Some(lane) = lane_of(session) else {
+            return;
+        };
+        let Some(slot) = lane.slots.iter().find(|slot| slot.seq == seq) else {
+            return;
+        };
+        let Some(actor) = slot.actor else {
+            return;
+        };
+        let body = slot.body;
+        let outcome = if winner {
+            self.decide_move_outcome(actor, seq, body, tick)
+        } else {
+            MoveVerdict::Superseded
+        };
+        let Some(session) = self.sessions.get_mut(&handle) else {
+            return;
+        };
+        if let Some(slot) = lane_of_mut(session)
+            .and_then(|lane| lane.slots.iter_mut().find(|slot| slot.seq == seq))
+        {
+            slot.decided = Some((outcome, tick));
+        }
+    }
+
+    /// D-7: HM-4's outcome for one winning slot, in its stated order.
+    fn decide_move_outcome(
+        &mut self,
+        actor: EntityId,
+        seq: u64,
+        body: MoveBody,
+        tick: u64,
+    ) -> MoveVerdict {
+        // (1) Lane 1 is the real-time and exploration lane (Reading 14).
+        let world = self.history.world();
+        let turn_based = world
+            .combat()
+            .is_some_and(|combat| combat.mode == EncounterMode::TurnBased);
+        if turn_based && world.combatants().get(actor).is_some() {
+            return MoveVerdict::Rejected(CodeV3::WrongMode);
+        }
+        match body {
+            MoveBody::MoveTo { destination } => {
+                let destination = destination.raw().map(Fx16_16::from_raw);
+                let route = match plan_route(
+                    self.nav.as_ref(),
+                    self.history.world(),
+                    actor,
+                    destination,
+                    RouteTag(seq),
+                ) {
+                    Ok(route) => route,
+                    Err(_) => return MoveVerdict::Rejected(CodeV3::IllegalAction),
+                };
+                match self.history.set_route(actor, route) {
+                    Ok(_) => MoveVerdict::Accepted {
+                        start_tick: tick + 1,
+                    },
+                    Err(HistoryError::Move(MoveError::TurnBased { .. })) => {
+                        MoveVerdict::Rejected(CodeV3::WrongMode)
+                    }
+                    Err(_) => MoveVerdict::Rejected(CodeV3::IllegalAction),
+                }
+            }
+            MoveBody::Halt => match self.history.clear_route(actor) {
+                Ok(_) => MoveVerdict::Accepted {
+                    start_tick: tick + 1,
+                },
+                Err(_) => MoveVerdict::Rejected(CodeV3::IllegalAction),
+            },
+        }
+    }
+
+    /// D-3: releases a session's decided slots from the front, one receipt
+    /// each in `seq` order: the reservation becomes the receipt's own length,
+    /// the receipt is queued, `processed_seq` advances and the slot enters the
+    /// duplicate cache. A `Rejected` receipt spends the failure buckets.
+    fn release_move_receipts(&mut self, handle: PeerHandle) {
+        let now = self.last_now_ms;
+        let Some(session) = self.sessions.get_mut(&handle) else {
+            return;
+        };
+        let epoch = session.epoch;
+        let (delta, spends) = {
+            let Some(v3) = session.v3.as_mut() else {
+                return;
+            };
+            let Some(v4) = v3.v4.as_mut() else {
+                return;
+            };
+            let lane = &mut v4.lane;
+            let mut delta: i64 = 0;
+            let mut spends: Vec<usize> = Vec::new();
+            while let Some(front) = lane.slots.front() {
+                let Some((outcome, processed_tick)) = front.decided else {
+                    break;
+                };
+                let seq = front.seq;
+                let actor = front.actor_net;
+                let Ok(bytes) = movement_v4::encode_down(&MoveDown::Receipt(MoveReceipt {
+                    epoch,
+                    seq,
+                    actor,
+                    processed_tick,
+                    outcome,
+                })) else {
+                    break;
+                };
+                let slot = lane.slots.pop_front().expect("the front was decided");
+                let len = bytes.len();
+                lane.processed_seq = seq;
+                lane.receipts.push_back((seq, bytes.clone()));
+                lane.cache_insert(MoveCacheEntry {
+                    seq,
+                    canonical: slot.canonical,
+                    receipt: bytes,
+                });
+                if matches!(outcome, MoveVerdict::Rejected(_)) {
+                    spends.push(len);
+                }
+                delta += len as i64 - MAX_MOVE_RECEIPT_BYTES as i64;
+            }
+            (delta, spends)
+        };
+        for len in spends {
+            let _ = try_consume_failure(session, now, len);
+        }
+        self.egress_bytes = (self.egress_bytes as i64 + delta) as usize;
     }
 
     /// C-5: after one committed tick, every v4 session's sample queue becomes
@@ -4368,6 +4888,9 @@ impl Host {
         }
         self.check_time(now_ms)?;
         self.last_now_ms = now_ms;
+        // D-5: the lane-1 decision window runs before the timer, paused or
+        // running; `tick` never decides.
+        self.decide_move_window();
         let timer_ended_turn = if self.paused.is_none() {
             self.expire_timer(now_ms)
         } else {
@@ -4591,6 +5114,12 @@ fn map_codec(error: CodecError) -> RejectionCode {
     }
 }
 
+/// The same map in v3's code vocabulary: lane 1's refusals carry exact v3
+/// codes (T026p Reading 3 reuses them; no code is added).
+fn move_codec_code(error: CodecError) -> CodeV3 {
+    CodeV3::from_u8(map_codec(error).as_u8()).expect("every codec error has a v3 code")
+}
+
 fn receipt_op(
     epoch: [u8; 16],
     seq: u64,
@@ -4781,7 +5310,10 @@ fn pace_session(egress_bytes: &mut usize, caps: &QueueCaps, session: &mut Sessio
         return;
     };
     // Lane-1 frames and bytes count beside the delivery log (C-7).
-    let (lane1_frames, lane1_bytes) = v3.v4.as_ref().map_or((0, 0), |v4| v4.egress);
+    let (lane1_frames, lane1_bytes) = v3
+        .v4
+        .as_ref()
+        .map_or((0, 0), |v4| v4.lane1_egress());
     while let Some(front) = v3.outbox.front() {
         let len = front.bytes.len();
         let fits = session.log.len() + lane1_frames < caps.per_peer_frames
@@ -4825,14 +5357,14 @@ fn project_session_samples(
     let Ok(entries) = project_samples(&v3.view, &mut v4.positions, &rows, refresh) else {
         return Vec::new();
     };
-    // T037d makes this the session's `MoveLane.processed_seq`; until then no
-    // lane-1 intent has been receipted.
-    movement_v4::sample_datagrams(tick, 0, &entries).unwrap_or_default()
+    // D-12: samples echo the highest lane-1 sequence receipted to this peer.
+    movement_v4::sample_datagrams(tick, v4.lane.processed_seq, &entries).unwrap_or_default()
 }
 
 /// C-5/C-7: replaces a v4 session's sample queue with `datagrams`, freeing the
 /// old queue's egress first and queueing the new datagrams only if all of them
-/// fit the session's egress room beside its delivery log and lane-1 bytes.
+/// fit the session's egress room beside its delivery log, released receipts
+/// and slot reservations (T037d).
 fn queue_samples(
     session: &mut Session,
     egress_bytes: &mut usize,
@@ -4850,17 +5382,18 @@ fn queue_samples(
         return;
     };
     v4.samples.clear();
-    v4.egress = (0, 0);
+    // The lane's other frames and bytes (receipts, reservations) share the
+    // same room.
+    let (lane_frames, lane_bytes) = v4.lane.egress();
     let frames = datagrams.len();
     let bytes: usize = datagrams.iter().map(Vec::len).sum();
-    if log_frames + frames > caps.per_peer_frames
-        || log_bytes + bytes > caps.per_peer_bytes
+    if log_frames + lane_frames + frames > caps.per_peer_frames
+        || log_bytes + lane_bytes + bytes > caps.per_peer_bytes
         || *egress_bytes + bytes > caps.host_bytes
     {
         return;
     }
     v4.samples = datagrams.into();
-    v4.egress = (frames, bytes);
     *egress_bytes += bytes;
 }
 
@@ -5096,6 +5629,39 @@ fn resolve_v3(
         }
     };
     Ok(Resolved { actor, intent })
+}
+
+/// D-2: resolves a lane-1 intent's actor through the session's `InterestView`
+/// (T141 D-2's actor rule): mapped in this area, granted `present` and
+/// `action_actor`, and controlled.
+fn resolve_move_actor(world: &World, session: &Session, actor_net: NetId) -> Option<EntityId> {
+    let v3 = session.v3.as_ref()?;
+    let area = world.area().unwrap_or(HOST_UNBOUND_AREA);
+    let entity = v3
+        .view
+        .entity(actor_net)
+        .filter(|key| key.area == area)
+        .map(|key| key.entity)?;
+    let grant = lookup(&session.grants, entity)?;
+    if !(grant.present && grant.action_actor) {
+        return None;
+    }
+    session.control.binary_search(&entity).ok().map(|_| entity)
+}
+
+/// The lane-1 state of a v4 session.
+fn lane_of(session: &Session) -> Option<&MoveLane> {
+    session.v3.as_ref()?.v4.as_ref().map(|v4| &v4.lane)
+}
+
+/// The mutable lane-1 state of a v4 session.
+fn lane_of_mut(session: &mut Session) -> Option<&mut MoveLane> {
+    session
+        .v3
+        .as_mut()?
+        .v4
+        .as_mut()
+        .map(|v4| &mut v4.lane)
 }
 
 /// The ids a viewer's mapped entities hold: live after the page, else (when

@@ -550,7 +550,8 @@ Neither changes a v1–v3 session's bytes.
   `position_rows` and `project_samples(view, positions, rows, refresh)` with
   `refresh = server_tick % POLICY_SAMPLE_REFRESH_TICKS == 0` (20 ticks, one
   second at 20 Hz), then `movement_v4::sample_datagrams(server_tick,
-  processed_seq, &entries)` (0 until T037d's lane). The queue **replaces**
+  processed_seq, &entries)` (T037d's `MoveLane.processed_seq`; 0 before any
+  lane-1 receipt). The queue **replaces**
   the previous tick's datagrams: the old ones are discarded and their egress
   freed first, and the new ones are queued only if all of them fit the
   session's egress room; otherwise none is (datagram loss, repaired by the
@@ -562,14 +563,86 @@ Neither changes a v1–v3 session's bytes.
 - **Reading them (C-6).** `take_samples(peer)` checks `UnknownPeer` then
   `NotV4Peer` and returns the queue, emptying it and freeing its egress; a
   closed host has no sessions, so it is `UnknownPeer`.
-- **Lane-1 egress (C-7, Reading 23).** `V4State.egress` counts the session's
-  lane-1 frames and bytes — its sample datagrams now, and receipts and
-  admission reservations from T037d — and the host's `egress_bytes` includes
-  those bytes. `room_for` and `pace_session` test `log.len() + lane1_frames`
-  and `log_bytes + lane1_bytes`; a v1–v3 session counts zero, so its checks
-  are unchanged. A fence, `unbind_peer` and `shutdown` release lane-1 egress
-  with the session. Lane 1 never fails on those caps after admission, and
-  taking a sample frees its room.
+- **Lane-1 egress (C-7, Reading 23).** `V4State::lane1_egress` counts the
+  session's lane-1 frames and bytes — its sample datagrams, and from T037d its
+  released untaken receipts and one reservation per unreleased slot — and the
+  host's `egress_bytes` includes those bytes. `room_for` and `pace_session`
+  test `log.len() + lane1_frames` and `log_bytes + lane1_bytes`; a v1–v3
+  session counts zero, so its checks are unchanged. A fence, `unbind_peer` and
+  `shutdown` release lane-1 egress with the session. Lane 1 never fails on
+  those caps after admission, and taking a sample frees its room.
+
+## Lane 1 (T037d)
+
+Lane 1 is the real-time and exploration movement lane (HM-2, HM-3; Readings 9,
+10, 15). `Host::ingest_move(peer, bytes, now_ms)` admits at most the session's
+next intent, synchronously, and `advance` decides every admitted intent once per
+call. Lane 1 keeps its own sequence, cache, move bucket and receipt queue per
+session (HM-10, Reading 22); only the shared intent and failure buckets are
+shared with lane 0.
+
+- **Admission before HM-2 (D-1).** `Closed`; `TimeRegression` (then `now_ms` is
+  recorded); an unbound handle is `Refused { None, Unauthenticated }`; both
+  shared intent buckets consume (`RateLimited`); the 4,096-byte frame cap
+  (`FrameTooLarge`); then per-peer and host ingress room (`QueueFull`). Nothing
+  is staged: a lane-1 frame spends the session's intent buckets per attempt but
+  never occupies the lane-0 FIFO (Reading 9).
+- **HM-2 (D-2).** After D-1: the session must be v4 (`UnsupportedVersion`),
+  the frame decodes with `movement_v4::decode_intent` (its code is
+  `move_codec_code`), its epoch must match (`SessionExpired`), and a `seq` that
+  is a slot or a cache entry is a duplicate (D-4) or, with other canonical
+  bytes, `SeqConflict` **and a fence**. Then the sequence range
+  (`SeqExhausted`, `SeqGap`, `StaleSeq`), the session's move bucket
+  (`TokenBucket::new(40, 20)`, `RateLimited`), the in-flight window
+  (`unreceipted + 1 > POLICY_MOVE_IN_FLIGHT`, 8) and the session's egress room
+  for one `MAX_MOVE_RECEIPT_BYTES` (60) reservation (`QueueFull`). Steps 1–8
+  consume no sequence and queue no receipt; the buckets keep what they spent.
+  Step 9 resolves the actor with T141 D-2's rule (the `InterestView`,
+  `present && action_actor`, the control list): without one the sequence is
+  consumed and a slot decided at once as `Rejected(NotAuthorized)` is appended;
+  otherwise `next_seq = seq + 1` and a pending slot takes the next host-wide
+  admission order.
+- **The decision window (D-5, D-6, D-7; Readings 12–14).** `advance` runs the
+  window after recording `now_ms` and before the timer, paused or running, at
+  `server_tick()`; `tick` never decides. Pending slots are taken in host-wide
+  admission order and, for each actor, only the last admitted one is decided —
+  every earlier one is `Superseded`, whichever session sent it. A winner that
+  is a combatant of a turn-based encounter is `Rejected(WrongMode)`; `MoveTo`
+  plans its route with `plan_route(.., RouteTag(seq))` (any refusal
+  `IllegalAction`) and sets it (`TurnBased` is `WrongMode`, any other refusal
+  `IllegalAction`); `Halt` clears it (any refusal `IllegalAction`); else the
+  outcome is `Accepted { start_tick: t + 1 }`, so the route starts in the stage
+  4 of the next tick in the same call when running, or on the first tick after
+  unpause. Decisions journal nothing, make no record and publish no lane-0
+  frame (Reading 21).
+- **Release and the cache (D-3).** Whenever a slot is decided, the session
+  releases from the front while the front is decided: the reservation becomes
+  the receipt's own length, the encoded
+  `MoveDown::Receipt(MoveReceipt { epoch, seq, actor, processed_tick, outcome })`
+  enters the receipt queue, `processed_seq` advances, and the slot moves into
+  the lane-1 cache (256 entries or 2 MiB of canonical plus receipt, oldest
+  evicted first). Receipts leave in `seq` order, one per consumed sequence. A
+  `Rejected` receipt spends the shared failure buckets and is never dropped by
+  them (Reading 15), unlike a lane-0 rejection.
+- **Duplicates (D-4).** A pending or held slot, or a cached entry whose receipt
+  is still queued, is `Duplicate { resent: false }`. A cached receipt is queued
+  again only if the session has egress room for it (`resent: true`), spending
+  the failure buckets when it is a rejection; without room it is
+  `resent: false`.
+- **Receipts and lifecycle (D-8 to D-10).** `take_move_receipts(peer)` checks
+  `UnknownPeer` then `NotV4Peer` and returns the queue in release order,
+  emptying it and freeing its egress. The queue is bounded by the egress frame
+  cap (128) through the same `room_for` checks. `unbind_peer`, a fence and
+  `shutdown` discard the session's lane-1 state; its pending slots are never
+  decided and get no receipt.
+- **Egress (C-7, Reading 23).** A session's lane-1 egress is its sample
+  datagrams, its released untaken receipts at their length and one frame plus
+  `MAX_MOVE_RECEIPT_BYTES` per unreleased slot; `room_for` and `pace_session`
+  count them beside the delivery log and the host's `egress_bytes` includes
+  them. Lane 1 never fails on the caps after admission: a slot's room is
+  reserved when it is admitted, so its receipt is never dropped.
+- **Samples (D-12).** A sample's `processed_seq` is the session's
+  `MoveLane.processed_seq`, the highest lane-1 `seq` receipted to it.
 
 ## Connections and bindings (T023b)
 
@@ -770,3 +843,4 @@ with T040/T041.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Added the navigation and trusted movement section (binding steps, the one `plan_route`, `HOST_ROUTE_TAG`, the four trusted ops and their error order) and the `crpg-nav` edge to the diagram and edge paragraph, so the doc describes the mesh the host now keeps instead of a host with no navigation.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037b · Added the protocol v4 session section (v4 as a v3 session plus `V4State`, v4 lane-0 codec and receipts, `position_rows` and the withheld list, v4 pages and `Moved`, the anchoring staging page with its 94-entry/2,880,916-byte outbox bound, and the untouched v1–v3 wires), so the doc describes the v4 sessions the host now binds.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037c · Added "The turn-based move and samples (T037c)" (the resolution and class order, the `commit_accepted` execution, the per-tick samples with their 20-tick refresh and replacement queue, `take_samples`, and lane-1 egress in `room_for`/pacing) and amended the T037b note that `DeclareMove` was a placeholder rejection, so the doc describes the move and the samples the host now produces.
+- 2026-11-16 (UTC) · opencode-go/deepseek-v4.1-flash + T037d · Added "Lane 1 (T037d)" (synchronous admission before HM-2, HM-2's checks and actor resolution, the `advance` decision window with supersede and HM-4's outcomes, release and the 256-entry cache, duplicates, receipts, lane-1 egress and samples' `processed_seq`) and amended the T037c sample and egress notes that named a placeholder `processed_seq` and the removed `V4State.egress` field, so the doc describes the lane the host now admits and decides.

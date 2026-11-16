@@ -13,12 +13,20 @@
 //! T037c adds the session's sample datagrams and the lane-1 egress they count
 //! toward (Reading 23): the queue replaces, never appends (C-5), and a frame
 //! or byte in it is one of the session's egress frames and bytes.
+//!
+//! T037d adds [`MoveLane`] (Reading 9, D-1 to D-4): the lane-1 sequence, the
+//! admitted slots awaiting the next decision window, the released receipts the
+//! transport has not taken, the duplicate cache, and the move token bucket.
+//! Lane 1 keeps its own state (HM-10) beside lane 0's.
 
 use std::collections::VecDeque;
 
 use crpg_core::EntityId;
+use crpg_net::movement_v4::{MoveBody, MoveOutcome};
 use crpg_net::positions_v4::PositionRow;
-use crpg_net::protocol_v4::Point;
+use crpg_net::protocol::{POLICY_RETRY_CACHE_BYTES_PER_PEER_LANE, POLICY_RETRY_CACHE_PER_PEER_LANE};
+use crpg_net::protocol_v4::{NetId, Point};
+use crpg_net::sim::TokenBucket;
 use crpg_sim::World;
 
 use crate::host::DisclosureGrants;
@@ -31,10 +39,129 @@ pub(crate) const OUTBOX_MAX_ENTRIES_V4: usize = 94;
 /// 2,851,124 transfer bytes, a 32-byte `Cancel` and 29,760 delta bytes.
 pub(crate) const OUTBOX_MAX_BYTES_V4: usize = 2_880_916;
 
+/// The egress reservation of one unreleased lane-1 receipt (Reading 23): the
+/// largest receipt a decision can produce (`tasks/T026p.md:607–609`). A slot
+/// reserves it from admission until its receipt is released.
+pub(crate) const MAX_MOVE_RECEIPT_BYTES: usize = 60;
+
 /// Whether a plan of `entries` frames and `bytes` encoded bytes fits the v4
 /// outbox bound (B-7); both bounds are inclusive.
 pub(crate) fn outbox_fits_v4(entries: usize, bytes: usize) -> bool {
     entries <= OUTBOX_MAX_ENTRIES_V4 && bytes <= OUTBOX_MAX_BYTES_V4
+}
+
+/// One admitted lane-1 intent (D-2 step 9).
+#[derive(Debug)]
+pub(crate) struct MoveSlot {
+    /// The intent's lane-1 sequence.
+    pub(crate) seq: u64,
+    /// Host-wide admission order relative to this window's other slots
+    /// (Reading 13): the last one for an actor wins.
+    pub(crate) order: u64,
+    /// The decoded intent's canonical bytes, for duplicate detection.
+    pub(crate) canonical: Vec<u8>,
+    /// The actor as the client named it (a `Rejected` receipt echoes it).
+    pub(crate) actor_net: NetId,
+    /// The resolved actor; `None` only for a slot refused `NotAuthorized` at
+    /// admission, which is decided at once.
+    pub(crate) actor: Option<EntityId>,
+    /// The verb.
+    pub(crate) body: MoveBody,
+    /// The outcome and its `processed_tick`, set by the admission refusal or
+    /// the next decision window; `None` is pending.
+    pub(crate) decided: Option<(MoveOutcome, u64)>,
+}
+
+/// One released receipt kept for lane-1 duplicate detection (D-3).
+#[derive(Debug)]
+pub(crate) struct MoveCacheEntry {
+    /// The intent's lane-1 sequence.
+    pub(crate) seq: u64,
+    /// The decoded intent's canonical bytes.
+    pub(crate) canonical: Vec<u8>,
+    /// The receipt's encoded bytes, resent verbatim on a duplicate.
+    pub(crate) receipt: Vec<u8>,
+}
+
+impl MoveCacheEntry {
+    /// The cache's accounting unit: canonical bytes plus the receipt.
+    fn bytes(&self) -> usize {
+        self.canonical.len() + self.receipt.len()
+    }
+}
+
+/// One session's lane-1 state (Reading 9, HM-10): its own sequence, slots,
+/// duplicate cache and move token bucket, never lane 0's.
+#[derive(Debug)]
+pub(crate) struct MoveLane {
+    /// The next `seq` a new intent must carry (consumed by every admitted
+    /// intent, D-2 step 9).
+    pub(crate) next_seq: u64,
+    /// Admitted intents not yet released, in admission (`seq`) order.
+    pub(crate) slots: VecDeque<MoveSlot>,
+    /// Released receipts still inside the cache bound (D-3).
+    pub(crate) cache: VecDeque<MoveCacheEntry>,
+    /// Canonical plus receipt bytes of `cache`.
+    pub(crate) cache_bytes: usize,
+    /// Lane 1's own intent budget (D-2 step 7).
+    pub(crate) bucket: TokenBucket,
+    /// Released receipts the transport has not taken, in release order.
+    pub(crate) receipts: VecDeque<(u64, Vec<u8>)>,
+    /// The highest lane-1 `seq` receipted so far; samples echo it (D-12).
+    pub(crate) processed_seq: u64,
+}
+
+impl MoveLane {
+    /// A fresh lane: `seq` 1, nothing pending, a full move bucket.
+    pub(crate) fn new() -> Self {
+        Self {
+            next_seq: crpg_net::protocol::SEQ_FIRST,
+            slots: VecDeque::new(),
+            cache: VecDeque::new(),
+            cache_bytes: 0,
+            bucket: TokenBucket::new(
+                crpg_net::movement_v4::POLICY_MOVE_INTENT_BURST,
+                crpg_net::movement_v4::POLICY_MOVE_INTENTS_PER_SEC,
+            ),
+            receipts: VecDeque::new(),
+            processed_seq: 0,
+        }
+    }
+
+    /// Reading 11's "unreceipted": the admitted intents not yet released plus
+    /// released receipts the transport has not taken.
+    pub(crate) fn unreceipted(&self) -> usize {
+        self.slots.len() + self.receipts.len()
+    }
+
+    /// The lane's egress contribution: one frame and
+    /// [`MAX_MOVE_RECEIPT_BYTES`] per unreleased slot, plus the released
+    /// receipts at their own length (Reading 23).
+    pub(crate) fn egress(&self) -> (usize, usize) {
+        let frames = self.slots.len() + self.receipts.len();
+        let bytes = self.slots.len() * MAX_MOVE_RECEIPT_BYTES
+            + self
+                .receipts
+                .iter()
+                .map(|(_, receipt)| receipt.len())
+                .sum::<usize>();
+        (frames, bytes)
+    }
+
+    /// Inserts one released receipt, evicting the oldest first to stay within
+    /// the 256-entry / 2-MiB lane ledger (the cache's retirement path, D-3).
+    pub(crate) fn cache_insert(&mut self, entry: MoveCacheEntry) {
+        while self.cache.len() >= POLICY_RETRY_CACHE_PER_PEER_LANE
+            || self.cache_bytes + entry.bytes() > POLICY_RETRY_CACHE_BYTES_PER_PEER_LANE
+        {
+            match self.cache.pop_front() {
+                Some(old) => self.cache_bytes -= old.bytes(),
+                None => break,
+            }
+        }
+        self.cache_bytes += entry.bytes();
+        self.cache.push_back(entry);
+    }
 }
 
 /// The v4 state of one session (Reading 1).
@@ -48,10 +175,24 @@ pub(crate) struct V4State {
     /// The sample datagrams of the last committed tick not yet taken (C-5);
     /// a new tick replaces them.
     pub(crate) samples: VecDeque<Vec<u8>>,
-    /// The session's lane-1 egress: frames and encoded bytes counted beside
-    /// its delivery log (C-7, Reading 23). T037c counts samples; T037d adds
-    /// receipts and reservations.
-    pub(crate) egress: (usize, usize),
+    /// The lane-1 state: sequence, slots, cache, receipts and move bucket
+    /// (T037d).
+    pub(crate) lane: MoveLane,
+}
+
+impl V4State {
+    /// The session's lane-1 egress, `(frames, bytes)` (C-7, Reading 23): its
+    /// queued samples, its released untaken receipts and one reservation per
+    /// unreleased slot.
+    pub(crate) fn lane1_egress(&self) -> (usize, usize) {
+        let sample_frames = self.samples.len();
+        let sample_bytes: usize = self.samples.iter().map(Vec::len).sum();
+        let (lane_frames, lane_bytes) = self.lane.egress();
+        (
+            sample_frames + lane_frames,
+            sample_bytes + lane_bytes,
+        )
+    }
 }
 
 /// B-4 (HM-6): one row per granted, present, live mover, in the disclosure
@@ -89,6 +230,11 @@ pub(crate) fn position_rows(
 mod tests {
     use super::{outbox_fits_v4, OUTBOX_MAX_BYTES_V4, OUTBOX_MAX_ENTRIES_V4};
     use crate::host_v3::outbox_fits;
+    use crpg_net::movement_v4::{
+        encode_down, MoveDown, MoveOutcome, MoveReceipt, MAX_MOVE_DOWN_BYTES,
+    };
+    use crpg_net::protocol_v4::NetId;
+    use crpg_net::protocol_v3::RejectionCode;
 
     /// B7: both v4 bounds are inclusive and the v3 bound did not move.
     #[test]
@@ -100,5 +246,38 @@ mod tests {
         assert!(!outbox_fits_v4(1, 2_880_917));
         assert!(outbox_fits(90, 2_852_148));
         assert!(!outbox_fits(91, 1));
+    }
+
+    /// The reservation constant is the largest receipt exactly: `seq`,
+    /// `processed_tick` and `start_tick` at their largest, an actor of ten
+    /// varint bytes (D10).
+    #[test]
+    fn d10_largest_receipt_fits_the_reservation() {
+        let largest = MoveReceipt {
+            epoch: [0xFF; 16],
+            seq: u64::MAX - 1,
+            actor: NetId::new(u64::MAX).expect("nonzero"),
+            processed_tick: u64::MAX,
+            outcome: MoveOutcome::Accepted {
+                start_tick: u64::MAX,
+            },
+        };
+        let encoded = encode_down(&MoveDown::Receipt(largest)).expect("encodes");
+        assert_eq!(encoded.len(), super::MAX_MOVE_RECEIPT_BYTES);
+        assert!(encoded.len() <= MAX_MOVE_DOWN_BYTES);
+        assert_eq!(super::MAX_MOVE_RECEIPT_BYTES, 60);
+        // Every other outcome is smaller, so the reservation always fits.
+        let superseded = encode_down(&MoveDown::Receipt(MoveReceipt {
+            outcome: MoveOutcome::Superseded,
+            ..largest
+        }))
+        .expect("encodes");
+        let rejected = encode_down(&MoveDown::Receipt(MoveReceipt {
+            outcome: MoveOutcome::Rejected(RejectionCode::IllegalAction),
+            ..largest
+        }))
+        .expect("encodes");
+        assert!(superseded.len() < super::MAX_MOVE_RECEIPT_BYTES);
+        assert!(rejected.len() < super::MAX_MOVE_RECEIPT_BYTES);
     }
 }
