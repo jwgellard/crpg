@@ -20,10 +20,10 @@ use crpg_net::movement_v4::{
 use crpg_net::protocol::NetId;
 use crpg_net::protocol_v4::Point;
 use crpg_net_quic::{
-    Channel, ChannelSendError, ClientLimits, CloseCode, CloseMode, CloseReason, ConnectError,
-    ConnectionId, Framing, Hello, Lane1Stats, QuicClient, QuicServer, SendError, ServerConfig,
-    ServerError, ServerLimits, Welcome, ALPN_LANE0_V1, ALPN_LANE0_V2, ALPN_LANE0_V3,
-    LANE1_OUTBOUND_FRAMES, MAX_DATAGRAM_BYTES, MOVEMENT_WIRE_VERSION,
+    Channel, ChannelSendError, ClientLimits, CloseCode, CloseMode, CloseReason, ConfigError,
+    ConnectError, ConnectionId, Framing, Hello, Lane1Stats, QuicClient, QuicServer, SendError,
+    ServerConfig, ServerError, ServerEvent, ServerLimits, ServerNotice, Welcome, ALPN_LANE0_V1,
+    ALPN_LANE0_V2, ALPN_LANE0_V3, LANE1_OUTBOUND_FRAMES, MAX_DATAGRAM_BYTES, MOVEMENT_WIRE_VERSION,
 };
 use movement_rig::*;
 use quic_rig::*;
@@ -152,6 +152,107 @@ fn client_closed(client: &QuicClient) -> CloseReason {
     reason.expect("close reason")
 }
 
+/// Guard: the server's next notice (the `poll_notice` path).
+fn next_notice(server: &mut QuicServer) -> ServerNotice {
+    let start = Instant::now();
+    loop {
+        if let Some(notice) = server.poll_notice() {
+            return notice;
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: notice");
+        server.wait(Duration::from_millis(20));
+    }
+}
+
+/// The `Flush` cutoff with `ClientLimits::v1()`: 2,000 ms less its 200 ms
+/// reserve (`close_budget.rs:166`). A close whose writers finish returns well
+/// before it.
+const FLUSH_END: Duration = Duration::from_millis(1_800);
+
+/// Client limits with the smallest lane window (65,540 bytes), so a stalled
+/// lane-1 writer is reached after a few hundred small frames. Nothing under
+/// test changes: the lane-1 queues are fixed per-connection constants.
+fn tight_window_client() -> ClientLimits {
+    let mut limits = ClientLimits::v1();
+    limits.stream_window_bytes = 65_540;
+    limits.connection_window_bytes = 65_540;
+    limits
+}
+
+/// Fills the server's lane-1 outbound queue with `size`-byte frames until the
+/// writer is stalled and the queue sits exactly at its frame cap; returns the
+/// frames accepted, in order. The client must not read lane 1.
+fn fill_server_lane1(server: &mut QuicServer, conn: ConnectionId, size: usize) -> Vec<Vec<u8>> {
+    let mut accepted: Vec<Vec<u8>> = Vec::new();
+    let start = Instant::now();
+    loop {
+        loop {
+            let frame = pat(accepted.len(), size);
+            match server.try_send_lane1(conn, &frame) {
+                Ok(()) => accepted.push(frame),
+                Err(ChannelSendError::Send(SendError::QueueFull)) => break,
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+        let before = queue_fields(server.lane1_stats(conn).expect("lane 1 open"));
+        std::thread::park_timeout(Duration::from_millis(20));
+        let after = queue_fields(server.lane1_stats(conn).expect("lane 1 open"));
+        assert!(
+            before.2 <= LANE1_OUTBOUND_FRAMES,
+            "lane-1 outbound cap above {}: {before:?}",
+            LANE1_OUTBOUND_FRAMES
+        );
+        if before == after && before.2 == LANE1_OUTBOUND_FRAMES {
+            return accepted;
+        }
+        assert!(
+            !(before == after && before.2 < LANE1_OUTBOUND_FRAMES),
+            "lane-1 outbound cap below {}: {before:?}",
+            LANE1_OUTBOUND_FRAMES
+        );
+        assert!(
+            start.elapsed() < DEADLINE,
+            "deadline: stalled lane-1 writer"
+        );
+    }
+}
+
+/// Fills the client's lane-1 outbound queue with `size`-byte frames until its
+/// writer is stalled and the queue sits exactly at its 64-frame cap; returns
+/// the frames accepted, in order. The server must not read lane 1.
+fn fill_client_lane1(client: &mut QuicClient, size: usize) -> Vec<Vec<u8>> {
+    let mut accepted: Vec<Vec<u8>> = Vec::new();
+    let start = Instant::now();
+    loop {
+        loop {
+            let frame = pat(accepted.len(), size);
+            match client.try_send_lane1(&frame) {
+                Ok(()) => accepted.push(frame),
+                Err(ChannelSendError::Send(SendError::QueueFull)) => break,
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+        let before = queue_fields(client.lane1_stats());
+        std::thread::park_timeout(Duration::from_millis(20));
+        let after = queue_fields(client.lane1_stats());
+        assert!(
+            before.2 <= 64,
+            "client lane-1 outbound cap above 64: {before:?}"
+        );
+        if before == after && before.2 == 64 {
+            return accepted;
+        }
+        assert!(
+            !(before == after && before.2 < 64),
+            "client lane-1 outbound cap below 64: {before:?}"
+        );
+        assert!(
+            start.elapsed() < DEADLINE,
+            "deadline: stalled client writer"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // M1
 // ---------------------------------------------------------------------------
@@ -229,6 +330,49 @@ fn m2_endpoint_kinds_and_parameters() {
     let _ = conn1;
 }
 
+/// Reading 1 / N-2 / N-3: a movement endpoint never takes a resume opening
+/// and grants exactly two bidirectional streams.
+#[test]
+fn m2_third_stream_and_resume_opening_refused() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    // A `/3` opening in the resume layout is parsed as a hello: its 4-byte
+    // header names a length far above the 130-byte hello cap, so it closes 3
+    // with no notice.
+    let raw = raw_movement(server.local_addr(), Some(65_536)).expect("raw /3");
+    let _streams = raw.open_and_write(&[0x91, 0, 0, 4, 1, 2, 3, 4]);
+    assert_eq!(raw.closed_code(), Some(3));
+    until("resume opening refused", || {
+        server.totals().refused_handshakes == 1
+    });
+    assert!(server.poll_notice().is_none(), "no resume notice on /3");
+    assert!(server.poll_event().is_none());
+
+    // Control: the same endpoint takes a hello4 and its lane-1 stream.
+    let mut rm = raw_accepted(&mut server, 65_536, epoch(1));
+    let (mut send2, _recv2) = rm.open_lane1(&[0, 0, 0, 1, 7]);
+    assert_eq!(server_lane1_next(&mut server, rm.conn), Ok(vec![7]));
+    // Two bidi streams are open (the hello stream and lane 1); the endpoint
+    // grants no third, so `open_bi` never completes.
+    let connection = rm.raw.connection.clone();
+    let third = rm.raw.rt.run(async move {
+        tokio::time::timeout(Duration::from_secs(1), connection.open_bi()).await
+    });
+    assert!(
+        third.is_err(),
+        "the movement endpoint granted a third bidirectional stream"
+    );
+    // Control: both existing streams still work.
+    rm.raw.write(&mut send2, &[0, 0, 0, 1, 9]);
+    assert_eq!(server_lane1_next(&mut server, rm.conn), Ok(vec![9]));
+    server.try_send(rm.conn, &[5]).expect("lane 0 send");
+    let mut frame = [0u8; 5];
+    rm.raw
+        .rt
+        .run(async { rm.recv.read_exact(&mut frame).await })
+        .expect("lane-0 frame");
+    assert_eq!(frame, [0, 0, 0, 1, 5]);
+}
+
 // ---------------------------------------------------------------------------
 // M3
 // ---------------------------------------------------------------------------
@@ -253,16 +397,17 @@ fn m3_movement_hello_and_welcome() {
     assert_eq!(totals.connections, 0);
     assert_eq!(totals.refused_handshakes, 0);
 
-    // A raw `/3` hello naming 2, then 3: close 6, no event.
-    for (index, version) in [2u8, 3].into_iter().enumerate() {
+    // A raw `/3` hello naming 2, then 3, then 5: close 6, no event.
+    let mut refused = 0u64;
+    for version in [2u8, 3, 5] {
         let raw = raw_movement(server.local_addr(), Some(65_536)).expect("raw /3");
         let mut bytes = raw_hello4(7);
         bytes[4] = version;
         let _streams = raw.open_and_write(&bytes);
         assert_eq!(raw.closed_code(), Some(6), "version {version}");
-        let expected = u64::try_from(index).unwrap() + 1;
+        refused += 1;
         until("refused handshake counted", || {
-            server.totals().refused_handshakes == expected
+            server.totals().refused_handshakes == refused
         });
         assert!(server.poll_event().is_none());
     }
@@ -274,7 +419,10 @@ fn m3_movement_hello_and_welcome() {
         bytes.extend_from_slice(&[7u8; 15]);
         let _streams = raw.open_and_write(&bytes);
         assert_eq!(raw.closed_code(), Some(6));
-        until("third refusal", || server.totals().refused_handshakes == 3);
+        refused += 1;
+        until("third refusal", || {
+            server.totals().refused_handshakes == refused
+        });
         // Control: version 4 with the same bad length is the credential's
         // fault, close 2.
         let raw = raw_movement(server.local_addr(), Some(65_536)).expect("raw /3");
@@ -282,7 +430,10 @@ fn m3_movement_hello_and_welcome() {
         bytes.extend_from_slice(&[7u8; 15]);
         let _streams = raw.open_and_write(&bytes);
         assert_eq!(raw.closed_code(), Some(2));
-        until("fourth refusal", || server.totals().refused_handshakes == 4);
+        refused += 1;
+        until("fourth refusal", || {
+            server.totals().refused_handshakes == refused
+        });
         assert!(server.poll_event().is_none());
     }
 
@@ -332,9 +483,126 @@ fn m3_movement_hello_and_welcome() {
     assert_eq!(client.framing(), Framing::V2);
     assert!(client.movement());
 
+    // Reading 10 / N-14: `/1` and `/2` keep the 1-or-2 rule, so a version-4
+    // hello or welcome closes or is refused there.
+    let mut v1 = bind_v1_server(ServerLimits::v1());
+    {
+        let raw = raw_connect(v1.local_addr(), ALPN_LANE0_V1).expect("raw /1");
+        let _streams = raw.open_and_write(&raw_hello4(7));
+        assert_eq!(raw.closed_code(), Some(6), "a /1 hello naming 4");
+        until("v1 refuses version 4", || {
+            v1.totals().refused_handshakes == 1
+        });
+        assert!(v1.poll_event().is_none());
+        // Control: the same raw layout naming 1 is a hello.
+        let raw = raw_connect(v1.local_addr(), ALPN_LANE0_V1).expect("raw /1");
+        let mut bytes = raw_hello4(7);
+        bytes[4] = 1;
+        let (_send, mut recv) = raw.open_and_write(&bytes);
+        let (conn1, _, hello) = next_hello(&mut v1);
+        assert_eq!(hello.wire_version, 1);
+        assert_eq!(
+            v1.accept(
+                conn1,
+                Welcome {
+                    wire_version: 4,
+                    epoch: epoch(3),
+                }
+            ),
+            Err(ServerError::InvalidWelcome),
+            "a /1 welcome naming 4"
+        );
+        assert_eq!(
+            v1.accept(
+                conn1,
+                Welcome {
+                    wire_version: 1,
+                    epoch: epoch(3),
+                }
+            ),
+            Ok(())
+        );
+        assert_eq!(raw.read_welcome(&mut recv).wire_version, 1);
+    }
+    let mut dual = bind_dual_server(ServerLimits::v1());
+    {
+        let raw = raw_connect(dual.local_addr(), ALPN_LANE0_V2).expect("raw /2");
+        let _streams = raw.open_and_write(&raw_hello4(7));
+        assert_eq!(raw.closed_code(), Some(6), "a /2 hello naming 4");
+        until("dual refuses version 4", || {
+            dual.totals().refused_handshakes == 1
+        });
+        assert!(dual.poll_event().is_none());
+        // Control: a version-2 hello is accepted; its welcome may not name 4.
+        let raw = raw_connect(dual.local_addr(), ALPN_LANE0_V2).expect("raw /2");
+        let mut bytes = raw_hello4(7);
+        bytes[4] = 2;
+        let (_send, mut recv) = raw.open_and_write(&bytes);
+        let (conn2, _, hello) = next_hello(&mut dual);
+        assert_eq!(hello.wire_version, 2);
+        assert_eq!(
+            dual.accept(
+                conn2,
+                Welcome {
+                    wire_version: 4,
+                    epoch: epoch(3),
+                }
+            ),
+            Err(ServerError::InvalidWelcome),
+            "a /2 welcome naming 4"
+        );
+        assert_eq!(
+            dual.accept(
+                conn2,
+                Welcome {
+                    wire_version: 2,
+                    epoch: epoch(3),
+                }
+            ),
+            Ok(())
+        );
+        assert_eq!(raw.read_welcome(&mut recv).wire_version, 2);
+    }
+
+    // N-4 order: the limits are validated before the hello is encoded, so a
+    // version-2 hello with invalid limits is `Config`, not `Handshake`.
+    let mut bad = ClientLimits::v1();
+    bad.inbound_frames = 0;
+    assert_eq!(
+        QuicClient::connect_movement(
+            client_config(bad),
+            server.local_addr(),
+            &Hello {
+                wire_version: 2,
+                credential: credential(32, 1),
+            }
+        )
+        .unwrap_err(),
+        ConnectError::Config(ConfigError::InvalidLimits {
+            field: "inbound_frames"
+        })
+    );
+    // Control: valid limits with the same hello are `Handshake` (above), and
+    // invalid limits with a version-4 hello are the same `Config` with no
+    // connection made.
+    let before = server.totals();
+    assert!(matches!(
+        QuicClient::connect_movement(
+            client_config(bad),
+            server.local_addr(),
+            &Hello {
+                wire_version: 4,
+                credential: credential(32, 1),
+            }
+        ),
+        Err(ConnectError::Config(_))
+    ));
+    let after = server.totals();
+    assert_eq!(after.connections, before.connections);
+    assert_eq!(after.refused_handshakes, before.refused_handshakes);
+
     // Control: a `/2` client with a version-2 hello still connects to
     // `bind_dual`.
-    let mut dual = bind_dual_server(ServerLimits::v1());
     let (client2, conn2) = accept_v2(&mut dual);
     assert_eq!(client2.welcome().wire_version, 2);
     assert_eq!(dual.framing(conn2), Ok(Framing::V2));
@@ -470,6 +738,18 @@ fn m5_lane1_round_trip() {
     server.try_send_lane1(conn, &pat(5, 1_023)).unwrap();
     assert!(client.wait(DEADLINE), "a lane-1 frame wakes the client");
     assert_eq!(client_recv_lane1(&mut client), pat(5, 1_023));
+    // N-12: once lane 1 is drained, `wait` times out on both sides (lane 0
+    // and the datagram queue are empty too).
+    assert_eq!(server.try_recv_lane1(conn), Ok(None));
+    assert_eq!(client.try_recv_lane1(), Ok(None));
+    assert!(
+        !server.wait(Duration::from_millis(100)),
+        "a drained lane 1 must not wake the server"
+    );
+    assert!(
+        !client.wait(Duration::from_millis(100)),
+        "a drained lane 1 must not wake the client"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -840,21 +1120,14 @@ fn m8_lane1_backpressure_outbound() {
     let mut server = bind_movement_server(ServerLimits::v1());
     let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
     prime(&mut client, &mut server, conn);
-    // The client reads no lane 1; the server sends until its queue is full.
-    let mut accepted: Vec<Vec<u8>> = Vec::new();
-    let start = Instant::now();
-    loop {
-        let frame = pat(accepted.len(), 1_024);
-        match server.try_send_lane1(conn, &frame) {
-            Ok(()) => accepted.push(frame),
-            Err(ChannelSendError::Send(SendError::QueueFull)) => break,
-            Err(other) => panic!("unexpected {other:?}"),
-        }
-        assert!(start.elapsed() < DEADLINE, "deadline: no QueueFull");
-    }
+    // The client reads no lane 1; the server sends until its queue is full
+    // and its writer is stalled: the 128-frame cap equals 131,072 bytes at
+    // 1,024-byte frames, so the stalled state pins both caps exactly.
+    let accepted = fill_server_lane1(&mut server, conn, 1_024);
     let stats = server.lane1_stats(conn).unwrap();
-    assert!(stats.outbound_frames <= 128, "{stats:?}");
-    assert!(stats.outbound_bytes <= 131_072, "{stats:?}");
+    assert_eq!(stats.outbound_frames, LANE1_OUTBOUND_FRAMES, "{stats:?}");
+    assert_eq!(stats.outbound_bytes, 131_072, "{stats:?}");
+    assert!(stats.outbound_frames > 0, "N-13: non-zero outbound count");
     // Pairs on a full queue: the size checks come first.
     assert_eq!(
         server.try_send_lane1(conn, &pat(1, 1_025)),
@@ -884,6 +1157,153 @@ fn m8_lane1_backpressure_outbound() {
     }
     assert_eq!(got, accepted);
     assert_eq!(client.try_recv_lane1(), Ok(None));
+}
+
+/// Reading 8 / N-6: 1-byte frames fill the server's *frame* cap (64) alone,
+/// 64 bytes below the 65,536-byte cap, and the 65th is parked.
+#[test]
+fn m8_lane1_inbound_frame_cap_binds_alone() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    let mut sent = 0usize;
+    let mut parked_offered = false;
+    until("server lane-1 frame cap and parked slot", || {
+        while sent < 64 {
+            let frame = pat(sent, 1);
+            match client.try_send_lane1(&frame) {
+                Ok(()) => sent += 1,
+                Err(ChannelSendError::Send(SendError::QueueFull)) => break,
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+        if sent < 64 {
+            return false;
+        }
+        if !parked_offered {
+            match client.try_send_lane1(&pat(200, 1)) {
+                Ok(()) => parked_offered = true,
+                Err(ChannelSendError::Send(SendError::QueueFull)) => {}
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+        let stats = server.lane1_stats(conn).expect("lane 1 open");
+        assert!(
+            stats.inbound_frames <= 64,
+            "server lane-1 inbound cap above 64: {stats:?}"
+        );
+        assert!(
+            !(stats.reader_parked && stats.inbound_frames < 64),
+            "server lane-1 inbound cap below 64: {stats:?}"
+        );
+        stats.inbound_frames == 64 && stats.inbound_bytes == 64 && stats.reader_parked
+    });
+    // The cap is exact: 64 frames of 1 byte, and one held behind them.
+    assert_eq!(server.try_recv_lane1(conn), Ok(Some(vec![0])));
+    let stats = server.lane1_stats(conn).unwrap();
+    assert_eq!(stats.inbound_frames, 64, "the parked frame enters at once");
+    assert_eq!(stats.inbound_bytes, 64);
+    assert!(!stats.reader_parked);
+    assert_eq!(server.try_recv_lane1(conn), Ok(Some(vec![1])));
+}
+
+/// Reading 8 / N-6: 100-byte frames fill the server's *frame* cap (128)
+/// alone: 12,800 bytes, far below 131,072, with the writer stalled.
+#[test]
+fn m8_lane1_outbound_frame_cap_binds_alone() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, tight_window_client(), 1, epoch(2));
+    prime(&mut client, &mut server, conn);
+    let accepted = fill_server_lane1(&mut server, conn, 100);
+    let stats = server.lane1_stats(conn).unwrap();
+    assert_eq!(stats.outbound_frames, LANE1_OUTBOUND_FRAMES, "{stats:?}");
+    assert_eq!(
+        stats.outbound_bytes,
+        LANE1_OUTBOUND_FRAMES * 100,
+        "{stats:?}"
+    );
+    // Pairs on a full queue, with the byte cap far from binding.
+    let before = queue_fields(stats);
+    assert_eq!(
+        server.try_send_lane1(conn, &pat(1, 1_025)),
+        Err(sent(SendError::FrameTooLarge))
+    );
+    assert_eq!(
+        server.try_send_lane1(conn, &[]),
+        Err(sent(SendError::EmptyFrame))
+    );
+    assert_eq!(queue_fields(server.lane1_stats(conn).unwrap()), before);
+    // Control: every accepted frame is still delivered once, in order.
+    let mut got: Vec<Vec<u8>> = Vec::new();
+    let start = Instant::now();
+    while got.len() < accepted.len() {
+        match client.try_recv_lane1().expect("lane 1 open") {
+            Some(frame) => got.push(frame),
+            None => {
+                assert!(start.elapsed() < DEADLINE, "deadline: drain");
+                client.wait(Duration::from_millis(2));
+            }
+        }
+    }
+    assert_eq!(got, accepted);
+}
+
+/// Reading 8 client caps: lane-1 outbound is 64 frames / 65,536 bytes and
+/// inbound 128 / 131,072 (not swapped and not the server's).
+#[test]
+fn m8_client_lane1_caps_are_not_swapped() {
+    // Outbound: 100-byte frames bind the 64-frame cap alone (6,400 bytes).
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, _conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    let accepted = fill_client_lane1(&mut client, 100);
+    let stats = client.lane1_stats();
+    assert_eq!(stats.outbound_frames, 64, "{stats:?}");
+    assert_eq!(stats.outbound_bytes, 6_400, "{stats:?}");
+    assert!(accepted.len() >= 64, "{}", accepted.len());
+    drop(client);
+
+    // Inbound: 100-byte frames fill 128 frames (12,800 bytes) and park the
+    // 129th; the client reads no lane 1.
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, tight_window_client(), 1, epoch(3));
+    prime(&mut client, &mut server, conn);
+    let mut sent = 0usize;
+    let mut parked_offered = false;
+    until("client lane-1 inbound cap and parked slot", || {
+        while sent < 128 {
+            let frame = pat(sent, 100);
+            match server.try_send_lane1(conn, &frame) {
+                Ok(()) => sent += 1,
+                Err(ChannelSendError::Send(SendError::QueueFull)) => break,
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+        if sent < 128 {
+            return false;
+        }
+        if !parked_offered {
+            match server.try_send_lane1(conn, &pat(200, 100)) {
+                Ok(()) => parked_offered = true,
+                Err(ChannelSendError::Send(SendError::QueueFull)) => {}
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+        let stats = client.lane1_stats();
+        assert!(
+            stats.inbound_frames <= 128,
+            "client lane-1 inbound cap above 128: {stats:?}"
+        );
+        assert!(
+            !(stats.reader_parked && stats.inbound_frames < 128),
+            "client lane-1 inbound cap below 128: {stats:?}"
+        );
+        stats.inbound_frames == 128 && stats.inbound_bytes == 12_800 && stats.reader_parked
+    });
+    assert_eq!(client.try_recv_lane1(), Ok(Some(pat(0, 100))));
+    let stats = client.lane1_stats();
+    assert_eq!(stats.inbound_frames, 128, "the parked frame enters at once");
+    assert_eq!(stats.inbound_bytes, 12_800);
+    assert!(!stats.reader_parked);
+    assert_eq!(client.try_recv_lane1(), Ok(Some(pat(1, 100))));
 }
 
 // ---------------------------------------------------------------------------
@@ -1071,10 +1491,14 @@ fn m11a_server_flush_drains_both_lanes() {
     }
     server.try_send(conn, &pat(4, 10)).unwrap();
     server.try_send(conn, &pat(5, 10)).unwrap();
+    let t0 = Instant::now();
     let report = server
         .close(conn, CloseCode::Normal, CloseMode::Flush)
         .unwrap();
+    let took = t0.elapsed();
     assert_eq!(report.outbound_frames_discarded, 0);
+    // Prompt: the flush ended when both writers finished, not at `flush_end`.
+    assert!(took < FLUSH_END, "flush took {took:?}");
     let (lane1, reason1) = client_lane1_all(&mut client);
     assert_eq!(lane1, vec![pat(1, 60), pat(2, 60), pat(3, 60)]);
     assert_eq!(reason1, CloseReason::Peer { code: 0 });
@@ -1097,10 +1521,14 @@ fn m11a_server_flush_waits_for_a_full_lane1_queue() {
         server.try_send_lane1(conn, frame).unwrap();
     }
     server.try_send(conn, &pat(200, 10)).unwrap();
+    let t0 = Instant::now();
     let report = server
         .close(conn, CloseCode::Normal, CloseMode::Flush)
         .unwrap();
+    let took = t0.elapsed();
     assert_eq!(report.outbound_frames_discarded, 0);
+    // The flush waited for the lane-1 writer (FIN) and returned promptly.
+    assert!(took < FLUSH_END, "flush took {took:?}");
     let (lane1, reason1) = client_lane1_all(&mut client);
     assert_eq!(lane1, frames);
     assert_eq!(reason1, CloseReason::Peer { code: 0 });
@@ -1165,6 +1593,148 @@ fn m11b_client_flush_and_record_lifetime() {
     assert_eq!(server.stats(conn), Err(ServerError::UnknownConnection));
 }
 
+/// N-11 (6) on the `poll_event` path: a record whose lane 0 held nothing and
+/// whose lane 1 held frames survives the `Closed` event and is forgotten only
+/// after lane 1 reports `Closed`.
+#[test]
+fn m11b_lane1_only_record_survives_the_event_poll() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    // Lane 0 carries nothing at all; only lane 1 holds frames.
+    client.try_send_lane1(&h(1)).unwrap();
+    client.try_send_lane1(&h(2)).unwrap();
+    client.close(CloseCode::Normal, CloseMode::Flush);
+    let (closed, reason) = next_closed(&mut server);
+    assert_eq!((closed, reason), (conn, CloseReason::Peer { code: 0 }));
+    // The event poll must not forget a record lane 1 still owes frames from.
+    assert!(
+        server.stats(conn).is_ok(),
+        "a lane-1-only record stays under its Closed event"
+    );
+    assert_eq!(server_lane1_next(&mut server, conn), Ok(h(1)));
+    assert_eq!(server_lane1_next(&mut server, conn), Ok(h(2)));
+    assert_eq!(
+        server_lane1_next(&mut server, conn),
+        Err(ServerError::Closed(CloseReason::Peer { code: 0 }))
+    );
+    assert_eq!(server.stats(conn), Err(ServerError::UnknownConnection));
+}
+
+/// N-11 (6) on the `poll_notice` path: the same lane-1-only record.
+#[test]
+fn m11b_lane1_only_record_survives_the_notice_poll() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let pending = connect_movement_async(ClientLimits::v1(), server.local_addr(), hello4(1));
+    let conn = match next_notice(&mut server) {
+        ServerNotice::Event(ServerEvent::HelloReceived { conn, .. }) => conn,
+        other => panic!("expected HelloReceived, got {other:?}"),
+    };
+    server
+        .accept(
+            conn,
+            Welcome {
+                wire_version: 4,
+                epoch: epoch(2),
+            },
+        )
+        .expect("accept");
+    let mut client = pending.join().expect("thread").expect("connect");
+    client.try_send_lane1(&h(1)).unwrap();
+    client.close(CloseCode::Normal, CloseMode::Flush);
+    match next_notice(&mut server) {
+        ServerNotice::Event(ServerEvent::Closed {
+            conn: closed,
+            reason,
+        }) => {
+            assert_eq!(closed, conn);
+            assert_eq!(reason, CloseReason::Peer { code: 0 });
+        }
+        other => panic!("expected Closed, got {other:?}"),
+    }
+    assert!(
+        server.stats(conn).is_ok(),
+        "a lane-1-only record stays under its Closed notice"
+    );
+    assert_eq!(server_lane1_next(&mut server, conn), Ok(h(1)));
+    assert_eq!(
+        server_lane1_next(&mut server, conn),
+        Err(ServerError::Closed(CloseReason::Peer { code: 0 }))
+    );
+    assert_eq!(server.stats(conn), Err(ServerError::UnknownConnection));
+}
+
+/// N-11 (6): both lanes drain to `Closed` before the `Closed` event is polled;
+/// the record survives until its event is polled, then is forgotten.
+#[test]
+fn m11b_record_survives_until_its_event_is_polled() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    client.try_send_lane1(&h(1)).unwrap();
+    client.try_send(&pat(6, 10)).unwrap();
+    client.close(CloseCode::Normal, CloseMode::Flush);
+    // Lane 0 and lane 1 both report Closed first.
+    assert_eq!(
+        server_channel_next(&mut server, conn),
+        Ok((Channel::Lane0, pat(6, 10)))
+    );
+    assert_eq!(
+        server_channel_next(&mut server, conn),
+        Err(ServerError::Closed(CloseReason::Peer { code: 0 }))
+    );
+    assert_eq!(server_lane1_next(&mut server, conn), Ok(h(1)));
+    assert_eq!(
+        server_lane1_next(&mut server, conn),
+        Err(ServerError::Closed(CloseReason::Peer { code: 0 }))
+    );
+    // Both claims reported, event still queued: the record stays.
+    assert!(
+        server.stats(conn).is_ok(),
+        "a record waits for its Closed event"
+    );
+    assert_eq!(
+        next_closed(&mut server),
+        (conn, CloseReason::Peer { code: 0 })
+    );
+    assert_eq!(server.stats(conn), Err(ServerError::UnknownConnection));
+}
+
+/// N-11 (1) client side: a `Flush` with a full lane-1 queue waits for the
+/// lane-1 writer, so every queued frame reaches the peer before the close.
+#[test]
+fn m11b_client_flush_waits_for_a_full_lane1_queue() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    // The server reads no lane 1 while the client fills its 64-frame queue.
+    let accepted = fill_client_lane1(&mut client, 100);
+    assert_eq!(
+        client.lane1_stats().outbound_frames,
+        64,
+        "the queue under the flush"
+    );
+    let closer = std::thread::spawn(move || client.close(CloseCode::Normal, CloseMode::Flush));
+    let mut got: Vec<Vec<u8>> = Vec::new();
+    let start = Instant::now();
+    loop {
+        match server.try_recv_lane1(conn) {
+            Ok(Some(frame)) => got.push(frame),
+            Ok(None) => {}
+            Err(ServerError::Closed(reason)) => {
+                assert_eq!(reason, CloseReason::Peer { code: 0 });
+                break;
+            }
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: client flush drain");
+        server.wait(Duration::from_millis(2));
+    }
+    let report = closer.join().expect("closer thread");
+    assert_eq!(
+        report.outbound_frames_discarded, 0,
+        "a lane-1 queue with a writer is flushed, not discarded"
+    );
+    assert_eq!(got, accepted, "every queued lane-1 frame arrived, in order");
+}
+
 #[test]
 fn m11c_datagrams_do_not_survive_a_close() {
     let mut server = bind_movement_server(ServerLimits::v1());
@@ -1210,10 +1780,22 @@ fn m11d_flush_while_the_lane1_accept_is_pending() {
         server.try_send_lane1(conn, &pat(k, 60)).unwrap();
     }
     server.try_send(conn, &pat(4, 10)).unwrap();
+    let t0 = Instant::now();
     let report = server
         .close(conn, CloseCode::Normal, CloseMode::Flush)
         .unwrap();
+    let took = t0.elapsed();
     assert_eq!(report.outbound_frames_discarded, 3);
+    // No lane-1 writer exists, so the flush waits for lane 0 alone and returns
+    // well under `flush_end` (a mutant that waits for a stream that is never
+    // made visible takes the whole 1,800 ms).
+    assert!(
+        took < FLUSH_END / 2,
+        "a pending lane-1 accept must not delay the flush: {took:?}"
+    );
+    // The recorded close discarded the lane-1 queue (N-11 (2)).
+    let stats = server.lane1_stats(conn).unwrap();
+    assert_eq!((stats.outbound_frames, stats.outbound_bytes), (0, 0));
     let (lane0, reason0) = client_lane0_all(&mut client);
     assert_eq!(lane0, vec![pat(4, 10)]);
     assert_eq!(reason0, CloseReason::Peer { code: 0 });
@@ -1230,11 +1812,15 @@ fn m11e_discard_counts_the_lane1_share() {
     for k in 1..=3 {
         server.try_send_lane1(conn, &pat(k, 60)).unwrap();
     }
+    assert_eq!(server.lane1_stats(conn).unwrap().outbound_frames, 3);
     let report = server
         .close(conn, CloseCode::Normal, CloseMode::Discard)
         .unwrap();
     assert_eq!(report.outbound_frames_discarded, 3);
     assert_eq!(report.inbound_frames_discarded, 0);
+    // N-11 (2): Discard empties the lane-1 outbound queue's accounting.
+    let stats = server.lane1_stats(conn).unwrap();
+    assert_eq!((stats.outbound_frames, stats.outbound_bytes), (0, 0));
     drop(client);
 }
 
@@ -1250,9 +1836,13 @@ fn m12_shutdown_flushes_lane1() {
     for k in 1..=3 {
         server.try_send_lane1(conn, &pat(k, 60)).unwrap();
     }
+    let t0 = Instant::now();
     let report = server.shutdown();
+    let took = t0.elapsed();
     assert_eq!(report.connections_closed, 1);
     assert_eq!(report.outbound_frames_discarded, 0);
+    // Prompt: the flush ended on the lane-1 writer's FIN, not at `flush_end`.
+    assert!(took < FLUSH_END, "shutdown took {took:?}");
     let (lane1, reason) = client_lane1_all(&mut client);
     assert_eq!(lane1, vec![pat(1, 60), pat(2, 60), pat(3, 60)]);
     assert_eq!(reason, CloseReason::Peer { code: 1 });
