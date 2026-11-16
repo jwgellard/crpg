@@ -2136,3 +2136,241 @@ fn b13_withheld_publishes_to_that_session_alone() {
         codec_v3::decode_delta(&before_q[0].bytes).expect("a v3 delta")
     );
 }
+
+/// Gap 5 (s02 s03 s10 s12): staging a v4 session while its transfer is in
+/// flight cancels it first. Narrowing emits `Cancel(Aborted)`, a `Resync`
+/// emits `Cancel(Superseded)`, and the plan's entry and byte counts include
+/// the `Cancel`.
+#[test]
+fn b14_stage_while_in_flight_cancels_first() {
+    // Narrowing while transfer 1 is in flight.
+    let mut host = host_of(&mv3_value());
+    let p = bind_p(&mut host, 0);
+    let epoch = host.epoch(p).expect("bound");
+    let mut client = Client::new(epoch);
+    let first = client.drain(&mut host, p, 0);
+    assert_eq!(
+        shape(&first.entries),
+        vec![
+            (1, DeliveryKind::Transfer),
+            (2, DeliveryKind::Transfer),
+            (3, DeliveryKind::Delta),
+        ]
+    );
+    assert_eq!(
+        host.transfer_state(p),
+        Ok(Some(TransferState {
+            next_transfer: 2,
+            in_flight: Some(1),
+        }))
+    );
+    assert_eq!(
+        host.set_grants(p, full_grants(&[a(), c()])),
+        Ok(GrantUpdate::SnapshotStaged)
+    );
+    let staged = client.drain(&mut host, p, 1);
+    assert_eq!(
+        shape(&staged.entries),
+        vec![
+            (4, DeliveryKind::Transfer),
+            (5, DeliveryKind::Transfer),
+            (6, DeliveryKind::Transfer),
+            (7, DeliveryKind::Delta),
+        ]
+    );
+    let TransferDown::Cancel {
+        epoch: cancel_epoch,
+        transfer,
+        reason,
+    } = decoded_transfer(&staged.entries[0])
+    else {
+        panic!("the first staged entry is a Cancel");
+    };
+    assert_eq!(cancel_epoch, epoch);
+    assert_eq!(transfer, tid(1));
+    assert_eq!(reason, CancelReason::Aborted);
+    let TransferDown::Begin(begin) = decoded_transfer(&staged.entries[1]) else {
+        panic!("the second staged entry is a Begin");
+    };
+    assert_eq!(begin.transfer, tid(2));
+    assert!(matches!(
+        decoded_transfer(&staged.entries[2]),
+        TransferDown::Chunk(_)
+    ));
+    assert_eq!(
+        entry_ops(&staged.entries[3]),
+        vec![
+            pos(1, Some((pt(65536, 0, 65536), false))),
+            pos(3, Some((pt(65536, 0, 327680), false))),
+            DeltaOp::V3(clock(None)),
+            DeltaOp::V3(host_facts(r1())),
+        ]
+    );
+    // Entry and byte counts include the `Cancel`: four entries, not three.
+    assert_eq!(staged.entries.len(), 4);
+    assert_eq!(
+        host.transfer_state(p),
+        Ok(Some(TransferState {
+            next_transfer: 3,
+            in_flight: Some(2),
+        }))
+    );
+
+    // Control: an upstream `Resync` while transfer 1 is in flight cancels
+    // with `Superseded`, not `Aborted`.
+    let mut other = host_of(&mv3_value());
+    let q = bind_p(&mut other, 0);
+    let other_epoch = other.epoch(q).expect("bound");
+    let mut other_client = Client::new(other_epoch);
+    other_client.drain(&mut other, q, 0);
+    assert_eq!(
+        other.ingest_transfer(q, &resync_bytes(other_epoch), 1),
+        Ok(TransferDisposition::Resynced)
+    );
+    let restaged = other_client.drain(&mut other, q, 1);
+    assert_eq!(
+        shape(&restaged.entries),
+        vec![
+            (4, DeliveryKind::Transfer),
+            (5, DeliveryKind::Transfer),
+            (6, DeliveryKind::Transfer),
+            (7, DeliveryKind::Delta),
+        ]
+    );
+    let TransferDown::Cancel {
+        reason, transfer, ..
+    } = decoded_transfer(&restaged.entries[0])
+    else {
+        panic!("the first restaged entry is a Cancel");
+    };
+    assert_eq!(reason, CancelReason::Superseded);
+    assert_eq!(transfer, tid(1));
+}
+
+/// A movement fixture with `extra` additional present movers (indices 3..),
+/// so a v4 staging page and a v4 page span several frames.
+fn mv_many_value(extra: usize) -> Value {
+    let mut value = mv3_value();
+    for i in 3..3 + extra as u32 {
+        let k = 1 + (i % 20);
+        let l = 1 + ((i / 20) % 20);
+        let x_raw = 65536 * (k as i32);
+        let z_raw = 65536 * (l as i32);
+        value["world"]["entities"]["slots"]
+            .as_array_mut()
+            .expect("slots")
+            .push(json!({"generation": 1, "value": {}}));
+        value["world"]["movers"]
+            .as_array_mut()
+            .expect("movers")
+            .push(json!([
+                {"index": i, "generation": 1},
+                {"position": [x_raw, 0, z_raw], "speed": 65536, "step": 655360}
+            ]));
+        value["world"]["transforms"]
+            .as_array_mut()
+            .expect("transforms")
+            .push(json!([
+                {"index": i, "generation": 1},
+                {"position": [k as f32, 0.0, l as f32], "velocity": [0.0, 0.0, 0.0]}
+            ]));
+    }
+    value
+}
+
+/// All live ids of `mv_many_value(extra)`: `A`, `B`, `C`, then `extra` more.
+fn many_ids(extra: usize) -> Vec<EntityId> {
+    let mut ids = vec![a(), b(), c()];
+    for i in 3..3 + extra as u32 {
+        ids.push(eid(i));
+    }
+    ids
+}
+
+/// Gap 6 (s20 s21 p26 p28 p12): more than 255 ops end to end. A v4 staging
+/// page and a v4 page each span several frames with one `event_seq` per
+/// frame, increasing, cut at the 256-op boundary.
+#[test]
+fn b15_many_positions_span_frames() {
+    let extra = 260usize;
+    let value = mv_many_value(extra);
+    let ids = many_ids(extra);
+    let total_positions = ids.len();
+    assert_eq!(total_positions, 263);
+    let mut host = host_of(&value);
+    let p = host
+        .bind_v4_peer(control(&[a()]), full_grants(&ids), facts(), r1(), 0)
+        .expect("binds");
+    let epoch = host.epoch(p).expect("bound");
+    let mut client = Client::new(epoch);
+    let staged = client.drain(&mut host, p, 0);
+    // Transfer frames first, then the anchoring page's delta frames.
+    let deltas: Vec<&DeliveryEntry> = staged
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == DeliveryKind::Delta)
+        .collect();
+    assert_eq!(deltas.len(), 2);
+    let first = codec_v4::decode_delta(&deltas[0].bytes).expect("a v4 delta");
+    let second = codec_v4::decode_delta(&deltas[1].bytes).expect("a v4 delta");
+    assert_eq!(first.event_seq, 1);
+    assert_eq!(second.event_seq, 2);
+    assert!(second.event_seq == first.event_seq + 1);
+    assert_eq!(first.ops.len(), 256);
+    assert_eq!(second.ops.len(), total_positions + 2 - 256);
+    assert_eq!(first.server_tick, 0);
+    assert_eq!(second.server_tick, 0);
+    // The tail of the second frame is `[Clock, HostFacts]`.
+    assert!(matches!(
+        second.ops[second.ops.len() - 2],
+        DeltaOp::V3(DeltaOpV3::Clock { .. })
+    ));
+    assert!(matches!(
+        second.ops[second.ops.len() - 1],
+        DeltaOp::V3(DeltaOpV3::EntityFacts { .. } | DeltaOpV3::HostFacts { .. })
+    ));
+    // Every `Position` op is an anchor for a distinct granted entity.
+    let mut position_entities = Vec::new();
+    for frame in [&first, &second] {
+        for op in &frame.ops {
+            if let DeltaOp::Position { entity, position } = op {
+                assert!(position.is_some());
+                position_entities.push(*entity);
+            }
+        }
+    }
+    assert_eq!(position_entities.len(), total_positions);
+    assert_eq!(
+        client.publish(&mut host, p, 0),
+        TransferDisposition::Published
+    );
+
+    // A v4 page with the same 263 withdrawals spans two frames the same way.
+    assert_eq!(host.set_position_withheld(p, ids.clone()), Ok(()));
+    let page = client.drain(&mut host, p, 1);
+    let deltas: Vec<DeltaFrame> = page.deltas.iter().cloned().collect();
+    assert_eq!(deltas.len(), 2);
+    assert_eq!(deltas[0].event_seq, 3);
+    assert_eq!(deltas[1].event_seq, 4);
+    assert_eq!(deltas[0].ops.len(), 256);
+    assert_eq!(deltas[1].ops.len(), total_positions - 256);
+    for frame in &deltas {
+        for op in &frame.ops {
+            assert!(matches!(op, DeltaOp::Position { position: None, .. }));
+        }
+    }
+    // Control: three positions fit one frame with one `event_seq`.
+    let mut small = host_of(&mv3_value());
+    let q = bind_p(&mut small, 0);
+    let mut small_client = Client::new(small.epoch(q).expect("bound"));
+    let small_staged = small_client.drain(&mut small, q, 0);
+    let small_deltas: Vec<&DeliveryEntry> = small_staged
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == DeliveryKind::Delta)
+        .collect();
+    assert_eq!(small_deltas.len(), 1);
+    let only = codec_v4::decode_delta(&small_deltas[0].bytes).expect("a v4 delta");
+    assert_eq!(only.event_seq, 1);
+    assert_eq!(only.ops.len(), 5);
+}
