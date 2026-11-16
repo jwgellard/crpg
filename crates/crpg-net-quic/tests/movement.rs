@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use crpg_net::movement_v4::{
     decode_down, decode_intent, sample_datagrams, MoveDown, MoveSample, SampleEntry,
 };
-use crpg_net::protocol::NetId;
+use crpg_net::protocol::{NetId, MAX_INTENT_FRAME_BYTES};
 use crpg_net::protocol_v4::Point;
 use crpg_net_quic::{
     Channel, ChannelSendError, ClientLimits, CloseCode, CloseMode, CloseReason, ConfigError,
@@ -1206,6 +1206,62 @@ fn m8_lane1_inbound_frame_cap_binds_alone() {
     assert_eq!(server.try_recv_lane1(conn), Ok(Some(vec![1])));
 }
 
+/// Reading 8 / N-6: 4,096-byte intents fill the server's lane-1 *byte* cap
+/// (65,536) after 16 frames — far below the 64-frame cap — and the 17th is
+/// parked. One pop lets it in at once.
+#[test]
+fn m8_lane1_inbound_byte_cap_binds_alone() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    // The server reads no lane 1. Maximal intents reach the byte cap first;
+    // the client's own queue grants them as its writer drains.
+    let mut sent = 0usize;
+    let start = Instant::now();
+    while sent <= 16 {
+        let frame = pat(sent, MAX_INTENT_FRAME_BYTES);
+        match client.try_send_lane1(&frame) {
+            Ok(()) => sent += 1,
+            Err(ChannelSendError::Send(SendError::QueueFull)) => {
+                client.wait(Duration::from_millis(2));
+            }
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: 17 frames");
+    }
+    // Sixteen fit exactly and the 17th is parked, before the frame cap.
+    until("server lane-1 byte cap and parked slot", || {
+        let stats = server.lane1_stats(conn).expect("lane 1 open");
+        assert!(
+            stats.inbound_frames <= 16,
+            "server lane-1 frame cap passed 16 before the byte cap: {stats:?}"
+        );
+        assert!(
+            stats.inbound_bytes <= 65_536,
+            "server lane-1 inbound byte cap above 65,536: {stats:?}"
+        );
+        stats.inbound_frames == 16 && stats.inbound_bytes == 65_536 && stats.reader_parked
+    });
+    // One pop lets the parked frame in at once, at the same caps.
+    assert_eq!(
+        server.try_recv_lane1(conn),
+        Ok(Some(pat(0, MAX_INTENT_FRAME_BYTES)))
+    );
+    let stats = server.lane1_stats(conn).unwrap();
+    assert_eq!(
+        (stats.inbound_frames, stats.inbound_bytes),
+        (16, 65_536),
+        "{stats:?}"
+    );
+    assert!(!stats.reader_parked);
+    // Control: all 17 arrived, once, in order.
+    let mut got = vec![pat(0, MAX_INTENT_FRAME_BYTES)];
+    while let Some(frame) = server.try_recv_lane1(conn).expect("lane 1 open") {
+        got.push(frame);
+    }
+    let want: Vec<Vec<u8>> = (0..17).map(|k| pat(k, MAX_INTENT_FRAME_BYTES)).collect();
+    assert_eq!(got, want);
+}
+
 /// Reading 8 / N-6: 100-byte frames fill the server's *frame* cap (128)
 /// alone: 12,800 bytes, far below 131,072, with the writer stalled.
 #[test]
@@ -1245,6 +1301,62 @@ fn m8_lane1_outbound_frame_cap_binds_alone() {
         }
     }
     assert_eq!(got, accepted);
+}
+
+/// Reading 8 / N-6: the client's lane-1 *byte* cap (65,536) binds alone: 16
+/// maximal intents reach it with the frame cap (64) far away, and the
+/// stalled writer leaves the next frame refused with nothing changed. The
+/// server's 131,072-byte cap cannot bind alone (128 maximal frames reach it
+/// exactly, so the frame cap refuses at the same moment); this is where the
+/// byte check is observable.
+#[test]
+fn m8_lane1_client_outbound_byte_cap_binds_alone() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, _conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    // The server reads no lane 1: its inbound queue fills, then its window
+    // stalls the client's writer, so the client's queue settles at its cap.
+    let mut accepted: Vec<Vec<u8>> = Vec::new();
+    let mut settled = 0usize;
+    let start = Instant::now();
+    loop {
+        loop {
+            let frame = pat(accepted.len(), MAX_INTENT_FRAME_BYTES);
+            match client.try_send_lane1(&frame) {
+                Ok(()) => accepted.push(frame),
+                Err(ChannelSendError::Send(SendError::QueueFull)) => break,
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+        let before = queue_fields(client.lane1_stats());
+        assert!(
+            before.2 <= 64,
+            "client lane-1 frame cap above 64: {before:?}"
+        );
+        assert!(
+            before.3 <= 65_536,
+            "client lane-1 byte cap above 65,536: {before:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        let after = queue_fields(client.lane1_stats());
+        settled = if before == after { settled + 1 } else { 0 };
+        if settled == 2 && before.2 == 16 && before.3 == 65_536 {
+            break;
+        }
+        assert!(
+            start.elapsed() < DEADLINE,
+            "deadline: stalled client writer"
+        );
+    }
+    // Exact: 16 frames of 4,096 bytes, and the 64-frame cap is untouched.
+    let stats = client.lane1_stats();
+    assert_eq!(stats.outbound_frames, 16, "{stats:?}");
+    assert_eq!(stats.outbound_bytes, 65_536, "{stats:?}");
+    assert!(accepted.len() > 16, "{}", accepted.len());
+    // The byte cap alone: 16 frames is far below 64, so a 1-byte frame is
+    // refused by the bytes and changes nothing.
+    let before = queue_fields(client.lane1_stats());
+    assert_eq!(client.try_send_lane1(&[7]), Err(sent(SendError::QueueFull)));
+    assert_eq!(queue_fields(client.lane1_stats()), before);
 }
 
 /// Reading 8 client caps: lane-1 outbound is 64 frames / 65,536 bytes and
@@ -1537,6 +1649,135 @@ fn m11a_server_flush_waits_for_a_full_lane1_queue() {
     assert_eq!(reason0, CloseReason::Peer { code: 0 });
 }
 
+/// N-11 (1), Reading 9: a `Flush` while the lane-1 accept is pending has no
+/// lane-1 writer to wait for, whatever its queue holds: it waits for lane 0
+/// alone and discards the 128 queued frames, well under `flush_end`.
+#[test]
+fn m11a_flush_with_a_pending_lane1_accept_is_prompt() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    // The client never writes lane 1: no lane-1 writer runs.
+    for k in 0..LANE1_OUTBOUND_FRAMES {
+        server
+            .try_send_lane1(conn, &pat(k, MAX_DATAGRAM_BYTES))
+            .unwrap();
+    }
+    let stats = server.lane1_stats(conn).unwrap();
+    assert_eq!(
+        (stats.outbound_frames, stats.outbound_bytes),
+        (LANE1_OUTBOUND_FRAMES, 131_072),
+        "{stats:?}"
+    );
+    server.try_send(conn, &pat(4, 10)).unwrap();
+    let t0 = Instant::now();
+    let report = server
+        .close(conn, CloseCode::Normal, CloseMode::Flush)
+        .unwrap();
+    let took = t0.elapsed();
+    assert_eq!(report.outbound_frames_discarded, LANE1_OUTBOUND_FRAMES);
+    assert!(
+        took < FLUSH_END / 2,
+        "a pending lane-1 accept must not delay the flush: {took:?}"
+    );
+    let (lane0, reason0) = client_lane0_all(&mut client);
+    assert_eq!(lane0, vec![pat(4, 10)]);
+    assert_eq!(reason0, CloseReason::Peer { code: 0 });
+    assert_eq!(
+        client_lane1_next(&mut client),
+        Err(CloseReason::Peer { code: 0 })
+    );
+}
+
+/// N-11 (1), Reading 9: a `Flush` waits for lane 0 alone while the lane-1
+/// accept is still pending. A lane-1 writer that only becomes visible during
+/// the flush must not be waited for; a flush that waits for it (its peer
+/// never reads the stream) runs to its 1,800 ms `flush_end`.
+#[test]
+fn m11a_flush_ignores_a_lane1_writer_that_starts_late() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    // A raw peer with an 8 KiB stream window: a stream it never reads blocks
+    // its writer after 8 KiB.
+    let RawMovement {
+        raw,
+        mut recv,
+        conn,
+        ..
+    } = raw_accepted_windowed(&mut server, 65_536, 8_192, epoch(2));
+    // No lane-1 stream exists yet; 128 frames wait in the server's queue.
+    for k in 0..LANE1_OUTBOUND_FRAMES {
+        server
+            .try_send_lane1(conn, &pat(k, MAX_DATAGRAM_BYTES))
+            .unwrap();
+    }
+    // Lane 0 is queued past the peer's window: its writer stalls until the
+    // peer reads, so the flush is still running when lane 1 appears.
+    for k in 0..32 {
+        server.try_send(conn, &pat(k, 1_024)).unwrap();
+    }
+    // The peer holds lane 1's receive half open until the close is over: it
+    // never reads the stream, and dropping it would stop the server's writer.
+    let (alive, hold) = std::sync::mpsc::channel::<()>();
+    let peer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let (_send1, _recv1) = raw.open_and_write(&pat(9, 1));
+        std::thread::sleep(Duration::from_millis(20));
+        while let Ok(Some(_)) = raw
+            .rt
+            .run(async { recv.read_chunk(usize::MAX, true).await })
+        {}
+        let _ = hold.recv();
+    });
+    let t0 = Instant::now();
+    let report = server
+        .close(conn, CloseCode::Normal, CloseMode::Flush)
+        .unwrap();
+    let took = t0.elapsed();
+    drop(alive);
+    assert!(
+        took < FLUSH_END / 2,
+        "a lane-1 writer that starts during the flush must not delay it: {took:?}"
+    );
+    assert!(
+        report.outbound_frames_discarded > 0,
+        "the queued lane-1 frames are discarded"
+    );
+    peer.join().expect("raw peer thread");
+}
+
+/// N-11 (1): a `Flush` wakes a lane-1 writer that has parked waiting for
+/// frames (empty queue) so it FINs; a flush that does not wake it waits out
+/// its 1,800 ms `flush_end`.
+#[test]
+fn m11a_flush_wakes_an_idle_lane1_writer() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    prime(&mut client, &mut server, conn);
+    // The writer has nothing to send: let it park on its wakeup.
+    until("lane-1 writer idle", || {
+        server.lane1_stats(conn).unwrap().outbound_frames == 0
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(server.lane1_stats(conn).unwrap().outbound_frames, 0);
+    let t0 = Instant::now();
+    let report = server
+        .close(conn, CloseCode::Normal, CloseMode::Flush)
+        .unwrap();
+    let took = t0.elapsed();
+    assert_eq!(report.outbound_frames_discarded, 0);
+    assert!(
+        took < FLUSH_END / 2,
+        "an idle lane-1 writer must be woken to FIN: {took:?}"
+    );
+    // The lane-1 stream saw its FIN: no frame, then the peer close.
+    assert_eq!(
+        client_lane1_next(&mut client),
+        Err(CloseReason::Peer { code: 0 })
+    );
+    let (lane0, reason0) = client_lane0_all(&mut client);
+    assert!(lane0.is_empty());
+    assert_eq!(reason0, CloseReason::Peer { code: 0 });
+}
+
 #[test]
 fn m11b_client_flush_and_record_lifetime() {
     // Lane 0 reported first, lane 1 second.
@@ -1698,20 +1939,27 @@ fn m11b_record_survives_until_its_event_is_polled() {
     assert_eq!(server.stats(conn), Err(ServerError::UnknownConnection));
 }
 
-/// N-11 (1) client side: a `Flush` with a full lane-1 queue waits for the
-/// lane-1 writer, so every queued frame reaches the peer before the close.
+/// N-11 (1) client side: a `Flush` with a stalled, full lane-1 queue waits
+/// for the lane-1 writer, so every frame the queue held at the close (all
+/// 64) reaches the peer before the close's FIN, counted on the server side.
 #[test]
 fn m11b_client_flush_waits_for_a_full_lane1_queue() {
     let mut server = bind_movement_server(ServerLimits::v1());
     let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
-    // The server reads no lane 1 while the client fills its 64-frame queue.
-    let accepted = fill_client_lane1(&mut client, 100);
-    assert_eq!(
-        client.lane1_stats().outbound_frames,
-        64,
-        "the queue under the flush"
-    );
-    let closer = std::thread::spawn(move || client.close(CloseCode::Normal, CloseMode::Flush));
+    // The server reads no lane 1: its own queue and window stall the client's
+    // writer, so the client's queue stays full at its 64-frame / 65,536-byte
+    // cap when the flush starts. (100-byte frames all fit the server's
+    // inbound queue, drain before the close, and prove nothing.)
+    let accepted = fill_client_lane1(&mut client, MAX_DATAGRAM_BYTES);
+    let stats = client.lane1_stats();
+    assert_eq!(stats.outbound_frames, 64, "the queue under the flush");
+    assert_eq!(stats.outbound_bytes, 65_536, "the queue under the flush");
+    assert!(accepted.len() >= 64, "{}", accepted.len());
+    let closer = std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let report = client.close(CloseCode::Normal, CloseMode::Flush);
+        (report, t0.elapsed())
+    });
     let mut got: Vec<Vec<u8>> = Vec::new();
     let start = Instant::now();
     loop {
@@ -1727,11 +1975,12 @@ fn m11b_client_flush_waits_for_a_full_lane1_queue() {
         assert!(start.elapsed() < DEADLINE, "deadline: client flush drain");
         server.wait(Duration::from_millis(2));
     }
-    let report = closer.join().expect("closer thread");
+    let (report, took) = closer.join().expect("closer thread");
     assert_eq!(
         report.outbound_frames_discarded, 0,
         "a lane-1 queue with a writer is flushed, not discarded"
     );
+    assert!(took < FLUSH_END, "client flush took {took:?}");
     assert_eq!(got, accepted, "every queued lane-1 frame arrived, in order");
 }
 

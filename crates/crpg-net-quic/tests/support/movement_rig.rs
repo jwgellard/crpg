@@ -147,6 +147,16 @@ pub fn raw_movement(
     server: SocketAddr,
     receive_buffer: Option<usize>,
 ) -> Result<RawClient, quinn::ConnectionError> {
+    raw_movement_with(server, receive_buffer, None)
+}
+
+/// `raw_movement` with a fixed stream receive window: a peer that never
+/// reads a stream leaves its writer blocked after that many bytes.
+pub fn raw_movement_with(
+    server: SocketAddr,
+    receive_buffer: Option<usize>,
+    stream_window: Option<u32>,
+) -> Result<RawClient, quinn::ConnectionError> {
     let rt = RawRuntime::new();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut tls = rustls::ClientConfig::builder_with_provider(provider.clone())
@@ -163,6 +173,9 @@ pub fn raw_movement(
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     let mut transport = quinn::TransportConfig::default();
     transport.datagram_receive_buffer_size(receive_buffer);
+    if let Some(window) = stream_window {
+        transport.stream_receive_window(quinn::VarInt::from_u32(window));
+    }
     config.transport_config(Arc::new(transport));
     let (endpoint, connection) = rt.run(async move {
         let endpoint = quinn::Endpoint::client(loopback()).expect("raw endpoint");
@@ -213,7 +226,28 @@ pub fn raw_accepted(
     receive_buffer: usize,
     epoch: [u8; 16],
 ) -> RawMovement {
-    let raw = raw_movement(server.local_addr(), Some(receive_buffer)).expect("raw /3");
+    raw_accepted_inner(server, receive_buffer, None, epoch)
+}
+
+/// `raw_accepted` with a fixed stream receive window: the peer's unread
+/// streams block their writers after that many bytes.
+pub fn raw_accepted_windowed(
+    server: &mut QuicServer,
+    receive_buffer: usize,
+    stream_window: u32,
+    epoch: [u8; 16],
+) -> RawMovement {
+    raw_accepted_inner(server, receive_buffer, Some(stream_window), epoch)
+}
+
+fn raw_accepted_inner(
+    server: &mut QuicServer,
+    receive_buffer: usize,
+    stream_window: Option<u32>,
+    epoch: [u8; 16],
+) -> RawMovement {
+    let raw = raw_movement_with(server.local_addr(), Some(receive_buffer), stream_window)
+        .expect("raw /3");
     let (send, mut recv) = raw.open_and_write(&raw_hello4(7));
     let (conn, _, hello) = next_hello(server);
     assert_eq!(hello.wire_version, 4);
