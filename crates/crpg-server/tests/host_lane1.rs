@@ -37,8 +37,8 @@ use crpg_net::pool_v4::{
 use crpg_net::protocol::{NetId, ReceiptStatus, LANE_COMBAT};
 use crpg_net::protocol_transfer::{TransferId, TransferUp};
 use crpg_net::protocol_v3::{PauseRights, RejectionCode as CodeV3};
-use crpg_net::protocol_v4::{IntentBody as IntentBodyV4, IntentFrame as IntentFrameV4, Point};
 use crpg_net::protocol_v4::SessionEpoch;
+use crpg_net::protocol_v4::{IntentBody as IntentBodyV4, IntentFrame as IntentFrameV4, Point};
 use crpg_net::replica_v4::ReplicaWorldV4;
 use crpg_net::transfer_v3;
 use crpg_server::capture::CaptureEntry;
@@ -348,7 +348,9 @@ impl Rig {
             .get(actor)
             .expect("a mover")
             .position();
-        let path = mesh.find_path(from, goal).expect("the mirror finds the path");
+        let path = mesh
+            .find_path(from, goal)
+            .expect("the mirror finds the path");
         self.oracle
             .set_route(
                 actor,
@@ -471,9 +473,7 @@ impl Rig {
     }
 
     fn bind_log(&mut self, peer: PeerHandle) -> Vec<DeliveryEntry> {
-        self.host
-            .take_delivery_entries(peer)
-            .expect("bound")
+        self.host.take_delivery_entries(peer).expect("bound")
     }
 }
 
@@ -913,11 +913,7 @@ fn d2_supersede_and_order() {
         MoveAdmission::Admitted { seq: 4 }
     );
     assert_eq!(
-        rig.ingest_move(
-            p2,
-            &move_to_bytes(epoch_2, 5, 1, (196608, 0, 262144)),
-            20
-        ),
+        rig.ingest_move(p2, &move_to_bytes(epoch_2, 5, 1, (196608, 0, 262144)), 20),
         MoveAdmission::Admitted { seq: 5 }
     );
     assert_eq!(
@@ -1954,10 +1950,7 @@ fn d7_no_double_spend() {
         record
             .events
             .iter()
-            .filter(|envelope| matches!(
-                envelope.payload,
-                HistoryEvent::ActionResolved { .. }
-            ))
+            .filter(|envelope| matches!(envelope.payload, HistoryEvent::ActionResolved { .. }))
             .count(),
         1,
         "{:?}",
@@ -2397,15 +2390,9 @@ fn d11_receipt_queue_bound() {
     for (index, bytes) in sent.iter().enumerate() {
         let seq = index as u64 + 1;
         let expected = if index < 128 {
-            MoveAdmission::Duplicate {
-                seq,
-                resent: true,
-            }
+            MoveAdmission::Duplicate { seq, resent: true }
         } else {
-            MoveAdmission::Duplicate {
-                seq,
-                resent: false,
-            }
+            MoveAdmission::Duplicate { seq, resent: false }
         };
         assert_eq!(rig.ingest_move(p, bytes, at), expected);
         at += 25;

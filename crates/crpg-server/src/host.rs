@@ -3824,12 +3824,7 @@ impl Host {
             .as_mut()
             .and_then(|v3| v3.v4.as_mut())
             .expect("checked above");
-        let taken: Vec<Vec<u8>> = v4
-            .lane
-            .receipts
-            .drain(..)
-            .map(|(_, bytes)| bytes)
-            .collect();
+        let taken: Vec<Vec<u8>> = v4.lane.receipts.drain(..).map(|(_, bytes)| bytes).collect();
         let bytes: usize = taken.iter().map(Vec::len).sum();
         self.egress_bytes -= bytes;
         Ok(taken)
@@ -3862,10 +3857,7 @@ impl Host {
         let session = self.sessions.get(&peer).expect("bound by caller");
         let lane = lane_of(session).expect("v4 session");
         if lane.slots.iter().any(|slot| slot.seq == seq) {
-            return Ok(MoveAdmission::Duplicate {
-                seq,
-                resent: false,
-            });
+            return Ok(MoveAdmission::Duplicate { seq, resent: false });
         }
         let Some(receipt) = lane
             .cache
@@ -3873,22 +3865,13 @@ impl Host {
             .find(|entry| entry.seq == seq)
             .map(|entry| entry.receipt.clone())
         else {
-            return Ok(MoveAdmission::Duplicate {
-                seq,
-                resent: false,
-            });
+            return Ok(MoveAdmission::Duplicate { seq, resent: false });
         };
         if lane.receipts.iter().any(|(released, _)| *released == seq) {
-            return Ok(MoveAdmission::Duplicate {
-                seq,
-                resent: false,
-            });
+            return Ok(MoveAdmission::Duplicate { seq, resent: false });
         }
         if !self.room_for(session, 1, receipt.len()) {
-            return Ok(MoveAdmission::Duplicate {
-                seq,
-                resent: false,
-            });
+            return Ok(MoveAdmission::Duplicate { seq, resent: false });
         }
         let rejected = matches!(
             movement_v4::decode_down(&receipt),
@@ -3983,8 +3966,8 @@ impl Host {
         let Some(session) = self.sessions.get_mut(&handle) else {
             return;
         };
-        if let Some(slot) = lane_of_mut(session)
-            .and_then(|lane| lane.slots.iter_mut().find(|slot| slot.seq == seq))
+        if let Some(slot) =
+            lane_of_mut(session).and_then(|lane| lane.slots.iter_mut().find(|slot| slot.seq == seq))
         {
             slot.decided = Some((outcome, tick));
         }
@@ -5310,10 +5293,7 @@ fn pace_session(egress_bytes: &mut usize, caps: &QueueCaps, session: &mut Sessio
         return;
     };
     // Lane-1 frames and bytes count beside the delivery log (C-7).
-    let (lane1_frames, lane1_bytes) = v3
-        .v4
-        .as_ref()
-        .map_or((0, 0), |v4| v4.lane1_egress());
+    let (lane1_frames, lane1_bytes) = v3.v4.as_ref().map_or((0, 0), |v4| v4.lane1_egress());
     while let Some(front) = v3.outbox.front() {
         let len = front.bytes.len();
         let fits = session.log.len() + lane1_frames < caps.per_peer_frames
@@ -5656,12 +5636,7 @@ fn lane_of(session: &Session) -> Option<&MoveLane> {
 
 /// The mutable lane-1 state of a v4 session.
 fn lane_of_mut(session: &mut Session) -> Option<&mut MoveLane> {
-    session
-        .v3
-        .as_mut()?
-        .v4
-        .as_mut()
-        .map(|v4| &mut v4.lane)
+    session.v3.as_mut()?.v4.as_mut().map(|v4| &mut v4.lane)
 }
 
 /// The ids a viewer's mapped entities hold: live after the page, else (when

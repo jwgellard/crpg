@@ -24,7 +24,9 @@ use std::collections::VecDeque;
 use crpg_core::EntityId;
 use crpg_net::movement_v4::{MoveBody, MoveOutcome};
 use crpg_net::positions_v4::PositionRow;
-use crpg_net::protocol::{POLICY_RETRY_CACHE_BYTES_PER_PEER_LANE, POLICY_RETRY_CACHE_PER_PEER_LANE};
+use crpg_net::protocol::{
+    POLICY_RETRY_CACHE_BYTES_PER_PEER_LANE, POLICY_RETRY_CACHE_PER_PEER_LANE,
+};
 use crpg_net::protocol_v4::{NetId, Point};
 use crpg_net::sim::TokenBucket;
 use crpg_sim::World;
@@ -188,10 +190,7 @@ impl V4State {
         let sample_frames = self.samples.len();
         let sample_bytes: usize = self.samples.iter().map(Vec::len).sum();
         let (lane_frames, lane_bytes) = self.lane.egress();
-        (
-            sample_frames + lane_frames,
-            sample_bytes + lane_bytes,
-        )
+        (sample_frames + lane_frames, sample_bytes + lane_bytes)
     }
 }
 
@@ -233,8 +232,8 @@ mod tests {
     use crpg_net::movement_v4::{
         encode_down, MoveDown, MoveOutcome, MoveReceipt, MAX_MOVE_DOWN_BYTES,
     };
-    use crpg_net::protocol_v4::NetId;
     use crpg_net::protocol_v3::RejectionCode;
+    use crpg_net::protocol_v4::NetId;
 
     /// B7: both v4 bounds are inclusive and the v3 bound did not move.
     #[test]
