@@ -1984,6 +1984,58 @@ fn m11b_client_flush_waits_for_a_full_lane1_queue() {
     assert_eq!(got, accepted, "every queued lane-1 frame arrived, in order");
 }
 
+/// K11: a client `Flush` with a stalled, full lane-1 queue must wait for the
+/// lane-1 writer even when the peer drains nothing at first. Lane 0 is idle,
+/// so a close that waits for lane 0 alone (the `lane1_writer_finished =
+/// false` deletion in the connect path) lands during the hold and discards
+/// the queued lane 1, while the real close waits through it and then delivers
+/// every accepted frame within `FLUSH_END`.
+#[test]
+fn m11b_client_flush_waits_for_lane1_while_server_holds_its_drain() {
+    let mut server = bind_movement_server(ServerLimits::v1());
+    let (mut client, conn) = accept_movement(&mut server, ClientLimits::v1(), 1, epoch(2));
+    // The server reads no lane 1: its own queue and window stall the client's
+    // writer, so the client's queue stays full at its 64-frame / 65,536-byte
+    // cap when the flush starts.
+    let accepted = fill_client_lane1(&mut client, MAX_DATAGRAM_BYTES);
+    let stats = client.lane1_stats();
+    assert_eq!(stats.outbound_frames, 64, "the queue under the flush");
+    assert_eq!(stats.outbound_bytes, 65_536, "the queue under the flush");
+    assert!(accepted.len() >= 64, "{}", accepted.len());
+    let closer = std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let report = client.close(CloseCode::Normal, CloseMode::Flush);
+        (report, t0.elapsed())
+    });
+    // Hold the drain: a lane-0-only close lands here (lane 0 is idle) and
+    // discards the queued lane 1, while a close that waits for the lane-1
+    // writer keeps waiting. The hold is pacing, not an oracle; the bound
+    // below is still the contract's `FLUSH_END`.
+    std::thread::sleep(Duration::from_millis(300));
+    let mut got: Vec<Vec<u8>> = Vec::new();
+    let start = Instant::now();
+    loop {
+        match server.try_recv_lane1(conn) {
+            Ok(Some(frame)) => got.push(frame),
+            Ok(None) => {}
+            Err(ServerError::Closed(reason)) => {
+                assert_eq!(reason, CloseReason::Peer { code: 0 });
+                break;
+            }
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: client flush drain");
+        server.wait(Duration::from_millis(2));
+    }
+    let (report, took) = closer.join().expect("closer thread");
+    assert_eq!(
+        report.outbound_frames_discarded, 0,
+        "a lane-1 queue with a writer is flushed, not discarded"
+    );
+    assert!(took < FLUSH_END, "client flush took {took:?}");
+    assert_eq!(got, accepted, "every queued lane-1 frame arrived, in order");
+}
+
 #[test]
 fn m11c_datagrams_do_not_survive_a_close() {
     let mut server = bind_movement_server(ServerLimits::v1());
