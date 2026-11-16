@@ -23,9 +23,12 @@ Single-player uses the in-memory transport (ADR-0012: same protocol bytes, same 
 - **D65g (T153 Q2)** — the AI acts while the host is paused (fights and loaded saves start paused): recommend (a) yes.
 - **D65h** — file a small `crpg-cli` task so `crpgc play` uses `crpg_ai::decide` for enemy turns (fastest terminal AI demo; needs a `crpg-cli` → `crpg-ai` edge): recommend yes.
 
+- **D65i (raised by the user, 2026-11-16)** — at what level is AI rule-definable? The engine needs an AI authoring surface, not only built-in behaviour. Plan (spec §6.1, `docs/IMPLEMENTATION_PLAN.md` T080–T084): ruleset/creature data sets AI profiles and consideration weights (T080, T081), behaviour trees are data (T082), considerations themselves are engine code. Open for the user, to be settled by an ADR before the T080/T081 contracts: may rulesets define their own considerations (e.g. expressions over ruleset stats) or script hooks via `crpg-script`, and where do faction/hostility relations live as data (today T056's caller passes `Sides`, D62)?
+
 ## Agent log
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65 · Recorded the user's answers on the server run loop and on joining a campaign, and the six T151/T153 questions still open.
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65c · Recorded the user's yes to D65c (in-memory pipe now, network client later).
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65d · Recorded the user's answer to keep v2 beside v4, with new work on v4 only and versions built by extension.
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65e · Recorded the user's yes: the client sends move requests (destination; in real time also the creature), and the server decides.
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65f · Recorded the user's yes to the `crpg-server` → `crpg-ai` edge.
+- 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + D65i · Recorded the user's question on the AI authoring level as an ADR item before T080/T081.
