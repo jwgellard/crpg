@@ -207,6 +207,23 @@ correctness limit (reordering deeper than 128 packet numbers, reachable at
 higher packet rates or larger jitter), but it is **not** a demonstrated fix for
 the spike's symptom. No latency or throughput promise is made.
 
+## Native Windows re-run (T150a)
+
+T150a re-ran the impairment matrix on native `x86_64-pc-windows-msvc` (rustc
+1.98.0). Result: **pass** — exactly 39 runs, none `{"failed":…}`, and
+`dedup_discards_both_endpoints` is 0 in every `"mode":"quic"` line of both
+builds. The deepest relay reorder depth for QUIC traffic was 18 packets, still
+below the 129-packet window the patch widens, so the unit-level defect again
+did not manifest end-to-end (the zero-discard finding is unchanged). Table:
+[`results/windows-impairment-summary.md`](results/windows-impairment-summary.md)
+(raw lines:
+[`results/windows-impairment-matrix.jsonl`](results/windows-impairment-matrix.jsonl)).
+
+Build difference from §6: "patched" here is the **vendored tree**
+(`third_party/quinn-proto/crate`, quinn-proto 0.11.19 with patch 0001 plus patch
+0002), where §6's "patched" build carried the dedup patch (0002) alone; the
+summary states this.
+
 ## 7. Memory
 
 Layout counts from `size_of`/`align_of` in the harness (no heap allocation in
@@ -291,6 +308,9 @@ unchanged.
 
 1. **Native Windows/MSVC**: none of the suites, the harness or the impairment
    matrix have been run on Windows. Required before T023 integration.
+
+   - 2026-11-16 (UTC): closed for the impairment matrix — the native Windows
+     re-run passed (see "Native Windows re-run (T150a)").
 2. **`cargo deny` bans** under the unchanged policy (the `windows-sys` split):
    needs a separate decision (§8).
 3. **Dependency approval**: pending; nothing here is approved.
@@ -315,3 +335,4 @@ content is otherwise verbatim. See [`results/linux-environment.txt`](results/lin
 ## Agent log
 
 - 2026-09-30 (UTC) · claude-code + T030 dependency preparation · Recorded the selected release, verified provenance, the 2049-packet patch with an independent reference-model reproduction, Linux suite and impairment evidence, and the unchanged-policy audit, reporting the Windows gap and the windows-sys bans failure as blockers instead of widening policy or claiming the spike symptom fixed.
+- 2026-11-16 (UTC) · opencode-go/deepseek-v4-pro + T150a · Appended the native Windows/MSVC impairment re-run section (39 runs, 0 dedup discards; "patched" = the vendored tree, 0001 + 0002) and closed §10 item 1 for the impairment matrix, after the manager's native Windows matrix passed.

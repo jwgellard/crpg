@@ -124,6 +124,9 @@ through CI.
 
 ## Supersession and corrections
 
+- 2026-11-16 (UTC): patch `0002-widen-dedup-window.patch` (D23's dedup window, the T030 patch blob) landed under T150a, with the user's H-dep approval of D64 Question 3 (item 2), after the native Windows impairment matrix passed (`docs/reviews/T030-quinn/results/windows-impairment-summary.md`); `third_party/quinn-proto/VENDOR.md` has its row.
+
 ## Agent log
 
 - 2026-10-05 (UTC) · claude-code + T023v-a · Filed the `third_party/` vendoring convention as Accepted on the user's T023v approval (Q5), so the layout, non-membership, advisories re-check, byte-exact storage and retirement rule D23's later dedup patch will reuse are recorded once, apart from the quinn-proto specifics in VENDOR.md.
+- 2026-11-16 (UTC) · claude-code (claude-sonnet-5-5) + T150a · Recorded that patch 0002 landed with the user's H-dep approval, in the corrections section, leaving the Accepted decision text unchanged.
