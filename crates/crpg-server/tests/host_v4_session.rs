@@ -2348,7 +2348,7 @@ fn b15_many_positions_span_frames() {
     // A v4 page with the same 263 withdrawals spans two frames the same way.
     assert_eq!(host.set_position_withheld(p, ids.clone()), Ok(()));
     let page = client.drain(&mut host, p, 1);
-    let deltas: Vec<DeltaFrame> = page.deltas.iter().cloned().collect();
+    let deltas: Vec<DeltaFrame> = page.deltas.to_vec();
     assert_eq!(deltas.len(), 2);
     assert_eq!(deltas[0].event_seq, 3);
     assert_eq!(deltas[1].event_seq, 4);
