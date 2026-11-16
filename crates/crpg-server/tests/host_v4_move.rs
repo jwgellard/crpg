@@ -50,7 +50,10 @@ use crpg_server::host::{
     EntityFactGrant, FactGrants, Host, HostConfig, HostError, IngestDisposition, PeerHandle,
     ProtocolSelection, TransferDisposition, DEFAULT_HOST_GRANTS, POLICY_SAMPLE_REFRESH_TICKS,
 };
-use crpg_sim::{history_hash, CombatError, HistoryWorld, MoveRoute, NavRevision, RouteTag};
+use crpg_sim::{
+    history_hash, validate_move, CombatError, HistoryWorld, MoveError, MoveRoute, NavRevision,
+    RouteTag,
+};
 use serde_json::{json, Value};
 
 const FIXTURE: &str = include_str!("fixtures/three_combatants.json");
@@ -1166,12 +1169,49 @@ fn c3_declare_move_retry() {
     assert_eq!(rig.host.executions(), 1);
     assert_eq!(rig.host.last_capture(), 1);
     rig.assert_authority();
-    // The pool was spent once: a later move cannot afford one unit.
+    // The pool was spent once (C-2 step 3): a later move to a reachable cell A
+    // does not occupy passes `plan_route` and is refused by `validate_move` as
+    // unaffordable, not by the route step as `AlreadyThere`.
+    let before = state_of(&mut rig.host, &[p]);
+    // The mirror judges this destination with `validate_move`, so it is a
+    // routable cell and the only fault is the spent pool.
     assert_eq!(
-        rig.declare_move(p, 2, 1, (262144, 0, 65536)).status,
+        validate_move(
+            rig.oracle.world(),
+            a(),
+            &route(&m10(), 2, &[m(4, 1), m(2, 1)])
+        ),
+        Err(MoveError::CannotAfford {
+            cost: 1,
+            current: 0
+        })
+    );
+    let poor = rig.declare_move(p, 2, 1, (131072, 0, 65536));
+    assert_eq!(
+        poor.status,
         ReceiptStatus::Rejected(RejectionCode::IllegalAction)
     );
+    // The turn check passed and steps 2 and 3 leave the error unchanged.
+    assert_eq!(rig.host.last_combat_error(), None);
+    assert_unchanged(&mut rig.host, &before);
     rig.assert_authority();
+
+    // Control: the same actor standing on the same cell with the pool unspent
+    // (A placed there, nothing paid) accepts the same destination, so the
+    // refusal above is the spent pool: an uncharged first move would leave
+    // `current` 1, accept this route, move A and raise `executions` to 2.
+    {
+        let mut fresh = Rig::new(&mv3_value());
+        fresh.bind_nav();
+        assert_eq!(fresh.host.place(a(), m(4, 1)), Ok(()));
+        fresh.oracle.place(a(), m(4, 1)).expect("the mirror places");
+        fresh.mirror_ack();
+        let fp = fresh.bind_p();
+        let control = fresh.declare_move(fp, 1, 1, (131072, 0, 65536));
+        assert_eq!(control.status, ReceiptStatus::Applied);
+        fresh.mirror_move(a(), &[m(4, 1), m(2, 1)], 1);
+        fresh.assert_authority();
+    }
 
     // A v3 session sending a v3 frame whose body tag is 6 (v4's move).
     let q = rig.bind_q();
