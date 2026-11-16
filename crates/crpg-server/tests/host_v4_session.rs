@@ -31,7 +31,7 @@ use crpg_net::pool_v4::{
 use crpg_net::protocol::LANE_COMBAT;
 use crpg_net::protocol::{IntentBody as IntentBodyV1, NetId};
 use crpg_net::protocol_transfer::{
-    HealthFact, ResyncReason, TransferDown, TransferId, TransferUp, TurnFact,
+    CancelReason, HealthFact, ResyncReason, TransferDown, TransferId, TransferUp, TurnFact,
 };
 use crpg_net::protocol_v3::{
     AutoPauseToggles, DeltaFrame as DeltaFrameV3, DeltaOp as DeltaOpV3, FactSet, HostFacts,
@@ -1787,4 +1787,352 @@ fn b9_older_bytes_unchanged_beside_v4() {
     };
     let _: IntentBodyV1 = IntentBodyV1::EndTurn;
     let _ = (b(), c(), smite(), whiff(), EncounterMode::TurnBased);
+}
+
+// ---------------------------------------------------------------------------
+// T037b fix round 2, gaps 1–7.
+// ---------------------------------------------------------------------------
+
+/// Gap 1 (r05): a mover with an active route shows `moving: true` in its
+/// anchor, beside a stopped control showing `false`.
+#[test]
+fn b10_moving_flag_route_vs_stopped() {
+    // Moving host: RT fixture, mesh bound, a trusted route set, then bound.
+    let value = mv3rt_value();
+    let mut host = host_of(&value);
+    let mut oracle = history_of(&value);
+    host.bind_area_bounds(fp(0, 0, 0), fp(655360, 655360, 655360))
+        .expect("binds the mesh");
+    mirror_bind_m10(&mut oracle);
+    host.move_to(a(), m(4, 1)).expect("sets the route");
+    oracle
+        .set_route(a(), m10_route(HOST_ROUTE_TAG, &[m(1, 1), m(4, 1)]))
+        .expect("the mirror routes");
+    oracle
+        .acknowledge(oracle.last_sequence())
+        .expect("acknowledges its own range");
+    assert_authority(&host, &oracle);
+    let p = bind_p(&mut host, 0);
+    let mut client = Client::new(host.epoch(p).expect("bound"));
+    let drained = client.drain(&mut host, p, 0);
+    assert_eq!(
+        drained.deltas,
+        vec![DeltaFrame {
+            lane: LANE_COMBAT,
+            server_tick: 0,
+            event_seq: 1,
+            ops: vec![
+                pos(1, Some((pt(65536, 0, 65536), true))),
+                pos(2, Some((pt(196608, 0, 65536), false))),
+                pos(3, Some((pt(65536, 0, 327680), false))),
+                DeltaOp::V3(clock(None)),
+                DeltaOp::V3(host_facts(r1())),
+            ],
+        }]
+    );
+    assert_eq!(
+        client.replica.positions().get(&n(1)),
+        Some(&PositionState {
+            tick: 0,
+            point: pt(65536, 0, 65536),
+            moving: true,
+        })
+    );
+    assert_eq!(
+        client.publish(&mut host, p, 0),
+        TransferDisposition::Published
+    );
+
+    // Control: the same binding with no route shows `moving: false`.
+    let mut still = host_of(&value);
+    let q = bind_p(&mut still, 0);
+    let mut twin = Client::new(still.epoch(q).expect("bound"));
+    let drained = twin.drain(&mut still, q, 0);
+    assert_eq!(
+        drained.deltas,
+        vec![DeltaFrame {
+            lane: LANE_COMBAT,
+            server_tick: 0,
+            event_seq: 1,
+            ops: vec![
+                pos(1, Some((pt(65536, 0, 65536), false))),
+                pos(2, Some((pt(196608, 0, 65536), false))),
+                pos(3, Some((pt(65536, 0, 327680), false))),
+                DeltaOp::V3(clock(None)),
+                DeltaOp::V3(host_facts(r1())),
+            ],
+        }]
+    );
+    assert_eq!(
+        twin.replica.positions().get(&n(1)),
+        Some(&PositionState {
+            tick: 0,
+            point: pt(65536, 0, 65536),
+            moving: false,
+        })
+    );
+}
+
+/// Gap 2 (b01 b03 b04 b05 b07): `bind_v4_peer` keeps `bind_v3_peer`'s
+/// precedence and errors. Each bad input runs through both binders on twin
+/// hosts and the two errors are equal, plus the literal expected error.
+#[test]
+fn b11_bind_v4_keeps_v3_precedence() {
+    fn twins() -> (Host, Host) {
+        (host_of(&mv3_value()), host_of(&mv3_value()))
+    }
+    fn oversized_control() -> ControlGrant {
+        ControlGrant {
+            actors: (0..1025).map(eid).collect(),
+        }
+    }
+    fn oversized_grants() -> DisclosureGrants {
+        DisclosureGrants {
+            entities: (0..1025).map(|i| disclosure(eid(i))).collect(),
+            abilities: vec![strike()],
+            encounters: vec![Ulid::from_u128(601)],
+            turn_round: true,
+            encounter_end: true,
+            turn_state: true,
+        }
+    }
+    fn oversized_facts() -> FactGrants {
+        let mut facts = facts();
+        facts.entities.push(all_fact_flags(eid(1024)));
+        facts.entities.push(all_fact_flags(eid(1025)));
+        while facts.entities.len() <= 1025 {
+            facts
+                .entities
+                .push(all_fact_flags(eid(2000 + facts.entities.len() as u32)));
+        }
+        facts
+    }
+
+    // Closed on a closed host, with otherwise valid arguments.
+    {
+        let (mut x, mut y) = twins();
+        x.shutdown();
+        y.shutdown();
+        assert_eq!(
+            x.bind_v3_peer(
+                control(&[a()]),
+                full_grants(&[a(), b(), c()]),
+                facts(),
+                r1(),
+                0
+            ),
+            Err(HostError::Closed)
+        );
+        assert_eq!(
+            y.bind_v4_peer(
+                control(&[a()]),
+                full_grants(&[a(), b(), c()]),
+                facts(),
+                r1(),
+                0
+            ),
+            Err(HostError::Closed)
+        );
+    }
+    // Closed beats a regressed clock and oversized fields.
+    {
+        let (mut x, mut y) = twins();
+        x.shutdown();
+        y.shutdown();
+        assert_eq!(
+            x.bind_v3_peer(oversized_control(), oversized_grants(), facts(), r1(), 0),
+            Err(HostError::Closed)
+        );
+        assert_eq!(
+            y.bind_v4_peer(oversized_control(), oversized_grants(), facts(), r1(), 0),
+            Err(HostError::Closed)
+        );
+    }
+    // TimeRegression beats two bad fields.
+    {
+        let (mut x, mut y) = twins();
+        bind_p(&mut x, 100);
+        bind_p(&mut y, 100);
+        let xv = x.bind_v3_peer(oversized_control(), oversized_grants(), facts(), r1(), 50);
+        let yv = y.bind_v4_peer(oversized_control(), oversized_grants(), facts(), r1(), 50);
+        assert_eq!(xv, Err(HostError::TimeRegression));
+        assert_eq!(yv, Err(HostError::TimeRegression));
+        assert_eq!(xv, yv);
+    }
+    // Control before grants: two bad fields give InvalidControl on both.
+    {
+        let (mut x, mut y) = twins();
+        let xv = x.bind_v3_peer(oversized_control(), oversized_grants(), facts(), r1(), 0);
+        let yv = y.bind_v4_peer(oversized_control(), oversized_grants(), facts(), r1(), 0);
+        assert_eq!(xv, Err(HostError::InvalidControl));
+        assert_eq!(yv, Err(HostError::InvalidControl));
+        assert_eq!(xv, yv);
+    }
+    // Grants before facts: two bad fields give InvalidGrants on both.
+    {
+        let (mut x, mut y) = twins();
+        let xv = x.bind_v3_peer(
+            control(&[a()]),
+            oversized_grants(),
+            oversized_facts(),
+            r1(),
+            0,
+        );
+        let yv = y.bind_v4_peer(
+            control(&[a()]),
+            oversized_grants(),
+            oversized_facts(),
+            r1(),
+            0,
+        );
+        assert_eq!(xv, Err(HostError::InvalidGrants));
+        assert_eq!(yv, Err(HostError::InvalidGrants));
+        assert_eq!(xv, yv);
+    }
+    // Normalisation before ServerBusy: a full host plus an invalid field
+    // still reports the field error on both binders.
+    {
+        let (mut x, mut y) = twins();
+        for _ in 0..8 {
+            bind_p(&mut x, 0);
+            bind_p(&mut y, 0);
+        }
+        let xv = x.bind_v3_peer(oversized_control(), full_grants(&[a()]), facts(), r1(), 0);
+        let yv = y.bind_v4_peer(oversized_control(), full_grants(&[a()]), facts(), r1(), 0);
+        assert_eq!(xv, Err(HostError::InvalidControl));
+        assert_eq!(yv, Err(HostError::InvalidControl));
+        assert_eq!(xv, yv);
+    }
+    // ServerBusy on the ninth valid binding, on both binders.
+    {
+        let (mut x, mut y) = twins();
+        for _ in 0..8 {
+            bind_p(&mut x, 0);
+            bind_p(&mut y, 0);
+        }
+        let xv = x.bind_v3_peer(control(&[a()]), full_grants(&[a()]), facts(), r1(), 0);
+        let yv = y.bind_v4_peer(control(&[a()]), full_grants(&[a()]), facts(), r1(), 0);
+        assert_eq!(xv, Err(HostError::ServerBusy));
+        assert_eq!(yv, Err(HostError::ServerBusy));
+        assert_eq!(xv, yv);
+    }
+    // Counter sentinel arm: a valid bind advances the handle on both.
+    {
+        let (mut x, mut y) = twins();
+        let q = x
+            .bind_v3_peer(control(&[a()]), full_grants(&[a()]), facts(), r1(), 0)
+            .expect("binds");
+        let p = y
+            .bind_v4_peer(control(&[a()]), full_grants(&[a()]), facts(), r1(), 0)
+            .expect("binds");
+        assert_eq!(q.get(), 1);
+        assert_eq!(p.get(), 1);
+        assert_eq!(x.session_wire(q), Ok(3));
+        assert_eq!(y.session_wire(p), Ok(4));
+    }
+}
+
+/// Gap 3 (w05 w07): the withheld list is stored sorted, and a non-adjacent
+/// duplicate is rejected.
+#[test]
+fn b12_withheld_list_is_sorted_and_unique() {
+    // An unsorted two-entry list is stored sorted: both are withheld.
+    let mut host = host_of(&mv3_value());
+    let p = bind_p(&mut host, 0);
+    let mut client = drained_v4(&mut host, p, 0);
+    assert_eq!(host.set_position_withheld(p, vec![c(), b()]), Ok(()));
+    let drained = client.drain(&mut host, p, 1);
+    assert_eq!(
+        drained.deltas,
+        vec![DeltaFrame {
+            lane: LANE_COMBAT,
+            server_tick: 0,
+            event_seq: 2,
+            ops: vec![pos(2, None), pos(3, None)],
+        }]
+    );
+    assert_eq!(client.replica.position(n(2)), None);
+    assert_eq!(client.replica.position(n(3)), None);
+    assert!(client.replica.position(n(1)).is_some());
+
+    // Control: the same two entries already sorted withdraw the same two.
+    let mut sorted = host_of(&mv3_value());
+    let q = bind_p(&mut sorted, 0);
+    let mut control = drained_v4(&mut sorted, q, 0);
+    assert_eq!(sorted.set_position_withheld(q, vec![b(), c()]), Ok(()));
+    let drained = control.drain(&mut sorted, q, 1);
+    assert_eq!(
+        drained.deltas,
+        vec![DeltaFrame {
+            lane: LANE_COMBAT,
+            server_tick: 0,
+            event_seq: 2,
+            ops: vec![pos(2, None), pos(3, None)],
+        }]
+    );
+
+    // A non-adjacent duplicate is rejected and changes nothing.
+    let mut host = host_of(&mv3_value());
+    let p = bind_p(&mut host, 0);
+    let _client = drained_v4(&mut host, p, 0);
+    let peers = [p];
+    let before = state(&mut host, &peers);
+    assert_eq!(
+        host.set_position_withheld(p, vec![b(), a(), b()]),
+        Err(HostError::InvalidGrants)
+    );
+    assert_unchanged(&mut host, &before, &peers);
+    // Control: the same entries without the repeat are accepted.
+    assert_eq!(host.set_position_withheld(p, vec![b(), a()]), Ok(()));
+}
+
+/// Gap 4 (w09): withholding publishes to that session alone. The v3 control
+/// session holds something pending, so a publish to every session would
+/// change its output; it receives nothing new.
+#[test]
+fn b13_withheld_publishes_to_that_session_alone() {
+    let value = mv3_value();
+    let mut host = host_of(&value);
+    let mut oracle = history_of(&value);
+    host.bind_area_bounds(fp(0, 0, 0), fp(655360, 655360, 655360))
+        .expect("binds the mesh");
+    mirror_bind_m10(&mut oracle);
+    let p = bind_p(&mut host, 0);
+    let mut client = drained_v4(&mut host, p, 0);
+    let q = bind_q(&mut host, 1);
+    let mut twin = drained_v3(&mut host, q, 1);
+    // A trusted move leaves one undrained frame for each session.
+    host.host_move(a(), m(4, 1)).expect("moves");
+    mirror_move(
+        &mut oracle,
+        a(),
+        m10_route(HOST_ROUTE_TAG, &[m(1, 1), m(4, 1)]),
+    );
+    assert_authority(&host, &oracle);
+    let pending_p = client.drain(&mut host, p, 2);
+    assert_eq!(pending_p.deltas.len(), 1);
+    // `Q` keeps its move frame pending while `P` is withheld.
+    let before_q: Vec<DeliveryEntry> = host.take_delivery_entries(q).expect("bound");
+    assert_eq!(before_q.len(), 1);
+    // Re-queue it by forgetting the take: the log still holds it until ack.
+    // (The take above only observed; acknowledge nothing yet.)
+    // Withhold `B` from `P` alone.
+    assert_eq!(host.set_position_withheld(p, vec![b()]), Ok(()));
+    let after_p = client.drain(&mut host, p, 3);
+    assert_eq!(
+        after_p.deltas,
+        vec![DeltaFrame {
+            lane: LANE_COMBAT,
+            server_tick: 0,
+            event_seq: 3,
+            ops: vec![pos(2, None)],
+        }]
+    );
+    // `Q` receives nothing new: exactly the one pending move frame.
+    let after_q = twin.drain(&mut host, q, 3);
+    assert_eq!(after_q.len(), 1);
+    assert_eq!(
+        codec_v3::decode_delta(&after_q[0].bytes).expect("a v3 delta"),
+        codec_v3::decode_delta(&before_q[0].bytes).expect("a v3 delta")
+    );
 }
