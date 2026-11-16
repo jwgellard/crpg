@@ -49,7 +49,7 @@ use crpg_server::capture::{CaptureEntry, CapturedRecord};
 use crpg_server::host::{
     ControlGrant, DeliveryEntry, DeliveryKind, DisclosureGrants, EntityDisclosure, EntityFactGrant,
     FactGrants, GrantUpdate, Host, HostConfig, HostError, IngestDisposition, PeerHandle,
-    ProtocolSelection, TransferDisposition, TransferState, DEFAULT_HOST_GRANTS,
+    ProtocolSelection, TransferDisposition, TransferState, DEFAULT_HOST_GRANTS, HOST_ROUTE_TAG,
 };
 use crpg_sim::{CombatAction, EncounterMode, HistoryWorld};
 use serde_json::{json, Value};
@@ -298,6 +298,60 @@ fn bind_q(host: &mut Host, now: u64) -> PeerHandle {
 
 fn assert_authority(host: &Host, oracle: &HistoryWorld) {
     assert_eq!(host.authority_hash(), crpg_sim::history_hash(oracle));
+}
+
+/// `M10`'s mesh: the box the area bounds of B5 and B9 bake.
+fn m10() -> crpg_nav::NavMesh {
+    crpg_nav::bake_box(
+        Fx16_16::ZERO,
+        crpg_nav::NavRect {
+            min_x: Fx16_16::ZERO,
+            min_z: Fx16_16::ZERO,
+            max_x: Fx16_16::from_int(10),
+            max_z: Fx16_16::from_int(10),
+        },
+        &[],
+    )
+    .expect("bakes")
+}
+
+/// `M10`'s revision, as `bind_area_bounds` computes it.
+fn m10_revision() -> crpg_sim::NavRevision {
+    crpg_sim::NavRevision::of_bytes(&m10().to_canonical_bytes())
+}
+
+/// `MoveRoute { R(M10), tag, points }`, computed on the same mesh.
+fn m10_route(tag: crpg_sim::RouteTag, points: &[[Fx16_16; 3]]) -> crpg_sim::MoveRoute {
+    crpg_sim::MoveRoute {
+        revision: m10_revision(),
+        tag,
+        points: points.to_vec(),
+    }
+}
+
+/// The mirror's `bind_nav` of `M10`, acknowledged after the call.
+fn mirror_bind_m10(oracle: &mut HistoryWorld) {
+    oracle
+        .bind_nav(m10_revision())
+        .expect("the mirror binds the revision");
+    oracle
+        .acknowledge(oracle.last_sequence())
+        .expect("acknowledges its own range");
+}
+
+/// The mirror's `perform_move`, acknowledged after the call.
+fn mirror_move(
+    oracle: &mut HistoryWorld,
+    actor: EntityId,
+    route: crpg_sim::MoveRoute,
+) -> crpg_sim::MoveOutcome {
+    let outcome = oracle
+        .perform_move(actor, &route)
+        .expect("the mirror moves");
+    oracle
+        .acknowledge(oracle.last_sequence())
+        .expect("acknowledges its own range");
+    outcome
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,7 +1307,9 @@ fn b4_presence_narrowing_reanchors() {
 #[test]
 fn b5_moved_follows_the_position_grant() {
     let row = fs(Some((0, 1)), Some(None));
-    let mut host = host_of(&mv3_value());
+    let value = mv3_value();
+    let mut host = host_of(&value);
+    let mut oracle = history_of(&value);
     assert_eq!(
         host.bind_area_bounds(fp(0, 0, 0), fp(655360, 655360, 655360)),
         Ok(crpg_server::host::NavBinding {
@@ -1275,6 +1331,8 @@ fn b5_moved_follows_the_position_grant() {
             placed: Vec::new(),
         })
     );
+    mirror_bind_m10(&mut oracle);
+    assert_authority(&host, &oracle);
     let p = bind_p(&mut host, 0);
     let mut client = drained_v4(&mut host, p, 0);
     let q = host
@@ -1297,6 +1355,20 @@ fn b5_moved_follows_the_position_grant() {
             to: m(4, 1),
         })
     );
+    assert_eq!(
+        mirror_move(
+            &mut oracle,
+            a(),
+            m10_route(HOST_ROUTE_TAG, &[m(1, 1), m(4, 1)]),
+        ),
+        crpg_sim::MoveOutcome {
+            actor: a(),
+            cost: 1,
+            from: m(1, 1),
+            to: m(4, 1),
+        }
+    );
+    assert_authority(&host, &oracle);
     let drained = client.drain(&mut host, p, 2);
     assert_eq!(
         drained.deltas,
@@ -1328,16 +1400,30 @@ fn b5_moved_follows_the_position_grant() {
     );
 
     // Control withheld: the same move, no `Moved`.
-    let mut other = host_of(&mv3_value());
+    let other_value = mv3_value();
+    let mut other = host_of(&other_value);
+    let mut other_oracle = history_of(&other_value);
     other
         .bind_area_bounds(fp(0, 0, 0), fp(655360, 655360, 655360))
         .expect("binds the mesh");
+    mirror_bind_m10(&mut other_oracle);
+    assert_authority(&other, &other_oracle);
     let r = bind_p(&mut other, 0);
     let mut other_client = drained_v4(&mut other, r, 0);
     assert_eq!(other.set_position_withheld(r, vec![a()]), Ok(()));
     let first = other_client.drain(&mut other, r, 1);
     assert_eq!(delta_ops(&first.entries), vec![pos(1, None)]);
     assert_eq!(other.host_move(a(), m(4, 1)).map(|o| o.cost), Ok(1));
+    assert_eq!(
+        mirror_move(
+            &mut other_oracle,
+            a(),
+            m10_route(HOST_ROUTE_TAG, &[m(1, 1), m(4, 1)]),
+        )
+        .cost,
+        1
+    );
+    assert_authority(&other, &other_oracle);
     let drained = other_client.drain(&mut other, r, 2);
     assert_eq!(
         drained.deltas,
@@ -1477,6 +1563,17 @@ fn assert_same_entries(left: &[DeliveryEntry], right: &[DeliveryEntry]) {
     }
 }
 
+/// A collected sequence of drained batches: non-empty, then byte-identical.
+fn assert_same_batches(left: &[DeliveryEntry], right: &[DeliveryEntry]) {
+    assert!(
+        !left.is_empty(),
+        "an empty batch sequence proves nothing about a v4 neighbour ({}, {})",
+        left.len(),
+        right.len()
+    );
+    assert_same_entries(left, right);
+}
+
 /// B9: a v4 session bound beside v2 and v3 ones changes no byte of theirs —
 /// in delivery or in the capture journal — while it does receive `Position`
 /// and `Moved`.
@@ -1566,8 +1663,14 @@ fn b9_older_bytes_unchanged_beside_v4() {
         y.p.as_ref()
             .map(|(handle, _)| y.host.epoch(*handle).expect("bound"));
 
-    // The mesh, then a trusted move while A still holds the turn.
-    for rig in [&mut x, &mut y] {
+    // The mesh, then a trusted move while A still holds the turn. Each host's
+    // drained batches are collected, so the comparisons below cannot be met
+    // by two empty sequences.
+    let mut xv = Vec::new();
+    let mut xq = Vec::new();
+    let mut yv = Vec::new();
+    let mut yq = Vec::new();
+    for (rig, v_batch, q_batch) in [(&mut x, &mut xv, &mut xq), (&mut y, &mut yv, &mut yq)] {
         assert_eq!(
             rig.host
                 .bind_area_bounds(fp(0, 0, 0), fp(655360, 655360, 655360))
@@ -1589,11 +1692,19 @@ fn b9_older_bytes_unchanged_beside_v4() {
         );
         assert_eq!(rig.host.host_move(a(), m(4, 1)).map(|o| o.cost), Ok(1));
         let (v, q) = rig.take_older();
-        let _ = (v, q);
+        v_batch.extend(v);
+        q_batch.extend(q);
     }
-    let (xv, xq) = x.take_older();
-    let (yv, yq) = y.take_older();
-    assert_same_entries(&xv, &yv);
+    // `Moved` is a v4 op, so the v2 `V` has no frame for the move; `Q`'s v3
+    // neighbour does, and both hosts must publish it identically.
+    assert!(
+        !xq.is_empty(),
+        "the move published nothing to the v3 session"
+    );
+    assert!(
+        !yq.is_empty(),
+        "the move published nothing to the v3 session"
+    );
     assert_same_entries(&xq, &yq);
     let xp = x.p_entries();
     let mut yp = y.p_entries();
@@ -1601,8 +1712,9 @@ fn b9_older_bytes_unchanged_beside_v4() {
     assert!(!yp.is_empty());
     assert_same_entries(&x.p_entries(), &xp);
 
-    // B2's script, run on both hosts' v3 session.
-    for rig in [&mut x, &mut y] {
+    // B2's script, run on both hosts' v3 session; the collected batches keep
+    // accumulating, so every drain of the run is compared exactly once.
+    for (rig, v_batch, q_batch) in [(&mut x, &mut xv, &mut xq), (&mut y, &mut yv, &mut yq)] {
         rig.now += 10;
         let now = rig.now;
         send_v3(
@@ -1617,7 +1729,8 @@ fn b9_older_bytes_unchanged_beside_v4() {
             now,
         );
         let (v, q) = rig.take_older();
-        let _ = (v, q);
+        v_batch.extend(v);
+        q_batch.extend(q);
         send_v3(&mut rig.host, rig.q, 2, 1, IntentBodyV3::EndTurn, now);
         rig.host
             .set_fact_grants(rig.q, facts_without_a_pools())
@@ -1629,12 +1742,12 @@ fn b9_older_bytes_unchanged_beside_v4() {
             rig.host.set_grants(rig.q, full_grants(&[a(), b()])),
             Ok(GrantUpdate::SnapshotStaged)
         );
-        let _ = rig.take_older();
+        let (v, q) = rig.take_older();
+        v_batch.extend(v);
+        q_batch.extend(q);
     }
-    let (xv, xq) = x.take_older();
-    let (yv, yq) = y.take_older();
-    assert_same_entries(&xv, &yv);
-    assert_same_entries(&xq, &yq);
+    assert_same_batches(&xv, &yv);
+    assert_same_batches(&xq, &yq);
     let x_captures = captures_without(x.host.read_capture_entries(0, 256).expect("reads"), [0; 16]);
     let y_captures = captures_without(
         y.host.read_capture_entries(0, 256).expect("reads"),
@@ -1660,7 +1773,6 @@ fn b9_older_bytes_unchanged_beside_v4() {
         }
     }
     assert!(saw_position && saw_moved, "{p_ops:?}");
-    let _ = xq.len();
     let _ = CapturedRecord {
         capture_seq: 0,
         epoch: [0; 16],
