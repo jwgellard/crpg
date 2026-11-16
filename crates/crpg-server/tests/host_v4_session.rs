@@ -2374,3 +2374,87 @@ fn b15_many_positions_span_frames() {
     assert_eq!(only.event_seq, 1);
     assert_eq!(only.ops.len(), 5);
 }
+
+/// Gap 7 (s01 s11 s13 s14 s15 s17 s19): the v4 staging plan's counters and
+/// bound, as far as the public API reaches. Transfer ids advance past the
+/// sentinel check, `event_seq` advances by one per frame (checked, not
+/// saturating), ordinal room fits, and the whole plan fits the v4 outbox
+/// bound with transfer frames counted in bytes.
+#[test]
+fn b16_v4_stage_counters_and_bound() {
+    let mut host = host_of(&mv3_value());
+    let p = bind_p(&mut host, 0);
+    let epoch = host.epoch(p).expect("bound");
+    let mut client = Client::new(epoch);
+    let first = client.drain(&mut host, p, 0);
+    assert_eq!(
+        host.transfer_state(p),
+        Ok(Some(TransferState {
+            next_transfer: 2,
+            in_flight: Some(1),
+        }))
+    );
+    // Ordinal room fits: three entries logged as ordinals 1, 2, 3.
+    assert_eq!(
+        shape(&first.entries),
+        vec![
+            (1, DeliveryKind::Transfer),
+            (2, DeliveryKind::Transfer),
+            (3, DeliveryKind::Delta),
+        ]
+    );
+    // A second staging while transfer 1 is in flight takes the next transfer
+    // id and the next `event_seq`, proving the sentinel did not trip and the
+    // sequence advanced by checked `+1` per frame.
+    assert_eq!(
+        host.set_grants(p, full_grants(&[a(), c()])),
+        Ok(GrantUpdate::SnapshotStaged)
+    );
+    let second = client.drain(&mut host, p, 1);
+    assert_eq!(
+        shape(&second.entries),
+        vec![
+            (4, DeliveryKind::Transfer),
+            (5, DeliveryKind::Transfer),
+            (6, DeliveryKind::Transfer),
+            (7, DeliveryKind::Delta),
+        ]
+    );
+    let TransferDown::Begin(begin) = decoded_transfer(&second.entries[1]) else {
+        panic!("the second staged entry is a Begin");
+    };
+    assert_eq!(begin.transfer, tid(2));
+    let delta = codec_v4::decode_delta(&second.entries[3].bytes).expect("a v4 delta");
+    assert_eq!(delta.event_seq, 2);
+    assert_eq!(
+        host.transfer_state(p),
+        Ok(Some(TransferState {
+            next_transfer: 3,
+            in_flight: Some(2),
+        }))
+    );
+    // The whole plan fits the v4 outbox bound (Reading 18): 4 entries and far
+    // below 2,880,916 bytes, transfer frames counted.
+    assert!(second.entries.len() <= 94);
+    let bytes: usize = second.entries.iter().map(|entry| entry.bytes.len()).sum();
+    assert!(bytes <= 2_880_916);
+    assert!(bytes > second.entries[3].bytes.len());
+    // Control: the 263-position plan of `b15` also fits the v4 bound.
+    let extra = 260usize;
+    let many = mv_many_value(extra);
+    let ids = many_ids(extra);
+    let mut big = host_of(&many);
+    let r = big
+        .bind_v4_peer(control(&[a()]), full_grants(&ids), facts(), r1(), 0)
+        .expect("binds");
+    let big_epoch = big.epoch(r).expect("bound");
+    let mut big_client = Client::new(big_epoch);
+    let big_staged = big_client.drain(&mut big, r, 0);
+    assert!(big_staged.entries.len() <= 94);
+    let big_bytes: usize = big_staged
+        .entries
+        .iter()
+        .map(|entry| entry.bytes.len())
+        .sum();
+    assert!(big_bytes <= 2_880_916);
+}
