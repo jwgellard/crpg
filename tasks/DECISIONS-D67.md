@@ -1,6 +1,6 @@
 # Decision D67 — session 68: the malicious-client suite (T042) questions and approval
 
-Status: **open, drafted by the manager in session 68.** Each question has a recommendation; answering "as recommended" answers all three.
+Status: **answered by the user, 2026-11-17 (session 69): D67a (a), D67b (a) now plus a backlog row for (b), D67c approve — all as recommended.**
 
 ## D67a — who writes the log line for a rejected client message (T042 Question 1)
 
@@ -28,3 +28,4 @@ T042 is one part, T042a: about 650 lines of tests in `crpg-net` (`tests/maliciou
 
 ## Agent log
 - 2026-11-17 (UTC) · claude-code/opus-5.5 (manager) + session 68 · Drafted the T042 decision batch from the contract's two questions and its review, with a recommendation for each.
+- 2026-11-17 (UTC) · claude-code/opus-5.5 (manager) + session 69 · Recorded the user's answers: all three as recommended.
