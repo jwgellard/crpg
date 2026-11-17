@@ -3163,3 +3163,96 @@ fn d12_actor_resolution() {
         );
     }
 }
+
+/// Gap 12 (mutant l03): the move bucket refills at 20 tokens per second, so
+/// after the 40-burst is spent at one `now_ms` the 41st intent is
+/// `RateLimited`, still `RateLimited` 49 ms later (49 ms refills 980
+/// milli-tokens, less than one token), and admitted 50 ms later (one full
+/// token). The admitted control then decides to `Accepted`.
+#[test]
+fn d4_move_bucket_refill_needs_a_full_period() {
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    for window in 0..5u64 {
+        for step in 0..8u64 {
+            let seq = window * 8 + step + 1;
+            assert_eq!(
+                rig.ingest_move(p, &halt_bytes(epoch, seq, 1), 5),
+                MoveAdmission::Admitted { seq }
+            );
+        }
+        rig.mirror_halt(a());
+        rig.assert_ticked(5);
+        assert_eq!(rig.receipts(p).len(), 8);
+    }
+    assert_eq!(
+        rig.ingest_move(p, &halt_bytes(epoch, 41, 1), 5),
+        MoveAdmission::Refused {
+            seq: Some(41),
+            code: CodeV3::RateLimited,
+        }
+    );
+    assert_eq!(
+        rig.ingest_move(p, &halt_bytes(epoch, 41, 1), 54),
+        MoveAdmission::Refused {
+            seq: Some(41),
+            code: CodeV3::RateLimited,
+        },
+        "49 ms refills less than one move token"
+    );
+    assert_eq!(
+        rig.ingest_move(p, &halt_bytes(epoch, 41, 1), 55),
+        MoveAdmission::Admitted { seq: 41 }
+    );
+    rig.mirror_halt(a());
+    rig.assert_ticked(55);
+    assert_eq!(
+        rig.receipts(p)[0].outcome,
+        MoveVerdict::Accepted { start_tick: 6 }
+    );
+}
+
+/// Gap 15 (mutant d11): a resent receipt is appended behind the queue, not
+/// put at the front. Taking seq 1, leaving seq 2 queued, then resending seq 1
+/// yields release order `[2, 1]`.
+#[test]
+fn d11_resent_receipt_is_appended_behind_the_queue() {
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    let first = halt_bytes(epoch, 1, 1);
+    let second = halt_bytes(epoch, 2, 1);
+    assert_eq!(
+        rig.ingest_move(p, &first, 10),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    rig.mirror_halt(a());
+    rig.assert_ticked(10);
+    assert_eq!(
+        rig.receipts(p)
+            .iter()
+            .map(|receipt| receipt.seq)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(
+        rig.ingest_move(p, &second, 20),
+        MoveAdmission::Admitted { seq: 2 }
+    );
+    rig.mirror_halt(a());
+    rig.assert_ticked(20);
+    // Seq 2's receipt is queued; resending seq 1 appends behind it.
+    assert_eq!(
+        rig.ingest_move(p, &first, 20),
+        MoveAdmission::Duplicate {
+            seq: 1,
+            resent: true
+        }
+    );
+    assert_eq!(
+        rig.receipts(p)
+            .iter()
+            .map(|receipt| receipt.seq)
+            .collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+}
