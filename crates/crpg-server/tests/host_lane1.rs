@@ -3256,3 +3256,106 @@ fn d11_resent_receipt_is_appended_behind_the_queue() {
         vec![2, 1]
     );
 }
+
+/// Gap 14, part 1 (mutant w14, D-5): a direct `host.tick()` never decides.
+/// The admitted intent stays pending through the tick (no receipt) and is
+/// decided by the next `advance`, with `processed_tick` of the decision
+/// point and `Accepted` starting on the following tick.
+#[test]
+fn tick_never_decides_lane1() {
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    assert_eq!(
+        rig.ingest_move(p, &move_to_bytes(epoch, 1, 1, (262144, 0, 65536)), 10),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    rig.host.tick().expect("ticks without deciding");
+    rig.mirror_tick();
+    assert_eq!(rig.receipts(p), Vec::new(), "the tick decides nothing");
+    rig.mirror_route(a(), m(4, 1), 1);
+    rig.assert_ticked(20);
+    assert_eq!(
+        rig.receipts(p),
+        vec![MoveReceipt {
+            epoch,
+            seq: 1,
+            actor: n(1),
+            processed_tick: 1,
+            outcome: MoveVerdict::Accepted { start_tick: 2 },
+        }]
+    );
+}
+
+/// Gap 14, part 2 (mutant o01, D-7 (1)): in turn-based `MV3` a controlled
+/// non-combatant mover is `Accepted`, beside a combatant control that is
+/// `Rejected(WrongMode)`. Lane 1 is the real-time and exploration lane, so
+/// the mode refusal applies to combatants only.
+#[test]
+fn non_combatant_mover_accepted_in_turn_based() {
+    fn mv3_with_bystander() -> Value {
+        let mut value = mv3_value();
+        value["world"]["entities"]["slots"]
+            .as_array_mut()
+            .expect("entity slots")
+            .push(json!({"generation": 1, "value": {}}));
+        value["world"]["movers"]
+            .as_array_mut()
+            .expect("movers")
+            .push(json!([
+                {"index": 3, "generation": 1},
+                {"position": [131072, 0, 131072], "speed": 65536, "step": 655360},
+            ]));
+        value["world"]["transforms"]
+            .as_array_mut()
+            .expect("transforms")
+            .push(json!([
+                {"index": 3, "generation": 1},
+                {"position": [2.0, 0.0, 2.0], "velocity": [0.0, 0.0, 0.0]},
+            ]));
+        value
+    }
+    let mut rig = Rig::new(&mv3_with_bystander());
+    rig.bind_nav();
+    let bystander = eid(3);
+    let p = rig
+        .host
+        .bind_v4_peer(
+            control(&[a(), bystander]),
+            full_grants(&[a(), b(), c(), bystander]),
+            facts(),
+            r1(),
+            0,
+        )
+        .expect("binds");
+    rig.publish(p);
+    let epoch = rig.epoch(p);
+    assert_eq!(
+        rig.ingest_move(p, &move_to_bytes(epoch, 1, 4, (262144, 0, 131072)), 10),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    assert_eq!(
+        rig.ingest_move(p, &move_to_bytes(epoch, 2, 1, (262144, 0, 65536)), 10),
+        MoveAdmission::Admitted { seq: 2 }
+    );
+    rig.mirror_route(bystander, m(4, 2), 1);
+    rig.assert_ticked(10);
+    assert_eq!(
+        rig.receipts(p),
+        vec![
+            MoveReceipt {
+                epoch,
+                seq: 1,
+                actor: n(4),
+                processed_tick: 0,
+                outcome: MoveVerdict::Accepted { start_tick: 1 },
+            },
+            MoveReceipt {
+                epoch,
+                seq: 2,
+                actor: n(1),
+                processed_tick: 0,
+                outcome: MoveVerdict::Rejected(CodeV3::WrongMode),
+            },
+        ]
+    );
+}
