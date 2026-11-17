@@ -82,6 +82,12 @@ Authoritative contract: `tasks/T025a.md` S§21.
   `Err(_)` from `resolve`, send `Rejected { epoch: request.epoch, reason:
   Denied }` (cause-neutral). After any `Rejected`, close with
   `close(conn, code, Flush)` (Q§4.5, Q§9 item 8).
+- **Addendum 2026-11-17 (D68b):** a host refuses a resume by closing at once
+  with close code 5 (the client starts a new session) or 7 (busy, retry),
+  without sending a `Rejected` frame and waiting for it to flush, because
+  the flush wait can stall the server loop up to the transport's flush
+  timeout on every forged request. T025b-q implements this; T046 maps the
+  two codes on the client.
 - **H5.** On `Accepted`, before anything else:
   - fence the session's previous connection if it is still open;
   - send the result;
@@ -125,3 +131,4 @@ Mechanism lives here; authenticated policy lives in `crpg-server` (T025b).
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Filed ADR-0032 Accepted per D39d S§26 item 9, recording S§2 and H1–H8 with the contract as authoritative.
 - 2026-10-30 (UTC) · opencode-go/deepseek-v4-pro + T025a1 · Restored H1, H4, H5 and H6 in full from S§21 (review 1): H1's `poll_event`-only warning, H4's `accept_resume`/`close(.., Flush)`, H5's `base_tick` = current server tick and unacknowledged-log clearing, H6's `finalized_through = next_new_seq − 1`.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T025a2 · Addendum: the fence, explicit-decision and rebind mechanisms landed in `crates/crpg-net/src/resume.rs` and the additive `reassembly::rebind_receiver`, proved by `reconnect_wire` cases 11–21.
+- 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + S71-bookkeeping · Addendum (D68b): a refused resume closes at once with close code 5 or 7 instead of sending `Rejected` and waiting for the flush; T025b-q implements it, T046 maps the codes on the client.

@@ -189,7 +189,8 @@ Each I row needs its C row approved first unless it says **ready**.
 | T023b | C → I | crpg-server | T022, T023 | QUIC host adapter: bind, start, pump, shutdown, errors |
 | T024 | C → I | crpg-net | T021, T023b | D11 versioned bounded snapshot transfer |
 | T025a | C → I | crpg-net | T024 | D12 resume/resync wire mechanisms |
-| T025b | C → I | crpg-server | T022, T023b, T025a | 30-second same-process grace and session fencing |
+| T025b-i | C → I | crpg-server | T022, T023b, T025a | `host.rs`: fence, grace, resume, expiry (contract approved D68, user, 2026-11-17); about 280 code + 750 test lines, with a two-keys writer from another lab on cases G3, G4, G6, G7 |
+| T025b-q | C → I | crpg-server | T025b-i | `quic.rs`: the network side, the `blake3` edge (D68a); about 240 code + 600 test lines |
 | T043 | C → I | crpg-server | T022 | Intent rate/queue policy and rejection codes (E022 ledger). H-filter |
 
 **4B — interest management**
@@ -225,6 +226,10 @@ Each I row needs its C row approved first unless it says **ready**.
 | T037 | C → I | crpg-server | T026p, T035, T036c | Movement host adapter. Split into T037a–e, serial (D60); T037e is the `crpg-testkit` part (tests only); T037a done on the session 60 batch (PR open), T037b next |
 | T150 | C → I | crpg-net-quic, then crpg-server | T037d | Lane-1 movement stream and datagram transport, plus the `crpg-server` `quic.rs` v4 route. Fact sheet `tasks/T150-facts.md`; blind drafts `tasks/T150-draft-a.md` and `tasks/T150-draft-b.md`; next an Opus architect contract |
 | T151 | C → I | crpg-godot | T037d | Protocol v4 movement bridge. Fact sheet `tasks/T151-facts.md`; blind drafts `tasks/T151-draft-a.md` and `tasks/T151-draft-b.md`; next an Opus architect contract |
+| T154a | C → I | crpg-server | — | Run loop part 1 (contract approved D66, user, 2026-11-17, revision 4): `run.rs` (`Hosting`, `HostLoop` and its cycle order, `LocalHost`, `LocalClient`); S-set: the cycle order. Done on the batch mgr/session-62-batch, approved by the user (session 70); PR pending |
+| T154b | C → I | crpg-server | T154a | Run loop part 2: `runner.rs` (`Clock`, `SystemClock`, `spawn`, `RunnerHandle`); blocked on the T154a merge |
+| T154c | C → I | crpg-server | T154b | Run loop part 3: `LocalHost` lane 1; blocked on the previous part |
+| T154d | C → I | crpg-server | T154c | Run loop part 4: `QuicHosting` and the save-into-dedicated proof; blocked on the previous part |
 
 **4D — persistence**
 
@@ -462,3 +467,4 @@ estimates slip.
 - 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + S46-bookkeeping · Added the T036c → T149b and T149a → T149b prerequisites on the T149 row and T036c → T037 on the T037 row, so the plan carries the session 46 contract split.
 - 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Noted on the T037 row that D60 splits it into T037a–e and that T037e exists as the `crpg-testkit` part, so the plan matches the approved contract.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + S60-bookkeeping · Added T150 and T151 beside T037, recorded T037a done on the session 60 batch with T037b next and the T056 contract with its D62 answers and split, so the plan matches the session's filed work.
+- 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + S71-bookkeeping · Split T025b into T025b-i and T025b-q (quic side depends on the host side) with the D68a `blake3` edge, and added the T154a–d run-loop rows beside T150/T151, so the plan matches the approved contracts and the batch state.
