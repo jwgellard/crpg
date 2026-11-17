@@ -18,7 +18,7 @@ use crpg_core::{EntityId, Ulid};
 use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
 use crpg_net::protocol::{IntentBody, IntentFrame, NetId, LANE_COMBAT};
-use crpg_net::protocol_transfer::{TransferId, TransferUp};
+use crpg_net::protocol_transfer::{ResyncReason, TransferId, TransferUp};
 use crpg_net::protocol_v3::PauseReason;
 use crpg_net::transport::Transport;
 use crpg_server::host::{
@@ -174,6 +174,15 @@ fn published(epoch: [u8; 16], transfer: u64) -> Vec<u8> {
     codec_transfer::encode_up(&TransferUp::Published {
         epoch,
         transfer: TransferId::new(transfer).expect("nonzero"),
+    })
+    .expect("encodes")
+}
+
+fn resync(epoch: [u8; 16], transfer: Option<u64>, reason: ResyncReason) -> Vec<u8> {
+    codec_transfer::encode_up(&TransferUp::Resync {
+        epoch,
+        after: transfer.and_then(TransferId::new),
+        reason,
     })
     .expect("encodes")
 }
@@ -1792,4 +1801,604 @@ fn ai_hook_receives_every_cycle_time_and_can_be_cleared() {
     control.step(0).expect("runs");
     control.step(600).expect("runs");
     assert_eq!(control.cycles(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// T154a fix round 1, part B (gaps 10–18): one test per gap. Each case has a
+// control beside it: the same setup with the one difference removed,
+// asserting the other outcome.
+// ---------------------------------------------------------------------------
+
+/// Gap 10 (B-5; M). An unbound handle outranks an existing link: after
+/// `unbind_peer` a re-attach is `UnknownPeer`, not `AlreadyAttached`.
+/// Kills a02 (the epoch check after the link check).
+#[test]
+fn reattach_after_unbind_is_unknown_peer() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let stale = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    host_loop.hosting_mut().host_mut().unbind_peer(p);
+    // The stale link is still tabled, so a link-first check would answer
+    // `AlreadyAttached`: the epoch check must come first.
+    assert!(host_loop.hosting().link_stats(p).is_some());
+    assert_eq!(
+        host_loop.hosting_mut().attach(p, cap(64)).err(),
+        Some(LocalError::UnknownPeer)
+    );
+    drop(stale);
+
+    // Control: still bound, a second attach is refused as attached.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut hosting = LocalHost::new(host);
+    let _client = hosting.attach(p, cap(64)).expect("attaches");
+    assert_eq!(
+        hosting.attach(p, cap(64)).err(),
+        Some(LocalError::AlreadyAttached)
+    );
+}
+
+/// Gap 11 (retire preamble; M). A retired record keeps the link's final
+/// counters: a held link retired after delivery was accepted records
+/// `sent > 0` and `held == true`. Kills r11 r12 (a record reset on retire).
+#[test]
+fn retired_record_keeps_sent_and_held() {
+    // Reach a hold exactly like K11, reading P so its delivery is accepted.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let s = host
+        .bind_peer(control(&[]), full_grants(), 0)
+        .expect("binds");
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut p_client = host_loop
+        .hosting_mut()
+        .attach(p, cap(4_096))
+        .expect("attaches");
+    let _s_client = host_loop.hosting_mut().attach(s, cap(1)).expect("attaches");
+    let mut sent = 0u64;
+    let mut cycle = 0u64;
+    while cycle < 2_000 {
+        drain(&mut p_client);
+        for _ in 0..2 {
+            let actor = 1 + (sent % 3);
+            let frame = actor_end_frame(host_loop.hosting().host(), p, sent + 1, actor);
+            p_client.send(&frame).expect("sends");
+            sent += 1;
+        }
+        host_loop.step(50 * cycle).expect("runs");
+        cycle += 1;
+        if host_loop.hosting().link_stats(p).expect("link").held {
+            break;
+        }
+    }
+    assert!(host_loop.hosting().link_stats(p).expect("link").held);
+
+    // Control (same setup, client kept): one more cycle retires nothing and
+    // the hold and the accepted delivery are still on the link.
+    drain(&mut p_client);
+    host_loop.step(50 * cycle).expect("runs");
+    cycle += 1;
+    let before = host_loop.hosting().link_stats(p).expect("link");
+    assert!(before.held);
+    assert!(before.sent > 0);
+    assert_eq!(before.refused, 0);
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+
+    // Dropped between cycles, the link retires with those counters intact:
+    // the unbind makes the held frame's retry `Unauthenticated`, so intake
+    // retires the link holding its final `sent` and `held`.
+    host_loop.hosting_mut().host_mut().unbind_peer(p);
+    host_loop.step(50 * cycle).expect("runs");
+    assert_eq!(host_loop.hosting().link_stats(p), None);
+    assert_eq!(
+        host_loop.hosting().host().epoch(p),
+        Err(HostError::UnknownPeer)
+    );
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, p);
+    assert_eq!(retired[0].1.received, before.received);
+    assert_eq!(retired[0].1.refused, before.refused + 1);
+    assert_eq!(retired[0].1.sent, before.sent);
+    assert!(retired[0].1.sent > 0);
+    assert!(retired[0].1.held);
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+    assert_eq!(host_loop.hosting().retired_dropped(), 0);
+}
+
+/// Gap 12 (B-9; M). Sixty-six retirements drop the two oldest records:
+/// the list holds Q2..Q65 in bind order and `retired_dropped == 2`, while
+/// at most 8 peers are ever bound at once (K17 rev3). Kills r05 (the cap
+/// keeps the newest or loses the count).
+#[test]
+fn retired_records_drop_oldest_beyond_the_cap() {
+    assert_eq!(MAX_RETIRED_RECORDS, 64);
+    assert_eq!(MAX_PEERS, 8);
+    let mut host_loop = HostLoop::new(LocalHost::new(tb3()), 0);
+    let mut handles = Vec::new();
+    for round in 0..=8u64 {
+        let count = if round <= 7 { 8 } else { 2 };
+        let now = 50 * round;
+        for _ in 0..count {
+            let peer = host_loop
+                .hosting_mut()
+                .host_mut()
+                .bind_peer(control(&[]), full_grants(), now)
+                .expect("binds");
+            let client = host_loop
+                .hosting_mut()
+                .attach(peer, cap(1))
+                .expect("attaches");
+            drop(client);
+            handles.push(peer);
+        }
+        let step = host_loop.step(now).expect("runs");
+        assert!(step.cycle.is_some());
+        assert_eq!(step.missed, 0);
+        for peer in handles.iter().skip(handles.len() - count as usize).copied() {
+            assert_eq!(host_loop.hosting().link_stats(peer), None);
+            assert_eq!(
+                host_loop.hosting().host().epoch(peer),
+                Err(HostError::UnknownPeer)
+            );
+        }
+        if round <= 7 {
+            assert_eq!(host_loop.hosting().retired_dropped(), 0);
+        }
+    }
+    assert_eq!(handles.len(), 66);
+    assert!(handles.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(host_loop.hosting().retired_dropped(), 2);
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 64);
+    for (index, (peer, stats)) in retired.iter().enumerate() {
+        assert_eq!(*peer, handles[index + 2]);
+        assert_eq!(stats.received, 0);
+        assert_eq!(stats.refused, 0);
+    }
+    assert_eq!(retired.first().expect("first").0, handles[2]);
+    assert_eq!(retired.last().expect("last").0, handles[65]);
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+    assert_eq!(host_loop.hosting().retired_dropped(), 2);
+
+    // Control: eight rounds fill exactly 64 records and drop none.
+    let mut host_loop = HostLoop::new(LocalHost::new(tb3()), 0);
+    let mut handles = Vec::new();
+    for round in 0..=7u64 {
+        let now = 50 * round;
+        for _ in 0..8 {
+            let peer = host_loop
+                .hosting_mut()
+                .host_mut()
+                .bind_peer(control(&[]), full_grants(), now)
+                .expect("binds");
+            let client = host_loop
+                .hosting_mut()
+                .attach(peer, cap(1))
+                .expect("attaches");
+            drop(client);
+            handles.push(peer);
+        }
+        host_loop.step(now).expect("runs");
+    }
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 64);
+    assert_eq!(retired.first().expect("first").0, handles[0]);
+    assert_eq!(retired.last().expect("last").0, handles[63]);
+    assert_eq!(host_loop.hosting().retired_dropped(), 0);
+}
+
+/// Gap 13 (B-6 Route; M). A `0x81` frame reaches `ingest_transfer`:
+/// `Published`, `Stale` and `Resynced` continue with `refused == 0`, an
+/// unbound peer's transfer frame is counted and retires the link, and the
+/// same holds past the first cycle. Kills v01 v03 v04 v07 v08 v11 v22.
+#[test]
+fn transfer_frames_route_by_first_byte_through_ingest_transfer() {
+    fn narrowed(host: &mut Host) -> (PeerHandle, [u8; 16]) {
+        let w = host
+            .bind_snapshot_peer(control(&[a(), b(), c()]), full_grants(), 0)
+            .expect("binds");
+        let mut grants = full_grants();
+        grants.abilities = vec![strike()];
+        assert_eq!(host.set_grants(w, grants), Ok(GrantUpdate::SnapshotStaged));
+        let epoch = host.epoch(w).expect("bound");
+        (w, epoch)
+    }
+
+    // (a) `Published` at step 50, not only the first cycle: in flight ends,
+    // nothing refused, nothing held.
+    let mut host = tb3();
+    let (w, epoch) = narrowed(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 50);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(w, cap(64))
+        .expect("attaches");
+    client.send(&published(epoch, 1)).expect("sends");
+    let step = host_loop.step(50).expect("runs");
+    assert_eq!(step.missed, 0);
+    assert_eq!(
+        host_loop.hosting().host().transfer_state(w),
+        Ok(Some(TransferState {
+            next_transfer: 2,
+            in_flight: None,
+        }))
+    );
+    let stats = host_loop.hosting().link_stats(w).expect("link");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert!(!stats.held);
+
+    // (b) A repeat publish is `Stale`: still continued, still uncounted.
+    let mut host = tb3();
+    let (w, epoch) = narrowed(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(w, cap(64))
+        .expect("attaches");
+    client.send(&published(epoch, 1)).expect("sends");
+    client.send(&published(epoch, 1)).expect("sends");
+    host_loop.step(0).expect("runs");
+    assert_eq!(
+        host_loop.hosting().host().transfer_state(w),
+        Ok(Some(TransferState {
+            next_transfer: 2,
+            in_flight: None,
+        }))
+    );
+    let stats = host_loop.hosting().link_stats(w).expect("link");
+    assert_eq!(stats.received, 2);
+    assert_eq!(stats.refused, 0);
+    assert!(!stats.held);
+
+    // (c) A resync of the in-flight transfer is `Resynced`: continued,
+    // uncounted, and the next transfer is staged.
+    let mut host = tb3();
+    let (w, epoch) = narrowed(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(w, cap(64))
+        .expect("attaches");
+    client
+        .send(&resync(epoch, Some(1), ResyncReason::Expired))
+        .expect("sends");
+    host_loop.step(0).expect("runs");
+    assert_eq!(
+        host_loop.hosting().host().transfer_state(w),
+        Ok(Some(TransferState {
+            next_transfer: 3,
+            in_flight: Some(2),
+        }))
+    );
+    let stats = host_loop.hosting().link_stats(w).expect("link");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert!(!stats.held);
+
+    // (d) An unbound peer's transfer frame is counted and retires the link.
+    let mut host = tb3();
+    let (w, epoch) = narrowed(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(w, cap(64))
+        .expect("attaches");
+    host_loop.step(0).expect("runs");
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+    host_loop.hosting_mut().host_mut().unbind_peer(w);
+    client.send(&published(epoch, 1)).expect("sends");
+    host_loop.step(50).expect("runs");
+    assert_eq!(host_loop.hosting().link_stats(w), None);
+    assert_eq!(
+        host_loop.hosting().host().epoch(w),
+        Err(HostError::UnknownPeer)
+    );
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, w);
+    assert_eq!(retired[0].1.received, 1);
+    assert_eq!(retired[0].1.refused, 1);
+
+    // Control: an unknown transfer is counted and dropped, the link stays
+    // unheld, and a second step changes nothing.
+    let mut host = tb3();
+    let (w, epoch) = narrowed(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(w, cap(64))
+        .expect("attaches");
+    client.send(&published(epoch, 9)).expect("sends");
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(w).expect("link stays");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 1);
+    assert!(!stats.held);
+    assert_eq!(
+        host_loop.hosting().host().transfer_state(w),
+        Ok(Some(TransferState {
+            next_transfer: 2,
+            in_flight: Some(1),
+        }))
+    );
+    host_loop.step(50).expect("runs");
+    let stats = host_loop.hosting().link_stats(w).expect("link stays");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 1);
+    assert!(!stats.held);
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+    drop(client);
+}
+
+/// Gap 14 (B-6; M). Two frames queued behind an unbind count only the
+/// first: the first retires the link and the drain stops. Kills v15 (the
+/// drain continues past the retirement).
+#[test]
+fn two_frames_after_unbind_count_only_the_first() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    host_loop.step(0).expect("runs");
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+    let first = end_frame(host_loop.hosting().host(), p, 1);
+    let second = end_frame(host_loop.hosting().host(), p, 2);
+    let queued = drain(&mut client);
+    host_loop.hosting_mut().host_mut().unbind_peer(p);
+    client.send(&first).expect("sends");
+    client.send(&second).expect("sends");
+    host_loop.step(50).expect("runs");
+    assert_eq!(host_loop.hosting().link_stats(p), None);
+    assert_eq!(
+        host_loop.hosting().host().epoch(p),
+        Err(HostError::UnknownPeer)
+    );
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, p);
+    assert_eq!(retired[0].1.received, 1);
+    assert_eq!(retired[0].1.refused, 1);
+    // The frames sent before the unbind are still readable, in order.
+    assert!(!queued.is_empty());
+    assert_eq!(client.recv(), None);
+    assert!(client.is_closed());
+    assert_eq!(client.send(&first), Err(LinkError::Closed));
+
+    // Control: still bound, both frames are taken and none refused.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut quiet = control.hosting_mut().attach(p, cap(64)).expect("attaches");
+    let first = end_frame(control.hosting().host(), p, 1);
+    let second = end_frame(control.hosting().host(), p, 2);
+    quiet.send(&first).expect("sends");
+    quiet.send(&second).expect("sends");
+    control.step(0).expect("runs");
+    let stats = control.hosting().link_stats(p).expect("link stays");
+    assert_eq!(stats.received, 2);
+    assert_eq!(stats.refused, 0);
+    assert!(!stats.held);
+}
+
+/// Gap 15 (B-6; L). An empty frame is not a transfer frame: it goes to
+/// `host.ingest`, which stages it, so the link continues with nothing
+/// refused and nothing held. Kills v20 (empty dropped or misrouted).
+#[test]
+fn empty_frame_routes_to_ingest_and_continues() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    client.send(&[]).expect("sends");
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link stays");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert!(!stats.held);
+
+    // The frame reached the host's lane-0 path: the loop's delivery equals
+    // a twin that staged the same empty bytes by hand.
+    let mut twin = tb3();
+    assert_eq!(bind(&mut twin), p);
+    assert_eq!(twin.ingest(p, &[], 0), Ok(IngestDisposition::Staged));
+    twin.pump(0).expect("pumps");
+    twin.advance(0).expect("advances");
+    let entries = twin.take_delivery_entries(p).expect("bound");
+    if let Some(last) = entries.last() {
+        twin.acknowledge_delivery(p, last.ordinal).expect("acks");
+    }
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks captures");
+    assert_eq!(
+        host_loop.hosting().host().authority_hash(),
+        twin.authority_hash()
+    );
+    assert_eq!(
+        drain(&mut client),
+        entries
+            .into_iter()
+            .map(|entry| entry.bytes)
+            .collect::<Vec<_>>()
+    );
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+
+    // Control: a one-byte `0x81` frame on a lane-0 peer routes to
+    // `ingest_transfer`, which refuses it as `NotSnapshotPeer`.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut quiet = control.hosting_mut().attach(p, cap(64)).expect("attaches");
+    quiet.send(&[0x81]).expect("sends");
+    control.step(0).expect("runs");
+    let stats = control.hosting().link_stats(p).expect("link stays");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 1);
+    assert!(!stats.held);
+}
+
+/// Gap 16 (B-3; L). A host ahead in time fails the cycle at intake: the
+/// step is `Hosting(TimeRegression)`, the AI hook never runs, and the
+/// drain stops after the first frame. Kills v23 v24 i25.
+#[test]
+fn host_time_regression_stops_the_cycle_mid_drain() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    // The host's last accepted time moves to 100; the loop starts at 0.
+    host.pump(100).expect("pumps");
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    let ran: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let probe = Arc::clone(&ran);
+    host_loop
+        .hosting_mut()
+        .set_ai(Some(Box::new(move |_host: &mut Host, _now_ms: u64| {
+            *probe.lock().expect("recorder") = true;
+            Ok(())
+        })));
+    let first = end_frame(host_loop.hosting().host(), p, 1);
+    let second = end_frame(host_loop.hosting().host(), p, 2);
+    client.send(&first).expect("sends");
+    client.send(&second).expect("sends");
+
+    let error = host_loop.step(0).expect_err("regresses");
+    assert_eq!(error, LoopError::Hosting(HostError::TimeRegression));
+    assert_eq!(
+        error.to_string(),
+        "Hosting at run/step: TimeRegression at host/admission"
+    );
+    // The hook never ran and only the first frame left the queue.
+    assert!(!*ran.lock().expect("recorder"));
+    let stats = host_loop.hosting().link_stats(p).expect("link stays");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert!(!stats.held);
+    assert_eq!(host_loop.cycles(), 1);
+
+    // Control: the same loop stepped at the host's time runs the hook and
+    // takes the second frame.
+    let step = host_loop.step(100).expect("runs");
+    assert!(step.cycle.is_some());
+    assert!(*ran.lock().expect("recorder"));
+    let stats = host_loop.hosting().link_stats(p).expect("link stays");
+    assert_eq!(stats.received, 2);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(host_loop.cycles(), 2);
+}
+
+/// Gap 17 (B-10; L). The first `send` after the server end went away
+/// reports `Closed` and sets the flag: no `recv` needs to come first.
+/// Kills n04 n05 (the flag set only on the receive path).
+#[test]
+fn send_first_after_drop_reports_closed() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop.hosting_mut().attach(p, cap(2)).expect("attaches");
+    let first = end_frame(host_loop.hosting().host(), p, 1);
+    let second = actor_end_frame(host_loop.hosting().host(), p, 2, 2);
+    assert_eq!(client.send(&first), Ok(()));
+    assert_eq!(client.send(&second), Ok(()));
+    assert_eq!(client.send(&first), Err(LinkError::Full));
+    assert!(!client.is_closed());
+
+    host_loop.step(0).expect("runs");
+    drop(host_loop);
+    // No `recv` first: the send itself finds the queue gone.
+    assert_eq!(client.send(b"later"), Err(LinkError::Closed));
+    assert!(client.is_closed());
+    assert!(client.recv().is_some());
+    assert!(client.recv().is_some());
+    assert_eq!(client.recv(), None);
+    assert!(client.is_closed());
+    assert_eq!(client.send(b"later"), Err(LinkError::Closed));
+    assert_eq!(LinkError::Closed.to_string(), "Closed at run/link");
+
+    // Control: before the drop the client is open and the queue delivers.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut quiet = control.hosting_mut().attach(p, cap(2)).expect("attaches");
+    let first = end_frame(control.hosting().host(), p, 1);
+    quiet.send(&first).expect("sends");
+    assert!(!quiet.is_closed());
+    control.step(0).expect("runs");
+    assert!(!quiet.is_closed());
+    assert!(quiet.recv().is_some());
+}
+
+/// Gap 18 (B-7(3)/(5); L). The AI hook runs between intake and deliver: a
+/// client it drops retires at deliver, with its staged command applied.
+/// Kills d10 d11 (no retire on a deliver-time disconnect).
+#[test]
+fn ai_hook_dropped_client_retires_at_deliver() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    let frame = end_frame(host_loop.hosting().host(), p, 1);
+    client.send(&frame).expect("sends");
+    let slot: Arc<Mutex<Option<LocalClient>>> = Arc::new(Mutex::new(None));
+    slot.lock().expect("slot").replace(client);
+    let dropped = Arc::clone(&slot);
+    let ran: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let probe = Arc::clone(&ran);
+    host_loop
+        .hosting_mut()
+        .set_ai(Some(Box::new(move |_host: &mut Host, _now_ms: u64| {
+            *probe.lock().expect("recorder") = true;
+            drop(dropped.lock().expect("slot").take());
+            Ok(())
+        })));
+    host_loop.step(0).expect("runs");
+    assert!(*ran.lock().expect("recorder"));
+
+    // Intake took the frame, deliver found the queue gone: one record.
+    assert_eq!(host_loop.hosting().link_stats(p), None);
+    assert_eq!(
+        host_loop.hosting().host().epoch(p),
+        Err(HostError::UnknownPeer)
+    );
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, p);
+    assert_eq!(retired[0].1.received, 1);
+    assert_eq!(retired[0].1.refused, 0);
+    assert!(!retired[0].1.held);
+    assert_eq!(retired[0].1.sent, 0);
+    // The staged command was still applied before the drop.
+    assert_eq!(host_loop.hosting().host().server_tick(), 1);
+    assert_eq!(host_loop.hosting().host().awaiting_orders(), vec![b()]);
+
+    // Control: a hook that keeps the client retires nothing.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut quiet = control.hosting_mut().attach(p, cap(64)).expect("attaches");
+    let frame = end_frame(control.hosting().host(), p, 1);
+    quiet.send(&frame).expect("sends");
+    control
+        .hosting_mut()
+        .set_ai(Some(Box::new(|_host: &mut Host, _now_ms: u64| Ok(()))));
+    control.step(0).expect("runs");
+    assert!(control.hosting().link_stats(p).is_some());
+    assert!(control.hosting_mut().take_retired().is_empty());
+    assert_eq!(control.hosting().host().server_tick(), 1);
 }
