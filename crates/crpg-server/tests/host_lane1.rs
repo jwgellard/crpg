@@ -34,7 +34,10 @@ use crpg_net::outbox_v4::MoveOutbox;
 use crpg_net::pool_v4::{
     GateMode, ReassemblyPoolV4, ReceiverIdV4, ReplicaUpdateV4, TransferLimitsV3,
 };
-use crpg_net::protocol::{NetId, ReceiptStatus, LANE_COMBAT};
+use crpg_net::protocol::{
+    NetId, ReceiptStatus, LANE_COMBAT, POLICY_INGRESS_BYTES_PER_PEER,
+    POLICY_INGRESS_FRAMES_PER_PEER,
+};
 use crpg_net::protocol_transfer::{TransferId, TransferUp};
 use crpg_net::protocol_v3::{PauseRights, RejectionCode as CodeV3};
 use crpg_net::protocol_v4::SessionEpoch;
@@ -1894,6 +1897,67 @@ fn d5_precedence_pairs() {
     // need 2^64 intents or one value to be two.
 }
 
+/// D-1 step 6: the ingress-room checks other than per-peer frames.
+/// `POLICY_INGRESS_FRAMES_PER_PEER` − 1 staged lane-0 frames still admit the
+/// next lane-1 frame; `POLICY_INGRESS_BYTES_PER_PEER` staged bytes refuse it
+/// with `QueueFull`. (The eight-peer host caps need eight saturated peers;
+/// skipped as too costly for the same code path.)
+#[test]
+fn d6_ingress_room_frames_and_bytes() {
+    // 127 staged frames admit the next.
+    {
+        let (mut rig, p) = lane1_rig(&mv3rt_value());
+        let epoch = rig.epoch(p);
+        let mut now = 5;
+        for seq in 1..=(POLICY_INGRESS_FRAMES_PER_PEER as u64 - 1) {
+            let frame = codec_v4::encode_intent(&IntentFrameV4 {
+                epoch,
+                lane: LANE_COMBAT,
+                seq,
+                observed_tick: 0,
+                actor: n(1),
+                body: IntentBodyV4::DeclareAction {
+                    ability: strike(),
+                    target: n(2),
+                },
+            })
+            .expect("encodes");
+            assert_eq!(
+                rig.host.ingest(p, &frame, now),
+                Ok(crpg_server::host::IngestDisposition::Staged)
+            );
+            now += 25;
+        }
+        assert_eq!(
+            rig.ingest_move(p, &halt_bytes(epoch, 1, 1), now),
+            MoveAdmission::Admitted { seq: 1 }
+        );
+    }
+    // About 256 KiB staged refuse the next with `QueueFull`.
+    {
+        let (mut rig, p) = lane1_rig(&mv3rt_value());
+        let epoch = rig.epoch(p);
+        let staged = vec![0xABu8; 4_096];
+        let mut now = 5;
+        for _ in 0..(POLICY_INGRESS_BYTES_PER_PEER / 4_096) {
+            assert_eq!(
+                rig.host.ingest(p, &staged, now),
+                Ok(crpg_server::host::IngestDisposition::Staged)
+            );
+            now += 100;
+        }
+        let state = state_of(&mut rig, &[p]);
+        assert_eq!(
+            rig.ingest_move(p, &halt_bytes(epoch, 1, 1), now),
+            MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::QueueFull,
+            }
+        );
+        assert_unchanged(&mut rig, &state, &[p]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // D6.
 // ---------------------------------------------------------------------------
@@ -2257,6 +2321,76 @@ fn d8_rejected_resend_spends_refilled_token() {
     let summary = control.host.pump(105).expect("pump");
     assert_eq!(summary.dropped_replies, 0, "{summary:?}");
     assert_eq!(summary.rejected, 1, "{summary:?}");
+}
+
+/// D-1 step 6 before HM-2 step 1 on a v3 session: with full ingress even a
+/// version-mismatched frame is `QueueFull`; with room a lane-byte-0 frame is
+/// `UnsupportedVersion`, because decode (which would say `WrongDirection`)
+/// is never reached.
+#[test]
+fn d5_v3_queue_full_before_version() {
+    // Full ingress: 128 staged lane-0 frames, one per 25 ms.
+    let mut rig = Rig::new(&mv3rt_value());
+    rig.bind_nav();
+    let q = rig.bind_v3();
+    let epoch = rig.epoch(q);
+    let mut now = 5;
+    for seq in 1..=128u64 {
+        let frame = codec_v4::encode_intent(&IntentFrameV4 {
+            epoch,
+            lane: LANE_COMBAT,
+            seq,
+            observed_tick: 0,
+            actor: n(1),
+            body: IntentBodyV4::DeclareAction {
+                ability: strike(),
+                target: n(2),
+            },
+        })
+        .expect("encodes");
+        assert_eq!(
+            rig.host.ingest(q, &frame, now),
+            Ok(crpg_server::host::IngestDisposition::Staged)
+        );
+        now += 25;
+    }
+    let mut bad = halt_bytes(epoch, 1, 1);
+    bad[17] = 0;
+    let state = state_of(&mut rig, &[q]);
+    assert_eq!(
+        rig.ingest_move(q, &bad, now),
+        MoveAdmission::Refused {
+            seq: None,
+            code: CodeV3::QueueFull,
+        }
+    );
+    assert_unchanged(&mut rig, &state, &[q]);
+    // Control: with room the same bytes are `UnsupportedVersion` ...
+    let mut control = Rig::new(&mv3rt_value());
+    control.bind_nav();
+    let r = control.bind_v3();
+    let epoch = control.epoch(r);
+    let mut bad = halt_bytes(epoch, 1, 1);
+    bad[17] = 0;
+    assert_eq!(
+        control.ingest_move(r, &bad, 10),
+        MoveAdmission::Refused {
+            seq: None,
+            code: CodeV3::UnsupportedVersion,
+        }
+    );
+    // ... while a v4 session with room reaches decode: `WrongDirection`.
+    let (mut v4, p) = lane1_rig(&mv3rt_value());
+    let epoch = v4.epoch(p);
+    let mut bad = halt_bytes(epoch, 1, 1);
+    bad[17] = 0;
+    assert_eq!(
+        v4.ingest_move(p, &bad, 10),
+        MoveAdmission::Refused {
+            seq: None,
+            code: CodeV3::WrongDirection,
+        }
+    );
 }
 
 // ---------------------------------------------------------------------------
