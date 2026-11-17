@@ -9596,6 +9596,331 @@ mod tests {
         );
     }
 
+    // -- T037b fix round 3b: the surviving mutants outside `plan_v4_stage` --
+
+    fn bind_v3(host: &mut Host, grants: DisclosureGrants) -> PeerHandle {
+        let peer = host
+            .bind_v3_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                grants,
+                v3_facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+            .expect("binds");
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        if let Some(v3) = host.sessions.get_mut(&peer).expect("bound").v3.as_mut() {
+            v3.throttle = None;
+        }
+        peer
+    }
+
+    /// `mv_value` with `extra` additional present movers (indices 3..), so a
+    /// v4 staging page spans several delta frames (round 2's gap-6 pattern).
+    fn mv_many_value(extra: u32) -> serde_json::Value {
+        let mut value = mv_value();
+        for i in 3..3 + extra {
+            let k = 1 + (i % 20);
+            let l = 1 + ((i / 20) % 20);
+            let x_raw = 65536 * (k as i32);
+            let z_raw = 65536 * (l as i32);
+            value["world"]["entities"]["slots"]
+                .as_array_mut()
+                .expect("slots")
+                .push(serde_json::json!({"generation": 1, "value": {}}));
+            value["world"]["movers"]
+                .as_array_mut()
+                .expect("movers")
+                .push(serde_json::json!([
+                    {"index": i, "generation": 1},
+                    {"position": [x_raw, 0, z_raw], "speed": 65536, "step": 655360}
+                ]));
+            value["world"]["transforms"]
+                .as_array_mut()
+                .expect("transforms")
+                .push(serde_json::json!([
+                    {"index": i, "generation": 1},
+                    {"position": [k as f32, 0.0, l as f32], "velocity": [0.0, 0.0, 0.0]}
+                ]));
+        }
+        value
+    }
+
+    fn many_grants(ids: &[EntityId]) -> DisclosureGrants {
+        let disclosure = |entity: EntityId| EntityDisclosure {
+            entity,
+            present: true,
+            health: true,
+            spawn: true,
+            despawn: true,
+            died: true,
+            action_actor: true,
+            action_target: true,
+            action_outcome: true,
+            action_damage: true,
+            turn_start: true,
+        };
+        DisclosureGrants {
+            entities: ids.iter().copied().map(disclosure).collect(),
+            abilities: vec![
+                Ulid::from_u128(603),
+                Ulid::from_u128(604),
+                Ulid::from_u128(605),
+            ],
+            encounters: vec![Ulid::from_u128(601)],
+            turn_round: true,
+            encounter_end: true,
+            turn_state: true,
+        }
+    }
+
+    /// s11: the staging count takes `deltas` as `deltas.len()`, not 1. With
+    /// two anchoring delta frames, ordinal room for every frame but one
+    /// refuses, while a count of the deltas as 1 would still fit.
+    #[test]
+    fn t037b_fix3b_s11_stage_count_needs_every_delta_frame() {
+        let extra = 260u32;
+        let mut history: HistoryWorld =
+            serde_json::from_value(mv_many_value(extra)).expect("mover fixture loads");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        let mut host = Host::from_history(
+            history,
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 1,
+            },
+            0,
+        )
+        .expect("wraps an acknowledged authority");
+        let ids: Vec<EntityId> = (0..3 + extra).map(eid).collect();
+        assert_eq!(ids.len(), 263);
+        let peer = host
+            .bind_v4_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                many_grants(&ids),
+                v3_facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+            .expect("binds");
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        if let Some(v3) = host.sessions.get_mut(&peer).expect("bound").v3.as_mut() {
+            v3.throttle = None;
+        }
+        // 263 anchored positions plus `Clock` and `HostFacts`: two delta frames.
+        let stage = plan_v4_stage_of(&host, peer).expect("control stages");
+        assert_eq!(stage.deltas.len(), 2);
+        let count =
+            (stage.frames.len() + usize::from(stage.cancel.is_some()) + stage.deltas.len()) as u64;
+        // Room for every frame but one delta: the true count overflows it.
+        host.sessions.get_mut(&peer).expect("bound").next_ordinal = (u64::MAX - 1) - (count - 1);
+        assert_eq!(
+            plan_v4_stage_of(&host, peer).unwrap_err(),
+            HostError::CounterExhausted
+        );
+        // Room equal to the true count stages.
+        host.sessions.get_mut(&peer).expect("bound").next_ordinal = (u64::MAX - 1) - count;
+        assert!(
+            plan_v4_stage_of(&host, peer).is_ok(),
+            "ordinal room equal to the true count stages"
+        );
+    }
+
+    /// b07: `bind_v4_peer` refuses when `next_handle` is the sentinel, as
+    /// `bind_v3_peer` does (B-1).
+    #[test]
+    fn t037b_fix3b_b07_handle_sentinel_is_counter_exhausted() {
+        let bind = |host: &mut Host| {
+            host.bind_v4_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                full_grants(),
+                v3_facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+        };
+        let mut host = mv_host();
+        host.next_handle = u64::MAX;
+        assert_eq!(bind(&mut host).unwrap_err(), HostError::CounterExhausted);
+        // Control: one id below the sentinel binds that handle.
+        host.next_handle = u64::MAX - 1;
+        let peer = bind(&mut host).expect("one id below the sentinel binds");
+        assert_eq!(peer.get(), u64::MAX - 1);
+    }
+
+    /// w09: `set_position_withheld` publishes to that session alone (B-8).
+    /// The v3 control session holds a pending leave, so a publish to every
+    /// session would change its log.
+    #[test]
+    fn t037b_fix3b_w09_withheld_publishes_to_that_session_alone() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        let other = bind_v3(&mut host, full_grants());
+        // The v3 session has a page pending: `C` leaves its interest,
+        // unpublished.
+        let mut hidden = full_grants();
+        hidden.entities[2].present = false;
+        host.sessions.get_mut(&other).expect("bound").grants = hidden;
+        let log_len = host.sessions.get(&other).expect("bound").log.len();
+        let log_bytes = host.sessions.get(&other).expect("bound").log_bytes;
+        // Withhold `B` from the v4 session alone.
+        host.set_position_withheld(peer, vec![eid(1)])
+            .expect("withholds");
+        let session = host.sessions.get(&peer).expect("bound");
+        let last = session.log.back().expect("the withhold logged a frame");
+        assert_eq!(last.event_seq, Some(2));
+        let frame = codec_v4::decode_delta(&last.bytes).expect("a v4 delta");
+        assert_eq!(frame.server_tick, 0);
+        assert_eq!(
+            frame.ops,
+            vec![DeltaOpV4::Position {
+                entity: net(2),
+                position: None,
+            }]
+        );
+        // The v3 session receives nothing new.
+        let session = host.sessions.get(&other).expect("bound");
+        assert_eq!(session.log.len(), log_len);
+        assert_eq!(session.log_bytes, log_bytes);
+        // Control: the v3 session's page was really pending — publishing it
+        // now delivers `C`'s `EntityLeave`, and the timeline without `C`
+        // (the fixture orders `A`, `B`, `C` under keys 1, 2, 3).
+        host.publish_v3(Some(other), &[]);
+        let session = host.sessions.get(&other).expect("bound");
+        assert_eq!(session.log.len(), log_len + 1);
+        let last = session.log.back().expect("the pending page logged");
+        let page = codec_v3::decode_delta(&last.bytes).expect("a v3 delta");
+        assert_eq!(
+            page.ops,
+            vec![
+                DeltaOpV3::EntityLeave { entity: net(3) },
+                DeltaOpV3::Timeline {
+                    entries: Some(vec![
+                        crpg_net::protocol_v3::TimelineEntry {
+                            key: 1,
+                            entity: net(1),
+                        },
+                        crpg_net::protocol_v3::TimelineEntry {
+                            key: 2,
+                            entity: net(2),
+                        },
+                    ]),
+                },
+            ]
+        );
+    }
+
+    /// p12: page candidates chunk at `MAX_DELTA_OPS`. Exactly one more
+    /// candidate splits into two frames of `MAX_DELTA_OPS` and 1.
+    #[test]
+    fn t037b_fix3b_p12_page_candidates_chunk_at_256() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        let events: Vec<HistoryEnvelope> = (0..MAX_DELTA_OPS + 1)
+            .map(|index| moved_envelope(5 + index as u64, 0))
+            .collect();
+        assert_eq!(events.len(), MAX_DELTA_OPS + 1);
+        let session = host.sessions.get(&peer).expect("bound");
+        let plan = host
+            .plan_v4_page(session, &events, None, None, false)
+            .expect("one more than a frame still plans");
+        assert_eq!(plan.frames.len(), 2);
+        let first = codec_v4::decode_delta(&plan.frames[0].1).expect("a v4 delta");
+        let second = codec_v4::decode_delta(&plan.frames[1].1).expect("a v4 delta");
+        assert_eq!(first.ops.len(), MAX_DELTA_OPS);
+        assert_eq!(second.ops.len(), 1);
+        assert_eq!((first.event_seq, second.event_seq), (2, 3));
+        // Control: exactly `MAX_DELTA_OPS` candidates fit one frame.
+        let control_events: Vec<HistoryEnvelope> = (0..MAX_DELTA_OPS)
+            .map(|index| moved_envelope(5 + index as u64, 0))
+            .collect();
+        let session = host.sessions.get(&peer).expect("bound");
+        let control = host
+            .plan_v4_page(session, &control_events, None, None, false)
+            .expect("a full frame plans");
+        assert_eq!(control.frames.len(), 1);
+        let only = codec_v4::decode_delta(&control.frames[0].1).expect("a v4 delta");
+        assert_eq!(only.ops.len(), MAX_DELTA_OPS);
+        assert_eq!(only.event_seq, 2);
+    }
+
+    /// p22: a page that produces no frames captures nothing, even with an
+    /// involved set; a page with frames captures its view.
+    #[test]
+    fn t037b_fix3b_p22_empty_page_captures_nothing() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        let involved: BTreeSet<EntityId> = BTreeSet::from([eid(0)]);
+        let session = host.sessions.get(&peer).expect("bound");
+        let plan = host
+            .plan_v4_page(session, &[], None, Some(&involved), false)
+            .expect("plans");
+        assert!(
+            plan.frames.is_empty(),
+            "an unchanged page produces no frames"
+        );
+        assert!(
+            plan.capture.is_none(),
+            "a page with no frames captures nothing"
+        );
+        // Control: the same call with a receipt frames once and captures.
+        let epoch = host.epoch(peer).expect("bound");
+        let tick = host.server_tick();
+        let receipt = receipt_op_v3(epoch, 7, tick, ReceiptV3::Applied);
+        let session = host.sessions.get(&peer).expect("bound");
+        let framed = host
+            .plan_v4_page(session, &[], Some(receipt), Some(&involved), false)
+            .expect("plans");
+        assert_eq!(framed.frames.len(), 1);
+        let capture = framed
+            .capture
+            .expect("a page with frames captures its view");
+        assert_eq!(capture.epoch, epoch);
+    }
+
+    /// p24: the page's `event_seq` step is checked, not saturating: the
+    /// counter at `u64::MAX` with a page to send is `CounterExhausted`.
+    #[test]
+    fn t037b_fix3b_p24_page_event_seq_sentinel_is_counter_exhausted() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        let epoch = host.epoch(peer).expect("bound");
+        let tick = host.server_tick();
+        let receipt = receipt_op_v3(epoch, 7, tick, ReceiptV3::Applied);
+        host.sessions.get_mut(&peer).expect("bound").next_event_seq = u64::MAX;
+        let session = host.sessions.get(&peer).expect("bound");
+        assert_eq!(
+            host.plan_v4_page(session, &[], Some(receipt.clone()), None, false)
+                .unwrap_err(),
+            HostError::CounterExhausted
+        );
+        // Control: one id below the sentinel plans one frame at that seq.
+        host.sessions.get_mut(&peer).expect("bound").next_event_seq = u64::MAX - 1;
+        let session = host.sessions.get(&peer).expect("bound");
+        let plan = host
+            .plan_v4_page(session, &[], Some(receipt), None, false)
+            .expect("one id below the sentinel plans");
+        assert_eq!(plan.frames.len(), 1);
+        assert_eq!(plan.frames[0].0, u64::MAX - 1);
+    }
+
     // -- T037c: samples share the egress caps (C8) ---------------------------
 
     /// Replaces a session's delivery log with `frames` one-byte frames, as if
