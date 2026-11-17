@@ -9190,6 +9190,320 @@ mod tests {
         assert_eq!(throttle_of(&host, p), closed);
     }
 
+    // -- T037b fix round 2, part C: gaps 8-10 (unit) -------------------------
+
+    fn mv_value() -> serde_json::Value {
+        let mut value = host_fixture_value(false);
+        value["world"]["movers"] = serde_json::json!([
+            [{"index": 0, "generation": 1},
+             {"position": [65536, 0, 65536], "speed": 65536, "step": 655360}],
+            [{"index": 1, "generation": 1},
+             {"position": [196608, 0, 65536], "speed": 65536, "step": 655360}],
+            [{"index": 2, "generation": 1},
+             {"position": [65536, 0, 327680], "speed": 65536, "step": 655360}]
+        ]);
+        value["world"]["transforms"] = serde_json::json!([
+            [{"index": 0, "generation": 1},
+             {"position": [1.0, 0.0, 1.0], "velocity": [0.0, 0.0, 0.0]}],
+            [{"index": 1, "generation": 1},
+             {"position": [3.0, 0.0, 1.0], "velocity": [0.0, 0.0, 0.0]}],
+            [{"index": 2, "generation": 1},
+             {"position": [1.0, 0.0, 5.0], "velocity": [0.0, 0.0, 0.0]}]
+        ]);
+        value["world"]["combat"]["definition"]["movement"] = serde_json::json!({
+            "measure": "euclidean",
+            "pool": "000000000000000000000000JY",
+            "step_cost": 1
+        });
+        value
+    }
+
+    fn mv_host() -> Host {
+        let mut history: HistoryWorld =
+            serde_json::from_value(mv_value()).expect("mover fixture loads");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        Host::from_history(
+            history,
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 1,
+            },
+            0,
+        )
+        .expect("wraps an acknowledged authority")
+    }
+
+    fn bind_v4(host: &mut Host, grants: DisclosureGrants) -> PeerHandle {
+        bind_v4_with(host, grants, v3_facts())
+    }
+
+    fn bind_v4_with(host: &mut Host, grants: DisclosureGrants, facts: FactGrants) -> PeerHandle {
+        let peer = host
+            .bind_v4_peer(
+                ControlGrant {
+                    actors: vec![eid(0)],
+                },
+                grants,
+                facts,
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+            .expect("binds");
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        if let Some(v3) = host.sessions.get_mut(&peer).expect("bound").v3.as_mut() {
+            v3.throttle = None;
+        }
+        peer
+    }
+
+    fn moved_envelope(seq: u64, entity: u32) -> HistoryEnvelope {
+        serde_json::from_value(serde_json::json!({
+            "tick": 0,
+            "seq": seq,
+            "payload": {
+                "type": "moved",
+                "value": {
+                    "entity": {"index": entity, "generation": 1},
+                    "points": [[65536, 0, 65536], [131072, 0, 65536]]
+                }
+            }
+        }))
+        .expect("moved envelope parses")
+    }
+
+    fn plan_v4_ops(
+        host: &Host,
+        peer: PeerHandle,
+        events: &[HistoryEnvelope],
+        receipt: Option<DeltaOpV3>,
+    ) -> Vec<DeltaOpV4> {
+        let session = host.sessions.get(&peer).expect("bound");
+        let plan = host
+            .plan_v4_page(session, events, receipt, None, false)
+            .expect("plans");
+        let mut ops = Vec::new();
+        for (_, bytes) in &plan.frames {
+            let frame = codec_v4::decode_delta(bytes).expect("a v4 delta");
+            ops.extend(frame.ops);
+        }
+        ops
+    }
+
+    fn moved_entities(ops: &[DeltaOpV4]) -> Vec<NetId> {
+        ops.iter()
+            .filter_map(|op| match op {
+                DeltaOpV4::Moved { entity, .. } => Some(*entity),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn v3_ops_of(ops: &[DeltaOpV4]) -> Vec<DeltaOpV3> {
+        ops.iter()
+            .filter_map(|op| match op {
+                DeltaOpV4::V3(inner) => Some(inner.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn t037b_gap8_moved_carries_the_post_page_id() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        let mut hidden = full_grants();
+        hidden.entities[2].present = false;
+        host.sessions.get_mut(&peer).expect("bound").grants = hidden;
+        host.publish_v3(Some(peer), &[]);
+        host.sessions.get_mut(&peer).expect("bound").grants = full_grants();
+        let ops = plan_v4_ops(&host, peer, &[moved_envelope(5, 2)], None);
+        let enters: Vec<NetId> = ops
+            .iter()
+            .filter_map(|op| match op {
+                DeltaOpV4::V3(DeltaOpV3::EntityEnter { entity }) => Some(*entity),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(enters, vec![net(4)]);
+        assert_eq!(moved_entities(&ops), vec![net(4)]);
+        let moved = ops
+            .iter()
+            .find_map(|op| match op {
+                DeltaOpV4::Moved { entity, points } => Some((*entity, points.clone())),
+                _ => None,
+            })
+            .expect("a Moved op");
+        assert_eq!(moved.0, net(4));
+        assert_eq!(
+            moved.1,
+            vec![
+                Point::new([65536, 0, 65536]).expect("in bound"),
+                Point::new([131072, 0, 65536]).expect("in bound"),
+            ]
+        );
+        let control = plan_v4_ops(&host, peer, &[moved_envelope(6, 1)], None);
+        assert_eq!(moved_entities(&control), vec![net(2)]);
+        let control_enters: Vec<NetId> = control
+            .iter()
+            .filter_map(|op| match op {
+                DeltaOpV4::V3(DeltaOpV3::EntityEnter { entity }) => Some(*entity),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(control_enters, vec![net(4)]);
+    }
+
+    #[test]
+    fn t037b_gap9_despawned_page_uses_the_list_and_the_retired_id() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        let before = host.history.last_sequence();
+        assert_eq!(host.history.despawn(eid(2)), Ok(true));
+        let events = host
+            .history
+            .read_after(before, MAX_HISTORY_PAGE)
+            .expect("reads");
+        assert!(events
+            .iter()
+            .any(|e| e.payload == HistoryEvent::Despawned { entity: eid(2) }));
+        let ops = plan_v4_ops(&host, peer, &events, None);
+        let despawned: Vec<NetId> = ops
+            .iter()
+            .filter_map(|op| match op {
+                DeltaOpV4::V3(DeltaOpV3::Despawned { entity }) => Some(*entity),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(despawned, vec![net(3), net(3)]);
+        assert!(!ops.contains(&DeltaOpV4::V3(DeltaOpV3::EntityLeave { entity: net(3) })));
+        let mut host = mv_host();
+        let mut grants = full_grants();
+        grants.entities[2].despawn = false;
+        let peer = bind_v4(&mut host, grants);
+        let before = host.history.last_sequence();
+        assert_eq!(host.history.despawn(eid(2)), Ok(true));
+        let events = host
+            .history
+            .read_after(before, MAX_HISTORY_PAGE)
+            .expect("reads");
+        let ops = plan_v4_ops(&host, peer, &events, None);
+        let despawned: Vec<NetId> = ops
+            .iter()
+            .filter_map(|op| match op {
+                DeltaOpV4::V3(DeltaOpV3::Despawned { entity }) => Some(*entity),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(despawned, Vec::<NetId>::new());
+        assert!(ops.contains(&DeltaOpV4::V3(DeltaOpV3::EntityLeave { entity: net(3) })));
+        let mut host = mv_host();
+        let mut grants = full_grants();
+        grants.entities.push(EntityDisclosure {
+            entity: eid(7),
+            present: true,
+            health: false,
+            spawn: false,
+            despawn: true,
+            died: false,
+            action_actor: false,
+            action_target: false,
+            action_outcome: false,
+            action_damage: false,
+            turn_start: false,
+        });
+        let peer = bind_v4(&mut host, grants);
+        let untold = plan_v4_ops(&host, peer, &[envelope(5, "despawned", 7)], None);
+        assert_eq!(
+            untold
+                .iter()
+                .filter(|op| matches!(op, DeltaOpV4::V3(DeltaOpV3::Despawned { .. })))
+                .count(),
+            0
+        );
+        let told = plan_v4_ops(&host, peer, &[envelope(6, "despawned", 2)], None);
+        assert_eq!(
+            told.iter()
+                .filter(|op| **op == DeltaOpV4::V3(DeltaOpV3::Despawned { entity: net(3) }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn t037b_gap10_page_order_is_receipt_enters_events_rest() {
+        fn bare_facts() -> FactGrants {
+            FactGrants {
+                entities: (0..3)
+                    .map(|index| EntityFactGrant {
+                        entity: eid(index),
+                        pools: false,
+                        effects: false,
+                        stats: false,
+                        tags: false,
+                    })
+                    .collect(),
+                encounter: EncounterGrants {
+                    mode: false,
+                    pending_mode: false,
+                    clock: false,
+                    timeline: false,
+                },
+                host: DEFAULT_HOST_GRANTS,
+            }
+        }
+        let mut host = v2_host(false);
+        let mut hidden = full_grants();
+        hidden.entities[2].present = false;
+        let peer = bind_v4_with(&mut host, hidden, bare_facts());
+        host.sessions.get_mut(&peer).expect("bound").grants = full_grants();
+        let epoch = host.epoch(peer).expect("bound");
+        let tick = host.server_tick();
+        let receipt = receipt_op_v3(epoch, 7, tick, ReceiptV3::Applied);
+        let ops = plan_v4_ops(&host, peer, &[round_started(5)], Some(receipt.clone()));
+        let v3 = v3_ops_of(&ops);
+        assert_eq!(v3[0], receipt);
+        assert_eq!(v3[1], DeltaOpV3::EntityEnter { entity: net(3) });
+        assert_eq!(v3[2], DeltaOpV3::RoundStarted { round: 1 });
+        assert_eq!(
+            v3[3],
+            DeltaOpV3::Health {
+                entity: net(3),
+                health: 3,
+                max_health: 3,
+                dead: false,
+            }
+        );
+        assert_eq!(v3.len(), 4);
+        let bare = plan_v4_ops(&host, peer, &[round_started(5)], None);
+        let v3 = v3_ops_of(&bare);
+        assert_eq!(v3[0], DeltaOpV3::EntityEnter { entity: net(3) });
+        assert_eq!(v3[1], DeltaOpV3::RoundStarted { round: 1 });
+        assert_eq!(
+            v3[2],
+            DeltaOpV3::Health {
+                entity: net(3),
+                health: 3,
+                max_health: 3,
+                dead: false,
+            }
+        );
+        let mut host = v2_host(false);
+        let peer = bind_v4_with(&mut host, full_grants(), bare_facts());
+        let epoch = host.epoch(peer).expect("bound");
+        let tick = host.server_tick();
+        let receipt = receipt_op_v3(epoch, 7, tick, ReceiptV3::Applied);
+        let ops = plan_v4_ops(&host, peer, &[round_started(5)], Some(receipt.clone()));
+        let v3 = v3_ops_of(&ops);
+        assert_eq!(v3[0], receipt);
+        assert_eq!(v3[1], DeltaOpV3::RoundStarted { round: 1 });
+        assert!(!v3.contains(&DeltaOpV3::EntityEnter { entity: net(3) }));
+    }
+
     // -- T037c: samples share the egress caps (C8) ---------------------------
 
     /// Replaces a session's delivery log with `frames` one-byte frames, as if
