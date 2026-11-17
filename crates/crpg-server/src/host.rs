@@ -9295,4 +9295,261 @@ mod tests {
             assert!(host.room_for(session, 1, 1));
         }
     }
+
+    /// Gap 9 (mutants t01, r07, r08, r14): `Host::egress_bytes` is always the
+    /// sum of every session's delivery-log bytes and lane-1 bytes, through
+    /// admit, release, take, resend and fence. A missed add or subtract at
+    /// any of those steps leaves the total off the recomputed sum here.
+    #[test]
+    fn host_egress_tracks_lane1_through_admit_release_take_resend_and_fence() {
+        fn expected(host: &Host) -> usize {
+            host.sessions
+                .values()
+                .map(|session| session.log_bytes + session.lane1_egress().1)
+                .sum()
+        }
+        let (mut host, peer) = v4_host_with_log(0);
+        assert_eq!(host.egress_bytes, 0);
+        assert_eq!(expected(&host), 0);
+        let epoch = host.epoch(peer).expect("bound");
+        let halt = crpg_net::movement_v4::encode_intent(&crpg_net::movement_v4::MoveIntent {
+            epoch,
+            seq: 1,
+            actor: net(1),
+            body: crpg_net::movement_v4::MoveBody::Halt,
+        })
+        .expect("encodes");
+        // Admit: one 60-byte reservation joins egress.
+        assert_eq!(
+            host.ingest_move(peer, &halt, 5),
+            Ok(MoveAdmission::Admitted { seq: 1 })
+        );
+        assert_eq!(host.egress_bytes, expected(&host));
+        assert_eq!(host.egress_bytes, 60);
+        // Release: the advance decides and swaps the reservation for the
+        // receipt's own length; taking it frees the receipt.
+        host.advance(5).expect("advances");
+        assert_eq!(host.egress_bytes, expected(&host));
+        assert_eq!(host.take_move_receipts(peer).expect("receipts").len(), 1);
+        assert_eq!(host.egress_bytes, expected(&host));
+        // Resend: the cached receipt is queued again and counted again.
+        assert_eq!(
+            host.ingest_move(peer, &halt, 30),
+            Ok(MoveAdmission::Duplicate {
+                seq: 1,
+                resent: true
+            })
+        );
+        assert_eq!(host.egress_bytes, expected(&host));
+        assert_eq!(host.take_move_receipts(peer).expect("receipts").len(), 1);
+        // Fence: the same seq with different bytes removes the session and
+        // its log and lane-1 bytes leave egress with it.
+        let conflict = crpg_net::movement_v4::encode_intent(&crpg_net::movement_v4::MoveIntent {
+            epoch,
+            seq: 1,
+            actor: net(1),
+            body: crpg_net::movement_v4::MoveBody::MoveTo {
+                destination: crpg_net::protocol_v4::Point::new([65536, 0, 65536])
+                    .expect("within the wire bound"),
+            },
+        })
+        .expect("encodes");
+        assert_eq!(
+            host.ingest_move(peer, &conflict, 55),
+            Ok(MoveAdmission::Refused {
+                seq: Some(1),
+                code: CodeV3::SeqConflict,
+            })
+        );
+        assert!(host.sessions.is_empty());
+        assert_eq!(host.egress_bytes, 0);
+        assert_eq!(expected(&host), 0);
+        assert_eq!(host.epoch(peer), Err(HostError::UnknownPeer));
+    }
+
+    /// Gap 11 (mutants i42, d05): the host-byte part of `room_for` binds
+    /// lane-1 admission and resend. With egress one reservation below the
+    /// host cap the receipt fits and is admitted; one byte more is refused.
+    /// The resend control is the same one-byte boundary at its own length.
+    #[test]
+    fn lane1_host_byte_cap_binds_admission_and_resend() {
+        use crpg_net::movement_v4::{encode_intent, MoveBody, MoveIntent};
+        // Admission fits exactly at `cap - 60`.
+        let (mut host, peer) = v4_host_with_log(0);
+        let caps = host.egress_caps;
+        let epoch = host.epoch(peer).expect("bound");
+        let halt = encode_intent(&MoveIntent {
+            epoch,
+            seq: 1,
+            actor: net(1),
+            body: MoveBody::Halt,
+        })
+        .expect("encodes");
+        host.egress_bytes = caps.host_bytes - crate::host_v4::MAX_MOVE_RECEIPT_BYTES;
+        assert_eq!(
+            host.ingest_move(peer, &halt, 5),
+            Ok(MoveAdmission::Admitted { seq: 1 })
+        );
+        // Control: one byte more has no host room and consumes no sequence.
+        let (mut full, peer) = v4_host_with_log(0);
+        let caps = full.egress_caps;
+        let epoch = full.epoch(peer).expect("bound");
+        let halt = encode_intent(&MoveIntent {
+            epoch,
+            seq: 1,
+            actor: net(1),
+            body: MoveBody::Halt,
+        })
+        .expect("encodes");
+        full.egress_bytes = caps.host_bytes - crate::host_v4::MAX_MOVE_RECEIPT_BYTES + 1;
+        assert_eq!(
+            full.ingest_move(peer, &halt, 5),
+            Ok(MoveAdmission::Refused {
+                seq: Some(1),
+                code: CodeV3::QueueFull,
+            })
+        );
+        {
+            let session = full.sessions.get(&peer).expect("bound");
+            let lane = super::lane_of(session).expect("v4");
+            assert_eq!(lane.next_seq, crpg_net::protocol::SEQ_FIRST);
+            assert!(lane.slots.is_empty());
+        }
+        // Resend fits exactly at `cap - receipt_len`, refused one byte over.
+        let (mut host, peer) = v4_host_with_log(0);
+        let caps = host.egress_caps;
+        let epoch = host.epoch(peer).expect("bound");
+        let halt = encode_intent(&MoveIntent {
+            epoch,
+            seq: 1,
+            actor: net(1),
+            body: MoveBody::Halt,
+        })
+        .expect("encodes");
+        assert_eq!(
+            host.ingest_move(peer, &halt, 5),
+            Ok(MoveAdmission::Admitted { seq: 1 })
+        );
+        host.advance(5).expect("advances");
+        let taken = host.take_move_receipts(peer).expect("receipts");
+        assert_eq!(taken.len(), 1);
+        let receipt_len = taken[0].len();
+        host.egress_bytes = caps.host_bytes - receipt_len;
+        assert_eq!(
+            host.ingest_move(peer, &halt, 30),
+            Ok(MoveAdmission::Duplicate {
+                seq: 1,
+                resent: true
+            })
+        );
+        assert_eq!(host.take_move_receipts(peer).expect("receipts").len(), 1);
+        host.egress_bytes = caps.host_bytes - receipt_len + 1;
+        assert_eq!(
+            host.ingest_move(peer, &halt, 55),
+            Ok(MoveAdmission::Duplicate {
+                seq: 1,
+                resent: false
+            })
+        );
+    }
+
+    /// Gap 13 e02 (mutant e02, Reading 23, C-7): pacing counts lane-1 frames
+    /// and bytes beside the delivery log. With 127 logged frames and one
+    /// slot reservation the cap is full, so a pending outbox entry waits;
+    /// control with the reservation freed moves it.
+    #[test]
+    fn pace_session_counts_lane1_reservations() {
+        use crate::host_v4::{MoveSlot, MAX_MOVE_RECEIPT_BYTES};
+        use crpg_net::movement_v4::MoveBody;
+        // Test: 127 logged frames plus one 60-byte slot reservation.
+        let (mut host, peer) = v4_host_with_log(127);
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session
+                .v3
+                .as_mut()
+                .and_then(|v3| v3.v4.as_mut())
+                .expect("v4")
+                .lane
+                .slots
+                .push_back(MoveSlot {
+                    seq: 1,
+                    order: 0,
+                    canonical: Vec::new(),
+                    actor_net: net(1),
+                    actor: None,
+                    body: MoveBody::Halt,
+                    decided: None,
+                });
+            host.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+        }
+        load_sizes(&mut host, peer, &[100]);
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 127, "nothing paces while full");
+        assert_eq!(outbox_len(&host, peer), 1);
+        // Control: the same log and outbox with the slot released move it.
+        let (mut host, peer) = v4_host_with_log(127);
+        load_sizes(&mut host, peer, &[100]);
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 128);
+        assert_eq!(outbox_len(&host, peer), 0);
+        assert_eq!(host.egress_bytes, 127 + 100);
+        let _ = caps;
+    }
+
+    /// Gap 13 e04 (mutant e04, Reading 23, C-7): `queue_samples` counts the
+    /// lane's reservations beside the log. With 127 logged frames and one
+    /// slot, one more datagram is 129 frames and is dropped whole; control
+    /// with the slot freed queues it.
+    #[test]
+    fn queue_samples_counts_lane1_reservations() {
+        use crate::host_v4::{MoveSlot, MAX_MOVE_RECEIPT_BYTES};
+        use crpg_net::movement_v4::MoveBody;
+        // Test: 127 logged frames plus one slot reservation.
+        let (mut host, peer) = v4_host_with_log(127);
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session
+                .v3
+                .as_mut()
+                .and_then(|v3| v3.v4.as_mut())
+                .expect("v4")
+                .lane
+                .slots
+                .push_back(MoveSlot {
+                    seq: 1,
+                    order: 0,
+                    canonical: Vec::new(),
+                    actor_net: net(1),
+                    actor: None,
+                    body: MoveBody::Halt,
+                    decided: None,
+                });
+            host.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+        }
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![9u8; 50]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, MAX_MOVE_RECEIPT_BYTES),
+            "the datagram was dropped whole"
+        );
+        assert_eq!(host.egress_bytes, 127 + MAX_MOVE_RECEIPT_BYTES);
+        // Control: the same log with no reservation queues the datagram.
+        let (mut host, peer) = v4_host_with_log(127);
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![9u8; 50]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, 50)
+        );
+        assert_eq!(host.egress_bytes, 127 + 50);
+    }
 }
