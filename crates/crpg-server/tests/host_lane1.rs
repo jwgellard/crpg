@@ -571,6 +571,21 @@ fn drain(host: &mut Host, peer: PeerHandle) -> Vec<DeliveryEntry> {
     entries
 }
 
+/// Decides every pending slot in a paused `advance` (D-5, D-7): the world may
+/// change, but the decision makes no capture record and publishes no lane-0
+/// frame (Reading 21). The pause's own publication is drained first, so what
+/// is compared is only what the decision emits; `before` comes from
+/// [`state_of`], whose drain proves the log started empty.
+fn decide_paused(rig: &mut Rig, peer: PeerHandle, before: &State, now: u64) {
+    assert_eq!(rig.host.pause(now), Ok(()));
+    drain(&mut rig.host, peer);
+    rig.assert_paused(now);
+    assert_eq!(rig.host.last_capture(), before.last_capture);
+    let delivered = drain(&mut rig.host, peer);
+    assert!(delivered.is_empty(), "{delivered:?}");
+    assert_eq!(rig.host.unpause(now), Ok(()));
+}
+
 // ---------------------------------------------------------------------------
 // The v4 client (T026p5).
 // ---------------------------------------------------------------------------
@@ -976,6 +991,7 @@ fn d3_decision_refusals() {
         MoveAdmission::Admitted { seq: 1 }
     );
     let state = state_of(&mut rig, &[p]);
+    decide_paused(&mut rig, p, &state, 10);
     rig.assert_ticked(10);
     assert_eq!(
         rig.receipts(p),
@@ -987,12 +1003,13 @@ fn d3_decision_refusals() {
             outcome: MoveVerdict::Rejected(CodeV3::WrongMode),
         }]
     );
-    let _ = state;
 
     assert_eq!(
         rig.ingest_move(p, &halt_bytes(epoch, 2, 1), 20),
         MoveAdmission::Admitted { seq: 2 }
     );
+    let state = state_of(&mut rig, &[p]);
+    decide_paused(&mut rig, p, &state, 20);
     rig.assert_ticked(20);
     assert_eq!(
         rig.receipts(p),
@@ -1016,6 +1033,7 @@ fn d3_decision_refusals() {
         MoveAdmission::Admitted { seq: 4 }
     );
     let state = state_of(&mut rig, &[p]);
+    decide_paused(&mut rig, p, &state, 30);
     rig.assert_ticked(30);
     assert_eq!(
         rig.receipts(p),
@@ -1036,7 +1054,6 @@ fn d3_decision_refusals() {
             },
         ]
     );
-    let _ = state;
 
     // Unbound: no mesh is `IllegalAction`.
     let mut unbound = Rig::new(&mv3rt_value());
@@ -1047,6 +1064,8 @@ fn d3_decision_refusals() {
         unbound.ingest_move(p, &move_to_bytes(epoch, 1, 1, (262144, 0, 65536)), 10),
         MoveAdmission::Admitted { seq: 1 }
     );
+    let state = state_of(&mut unbound, &[p]);
+    decide_paused(&mut unbound, p, &state, 10);
     unbound.assert_ticked(10);
     assert_eq!(
         unbound.receipts(p),
@@ -1069,6 +1088,8 @@ fn d3_decision_refusals() {
         bound.ingest_move(p, &move_to_bytes(epoch, 1, 1, (65536, 0, 65536)), 10),
         MoveAdmission::Admitted { seq: 1 }
     );
+    let state = state_of(&mut bound, &[p]);
+    decide_paused(&mut bound, p, &state, 10);
     bound.assert_ticked(10);
     assert_eq!(
         bound.receipts(p),
@@ -1080,12 +1101,18 @@ fn d3_decision_refusals() {
             outcome: MoveVerdict::Rejected(CodeV3::IllegalAction),
         }]
     );
-    // Control: the same host accepts its next intent's route.
+    // Control: the same host accepts its next intent's route — the decision
+    // changes the world, while `decide_paused` proves it makes no record and
+    // publishes no lane-0 frame.
     assert_eq!(
         bound.ingest_move(p, &move_to_bytes(epoch, 2, 1, (262144, 0, 65536)), 20),
         MoveAdmission::Admitted { seq: 2 }
     );
+    let state = state_of(&mut bound, &[p]);
+    let before_route = bound.host.authority_hash();
     bound.mirror_route(a(), m(4, 1), 2);
+    decide_paused(&mut bound, p, &state, 20);
+    assert_ne!(bound.host.authority_hash(), before_route);
     bound.assert_ticked(20);
     assert_eq!(
         bound.receipts(p)[0].outcome,
@@ -1102,7 +1129,8 @@ fn d3_decision_refusals() {
         meshless.ingest_move(p, &halt_bytes(epoch, 1, 3), 10),
         MoveAdmission::Admitted { seq: 1 }
     );
-    state_of(&mut meshless, &[p]);
+    let state = state_of(&mut meshless, &[p]);
+    decide_paused(&mut meshless, p, &state, 10);
     meshless.assert_ticked(10);
     assert_eq!(
         meshless.receipts(p),
@@ -1456,6 +1484,14 @@ fn d4_admission_refusals() {
             }
         );
         assert_unchanged(&mut rig, &state, &[p]);
+        // Control: once `pump` has drained the lane-0 ingress, the same
+        // bytes are `Admitted`.
+        rig.host.pump(now).expect("pumps the staged lane-0 frames");
+        drain(&mut rig.host, p);
+        assert_eq!(
+            rig.ingest_move(p, &halt_bytes(epoch, 1, 1), now),
+            MoveAdmission::Admitted { seq: 1 }
+        );
     }
     // Stale: 257 decided and taken, so seq 1 left the 256-entry cache.
     {
@@ -1502,14 +1538,27 @@ fn d4_admission_refusals() {
 /// cannot be built is named.
 #[test]
 fn d5_precedence_pairs() {
-    // Closed beats a regressed `now_ms`.
+    // Closed beats a regressed `now_ms`: the clock is advanced first, so the
+    // regression is real and only `Closed` can answer it.
     {
         let (mut rig, p) = lane1_rig(&mv3rt_value());
         let epoch = rig.epoch(p);
+        assert_eq!(rig.host.pause(10), Ok(()));
         rig.host.shutdown();
         assert_eq!(
             rig.host.ingest_move(p, &halt_bytes(epoch, 1, 1), 0),
             Err(HostError::Closed)
+        );
+    }
+    // Control: the same regression alone, on an open host, is
+    // `TimeRegression`.
+    {
+        let (mut rig, p) = lane1_rig(&mv3rt_value());
+        let epoch = rig.epoch(p);
+        assert_eq!(rig.host.pause(10), Ok(()));
+        assert_eq!(
+            rig.host.ingest_move(p, &halt_bytes(epoch, 1, 1), 0),
+            Err(HostError::TimeRegression)
         );
     }
     // A regression beats an unbound handle.
