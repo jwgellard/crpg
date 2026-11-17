@@ -9504,6 +9504,98 @@ mod tests {
         assert!(!v3.contains(&DeltaOpV3::EntityEnter { entity: net(3) }));
     }
 
+    // -- T037b fix round 3a, part A: unit tests for `plan_v4_stage` arms ----
+
+    fn plan_v4_stage_of(host: &Host, peer: PeerHandle) -> Result<V3Stage, HostError> {
+        let grants = host.sessions.get(&peer).expect("bound").grants.clone();
+        let session = host.sessions.get(&peer).expect("bound");
+        host.plan_v4_stage(session, &grants, SnapshotCause::Resync)
+    }
+
+    #[test]
+    fn t037b_fix3a_s01_transfer_sentinel_is_counter_exhausted() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        host.sessions.get_mut(&peer).expect("bound").next_transfer = u64::MAX - 1;
+        assert!(
+            plan_v4_stage_of(&host, peer).is_ok(),
+            "one id below the sentinel still stages"
+        );
+        host.sessions.get_mut(&peer).expect("bound").next_transfer = u64::MAX;
+        assert_eq!(
+            plan_v4_stage_of(&host, peer).unwrap_err(),
+            HostError::CounterExhausted
+        );
+    }
+
+    #[test]
+    fn t037b_fix3a_s17_event_seq_sentinel_is_counter_exhausted() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        let good = host.sessions.get(&peer).expect("bound").next_event_seq;
+        host.sessions.get_mut(&peer).expect("bound").next_event_seq = u64::MAX;
+        assert_eq!(
+            plan_v4_stage_of(&host, peer).unwrap_err(),
+            HostError::CounterExhausted
+        );
+        host.sessions.get_mut(&peer).expect("bound").next_event_seq = good;
+        assert!(
+            plan_v4_stage_of(&host, peer).is_ok(),
+            "the untouched counter still stages"
+        );
+    }
+
+    #[test]
+    fn t037b_fix3a_s13_ordinal_room_covers_the_whole_plan() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        host.sessions.get_mut(&peer).expect("bound").in_flight = Some(1);
+        let stage = plan_v4_stage_of(&host, peer).expect("control stages");
+        let count =
+            (stage.frames.len() + usize::from(stage.cancel.is_some()) + stage.deltas.len()) as u64;
+        host.sessions.get_mut(&peer).expect("bound").next_ordinal = (u64::MAX - 1) - (count - 1);
+        assert_eq!(
+            plan_v4_stage_of(&host, peer).unwrap_err(),
+            HostError::CounterExhausted
+        );
+        host.sessions.get_mut(&peer).expect("bound").next_ordinal = (u64::MAX - 1) - count;
+        assert!(
+            plan_v4_stage_of(&host, peer).is_ok(),
+            "ordinal room equal to the plan count still stages"
+        );
+    }
+
+    #[test]
+    fn t037b_fix3a_s10_cancel_counts_toward_the_plan() {
+        let mut host = mv_host();
+        let peer = bind_v4(&mut host, full_grants());
+        host.sessions.get_mut(&peer).expect("bound").in_flight = Some(1);
+        let stage = plan_v4_stage_of(&host, peer).expect("control stages");
+        assert!(stage.cancel.is_some(), "a transfer is in flight");
+        let without_cancel = (stage.frames.len() + stage.deltas.len()) as u64;
+        // Room for every frame but the `Cancel`: the full count overflows it.
+        host.sessions.get_mut(&peer).expect("bound").next_ordinal = (u64::MAX - 1) - without_cancel;
+        assert_eq!(
+            plan_v4_stage_of(&host, peer).unwrap_err(),
+            HostError::CounterExhausted
+        );
+        // One more ordinal of room fits the whole plan including the `Cancel`.
+        host.sessions.get_mut(&peer).expect("bound").next_ordinal =
+            (u64::MAX - 1) - (without_cancel + 1);
+        assert!(
+            plan_v4_stage_of(&host, peer).is_ok(),
+            "room for the Cancel stages"
+        );
+        // Without the in-flight transfer the same room fits: the `Cancel` is
+        // the frame that overflowed it.
+        host.sessions.get_mut(&peer).expect("bound").in_flight = None;
+        host.sessions.get_mut(&peer).expect("bound").next_ordinal = (u64::MAX - 1) - without_cancel;
+        assert!(
+            plan_v4_stage_of(&host, peer).is_ok(),
+            "the same room fits once the Cancel is gone"
+        );
+    }
+
     // -- T037c: samples share the egress caps (C8) ---------------------------
 
     /// Replaces a session's delivery log with `frames` one-byte frames, as if
