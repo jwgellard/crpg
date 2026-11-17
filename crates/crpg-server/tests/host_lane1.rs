@@ -1530,6 +1530,106 @@ fn d4_admission_refusals() {
     }
 }
 
+/// D-1 step 5: the 4,096-byte frame cap is exclusive ("more than
+/// `MAX_INTENT_FRAME_BYTES`): a 4,096-byte frame passes the cap and is
+/// refused by decode instead, while a 4,097-byte frame never reaches decode.
+#[test]
+fn d4_frame_cap_boundary() {
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    let valid = halt_bytes(epoch, 1, 1);
+    assert_eq!(valid.len(), 21);
+    // Exactly the cap: passes step 5, fails decode.
+    let mut at_cap = valid.clone();
+    at_cap.resize(4_096, 0);
+    assert_eq!(at_cap.len(), 4_096);
+    let state = state_of(&mut rig, &[p]);
+    assert_eq!(
+        rig.ingest_move(p, &at_cap, 10),
+        MoveAdmission::Refused {
+            seq: None,
+            code: CodeV3::Malformed,
+        }
+    );
+    assert_unchanged(&mut rig, &state, &[p]);
+    // One byte more: refused before decode.
+    let mut over_cap = valid.clone();
+    over_cap.resize(4_097, 0);
+    assert_eq!(
+        rig.ingest_move(p, &over_cap, 10),
+        MoveAdmission::Refused {
+            seq: None,
+            code: CodeV3::FrameTooLarge,
+        }
+    );
+    assert_unchanged(&mut rig, &state, &[p]);
+    assert_eq!(
+        rig.ingest_move(p, &valid, 10),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+}
+
+/// D-1 step 4: frames refused by the cap or decode still spend the shared
+/// byte bucket first. Thirty-two 4,096-byte frames (each `Malformed`) spend
+/// exactly the 128 KiB byte burst, so the next valid frame is `RateLimited`;
+/// after 31 such frames the next valid frame is admitted.
+/// (Reading: 4,096-byte frames, not 4,097: with a 128 KiB burst the 32nd
+/// 4,097-byte frame is itself `RateLimited` and spends nothing, so no later
+/// frame could tell 32 attempts from 31; thirty-two frames of exactly the
+/// cap spend the burst to the last byte.)
+#[test]
+fn d4_shared_byte_bucket_spends() {
+    // Case: 32 capped frames spend the whole burst.
+    {
+        let (mut rig, p) = quiet_lane1_rig(&mv3rt_value());
+        let epoch = rig.epoch(p);
+        let valid = halt_bytes(epoch, 1, 1);
+        assert_eq!(valid.len(), 21);
+        let mut padded = valid.clone();
+        padded.resize(4_096, 0);
+        let state = state_of(&mut rig, &[p]);
+        for _ in 0..32 {
+            assert_eq!(
+                rig.ingest_move(p, &padded, 5),
+                MoveAdmission::Refused {
+                    seq: None,
+                    code: CodeV3::Malformed,
+                }
+            );
+        }
+        assert_unchanged(&mut rig, &state, &[p]);
+        // The byte bucket is empty: the next valid frame is `RateLimited`.
+        assert_eq!(
+            rig.ingest_move(p, &valid, 5),
+            MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::RateLimited,
+            }
+        );
+    }
+    // Control: 31 such frames leave room, so the next valid frame is admitted.
+    {
+        let (mut rig, p) = quiet_lane1_rig(&mv3rt_value());
+        let epoch = rig.epoch(p);
+        let valid = halt_bytes(epoch, 1, 1);
+        let mut padded = valid.clone();
+        padded.resize(4_096, 0);
+        for _ in 0..31 {
+            assert_eq!(
+                rig.ingest_move(p, &padded, 5),
+                MoveAdmission::Refused {
+                    seq: None,
+                    code: CodeV3::Malformed,
+                }
+            );
+        }
+        assert_eq!(
+            rig.ingest_move(p, &valid, 5),
+            MoveAdmission::Admitted { seq: 1 }
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // D5.
 // ---------------------------------------------------------------------------
