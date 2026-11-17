@@ -14,11 +14,12 @@ as amended by A§0–A§7, with the reasoning in
 
 ## Public surface
 
-The library exposes five modules, `host`, `capture`, `checkpoint`, `save`,
-`quic`, with no glob re-export; changing any public type, field, variant,
-signature, cap or `Display` text needs an ADR. Inventory: T022 §1, T039 §2,
-T023b B§3 and T024h S§5. `quic` re-exports nothing from `crpg_net_quic` or
-`crpg_net`; callers name `crpg_net_quic::{QuicServer, Credential, ...}`
+The library exposes six modules, `host`, `capture`, `checkpoint`, `save`,
+`quic`, `run`, with no glob re-export; changing any public type, field,
+variant, signature, cap or `Display` text needs an ADR. Inventory: T022 §1,
+T039 §2, T023b B§3, T024h S§5 and T154a's `run.rs` block. `quic` re-exports
+nothing from `crpg_net_quic` or `crpg_net`; callers name
+`crpg_net_quic::{QuicServer, Credential, ...}`
 themselves. Beyond
 those lists the as-built crate adds only `Copy` on `ProtocolSelection`
 (required by `as_u8(self)`). The binary (`src/main.rs`) is a wiring shell: no host
@@ -65,6 +66,14 @@ T037d's additive `host` items: `MoveAdmission` and
 `MoveSlot`, `MoveCacheEntry`, `MAX_MOVE_RECEIPT_BYTES`) is private in
 `src/host_v4.rs`; the window, release and duplicate helpers are private in
 `src/host.rs`.
+
+T154a's `run` items: `TICK_PERIOD_MS`, `MAX_RETIRED_RECORDS`, the `Hosting`
+trait, `CycleReport`, `StepReport`, `LoopError`, `HostLoop`, `AiHook`,
+`LinkStats` (`#[non_exhaustive]`), `LocalError`, `LinkError`, `LocalHost` and
+`LocalClient` (its `crpg_net::transport::Transport` impl). The link table is
+private, and `run.rs` names no `crpg_ai` type. T154c adds one `LinkStats`
+field; T154d adds `QuicHosting` and `QuicAiHook`; neither changes a signature
+here.
 
 ## Invariants
 
@@ -410,6 +419,16 @@ git diff --check
   is queued anyway, unlike a lane-0 rejection. Only the egress caps bound the
   queue (128 frames), and a resend that does not fit is `resent: false`.
 
+- **The loop never reads pause (T154a, Reading 4).** `HostLoop` and
+  `LocalHost` never call `paused()`: intake, the AI hook and deliver run on
+  a paused host, and only `Host::advance` declines to tick (a `Restore`-
+  paused load must still deliver and take its unpause). Do not add a paused
+  guard to `run_cycle` or to intake/deliver.
+- **`run.rs` never blocks (T154a, Reading 9).** It reads no clock, starts
+  no thread, sleeps nowhere and uses only `try_send`/`try_recv`; the one
+  thread and the `Instant` reads are T154b's `runner.rs`. A blocking call
+  in `run.rs` would put the frame loop behind a peer's socket or queue.
+
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the crate contract with the host invariants, the D20 dependency boundary, the gate list and the traps found while implementing T022, so later transport and persistence tasks start from the as-built rules.
@@ -429,3 +448,4 @@ git diff --check
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037c · Recorded `POLICY_SAMPLE_REFRESH_TICKS` and `Host::take_samples` in the surface, amended the interim `DeclareMove` trap, and added the three movement traps (the turn check precedes navigation; samples replace, never append; samples never enter a delivery log and count toward lane-1 egress), so the crate contract matches the turn-based move and the samples the host now produces.
 - 2026-11-16 (UTC) · opencode-go/deepseek-v4.1-flash + T037d · Recorded the lane-1 surface (`MoveAdmission`, `Host::ingest_move`, `Host::take_move_receipts`) and its four traps (lane 1 keeps its own state, decisions happen only in `advance`, steps 1–8 never consume a sequence, a lane-1 receipt is never dropped), and corrected the T037c egress trap to `V4State::lane1_egress`, so the crate contract matches the lane the host now admits and decides.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T037b · Recorded fix round 3b's six `host.rs` unit tests for the surviving mutants (s11, b07, w09, p12, p22, p24) and the b03/p06 equivalence reports, so the contract knows the suite pins the multi-frame staging count, the handle sentinel, per-session withheld publication, 256-op chunking, empty-page capture and the page `event_seq` sentinel.
+- 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the sixth module `run` to the surface (the loop, `Hosting`, the local link types and the errors) and the pause and no-blocking traps, so later parts extend an accurate contract instead of rediscovering that the loop never reads pause and must never block.

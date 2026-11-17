@@ -5,8 +5,9 @@
 `crpg-server` owns authoritative world state. As of T022 it is a library plus
 a thin dedicated binary (D02): the library is the one platform-neutral host
 that the Windows embedded single-player adapter and the Windows/Linux
-dedicated adapters will reuse, and the binary stays a wiring shell that
-still refuses to run until the dedicated product (T040) wires it. The exact contract —
+dedicated adapters reuse through the T154a run loop, and the binary stays a
+wiring shell that still refuses to run until the dedicated product (T040)
+wires it. The exact contract —
 API, error precedence, numeric caps, checkpoint shape and acceptance cases —
 is the "Specification revision — 2026-09-29" appendix of
 [T022](../../tasks/T022.md); the reasoning is
@@ -30,7 +31,9 @@ configuration (T040); reconnect, resume and the 30 s grace (T025a/T025b);
 production interest facts
 (T027a–c supply values for these grant shapes); save slot/autosave policy,
 the save directory and the incarnation source (T040); OS service
-integration; listen-server mixed mode; and the GM endpoint.
+integration; listen-server mixed mode; and the GM endpoint. The run loop and
+the in-memory local hosting exist since T154a, but nothing reads a clock or
+starts a thread yet (T154b) and the QUIC hosting of the same loop is T154d.
 
 ## Where it sits
 
@@ -775,6 +778,69 @@ returns `GrantChange::SnapshotStaged`; on `/1` it still fences
 `bind_dual`, never `bind_resumable` (T025b lifts this). `/1` connections
 carry only lane-0 frames and keep T023b's behaviour and trace.
 
+## The run loop (T154)
+
+T154a adds `run`, the module that actually runs the world. Nothing ran it
+before: `Host::advance` was called only by tests and the dedicated binary
+still refuses to start (T040). `HostLoop` owns the one cycle order and the
+20 Hz grid; `LocalHost` is the in-memory hosting that carries a local
+player's lane-0 and transfer frames to the one `Host`. The thread and clock
+that drive the loop are T154b's, lane 1 on the local link is T154c's, and
+the QUIC hosting (`QuicHosting`) is T154d's. Exact contract:
+[T154](../../tasks/T154.md).
+
+- **One order, one function.** `HostLoop::run_cycle` calls `intake`,
+  `drive_ai`, `advance`, `deliver` and `retire_captures`, once each, and
+  returns at the first error, so no later stage runs. `intake` is every
+  waiting frame and then one `Host::pump`; `drive_ai` is the hosting's
+  `AiHook`, if set; `advance` is the pause-aware driver; `deliver` hands each
+  peer its delivery and acknowledges what was accepted; `retire_captures` is
+  `acknowledge_captures(last_capture())`. The order is the spec's
+  submit/AI/advance/publish, with the AI driver after `pump` and before
+  `advance` (T153).
+- **The grid.** `TICK_PERIOD_MS` is 50 (20 Hz); `HostLoop::new(h, s)` puts
+  the first slot at `s` and `with_period` changes the period. `step(now)`
+  reads no clock and never blocks: a `now` below the last accepted one is
+  `LoopError::TimeRegression` and changes nothing; a `now` before the next
+  slot runs no cycle; otherwise it runs exactly one cycle, counts
+  `k = (now − next_due_ms) / period` skipped slots in `missed` and moves
+  `next_due_ms` to the first slot after `now`, so game time slows under
+  overload and never bursts. `cycles` counts the cycles attempted, a failed
+  one included; the schedule and counters have already moved when its error
+  returns.
+- **The hosting seam.** `Hosting` is the five stages with one error type.
+  `LocalHost` owns the `Host`, a `BTreeMap<PeerHandle, Link>` (ascending
+  handle order in every pass), the retired-link records and an optional
+  `AiHook`; the loop names no transport and no AI type. A later task adds
+  `QuicHosting` behind the same trait.
+- **Local links (B-6, B-7, B-9).** `attach` refuses an unbound handle
+  (`UnknownPeer`) before an existing link (`AlreadyAttached`) and makes two
+  bounded `sync_channel` queues of whole frames; `LocalClient` is the other
+  end (`Send`, not `Clone` or `Sync`). Intake retries a held frame first,
+  then takes at most `MAX_DRAIN_PER_CONNECTION` (128) fresh frames per link:
+  a `QueueFull` holds the frame and stops that link's drain, a transfer
+  frame (`0x81`/`0x82`) routes to `Host::ingest_transfer`, any other frame
+  to `Host::ingest`, `Unauthenticated`/`Unbound` retire the link, other
+  refusals are counted and dropped, and one `Host::pump` follows every link.
+  Deliver offers the host's entries in order until the down queue is full
+  and acknowledges the last accepted ordinal, so unaccepted entries stay
+  and are offered first next cycle. A link ends only by retirement — a
+  departed client, an unbound peer, or `UnknownPeer` at deliver — which
+  unbinds the peer, drops both server ends and records the link's final
+  counters in a bounded list (`MAX_RETIRED_RECORDS` 64, oldest dropped
+  first and counted in `retired_dropped`); `take_retired` drains it.
+  `LinkStats` is `#[non_exhaustive]` (`received`, `refused`, `held`, `sent`)
+  so T154c can add a lane-1 field without breaking a reader.
+- **Pause and state (Readings 4, 14).** Neither the loop nor `LocalHost`
+  reads `paused()`: a paused host still takes commands, runs the AI hook and
+  delivers; only `advance` declines to tick. The schedule, the links and the
+  hook are hosting state, not checkpoint state; `save_checkpoint` reads only
+  the host.
+- **Fences (Reading 9).** `run.rs` reads no clock, starts no thread, sleeps
+  nowhere and uses no blocking call: the client queues are tried with
+  `try_send`/`try_recv` and the loop is stepped by an injected `now_ms`.
+  T154b's `runner.rs` owns the one thread and the clock.
+
 ## Gate 10 (save/load equivalence)
 
 Spec §15.4 step 10 is active as **file-backed host save/load continuation
@@ -845,3 +911,4 @@ with T040/T041.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037c · Added "The turn-based move and samples (T037c)" (the resolution and class order, the `commit_accepted` execution, the per-tick samples with their 20-tick refresh and replacement queue, `take_samples`, and lane-1 egress in `room_for`/pacing) and amended the T037b note that `DeclareMove` was a placeholder rejection, so the doc describes the move and the samples the host now produces.
 - 2026-11-16 (UTC) · opencode-go/deepseek-v4.1-flash + T037d · Added "Lane 1 (T037d)" (synchronous admission before HM-2, HM-2's checks and actor resolution, the `advance` decision window with supersede and HM-4's outcomes, release and the 256-entry cache, duplicates, receipts, lane-1 egress and samples' `processed_seq`) and amended the T037c sample and egress notes that named a placeholder `processed_seq` and the removed `V4State.egress` field, so the doc describes the lane the host now admits and decides.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T037b · Noted fix round 3b's six `host.rs` unit tests for the surviving mutants (s11, b07, w09, p12, p22, p24) and the b03/p06 equivalence reports, so the doc records how the suite pins the multi-frame staging count, the handle sentinel, per-session withheld publication, 256-op chunking, empty-page capture and the page `event_seq` sentinel.
+- 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the run-loop section (one cycle order, the 20 Hz grid and skip-not-burst, the `Hosting` seam, local intake/deliver and bounded retirement, pause and the no-clock/no-thread fence) and updated Scope, so the doc describes the loop the crate now has instead of a host nothing drives.
