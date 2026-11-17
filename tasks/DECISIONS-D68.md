@@ -1,6 +1,6 @@
 # Decision D68 — session 70: the reconnect contract (T025b) questions and approval
 
-Status: **open, drafted 2026-11-17 (session 70).**
+Status: **answered by the user, 2026-11-17 (session 70): D68a (b), D68b (b), D68c approve — all as recommended.**
 
 T025b lets a player whose connection drops get the same seat back within 30 seconds, instead of rejoining as a new player. The contract is on `task/T025b-c1` (`00fa070`, Opus architect; review fixes `4d13749`).
 
@@ -43,3 +43,4 @@ A free first-pass review found four defects, all fixed in `4d13749`:
 
 ## Agent log
 - 2026-11-17 (UTC) · claude-code/opus-5.5 (manager) + session 70 · Drafted the T025b decision batch from the contract's two questions and its review, with a recommendation for each.
+- 2026-11-17 (UTC) · claude-code/opus-5.5 (manager) + session 70 · Recorded the user's answers: all three as recommended.
