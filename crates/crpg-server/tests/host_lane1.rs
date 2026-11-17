@@ -2246,10 +2246,13 @@ fn d8_resend() {
             resent: true,
         }
     );
+    // Control: the same lane-0 rejection on a fresh lane 0 (`seq: 1`, not a
+    // `SeqGap` refusal) is genuinely rejected and not dropped, because the
+    // cached `Accepted` resend above spent no failure token.
     let frame = codec_v4::encode_intent(&IntentFrameV4 {
         epoch,
         lane: LANE_COMBAT,
-        seq: 2,
+        seq: 1,
         observed_tick: 0,
         actor: n(2),
         body: IntentBodyV4::DeclareAction {
@@ -2262,7 +2265,9 @@ fn d8_resend() {
         twin.host.ingest(q, &frame, 5),
         Ok(crpg_server::host::IngestDisposition::Staged)
     );
-    assert_eq!(twin.host.pump(5).expect("pump").dropped_replies, 0);
+    let summary = twin.host.pump(5).expect("pump");
+    assert_eq!(summary.dropped_replies, 0, "{summary:?}");
+    assert_eq!(summary.rejected, 1, "{summary:?}");
 }
 
 // ---------------------------------------------------------------------------
