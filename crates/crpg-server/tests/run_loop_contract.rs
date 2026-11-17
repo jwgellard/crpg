@@ -20,8 +20,8 @@ use crpg_net::protocol_transfer::{TransferId, TransferUp};
 use crpg_net::protocol_v3::PauseReason;
 use crpg_net::transport::Transport;
 use crpg_server::host::{
-    AdvanceReport, ControlGrant, DisclosureGrants, EntityDisclosure, Host, HostConfig, HostError,
-    PeerHandle, ProtocolSelection, TransferState, MAX_PEERS,
+    AdvanceReport, ControlGrant, DisclosureGrants, EntityDisclosure, GrantUpdate, Host, HostConfig,
+    HostError, PeerHandle, ProtocolSelection, TransferState, MAX_PEERS,
 };
 use crpg_server::run::{
     AiHook, HostLoop, Hosting, LinkError, LinkStats, LocalClient, LocalError, LocalHost, LoopError,
@@ -593,39 +593,84 @@ fn round_trip_matches_twin() {
 
 #[test]
 fn transfer_frames_route_to_ingest_transfer() {
+    // Fresh snapshot bind stages nothing; narrowing the grants stages transfer 1.
     let mut hosting = LocalHost::new(tb3_host());
     let w = hosting
         .host_mut()
         .bind_snapshot_peer(control(&[a(), b(), c()]), full_grants(), 0)
         .expect("binds snapshot");
+    let fresh: Option<TransferState> = hosting.host().transfer_state(w).expect("state");
+    assert_eq!(
+        fresh,
+        Some(TransferState {
+            next_transfer: 1,
+            in_flight: None,
+        })
+    );
+    let mut narrowed = full_grants();
+    narrowed.abilities = vec![strike()];
+    assert_eq!(
+        hosting.host_mut().set_grants(w, narrowed),
+        Ok(GrantUpdate::SnapshotStaged)
+    );
+    assert_eq!(
+        hosting.host().transfer_state(w).expect("state"),
+        Some(TransferState {
+            next_transfer: 2,
+            in_flight: Some(1),
+        })
+    );
     let epoch = hosting.host().epoch(w).expect("bound");
-    let st: Option<TransferState> = hosting.host().transfer_state(w).expect("bound");
-    assert_eq!(st.expect("snapshot").in_flight, Some(1));
     let mut client = hosting.attach(w, cap(64)).expect("attaches");
     client.send(published(epoch, 1).as_slice()).expect("queues");
     let mut loop_ = HostLoop::new(hosting, 0);
     loop_.step(0).expect("cycles");
-    let st: Option<TransferState> = loop_.hosting().host().transfer_state(w).expect("bound");
-    assert_eq!(st.expect("snapshot").in_flight, None);
+    let st: Option<TransferState> = loop_.hosting().host().transfer_state(w).expect("state");
+    assert_eq!(
+        st,
+        Some(TransferState {
+            next_transfer: 2,
+            in_flight: None,
+        })
+    );
     let stats = loop_.hosting().link_stats(w).expect("linked");
+    assert_eq!(stats.received, 1);
     assert_eq!(stats.refused, 0);
-    // Control: no frame leaves the transfer in flight.
+    // Control: no frame leaves the staged transfer in flight.
     let mut hosting = LocalHost::new(tb3_host());
     let w = hosting
         .host_mut()
         .bind_snapshot_peer(control(&[a(), b(), c()]), full_grants(), 0)
         .expect("binds");
+    let mut narrowed = full_grants();
+    narrowed.abilities = vec![strike()];
+    assert_eq!(
+        hosting.host_mut().set_grants(w, narrowed),
+        Ok(GrantUpdate::SnapshotStaged)
+    );
     let _client = hosting.attach(w, cap(64)).expect("attaches");
     let mut loop_ = HostLoop::new(hosting, 0);
     loop_.step(0).expect("cycles");
-    let st: Option<TransferState> = loop_.hosting().host().transfer_state(w).expect("bound");
-    assert_eq!(st.expect("snapshot").in_flight, Some(1));
+    let st: Option<TransferState> = loop_.hosting().host().transfer_state(w).expect("state");
+    assert_eq!(
+        st,
+        Some(TransferState {
+            next_transfer: 2,
+            in_flight: Some(1),
+        })
+    );
     // Control: an unknown transfer is refused, counted, and the link lives.
     let mut hosting = LocalHost::new(tb3_host());
     let w = hosting
         .host_mut()
         .bind_snapshot_peer(control(&[a(), b(), c()]), full_grants(), 0)
         .expect("binds");
+    let mut narrowed = full_grants();
+    narrowed.abilities = vec![strike()];
+    assert_eq!(
+        hosting.host_mut().set_grants(w, narrowed),
+        Ok(GrantUpdate::SnapshotStaged)
+    );
     let epoch = hosting.host().epoch(w).expect("bound");
     let mut client = hosting.attach(w, cap(64)).expect("attaches");
     client.send(published(epoch, 9).as_slice()).expect("queues");
@@ -633,6 +678,14 @@ fn transfer_frames_route_to_ingest_transfer() {
     loop_.step(0).expect("cycles");
     let stats = loop_.hosting().link_stats(w).expect("linked");
     assert_eq!(stats.refused, 1);
+    let st: Option<TransferState> = loop_.hosting().host().transfer_state(w).expect("state");
+    assert_eq!(
+        st,
+        Some(TransferState {
+            next_transfer: 2,
+            in_flight: Some(1),
+        })
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -877,26 +930,38 @@ fn links_end_only_by_retirement() {
 
 #[test]
 fn full_down_queue_acknowledges_only_what_was_sent() {
+    // A fresh bind stages exactly one entry, so the run sends A's EndTurn first.
     let mut hosting = LocalHost::new(tb3_host());
     let p = hosting
         .host_mut()
         .bind_peer(control(&[a(), b(), c()]), full_grants(), 0)
         .expect("binds");
     let mut client = hosting.attach(p, cap(1)).expect("attaches");
+    let frame = end_frame(hosting.host(), p, 1);
+    client.send(frame.as_slice()).expect("queues");
     let mut twin = tb3_host();
     let tp = twin
         .bind_peer(control(&[a(), b(), c()]), full_grants(), 0)
         .expect("binds");
+    let tframe = end_frame(&twin, tp, 1);
+    assert_eq!(frame, tframe);
+    twin.ingest(tp, &tframe, 0).expect("staged");
     twin.pump(0).expect("pumps");
     twin.advance(0).expect("advances");
     let want = twin.take_delivery_entries(tp).expect("bound");
-    assert!(want.len() >= 2, "twin has at least two bind entries");
+    if let Some(last) = want.last() {
+        twin.acknowledge_delivery(tp, last.ordinal).expect("acks");
+    }
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks");
+    let n = want.len();
+    assert!(n >= 2, "twin has the bind entry and the command delta");
     let mut loop_ = HostLoop::new(hosting, 0);
     loop_.step(0).expect("cycles");
     assert_eq!(loop_.hosting().link_stats(p).expect("linked").sent, 1);
     assert_eq!(client.recv().expect("first entry"), want[0].bytes);
     let mut got = vec![want[0].bytes.clone()];
-    for k in 1..want.len() {
+    for k in 1..n {
         loop_.step(50 * k as u64).expect("cycles");
         got.push(client.recv().expect("next entry in order"));
     }
@@ -906,7 +971,7 @@ fn full_down_queue_acknowledges_only_what_was_sent() {
     );
     assert_eq!(
         loop_.hosting().link_stats(p).expect("linked").sent,
-        want.len() as u64
+        n as u64
     );
     // Control: a wide queue delivers everything in one cycle.
     let mut hosting = LocalHost::new(tb3_host());
@@ -915,9 +980,11 @@ fn full_down_queue_acknowledges_only_what_was_sent() {
         .bind_peer(control(&[a(), b(), c()]), full_grants(), 0)
         .expect("binds");
     let mut client = hosting.attach(p, cap(64)).expect("attaches");
+    let frame = end_frame(hosting.host(), p, 1);
+    client.send(frame.as_slice()).expect("queues");
     let mut loop_ = HostLoop::new(hosting, 0);
     loop_.step(0).expect("cycles");
-    assert_eq!(drain_down(&mut client).len(), want.len());
+    assert_eq!(drain_down(&mut client).len(), n);
 }
 
 // ---------------------------------------------------------------------------
