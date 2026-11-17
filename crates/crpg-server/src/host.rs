@@ -9552,4 +9552,279 @@ mod tests {
         );
         assert_eq!(host.egress_bytes, 127 + 50);
     }
+
+    // -- T037d fix round 3: mutant survivors --------------------------------
+
+    /// Fix round 3 (mutant i09): `ingest_move` deducts from both shared intent
+    /// buckets per attempt, even when the frame bucket refuses first. With the
+    /// frame burst spent at `now`, a 24-byte attempt is `RateLimited` by
+    /// frames and the byte bucket has still spent exactly 24 of its 131,072.
+    #[test]
+    fn ingest_move_charges_intent_bytes_when_frames_refuse() {
+        let (mut host, peer) = v4_host_with_log(0);
+        let now = 1_000;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            assert!(
+                session.intent_frames.consume(now, 80),
+                "the whole frame burst is spent"
+            );
+            assert_eq!(session.intent_frames.available(), 0);
+            // Pin the byte bucket's watermark so no refill intervenes.
+            assert!(session.intent_bytes.consume(now, 0));
+            assert_eq!(session.intent_bytes.available(), 131_072);
+        }
+        assert_eq!(
+            host.ingest_move(peer, &[0u8; 24], now),
+            Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::RateLimited,
+            })
+        );
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.intent_frames.available(), 0);
+            assert_eq!(session.intent_bytes.available(), 131_072 - 24);
+        }
+        // Control: with the frame bucket full the same 24 bytes are refused
+        // by the version byte instead, and the byte bucket drops the same 24.
+        let (mut host, peer) = v4_host_with_log(0);
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            assert!(session.intent_bytes.consume(now, 0));
+            assert_eq!(session.intent_frames.available(), 80);
+            assert_eq!(session.intent_bytes.available(), 131_072);
+        }
+        assert_eq!(
+            host.ingest_move(peer, &[0u8; 24], now),
+            Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::UnsupportedVersion,
+            })
+        );
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.intent_frames.available(), 79);
+            assert_eq!(session.intent_bytes.available(), 131_072 - 24);
+        }
+    }
+
+    /// Fix round 3 (mutant i13): the per-peer ingress byte cap is inclusive.
+    /// A frame that lands exactly on 4,096 is admitted; one byte over is
+    /// `QueueFull` and consumes no sequence. Frame and host caps are loose.
+    #[test]
+    fn ingest_move_per_peer_ingress_bytes_are_inclusive() {
+        use crpg_net::movement_v4::{encode_intent, MoveBody, MoveIntent};
+        let (mut host, peer) = v4_host_with_log(0);
+        let epoch = host.epoch(peer).expect("bound");
+        let halt = encode_intent(&MoveIntent {
+            epoch,
+            seq: 1,
+            actor: net(1),
+            body: MoveBody::Halt,
+        })
+        .expect("encodes");
+        let len = halt.len();
+        host.ingress_caps = QueueCaps {
+            per_peer_frames: 128,
+            per_peer_bytes: 4_096,
+            host_frames: 128,
+            host_bytes: 1 << 20,
+        };
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session.ingress_bytes = 4_096 - len;
+        }
+        assert_eq!(
+            host.ingest_move(peer, &halt, 5),
+            Ok(MoveAdmission::Admitted { seq: 1 })
+        );
+        // Control: one byte more has no per-peer ingress room.
+        let (mut host, peer) = v4_host_with_log(0);
+        let epoch = host.epoch(peer).expect("bound");
+        let halt = encode_intent(&MoveIntent {
+            epoch,
+            seq: 1,
+            actor: net(1),
+            body: MoveBody::Halt,
+        })
+        .expect("encodes");
+        let len = halt.len();
+        host.ingress_caps = QueueCaps {
+            per_peer_frames: 128,
+            per_peer_bytes: 4_096,
+            host_frames: 128,
+            host_bytes: 1 << 20,
+        };
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session.ingress_bytes = 4_096 - len + 1;
+        }
+        assert_eq!(
+            host.ingest_move(peer, &halt, 5),
+            Ok(MoveAdmission::Refused {
+                seq: None,
+                code: CodeV3::QueueFull,
+            })
+        );
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            let lane = super::lane_of(session).expect("v4");
+            assert_eq!(lane.next_seq, crpg_net::protocol::SEQ_FIRST);
+            assert!(lane.slots.is_empty());
+        }
+    }
+
+    /// Fix round 3 (mutant r09): a released `Rejected` receipt spends the
+    /// failure budgets at the host's current time (`last_now_ms`), not at 0.
+    /// Nine failure frames were spent at 0; at 500 ms the bucket holds
+    /// 1 + 500 ms * 10/s = 6 tokens, and the receipt's frame spend leaves 5.
+    #[test]
+    fn release_move_receipts_spends_failure_budget_at_host_time() {
+        use crate::host_v4::{MoveSlot, MAX_MOVE_RECEIPT_BYTES};
+        use crpg_net::movement_v4::MoveBody;
+        let (mut host, peer) = v4_host_with_log(0);
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            assert!(session.fail_frames.consume(0, 9));
+            assert_eq!(session.fail_frames.available(), 1);
+            session
+                .v3
+                .as_mut()
+                .and_then(|v3| v3.v4.as_mut())
+                .expect("v4")
+                .lane
+                .slots
+                .push_back(MoveSlot {
+                    seq: 1,
+                    order: 0,
+                    canonical: Vec::new(),
+                    actor_net: net(1),
+                    actor: None,
+                    body: MoveBody::Halt,
+                    decided: Some((MoveVerdict::Rejected(CodeV3::NotAuthorized), 1)),
+                });
+            host.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+        }
+        host.last_now_ms = 500;
+        host.release_move_receipts(peer);
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.fail_frames.available(), 5);
+        }
+        assert_eq!(host.take_move_receipts(peer).expect("receipts").len(), 1);
+        // Control: the same drain and release with no elapsed time spends the
+        // tenth token instead (1 left, no refill, one spent).
+        let (mut host, peer) = v4_host_with_log(0);
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            assert!(session.fail_frames.consume(0, 9));
+            assert_eq!(session.fail_frames.available(), 1);
+            session
+                .v3
+                .as_mut()
+                .and_then(|v3| v3.v4.as_mut())
+                .expect("v4")
+                .lane
+                .slots
+                .push_back(MoveSlot {
+                    seq: 1,
+                    order: 0,
+                    canonical: Vec::new(),
+                    actor_net: net(1),
+                    actor: None,
+                    body: MoveBody::Halt,
+                    decided: Some((MoveVerdict::Rejected(CodeV3::NotAuthorized), 1)),
+                });
+            host.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+        }
+        host.last_now_ms = 0;
+        host.release_move_receipts(peer);
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.fail_frames.available(), 0);
+        }
+    }
+
+    /// Fix round 3 (mutant e04): `queue_samples` counts the lane's bytes
+    /// beside the delivery log against the per-peer byte cap. With 1 logged
+    /// byte, a 60-byte reservation and a 10-byte datagram the total is 71, one
+    /// over 70, so the datagram is dropped whole; a byte smaller is exactly
+    /// 70 and queues.
+    #[test]
+    fn queue_samples_counts_lane1_bytes_beside_the_log() {
+        use crate::host_v4::{MoveSlot, MAX_MOVE_RECEIPT_BYTES};
+        use crpg_net::movement_v4::MoveBody;
+        let caps = QueueCaps {
+            per_peer_frames: 128,
+            per_peer_bytes: 70,
+            host_frames: usize::MAX,
+            host_bytes: 1 << 20,
+        };
+        let (mut host, peer) = v4_host_with_log(1);
+        host.egress_caps = caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session
+                .v3
+                .as_mut()
+                .and_then(|v3| v3.v4.as_mut())
+                .expect("v4")
+                .lane
+                .slots
+                .push_back(MoveSlot {
+                    seq: 1,
+                    order: 0,
+                    canonical: Vec::new(),
+                    actor_net: net(1),
+                    actor: None,
+                    body: MoveBody::Halt,
+                    decided: None,
+                });
+            host.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+        }
+        assert_eq!(host.egress_bytes, 61);
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![9u8; 10]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, MAX_MOVE_RECEIPT_BYTES),
+            "the datagram was dropped whole"
+        );
+        assert_eq!(host.egress_bytes, 61);
+        // Control: one byte smaller lands exactly on the 70-byte cap.
+        let (mut host, peer) = v4_host_with_log(1);
+        host.egress_caps = caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            session
+                .v3
+                .as_mut()
+                .and_then(|v3| v3.v4.as_mut())
+                .expect("v4")
+                .lane
+                .slots
+                .push_back(MoveSlot {
+                    seq: 1,
+                    order: 0,
+                    canonical: Vec::new(),
+                    actor_net: net(1),
+                    actor: None,
+                    body: MoveBody::Halt,
+                    decided: None,
+                });
+            host.egress_bytes += MAX_MOVE_RECEIPT_BYTES;
+        }
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![9u8; 9]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (2, MAX_MOVE_RECEIPT_BYTES + 9)
+        );
+        assert_eq!(host.egress_bytes, 70);
+    }
 }
