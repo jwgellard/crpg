@@ -603,8 +603,7 @@ impl Hosting for LocalHost {
     }
 
     fn retire_captures(&mut self) -> Result<(), Self::Error> {
-        self.host
-            .acknowledge_captures(self.host.last_capture())
+        self.host.acknowledge_captures(self.host.last_capture())
     }
 }
 
