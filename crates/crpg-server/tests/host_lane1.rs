@@ -1916,6 +1916,249 @@ fn d6_aggregates() {
     }
 }
 
+/// D-3, D-8, Reading 15: only `Rejected` lane-1 receipts spend the shared
+/// failure budget. Ten `Accepted`/`Superseded` receipts released at one
+/// `now_ms` leave the budget full, so the next lane-0 rejection is kept;
+/// ten `Rejected` receipts empty it, so the same rejection is dropped.
+#[test]
+fn d6_accepted_receipts_spare_failure_budget() {
+    // Ten `Accepted`/`Superseded` receipts, all released at `now_ms` 5.
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    // Window 1: two `Halt A` intents; the earlier one is superseded.
+    assert_eq!(
+        rig.ingest_move(p, &halt_bytes(epoch, 1, 1), 5),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    assert_eq!(
+        rig.ingest_move(p, &halt_bytes(epoch, 2, 1), 5),
+        MoveAdmission::Admitted { seq: 2 }
+    );
+    rig.mirror_halt(a());
+    rig.assert_ticked(5);
+    assert_eq!(
+        rig.receipts(p),
+        vec![
+            MoveReceipt {
+                epoch,
+                seq: 1,
+                actor: n(1),
+                processed_tick: 0,
+                outcome: MoveVerdict::Superseded,
+            },
+            MoveReceipt {
+                epoch,
+                seq: 2,
+                actor: n(1),
+                processed_tick: 0,
+                outcome: MoveVerdict::Accepted { start_tick: 1 },
+            },
+        ]
+    );
+    // Window 2: six more `Halt A` intents in one window; only the last wins.
+    for seq in 3..=8u64 {
+        assert_eq!(
+            rig.ingest_move(p, &halt_bytes(epoch, seq, 1), 5),
+            MoveAdmission::Admitted { seq }
+        );
+    }
+    rig.mirror_halt(a());
+    rig.assert_ticked(5);
+    let got = rig.receipts(p);
+    assert_eq!(got.len(), 6);
+    for (i, receipt) in got.iter().enumerate() {
+        let seq = i as u64 + 3;
+        assert_eq!(receipt.epoch, epoch);
+        assert_eq!(receipt.seq, seq);
+        assert_eq!(receipt.actor, n(1));
+        assert_eq!(receipt.processed_tick, 1);
+        assert_eq!(
+            receipt.outcome,
+            if seq == 8 {
+                MoveVerdict::Accepted { start_tick: 2 }
+            } else {
+                MoveVerdict::Superseded
+            }
+        );
+    }
+    // Window 3: two more, the earlier superseded: ten receipts in all, none
+    // of them `Rejected`.
+    for seq in 9..=10u64 {
+        assert_eq!(
+            rig.ingest_move(p, &halt_bytes(epoch, seq, 1), 5),
+            MoveAdmission::Admitted { seq }
+        );
+    }
+    rig.mirror_halt(a());
+    rig.assert_ticked(5);
+    assert_eq!(
+        rig.receipts(p),
+        vec![
+            MoveReceipt {
+                epoch,
+                seq: 9,
+                actor: n(1),
+                processed_tick: 2,
+                outcome: MoveVerdict::Superseded,
+            },
+            MoveReceipt {
+                epoch,
+                seq: 10,
+                actor: n(1),
+                processed_tick: 2,
+                outcome: MoveVerdict::Accepted { start_tick: 3 },
+            },
+        ]
+    );
+    // The lane-0 rejection that follows is kept: the failure budget is full.
+    let frame = codec_v4::encode_intent(&IntentFrameV4 {
+        epoch,
+        lane: LANE_COMBAT,
+        seq: 1,
+        observed_tick: 0,
+        actor: n(2),
+        body: IntentBodyV4::DeclareAction {
+            ability: strike(),
+            target: n(1),
+        },
+    })
+    .expect("encodes");
+    assert_eq!(
+        rig.host.ingest(p, &frame, 5),
+        Ok(crpg_server::host::IngestDisposition::Staged)
+    );
+    let summary = rig.host.pump(5).expect("pump");
+    assert_eq!(summary.dropped_replies, 0, "{summary:?}");
+    assert_eq!(summary.rejected, 1, "{summary:?}");
+
+    // Control: ten `Rejected` receipts at one `now_ms` empty the budget, so
+    // the same lane-0 rejection is dropped.
+    let (mut control, q) = lane1_rig(&mv3rt_value());
+    let epoch = control.epoch(q);
+    for seq in 1..=10u64 {
+        assert_eq!(
+            control.ingest_move(q, &move_to_bytes(epoch, seq, 2, (65536, 0, 262144)), 5),
+            MoveAdmission::Rejected {
+                seq,
+                code: CodeV3::NotAuthorized,
+            }
+        );
+        assert_eq!(control.receipts(q).len(), 1);
+    }
+    let frame = codec_v4::encode_intent(&IntentFrameV4 {
+        epoch,
+        lane: LANE_COMBAT,
+        seq: 1,
+        observed_tick: 0,
+        actor: n(2),
+        body: IntentBodyV4::DeclareAction {
+            ability: strike(),
+            target: n(1),
+        },
+    })
+    .expect("encodes");
+    assert_eq!(
+        control.host.ingest(q, &frame, 5),
+        Ok(crpg_server::host::IngestDisposition::Staged)
+    );
+    let summary = control.host.pump(5).expect("pump");
+    assert_eq!(summary.dropped_replies, 1, "{summary:?}");
+    assert_eq!(summary.rejected, 1, "{summary:?}");
+}
+
+/// D-3, D-8, Reading 15: a `Rejected` lane-1 receipt spends the failure
+/// budget refilled since. Ten rejections empty the ten-token budget at
+/// `now_ms` 5; 100 ms later exactly one token has refilled, so one
+/// `Rejected` resend spends it and the next lane-0 rejection is dropped.
+/// Without that resend the refilled token keeps the rejection.
+#[test]
+fn d8_rejected_resend_spends_refilled_token() {
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    for seq in 1..=10u64 {
+        assert_eq!(
+            rig.ingest_move(p, &move_to_bytes(epoch, seq, 2, (65536, 0, 262144)), 5),
+            MoveAdmission::Rejected {
+                seq,
+                code: CodeV3::NotAuthorized,
+            }
+        );
+        assert_eq!(rig.receipts(p).len(), 1);
+    }
+    // One refill token 100 ms later; the cached `Rejected` resend spends it.
+    assert_eq!(
+        rig.ingest_move(p, &move_to_bytes(epoch, 10, 2, (65536, 0, 262144)), 105),
+        MoveAdmission::Duplicate {
+            seq: 10,
+            resent: true,
+        }
+    );
+    assert_eq!(
+        rig.receipts(p),
+        vec![MoveReceipt {
+            epoch,
+            seq: 10,
+            actor: n(2),
+            processed_tick: 0,
+            outcome: MoveVerdict::Rejected(CodeV3::NotAuthorized),
+        }]
+    );
+    // The lane-0 rejection that follows is dropped: the budget is empty.
+    let frame = codec_v4::encode_intent(&IntentFrameV4 {
+        epoch,
+        lane: LANE_COMBAT,
+        seq: 1,
+        observed_tick: 0,
+        actor: n(2),
+        body: IntentBodyV4::DeclareAction {
+            ability: strike(),
+            target: n(1),
+        },
+    })
+    .expect("encodes");
+    assert_eq!(
+        rig.host.ingest(p, &frame, 105),
+        Ok(crpg_server::host::IngestDisposition::Staged)
+    );
+    let summary = rig.host.pump(105).expect("pump");
+    assert_eq!(summary.dropped_replies, 1, "{summary:?}");
+    assert_eq!(summary.rejected, 1, "{summary:?}");
+
+    // Control: the same run without the resend keeps its one refilled token,
+    // so the same lane-0 rejection is not dropped.
+    let (mut control, q) = lane1_rig(&mv3rt_value());
+    let epoch = control.epoch(q);
+    for seq in 1..=10u64 {
+        assert_eq!(
+            control.ingest_move(q, &move_to_bytes(epoch, seq, 2, (65536, 0, 262144)), 5),
+            MoveAdmission::Rejected {
+                seq,
+                code: CodeV3::NotAuthorized,
+            }
+        );
+        assert_eq!(control.receipts(q).len(), 1);
+    }
+    let frame = codec_v4::encode_intent(&IntentFrameV4 {
+        epoch,
+        lane: LANE_COMBAT,
+        seq: 1,
+        observed_tick: 0,
+        actor: n(2),
+        body: IntentBodyV4::DeclareAction {
+            ability: strike(),
+            target: n(1),
+        },
+    })
+    .expect("encodes");
+    assert_eq!(
+        control.host.ingest(q, &frame, 105),
+        Ok(crpg_server::host::IngestDisposition::Staged)
+    );
+    let summary = control.host.pump(105).expect("pump");
+    assert_eq!(summary.dropped_replies, 0, "{summary:?}");
+    assert_eq!(summary.rejected, 1, "{summary:?}");
+}
+
 // ---------------------------------------------------------------------------
 // D7.
 // ---------------------------------------------------------------------------
