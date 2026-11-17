@@ -255,6 +255,16 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
   positions and keeps the sample clock. `MoveOutbox` never reorders or skips a
   receipt: `receive` takes only the oldest pending intent.
 
+- *2026-11-17 (UTC), T042:* **A new server-facing decoder is a new `Wire` row in
+  `tests/malicious_client.rs`** (with its fixtures), in the same task that
+  adds the decoder; the suite is the whole client-to-server byte boundary.
+  **Never relax `stable` or W-12's exactness to admit a decoder change**:
+  the host's replay cache compares canonical re-encodings
+  (`crpg-server` `Host::canonical`), so a decoded value that does not
+  re-encode, or re-encodes to bytes that decode differently, is a defect.
+  Checks run in wire order; the architecture invariant says so since T042.
+  DoD count: 728 passed.
+
 ## Agent log
 
 - 2026-09-29 (UTC) · opencode/gpt-6-astra + T021 review fixes · Added overflow-regression and transport-backed retry requirements. The checks prevent wrapped length acceptance and keep exactly-once evidence tied to admission and delivery paths.
@@ -304,3 +314,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the position-filter entry with its three traps (a position is sampled only after its anchor; `project_samples` reads the current grant so revocation is immediate; a snapshot empties the `PositionView` and the next page re-anchors).
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the v4 receiver-gate entry; its trap that a pool fix is a fix to all three pools supersedes the T140r1 two-pool wording by a new entry, not an edit.
 - 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the v4 replica and sender entry with its four traps (v3 ops only through `apply_op`; `Moved` is an unchecked notice; `apply_sample` never fails; an anchor replaces only if not older).
+- 2026-11-17 (UTC) · opencode-go/deepseek-v4.1-flash + T042a · Added the malicious-client suite trap (a new server-facing decoder is a new `Wire` row in the same task; never relax `stable` or W-12 exactness for a decoder change) and corrected the decode-order claims in the architecture invariant and two codec comments, with the DoD count 728.

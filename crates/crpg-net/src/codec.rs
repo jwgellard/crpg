@@ -7,13 +7,17 @@
 //!
 //! 1. Length cap against the frame maximum, before any allocation.
 //! 2. Version byte.
-//! 3. Lane/direction bytes (intent lane, delta lane, receipt lane).
-//! 4. Discriminant tags (intent body, delta op, receipt status, code).
-//! 5. Length and collection bounds (ability string bytes, op count).
-//! 6. Complete decode of the remaining fields.
-//! 7. Empty-remainder check: trailing bytes are [`CodecError::Malformed`].
-//! 8. Semantic value checks: nonzero [`NetId`](crate::protocol::NetId)s,
-//!    `seq` within `SEQ_FIRST..=SEQ_LAST`, valid ULID text.
+//! 3. Every later field in the frozen order below, each checked as it is
+//!    read: a lane byte is `WrongDirection`; a `seq` outside
+//!    `SEQ_FIRST..=SEQ_LAST` or a zero `NetId` is `Malformed`; an unknown
+//!    discriminant tag or code is `UnknownMessage`; an op count over
+//!    `MAX_DELTA_OPS` is `LimitExceeded` before any op is read; the ability
+//!    text is read whole (within the frame cap), then bounded
+//!    (`LimitExceeded`), then parsed (`Malformed`).
+//! 4. Empty-remainder check: trailing bytes are [`CodecError::Malformed`].
+//!
+//! No check waits for a later field: an intent with `seq` 0 and an unknown
+//! body tag is `Malformed` (T042).
 //!
 //! The codec never touches `World`, RNG, or the event queue, never reserves
 //! from untrusted lengths (the op vector grows by push; string bodies are
@@ -184,9 +188,9 @@ pub fn encode_intent(frame: &IntentFrame) -> Result<Vec<u8>, CodecError> {
 
 /// Decodes one intent frame from its v1 bytes.
 ///
-/// Applies the staged checks in order: frame cap, version, lane, body tag,
-/// string bound, complete decode with no trailing bytes, then the nonzero-id
-/// and `seq`-range value checks.
+/// Checks in wire order, each field as it is read: frame cap, version,
+/// lane, `seq` range, nonzero `actor`, body tag, the body (ability text read
+/// whole, bounded, parsed; nonzero target), then trailing bytes.
 pub fn decode_intent(bytes: &[u8]) -> Result<IntentFrame, CodecError> {
     if bytes.len() > MAX_INTENT_FRAME_BYTES {
         return Err(CodecError::FrameTooLarge);

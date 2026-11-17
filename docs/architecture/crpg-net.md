@@ -151,10 +151,17 @@ needs a new protocol version plus new fixtures, never ignore-and-continue.
 - v1 freezes tags, field order, and numeric codes. Additive variants, field
   additions, or meaning changes require a new protocol version plus new
   fixtures. v1 never ignores-and-continues on unknown input.
-- Decode order is contract: length cap → version → lane/direction →
-  discriminant → lengths/collection bounds → complete decode →
-  trailing-byte check → semantic value checks (`NetId` nonzero, `seq` in
-  `SEQ_FIRST..=SEQ_LAST`, ULID text parses). First failure wins.
+- Decode order is contract, and it is wire order: length cap → version →
+  every later field in its frozen order, each checked as it is read (a lane
+  byte → `WrongDirection`; `seq` outside `SEQ_FIRST..=SEQ_LAST` or a zero
+  `NetId` → `Malformed`; a discriminant tag or code → `UnknownMessage`; an
+  op count over its bound → `LimitExceeded` before any op is read; a v1
+  ability string read whole within the frame cap, then bounded, then parsed;
+  a v2+ string length bounded before its body) → trailing-byte check. First
+  failure wins and no check waits for a later field: an intent with `seq` 0
+  and an unknown body tag is `Malformed`, not `UnknownMessage` (T042 X9).
+  *2026-11-17 (UTC), T042: corrected; the earlier text put the `NetId`, `seq`
+  and ULID checks after the trailing-byte check, which no codec does.*
 - Bounds fire on encode as well as decode (`WrongDirection` lane,
   `Malformed` `seq`, `LimitExceeded` op count; post-check encoded length
   against the frame cap).
@@ -283,6 +290,35 @@ and the negative controls prove it fails loudly. Every rejection carries a
 positive control and a byte-identical complete-state assertion. A passing
 double is not host integration passing: E012/E018/E022 still own the real
 host.
+
+## Malicious-client suite (T042)
+
+T042 adds `tests/malicious_client.rs`, one table-driven suite over the whole
+client-to-server byte boundary: the eight server-facing decoders (lane-0
+v1–v4, the `0x81`/`0x82` transfer upstream, the `0x91` resume request and the
+`0xA1` movement intent), each with its own encoder-built pinned fixture, its
+own cap, version, lane and tag checks, every truncation and single-byte
+corruption, and seeded noise. It is the wire-level answer to spec §16.2's
+malicious-client mandate; host-level classes (ownership, timing, interest,
+replay, rate) stay T041's.
+
+A value a decoder accepts must re-encode canonically and the re-encoding must
+decode back to itself (ULID case aliases re-encode canonically); the host's
+replay cache compares those canonical bytes (`crpg-server` `Host::canonical`),
+so a decoder that accepts what its encoder refuses, or re-encodes to bytes
+that decode differently, is a defect. A new server-facing decoder is a new
+`Wire` row in the same task.
+
+| Spec class (§16.2) | Wire level, `crpg-net` | Host level |
+|---|---|---|
+| Oversized packets | `malicious_client.rs` X3 | T041; `crates/crpg-server/tests/host_quic.rs` `quic_malicious_frames_rejected_without_mutation` |
+| Malformed frames | `malicious_client.rs` X2, X4–X8, X10–X13; the per-codec suites | T041; the same `host_quic.rs` test |
+| Intents for entities not owned | X9 (zero ids only); `conformance.rs` `forged_and_cross_client_ids_rejected` (T018c double) | T041 (`NotAuthorized`) |
+| Intents at illegal times | none: `observed_tick` is carried, not judged; `conformance.rs` `stale_and_future_ticks_rejected_terminally`, `unknown_ability_out_of_turn_and_self_target_rejected` (double) | T041 |
+| Flooding | `transport.rs` `token_bucket_replenishes_exactly`, `rate_buckets_gate_and_replenish_exactly`; `token_bucket_regression.rs`; `conformance.rs` `over_rate_bursts_rejected_before_admit`, `slow_peer_terminates_with_queue_full_never_silent_loss` | T041 |
+| Replay of old packets | none in a decoder (stateless); `reconnect_wire.rs` `fence_window_retries_lost_grants_without_reissuing`, `fenced_connection_frames_never_reach_admission`; `conformance.rs` `replayed_seq_same_bytes_cached_conflict_closes`, `seq_gap_does_not_advance_stale_never_reapplies` | T041 |
+| Requesting entities outside the interest set | `interest.rs` `i08_retired_ids_do_not_resolve`; `conformance.rs` `revoked_visibility_ids_rejected` | T041 |
+| Clean rejection and a log line | every refusal is a `CodecError` with a fixed text (X14) | Question 1's owner |
 
 ## v2 event wire (T021)
 
@@ -1328,3 +1364,4 @@ R9 drives a `ReassemblyPoolV4` into the replica.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p3 · Added the `positions_v4`/`projection_v4` subsection (the anchor-then-samples disclosure, `PositionView`, the page, sample and snapshot rules, reconnect and `Moved` disclosure) and extended the op-owner table; no earlier section changed.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the `pool_v4` subsection (what is re-exported from `pool_v3`, the V-1 substitution table and its runnable `diff -B` check, the two-pool mirror proof and version isolation); no earlier section changed.
 - 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the `replica_v4`/`outbox_v4` subsection with the replica's apply rules, the sample and anchor ordering rule and the outbox window and receipt order.
+- 2026-11-17 (UTC) · opencode-go/deepseek-v4.1-flash + T042a · Added the "Malicious-client suite (T042)" section (the eight-wire surface, the decode-stability rule and the spec-class index) and corrected the decode-order invariant to wire order, superseding the earlier semantic-checks-last wording by appending a dated note.

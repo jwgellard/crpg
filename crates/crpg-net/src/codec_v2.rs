@@ -270,10 +270,10 @@ pub fn encode_intent(frame: &IntentFrame) -> Result<Vec<u8>, CodecError> {
 
 /// Decodes one intent frame from its v2 bytes.
 ///
-/// Applies the staged checks in order: frame cap, version (byte 1 is
-/// [`CodecError::UnsupportedVersion`]), lane, body tag, string bound,
-/// complete decode with no trailing bytes, then the nonzero-id and
-/// `seq`-range value checks.
+/// Checks in wire order, each field as it is read: frame cap, version
+/// (byte 1 is [`CodecError::UnsupportedVersion`]), lane, `seq` range,
+/// nonzero `actor`, body tag, the body (ULID length bounded before its
+/// body, then parsed; nonzero target), then trailing bytes.
 pub fn decode_intent(bytes: &[u8]) -> Result<IntentFrame, CodecError> {
     if bytes.len() > MAX_INTENT_FRAME_BYTES {
         return Err(CodecError::FrameTooLarge);
