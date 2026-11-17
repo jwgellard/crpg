@@ -1179,3 +1179,617 @@ fn retired_records_are_bounded() {
     assert_eq!(retired.last().expect("last").0, handles[63]);
     assert_eq!(host_loop.hosting().retired_dropped(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// T154a fix round 1, part A (gaps 1–9): one test per gap. Each case has a
+// control beside it: the same setup with the one difference removed,
+// asserting the other outcome.
+// ---------------------------------------------------------------------------
+
+/// Gap 1 (B-4; H). A paused host with a link still runs every stage: a frame
+/// sent while paused is applied, delivery advances `sent`, and captures are
+/// retired. Kills p02 (delivery skipped while paused), p03 (intake skipped),
+/// p04 (captures skipped) and p05 (pump skipped).
+#[test]
+fn paused_link_still_intakes_delivers_and_retires_captures() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    host.pause(0).expect("pauses");
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    let frame = end_frame(host_loop.hosting().host(), p, 1);
+    client.send(&frame).expect("sends");
+    let step = host_loop.step(0).expect("runs");
+    assert_eq!(
+        step.cycle.expect("runs a cycle").advance,
+        AdvanceReport {
+            ticked: false,
+            timer_ended_turn: None,
+            paused: Some(PauseReason::Operator),
+        }
+    );
+
+    // The twin runs the same cycle by hand while paused.
+    let mut twin = tb3();
+    assert_eq!(bind(&mut twin), p);
+    twin.pause(0).expect("pauses");
+    assert_eq!(twin.ingest(p, &frame, 0), Ok(IngestDisposition::Staged));
+    twin.pump(0).expect("pumps");
+    assert_eq!(
+        twin.advance(0).expect("advances"),
+        AdvanceReport {
+            ticked: false,
+            timer_ended_turn: None,
+            paused: Some(PauseReason::Operator),
+        }
+    );
+    let entries = twin.take_delivery_entries(p).expect("bound");
+    if let Some(last) = entries.last() {
+        twin.acknowledge_delivery(p, last.ordinal).expect("acks");
+    }
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks captures");
+
+    // The frame was applied (intake and pump ran): same post-state as the twin.
+    assert_eq!(
+        host_loop.hosting().host().authority_hash(),
+        twin.authority_hash()
+    );
+    assert_eq!(host_loop.hosting().host().awaiting_orders(), vec![b()]);
+    assert_eq!(twin.awaiting_orders(), vec![b()]);
+    assert_eq!(host_loop.hosting().host().server_tick(), 0);
+    // Delivery ran: the client receives the twin's entries, counted in `sent`.
+    let received = drain(&mut client);
+    assert_eq!(
+        received,
+        entries
+            .into_iter()
+            .map(|entry| entry.bytes)
+            .collect::<Vec<_>>()
+    );
+    assert!(!received.is_empty());
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.sent as usize, received.len());
+    // Captures were retired.
+    assert_eq!(
+        host_loop.hosting().host().capture_acknowledged(),
+        host_loop.hosting().host().last_capture()
+    );
+    assert_eq!(twin.capture_acknowledged(), twin.last_capture());
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+
+    // Control: the same run unpaused ticks and delivers the same way.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut quiet = control.hosting_mut().attach(p, cap(64)).expect("attaches");
+    let frame = end_frame(control.hosting().host(), p, 1);
+    quiet.send(&frame).expect("sends");
+    let step = control.step(0).expect("runs");
+    assert_eq!(step.cycle.expect("runs a cycle").advance, advance_report());
+    assert_eq!(control.hosting().host().server_tick(), 1);
+    assert!(!drain(&mut quiet).is_empty());
+    assert_eq!(
+        control.hosting().host().capture_acknowledged(),
+        control.hosting().host().last_capture()
+    );
+}
+
+/// Gap 2 (B-6/B-9; H). A departure seen at intake still retires at deliver,
+/// after the pump: a client that sends a command then drops still has its
+/// command applied. Kills i18 (retire at intake, before the pump, so the
+/// staged command is refused `SessionExpired`).
+#[test]
+fn dropped_client_command_survives_until_deliver() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    let frame = end_frame(host_loop.hosting().host(), p, 1);
+    client.send(&frame).expect("sends");
+    drop(client);
+    host_loop.step(0).expect("runs");
+    assert_eq!(host_loop.hosting().link_stats(p), None);
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, p);
+    assert_eq!(retired[0].1.received, 1);
+    assert_eq!(retired[0].1.refused, 0);
+    assert_eq!(retired[0].1.sent, 0);
+
+    // The command took effect: the host matches a twin that received it.
+    let mut twin = tb3();
+    assert_eq!(bind(&mut twin), p);
+    assert_eq!(twin.ingest(p, &frame, 0), Ok(IngestDisposition::Staged));
+    twin.pump(0).expect("pumps");
+    twin.advance(0).expect("advances");
+    twin.unbind_peer(p);
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks captures");
+    assert_eq!(
+        host_loop.hosting().host().authority_hash(),
+        twin.authority_hash()
+    );
+    assert_eq!(host_loop.hosting().host().server_tick(), 1);
+    assert_eq!(
+        host_loop.hosting().host().awaiting_orders(),
+        twin.awaiting_orders()
+    );
+
+    // Control: dropped with no command, the state is the command-less twin's.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let idle = control.hosting_mut().attach(p, cap(64)).expect("attaches");
+    drop(idle);
+    control.step(0).expect("runs");
+    let retired = control.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].1.received, 0);
+    let mut twin = tb3();
+    assert_eq!(bind(&mut twin), p);
+    twin.pump(0).expect("pumps");
+    twin.advance(0).expect("advances");
+    twin.unbind_peer(p);
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks captures");
+    assert_eq!(
+        control.hosting().host().authority_hash(),
+        twin.authority_hash()
+    );
+    assert_ne!(
+        control.hosting().host().authority_hash(),
+        host_loop.hosting().host().authority_hash()
+    );
+}
+
+/// Gap 3 (B-6/B-7; H). K12(a) drops before the first cycle, where the bind
+/// entries still queued mask a missing departed mark. Drained first, the next
+/// cycle carries no entries, so only the intake mark retires the link. Kills
+/// i17 (the disconnect never marked) and d01 (no retire at deliver step 1).
+#[test]
+fn drained_then_dropped_link_retires_on_the_next_step() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    host_loop.step(0).expect("runs");
+    assert!(host_loop.hosting().link_stats(p).is_some());
+    drain(&mut client);
+    drop(client);
+    host_loop.step(50).expect("runs");
+    assert_eq!(host_loop.hosting().link_stats(p), None);
+    assert_eq!(
+        host_loop.hosting().host().epoch(p),
+        Err(HostError::UnknownPeer)
+    );
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, p);
+    assert_eq!(retired[0].1.received, 0);
+    assert_eq!(retired[0].1.refused, 0);
+
+    // Control: drained but attended, the link stays and records nothing.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut quiet = control.hosting_mut().attach(p, cap(64)).expect("attaches");
+    control.step(0).expect("runs");
+    drain(&mut quiet);
+    control.step(50).expect("runs");
+    assert!(control.hosting().link_stats(p).is_some());
+    assert!(control.hosting_mut().take_retired().is_empty());
+}
+
+/// Gap 4 (B-6(3); H). The pump runs even with no links: a command staged
+/// straight into the host is applied by the step. Kills i20 (no pump when the
+/// link table is empty).
+#[test]
+fn pump_runs_with_no_links_attached() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let frame = end_frame(&host, p, 1);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    assert_eq!(
+        host_loop.hosting_mut().host_mut().ingest(p, &frame, 0),
+        Ok(IngestDisposition::Staged)
+    );
+    host_loop.step(0).expect("runs");
+
+    let mut twin = tb3();
+    assert_eq!(bind(&mut twin), p);
+    assert_eq!(twin.ingest(p, &frame, 0), Ok(IngestDisposition::Staged));
+    twin.pump(0).expect("pumps");
+    twin.advance(0).expect("advances");
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks captures");
+    assert_eq!(
+        host_loop.hosting().host().authority_hash(),
+        twin.authority_hash()
+    );
+    assert_eq!(host_loop.hosting().host().server_tick(), 1);
+
+    // Control: nothing staged, the step ticks but applies nothing.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    control.step(0).expect("runs");
+    let mut twin = tb3();
+    assert_eq!(bind(&mut twin), p);
+    twin.pump(0).expect("pumps");
+    twin.advance(0).expect("advances");
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks captures");
+    assert_eq!(
+        control.hosting().host().authority_hash(),
+        twin.authority_hash()
+    );
+    assert_ne!(
+        control.hosting().host().authority_hash(),
+        host_loop.hosting().host().authority_hash()
+    );
+}
+
+/// Gap 5 (B-6; M). Intake walks the links in ascending `PeerHandle` order no
+/// matter the attach order: two peers' commands match a twin driven by hand
+/// in ascending order. Kills i24 (descending intake, which stages the frames
+/// in the other order).
+#[test]
+fn intake_processes_peers_in_ascending_handle_order() {
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let q = host
+        .bind_peer(control(&[a(), b(), c()]), full_grants(), 0)
+        .expect("binds");
+    assert!(p < q);
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    // Attached descending: the intake order still governs.
+    let mut q_client = host_loop
+        .hosting_mut()
+        .attach(q, cap(64))
+        .expect("attaches");
+    let mut p_client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    let p_frame = actor_end_frame(host_loop.hosting().host(), p, 1, 1);
+    let q_frame = actor_end_frame(host_loop.hosting().host(), q, 1, 2);
+    p_client.send(&p_frame).expect("sends");
+    q_client.send(&q_frame).expect("sends");
+    host_loop.step(0).expect("runs");
+
+    // The twin ingests in ascending handle order, then pumps once.
+    let mut twin = tb3();
+    assert_eq!(bind(&mut twin), p);
+    assert_eq!(
+        twin.bind_peer(control(&[a(), b(), c()]), full_grants(), 0),
+        Ok(q)
+    );
+    assert_eq!(twin.ingest(p, &p_frame, 0), Ok(IngestDisposition::Staged));
+    assert_eq!(twin.ingest(q, &q_frame, 0), Ok(IngestDisposition::Staged));
+    let summary = twin.pump(0).expect("pumps");
+    assert_eq!(summary.admitted, 2);
+    assert_eq!(summary.applied, 2);
+    assert_eq!(summary.rejected, 0);
+    twin.advance(0).expect("advances");
+    let p_entries = twin.take_delivery_entries(p).expect("bound");
+    if let Some(last) = p_entries.last() {
+        twin.acknowledge_delivery(p, last.ordinal).expect("acks");
+    }
+    let q_entries = twin.take_delivery_entries(q).expect("bound");
+    if let Some(last) = q_entries.last() {
+        twin.acknowledge_delivery(q, last.ordinal).expect("acks");
+    }
+    twin.acknowledge_captures(twin.last_capture())
+        .expect("acks captures");
+
+    // The setup is order-sensitive: a twin driven descending disagrees.
+    let mut flipped = tb3();
+    assert_eq!(bind(&mut flipped), p);
+    assert_eq!(
+        flipped.bind_peer(control(&[a(), b(), c()]), full_grants(), 0),
+        Ok(q)
+    );
+    assert_eq!(
+        flipped.ingest(q, &q_frame, 0),
+        Ok(IngestDisposition::Staged)
+    );
+    assert_eq!(
+        flipped.ingest(p, &p_frame, 0),
+        Ok(IngestDisposition::Staged)
+    );
+    flipped.pump(0).expect("pumps");
+    flipped.advance(0).expect("advances");
+    flipped
+        .acknowledge_captures(flipped.last_capture())
+        .expect("acks captures");
+    assert_ne!(flipped.authority_hash(), twin.authority_hash());
+
+    // Ascending, P ends A's turn and Q ends B's: both apply, nothing refused.
+    let p_stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(p_stats.received, 1);
+    assert_eq!(p_stats.refused, 0);
+    let q_stats = host_loop.hosting().link_stats(q).expect("link");
+    assert_eq!(q_stats.received, 1);
+    assert_eq!(q_stats.refused, 0);
+    assert_eq!(
+        host_loop.hosting().host().authority_hash(),
+        twin.authority_hash()
+    );
+    let p_got = drain(&mut p_client);
+    assert_eq!(
+        p_got,
+        p_entries
+            .into_iter()
+            .map(|entry| entry.bytes)
+            .collect::<Vec<_>>()
+    );
+    let q_got = drain(&mut q_client);
+    assert_eq!(
+        q_got,
+        q_entries
+            .into_iter()
+            .map(|entry| entry.bytes)
+            .collect::<Vec<_>>()
+    );
+    assert_ne!(p_got, q_got);
+
+    // Control: attached ascending, the same frames give the same outcome.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let q = host
+        .bind_peer(control(&[a(), b(), c()]), full_grants(), 0)
+        .expect("binds");
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut p_client = control.hosting_mut().attach(p, cap(64)).expect("attaches");
+    let mut q_client = control.hosting_mut().attach(q, cap(64)).expect("attaches");
+    let p_frame = actor_end_frame(control.hosting().host(), p, 1, 1);
+    let q_frame = actor_end_frame(control.hosting().host(), q, 1, 2);
+    p_client.send(&p_frame).expect("sends");
+    q_client.send(&q_frame).expect("sends");
+    control.step(0).expect("runs");
+    assert_eq!(
+        control.hosting().host().authority_hash(),
+        host_loop.hosting().host().authority_hash()
+    );
+    assert_eq!(drain(&mut p_client), p_got);
+    assert_eq!(drain(&mut q_client), q_got);
+}
+
+/// Gap 6 (B-6(1); M). K11 allows "sent or one fewer" at the hold. Held over
+/// several cycles, `received` stays flat; on resume nothing is lost or
+/// reordered. Kills i03 (re-held frame dropped), i04 (a re-held frame falls
+/// through to the fresh drain) and i13 (a fresh hold keeps draining).
+#[test]
+fn held_frame_blocks_its_peer_until_room_returns() {
+    // S is never read: its full log blocks admission, so P's staged frames
+    // reach the per-peer ingress cap and one frame is held.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let s = host
+        .bind_peer(control(&[]), full_grants(), 0)
+        .expect("binds");
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut p_client = host_loop
+        .hosting_mut()
+        .attach(p, cap(4_096))
+        .expect("attaches");
+    let mut s_client = host_loop.hosting_mut().attach(s, cap(1)).expect("attaches");
+
+    let mut sent = 0u64;
+    let mut cycle = 0u64;
+    while cycle < 2_000 {
+        drain(&mut p_client);
+        for _ in 0..2 {
+            let actor = 1 + (sent % 3);
+            let frame = actor_end_frame(host_loop.hosting().host(), p, sent + 1, actor);
+            p_client.send(&frame).expect("sends");
+            sent += 1;
+        }
+        host_loop.step(50 * cycle).expect("runs");
+        cycle += 1;
+        if host_loop.hosting().link_stats(p).expect("link").held {
+            break;
+        }
+    }
+    let held_received = host_loop.hosting().link_stats(p).expect("link").received;
+    assert!(host_loop.hosting().link_stats(p).expect("link").held);
+    assert_eq!(host_loop.hosting().link_stats(p).expect("link").refused, 0);
+    assert!(held_received == sent || held_received + 1 == sent);
+
+    // While held, further cycles take nothing more: `received` is flat and
+    // nothing is refused.
+    for _ in 0..5 {
+        drain(&mut p_client);
+        for _ in 0..2 {
+            let actor = 1 + (sent % 3);
+            let frame = actor_end_frame(host_loop.hosting().host(), p, sent + 1, actor);
+            p_client.send(&frame).expect("sends");
+            sent += 1;
+        }
+        host_loop.step(50 * cycle).expect("runs");
+        cycle += 1;
+        let stats = host_loop.hosting().link_stats(p).expect("link");
+        assert!(stats.held);
+        assert_eq!(stats.received, held_received);
+        assert_eq!(stats.refused, 0);
+    }
+
+    // Release: P stops and S is read dry. Every sent frame is taken exactly
+    // once, in order, so the rotating `EndTurn`s stay valid: none refused.
+    let mut released = false;
+    for _ in 0..20 {
+        drain(&mut s_client);
+        drain(&mut p_client);
+        host_loop.step(50 * cycle).expect("runs");
+        cycle += 1;
+        let stats = host_loop.hosting().link_stats(p).expect("link");
+        if !stats.held && stats.received == sent {
+            assert_eq!(stats.refused, 0);
+            released = true;
+            break;
+        }
+    }
+    assert!(released, "the hold did not clear");
+
+    // Control: S read every cycle never blocks admission, so nothing holds.
+    let mut host = tb3();
+    let p = bind(&mut host);
+    let s = host
+        .bind_peer(control(&[]), full_grants(), 0)
+        .expect("binds");
+    let mut control = HostLoop::new(LocalHost::new(host), 0);
+    let mut p_client = control
+        .hosting_mut()
+        .attach(p, cap(4_096))
+        .expect("attaches");
+    let mut s_client = control.hosting_mut().attach(s, cap(2)).expect("attaches");
+    let mut sent = 0u64;
+    for cycle in 0..100u64 {
+        drain(&mut p_client);
+        drain(&mut s_client);
+        for _ in 0..2 {
+            let actor = 1 + (sent % 3);
+            let frame = actor_end_frame(control.hosting().host(), p, sent + 1, actor);
+            p_client.send(&frame).expect("sends");
+            sent += 1;
+        }
+        control.step(50 * cycle).expect("runs");
+        assert!(
+            !control.hosting().link_stats(p).expect("link").held,
+            "held in control cycle {cycle}"
+        );
+        assert_eq!(control.hosting().link_stats(p).expect("link").refused, 0);
+    }
+}
+
+/// Gap 7 (B-1; M). `missed()` sums across skipping steps, a failing cycle
+/// past several slots still moves the schedule and the total, and the grid
+/// saturates at `u64::MAX`. Kills s16 (total overwritten), s25 (a failure
+/// rolls the total back) and s11 (wrapping `next_due_ms`).
+#[test]
+fn missed_slots_sum_and_saturate() {
+    // `missed()` sums over two skipping steps.
+    let (rec, _) = Rec::new();
+    let mut host_loop = HostLoop::new(rec, 0);
+    host_loop.step(0).expect("runs");
+    let step = host_loop.step(210).expect("runs");
+    assert_eq!(step.missed, 3);
+    let step = host_loop.step(420).expect("runs");
+    assert_eq!(step.missed, 3);
+    assert_eq!(host_loop.missed(), 6);
+    assert_eq!(host_loop.cycles(), 3);
+    assert_eq!(host_loop.next_due_ms(), 450);
+
+    // Control: every slot stepped, nothing missed.
+    let (rec, _) = Rec::new();
+    let mut control = HostLoop::new(rec, 0);
+    for slot in 0..3u64 {
+        let step = control.step(50 * slot).expect("runs");
+        assert_eq!(step.missed, 0);
+    }
+    assert_eq!(control.missed(), 0);
+    assert_eq!(control.cycles(), 3);
+
+    // A failing cycle past several slots still moves the schedule and total.
+    let mut host_loop = HostLoop::new(Rec::failing_at(0), 0);
+    let error = host_loop.step(210).expect_err("fails");
+    assert_eq!(error, LoopError::Hosting(HostError::QueueFull));
+    assert_eq!(host_loop.cycles(), 1);
+    assert_eq!(host_loop.missed(), 4);
+    assert_eq!(host_loop.next_due_ms(), 250);
+    host_loop.step(250).expect("runs");
+    assert_eq!(host_loop.cycles(), 2);
+    assert_eq!(host_loop.missed(), 4);
+
+    // Control: the same jump without a failure runs and counts the same skip.
+    let (rec, _) = Rec::new();
+    let mut control = HostLoop::new(rec, 0);
+    let step = control.step(210).expect("runs");
+    assert_eq!(step.missed, 4);
+    assert_eq!(control.missed(), 4);
+
+    // The grid saturates instead of wrapping past `u64::MAX`.
+    let (rec, _) = Rec::new();
+    let mut host_loop = HostLoop::new(rec, u64::MAX - 10);
+    let step = host_loop.step(u64::MAX).expect("runs");
+    assert_eq!(step.missed, 0);
+    assert_eq!(step.cycle.map(|cycle| cycle.now_ms), Some(u64::MAX));
+    assert_eq!(host_loop.next_due_ms(), u64::MAX);
+    assert_eq!(host_loop.missed(), 0);
+
+    // Control: the start slot itself runs and already saturates the next due.
+    let (rec, _) = Rec::new();
+    let mut control = HostLoop::new(rec, u64::MAX - 10);
+    assert!(control.step(u64::MAX - 10).expect("runs").cycle.is_some());
+    assert_eq!(control.next_due_ms(), u64::MAX);
+}
+
+/// Gap 8 (B-1; M). `with_period` starts `last_ms` at the given start, so an
+/// earlier time regresses. Kills k05 (`last_ms` 0 in `with_period`).
+#[test]
+fn with_period_starts_last_ms_at_the_given_start() {
+    let (rec, _) = Rec::new();
+    let mut host_loop = HostLoop::with_period(rec, 1_000, NonZeroU64::new(25).expect("nonzero"));
+    assert_eq!(host_loop.last_ms(), 1_000);
+    assert_eq!(host_loop.next_due_ms(), 1_000);
+    let error = host_loop.step(999).expect_err("regresses");
+    assert_eq!(
+        error,
+        LoopError::TimeRegression {
+            last_ms: 1_000,
+            now_ms: 999,
+        }
+    );
+    assert_eq!(host_loop.cycles(), 0);
+
+    // Control: the start slot itself runs.
+    let (rec, _) = Rec::new();
+    let mut control = HostLoop::with_period(rec, 1_000, NonZeroU64::new(25).expect("nonzero"));
+    let step = control.step(1_000).expect("runs");
+    assert_eq!(step.cycle.map(|cycle| cycle.now_ms), Some(1_000));
+    assert_eq!(control.last_ms(), 1_000);
+}
+
+/// Gap 9 (B-8; M). The AI hook sees each cycle's `now_ms`, runs every cycle,
+/// and `set_ai(None)` stops it. Kills h01 (the hook gets time 0), h03 (the
+/// hook consumed after the first call) and l03 (`set_ai` cannot clear).
+#[test]
+fn ai_hook_receives_every_cycle_time_and_can_be_cleared() {
+    let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let probe = Arc::clone(&seen);
+    let mut hosting = LocalHost::new(tb3());
+    hosting.set_ai(Some(Box::new(move |_host: &mut Host, now_ms: u64| {
+        probe.lock().expect("recorder").push(now_ms);
+        Ok(())
+    })));
+    let mut host_loop = HostLoop::new(hosting, 0);
+    host_loop.step(0).expect("runs");
+    host_loop.step(600).expect("runs");
+    host_loop.step(650).expect("runs");
+    assert_eq!(*seen.lock().expect("recorder"), vec![0, 600, 650]);
+    assert_eq!(host_loop.cycles(), 3);
+
+    // Clearing the hook stops the stage: the next cycle records nothing.
+    host_loop.hosting_mut().set_ai(None);
+    host_loop.step(700).expect("runs");
+    assert_eq!(*seen.lock().expect("recorder"), vec![0, 600, 650]);
+    assert_eq!(host_loop.cycles(), 4);
+
+    // Control: with no hook at all, cycles still run and record nothing.
+    let mut control = HostLoop::new(LocalHost::new(tb3()), 0);
+    control.step(0).expect("runs");
+    control.step(600).expect("runs");
+    assert_eq!(control.cycles(), 2);
+}
