@@ -3359,3 +3359,82 @@ fn non_combatant_mover_accepted_in_turn_based() {
         ]
     );
 }
+
+/// Gap 13 (mutant e03, Reading 23, C-7): with 126 logged frames and two
+/// lane-1 reservations the frame cap is full, so the next tick's page does
+/// not fit and the session restages; its re-anchored tick sample is empty.
+/// Control: the same 126 frames with the walk started by trusted `move_to`
+/// (no lane-1 state) logs its page and queues the walking sample.
+#[test]
+fn samples_dropped_when_lane1_fills_egress() {
+    // Test: 126 ticks, then two lane-1 `MoveTo` for A in one window.
+    let mut rig = Rig::new(&mv3rt_value());
+    rig.bind_nav();
+    let p = rig.bind_p();
+    rig.publish(p);
+    let epoch = rig.epoch(p);
+    for tick in 1..=126u64 {
+        rig.assert_ticked(tick * 10);
+    }
+    assert_eq!(
+        rig.ingest_move(p, &move_to_bytes(epoch, 1, 1, (262144, 0, 65536)), 2000),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    assert_eq!(
+        rig.ingest_move(p, &move_to_bytes(epoch, 2, 1, (65536, 0, 262144)), 2000),
+        MoveAdmission::Admitted { seq: 2 }
+    );
+    rig.mirror_route(a(), m(1, 4), 2);
+    rig.assert_ticked(2010);
+    assert_eq!(
+        rig.receipts(p)
+            .iter()
+            .map(|receipt| (receipt.seq, receipt.outcome))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, MoveVerdict::Superseded),
+            (2, MoveVerdict::Accepted { start_tick: 127 }),
+        ]
+    );
+    assert_eq!(
+        rig.host.transfer_state(p),
+        Ok(Some(TransferState {
+            next_transfer: 3,
+            in_flight: Some(2),
+        })),
+        "the tick's page no longer fits beside two lane-1 frames"
+    );
+    assert_eq!(rig.samples(p), Vec::new());
+
+    // Control: the same 126 frames, the same walk, no lane-1 state.
+    let mut twin = Rig::new(&mv3rt_value());
+    twin.bind_nav();
+    let q = twin.bind_p();
+    twin.publish(q);
+    for tick in 1..=126u64 {
+        twin.assert_ticked(tick * 10);
+    }
+    twin.host.move_to(a(), m(1, 4)).expect("trusted walk");
+    twin.mirror_route(a(), m(1, 4), 0);
+    twin.assert_ticked(2010);
+    assert_eq!(
+        twin.host.transfer_state(q),
+        Ok(Some(TransferState {
+            next_transfer: 2,
+            in_flight: None,
+        })),
+        "the page is logged and the session is not staged"
+    );
+    assert_eq!(
+        twin.samples(q),
+        vec![MoveSample {
+            server_tick: 127,
+            processed_seq: 0,
+            entries: vec![SampleEntry {
+                entity: n(1),
+                point: pt(65536, 0, 131072),
+                moving: true,
+            }],
+        }]
+    );
+}
