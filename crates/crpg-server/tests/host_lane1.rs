@@ -2747,6 +2747,73 @@ fn d8_resend() {
     assert_eq!(summary.rejected, 1, "{summary:?}");
 }
 
+/// D-2 step 3: duplicates compare canonical bytes. A cached `seq` resent
+/// with a non-canonical but equivalent encoding is `Duplicate`; resent with
+/// other content it is `SeqConflict` and fences the session.
+#[test]
+fn d2_canonical_duplicate_and_conflict() {
+    // The same intent with `seq` 1 overlong (`0x81 0x00` for `0x01`; byte 18
+    // is the varint `seq`) decodes to identical canonical bytes: `Duplicate`.
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    let valid = halt_bytes(epoch, 1, 1);
+    assert_eq!(
+        rig.ingest_move(p, &valid, 10),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    rig.mirror_halt(a());
+    rig.assert_ticked(10);
+    assert_eq!(rig.receipts(p).len(), 1);
+    let mut overlong = valid[..18].to_vec();
+    overlong.extend_from_slice(&[0x81, 0x00]);
+    overlong.extend_from_slice(&valid[19..]);
+    assert_eq!(overlong.len(), 22);
+    assert_eq!(
+        rig.ingest_move(p, &overlong, 20),
+        MoveAdmission::Duplicate {
+            seq: 1,
+            resent: true,
+        }
+    );
+    assert_eq!(
+        rig.ingest_move(p, &overlong, 20),
+        MoveAdmission::Duplicate {
+            seq: 1,
+            resent: false,
+        },
+        "already queued"
+    );
+    assert_eq!(
+        rig.receipts(p),
+        vec![MoveReceipt {
+            epoch,
+            seq: 1,
+            actor: n(1),
+            processed_tick: 0,
+            outcome: MoveVerdict::Accepted { start_tick: 1 },
+        }],
+        "the cached receipt, verbatim and only once"
+    );
+    // Control beside it: a cached `seq` with other content fences.
+    let (mut rig, p) = lane1_rig(&mv3rt_value());
+    let epoch = rig.epoch(p);
+    assert_eq!(
+        rig.ingest_move(p, &halt_bytes(epoch, 1, 1), 10),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    rig.mirror_halt(a());
+    rig.assert_ticked(10);
+    assert_eq!(rig.receipts(p).len(), 1);
+    assert_eq!(
+        rig.ingest_move(p, &move_to_bytes(epoch, 1, 1, (262144, 0, 65536)), 20),
+        MoveAdmission::Refused {
+            seq: Some(1),
+            code: CodeV3::SeqConflict,
+        }
+    );
+    assert_eq!(rig.host.session_wire(p), Err(HostError::UnknownPeer));
+}
+
 // ---------------------------------------------------------------------------
 // D9.
 // ---------------------------------------------------------------------------
