@@ -227,13 +227,18 @@ pub(crate) fn position_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::{outbox_fits_v4, OUTBOX_MAX_BYTES_V4, OUTBOX_MAX_ENTRIES_V4};
+    use super::{
+        outbox_fits_v4, MoveCacheEntry, MoveLane, MoveSlot, V4State, OUTBOX_MAX_BYTES_V4,
+        OUTBOX_MAX_ENTRIES_V4,
+    };
     use crate::host_v3::outbox_fits;
     use crpg_net::movement_v4::{
-        encode_down, MoveDown, MoveOutcome, MoveReceipt, MAX_MOVE_DOWN_BYTES,
+        encode_down, MoveBody, MoveDown, MoveOutcome, MoveReceipt, MAX_MOVE_DOWN_BYTES,
     };
+    use crpg_net::positions_v4::PositionView;
     use crpg_net::protocol_v3::RejectionCode;
-    use crpg_net::protocol_v4::NetId;
+    use crpg_net::protocol_v4::{NetId, SessionEpoch};
+    use std::collections::VecDeque;
 
     /// B7: both v4 bounds are inclusive and the v3 bound did not move.
     #[test]
@@ -278,5 +283,73 @@ mod tests {
         .expect("encodes");
         assert!(superseded.len() < super::MAX_MOVE_RECEIPT_BYTES);
         assert!(rejected.len() < super::MAX_MOVE_RECEIPT_BYTES);
+    }
+
+    /// Gap 10 (Reading 23, mutants l10-l12): `MoveLane::egress` counts one
+    /// frame and `MAX_MOVE_RECEIPT_BYTES` per unreleased slot plus released
+    /// receipts at their own length, and `V4State::lane1_egress` adds the
+    /// queued sample datagrams beside the lane. A lane that ignored slots,
+    /// receipts or samples would report the wrong frames and bytes here.
+    #[test]
+    fn lane_egress_counts_slots_receipts_and_samples() {
+        fn slot(seq: u64) -> MoveSlot {
+            MoveSlot {
+                seq,
+                order: seq,
+                canonical: vec![9; 10],
+                actor_net: NetId::new(1).expect("nonzero"),
+                actor: None,
+                body: MoveBody::Halt,
+                decided: None,
+            }
+        }
+        // Control: a fresh lane contributes nothing.
+        let mut lane = MoveLane::new();
+        assert_eq!(lane.egress(), (0, 0));
+        // One admitted slot reserves one frame and 60 bytes.
+        lane.slots.push_back(slot(1));
+        assert_eq!(lane.egress(), (1, super::MAX_MOVE_RECEIPT_BYTES));
+        assert_eq!(lane.egress(), (1, 60));
+        // A second slot reserves a second frame and 60 more bytes.
+        lane.slots.push_back(slot(2));
+        assert_eq!(lane.egress(), (2, 120));
+        // Releasing the first slot swaps its 60-byte reservation for its own
+        // 25-byte receipt: one slot plus one receipt.
+        let first = lane.slots.pop_front().expect("a slot");
+        lane.cache_insert(MoveCacheEntry {
+            seq: first.seq,
+            canonical: first.canonical,
+            receipt: vec![0; 25],
+        });
+        lane.receipts.push_back((1, vec![0; 25]));
+        assert_eq!(lane.egress(), (2, 85));
+        // Releasing the second with a 30-byte receipt leaves two receipts.
+        let second = lane.slots.pop_front().expect("a slot");
+        lane.cache_insert(MoveCacheEntry {
+            seq: second.seq,
+            canonical: second.canonical,
+            receipt: vec![0; 30],
+        });
+        lane.receipts.push_back((2, vec![0; 30]));
+        assert_eq!(lane.egress(), (2, 55));
+
+        // The session adds its queued samples beside the lane.
+        let state = V4State {
+            positions: PositionView::new(SessionEpoch([7; 16])),
+            withheld: Vec::new(),
+            samples: VecDeque::from([vec![1; 100], vec![2; 50]]),
+            lane,
+        };
+        assert_eq!(state.lane1_egress(), (4, 205));
+        // Control: samples alone count, and an empty session counts zero.
+        let mut samples_only = V4State {
+            positions: PositionView::new(SessionEpoch([7; 16])),
+            withheld: Vec::new(),
+            samples: VecDeque::from([vec![3; 100]]),
+            lane: MoveLane::new(),
+        };
+        assert_eq!(samples_only.lane1_egress(), (1, 100));
+        samples_only.samples.clear();
+        assert_eq!(samples_only.lane1_egress(), (0, 0));
     }
 }
