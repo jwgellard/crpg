@@ -928,13 +928,25 @@ fn frozen_during_grace() {
             crpg_server::host::TransferRefusal::Unbound
         ))
     );
-    assert!(rig.host.take_delivery_entries(q).is_err());
+    assert_eq!(
+        rig.host.take_delivery_entries(q),
+        Err(HostError::UnknownPeer)
+    );
     assert_eq!(rig.host.transfer_state(q), Err(HostError::UnknownPeer));
     assert_eq!(rig.host.epoch(q), Err(HostError::UnknownPeer));
     assert_eq!(rig.host.session_wire(q), Err(HostError::UnknownPeer));
-    assert!(rig.host.set_grants(q, full_grants()).is_err());
-    assert!(rig.host.set_control(q, control(&[])).is_err());
-    assert!(rig.host.acknowledge_delivery(q, 1).is_err());
+    assert_eq!(
+        rig.host.set_grants(q, full_grants()),
+        Err(HostError::UnknownPeer)
+    );
+    assert_eq!(
+        rig.host.set_control(q, control(&[])),
+        Err(HostError::UnknownPeer)
+    );
+    assert_eq!(
+        rig.host.acknowledge_delivery(q, 1),
+        Err(HostError::UnknownPeer)
+    );
     assert_eq!(
         rig.host.check_frame(q, ConnectionFence::FIRST),
         Err(HostError::UnknownPeer)
@@ -1498,4 +1510,421 @@ fn restart_unbind_and_shutdown_drop_graces() {
         Err(HostError::Closed)
     );
     let _ = twin;
+}
+
+// ---------------------------------------------------------------------------
+// Fix round 2a: surviving mutants F1–F7 (tests only).
+// ---------------------------------------------------------------------------
+
+/// Eight snapshot sessions, each ticketed and graced at 100 (deadline
+/// 30_100): the whole `MAX_PEERS` table is held by graces.
+fn eight_graced(rig: &mut Rig) -> Vec<PeerHandle> {
+    let mut peers = Vec::new();
+    for index in 0..8u8 {
+        let peer = rig.bind_snapshot(control(&[]), full_grants());
+        rig.host
+            .issue_resume_ticket(
+                peer,
+                ResumeProof::new(vec![0x20 + index; 32]).expect("proof"),
+            )
+            .expect("ticket");
+        peers.push(peer);
+    }
+    for peer in &peers {
+        assert_eq!(rig.host.begin_grace(*peer, 100), Ok(30_100));
+    }
+    peers
+}
+
+/// F1 (K2, K3, K5, K6): `bind_v3_peer` sweeps expired graces before the seat
+/// check and counts an unexpired grace toward the cap. A mutant that drops
+/// the sweep is `ServerBusy` at the deadline; one that counts only live
+/// sessions admits at 30_099.
+#[test]
+fn v3_binds_sweep_expired_graces_and_count_held_ones() {
+    let mut rig = Rig::new(V2);
+    let peers = eight_graced(&mut rig);
+    assert_eq!(
+        rig.host.bind_v3_peer(
+            control(&[a()]),
+            full_grants_v3(&[a(), b(), c()]),
+            facts_v3(),
+            r1(),
+            30_099,
+        ),
+        Err(HostError::ServerBusy),
+        "an unexpired grace holds its seat"
+    );
+    let ninth = rig
+        .host
+        .bind_v3_peer(
+            control(&[a()]),
+            full_grants_v3(&[a(), b(), c()]),
+            facts_v3(),
+            r1(),
+            30_100,
+        )
+        .expect("the sweep frees every expired grace");
+    assert_eq!(ninth.get(), 9);
+    for peer in &peers {
+        assert_eq!(rig.host.grace_deadline(*peer), None);
+    }
+}
+
+/// F1 (K2, K3, K5, K6): the same shape for `bind_v4_peer`.
+#[test]
+fn v4_binds_sweep_expired_graces_and_count_held_ones() {
+    let mut rig = Rig::new(V2);
+    let peers = eight_graced(&mut rig);
+    assert_eq!(
+        rig.host.bind_v4_peer(
+            control(&[a()]),
+            full_grants_v3(&[a(), b(), c()]),
+            facts_v3(),
+            r1(),
+            30_099,
+        ),
+        Err(HostError::ServerBusy),
+        "an unexpired grace holds its seat"
+    );
+    let ninth = rig
+        .host
+        .bind_v4_peer(
+            control(&[a()]),
+            full_grants_v3(&[a(), b(), c()]),
+            facts_v3(),
+            r1(),
+            30_100,
+        )
+        .expect("the sweep frees every expired grace");
+    assert_eq!(ninth.get(), 9);
+    for peer in &peers {
+        assert_eq!(rig.host.grace_deadline(*peer), None);
+    }
+}
+
+/// F3 (B9): `begin_grace` purges only the graced peer's staged commands.
+/// A mutant that purges every peer removes the other peer's applied command.
+#[test]
+fn grace_purges_only_its_own_commands() {
+    let mut rig = Rig::new(V2);
+    let graced = rig.bind_snapshot(control(&[]), full_grants());
+    rig.host
+        .issue_resume_ticket(graced, proof_p())
+        .expect("ticket");
+    let other = rig.bind_snapshot(all_actors(), full_grants());
+    let bytes = rig.declare(other, 1, 1, strike(), 2);
+    assert_eq!(
+        rig.host.ingest(other, &bytes, 100),
+        Ok(IngestDisposition::Staged)
+    );
+    assert_eq!(
+        rig.host.ingest(graced, &[0x00], 100),
+        Ok(IngestDisposition::Staged)
+    );
+    assert_eq!(rig.host.begin_grace(graced, 100), Ok(30_100));
+    let summary = rig.host.pump(100).expect("pump");
+    assert_eq!(summary.results.len(), 1, "{summary:?}");
+    assert_eq!(summary.admitted, 1);
+    assert_eq!(summary.applied, 1);
+    assert_eq!(summary.rejected, 0);
+    assert_eq!(summary.results[0].peer, other);
+    assert_eq!(summary.results[0].seq, Some(1));
+    assert_eq!(summary.results[0].status, APPLIED);
+    assert!(!summary.results[0].cached);
+    assert_eq!(rig.host.executions(), 1);
+}
+
+/// F4 (B13): the purge keeps the other peers' commands in staged order. A
+/// mutant that restages them at the front reverses the admission order.
+#[test]
+fn grace_keeps_other_peers_commands_in_order() {
+    let mut rig = Rig::new(V2);
+    let graced = rig.bind_snapshot(control(&[]), full_grants());
+    rig.host
+        .issue_resume_ticket(graced, proof_p())
+        .expect("ticket");
+    let first = rig.bind_snapshot(control(&[b()]), full_grants());
+    let second = rig.bind_snapshot(control(&[c()]), full_grants());
+    let staged = [
+        (first, rig.declare(first, 1, 2, strike(), 1)),
+        (second, rig.declare(second, 1, 3, strike(), 1)),
+        (graced, vec![0x00]),
+        (first, rig.declare(first, 2, 2, strike(), 1)),
+        (second, rig.declare(second, 2, 3, strike(), 1)),
+    ];
+    for (peer, bytes) in &staged {
+        assert_eq!(
+            rig.host.ingest(*peer, bytes, 100),
+            Ok(IngestDisposition::Staged),
+            "staging {peer:?}"
+        );
+    }
+    assert_eq!(rig.host.begin_grace(graced, 100), Ok(30_100));
+    let summary = rig.host.pump(100).expect("pump");
+    assert_eq!(summary.admitted, 4, "{summary:?}");
+    assert_eq!(
+        summary
+            .results
+            .iter()
+            .map(|result| (result.peer, result.seq))
+            .collect::<Vec<_>>(),
+        vec![
+            (first, Some(1)),
+            (second, Some(1)),
+            (first, Some(2)),
+            (second, Some(2)),
+        ]
+    );
+}
+
+/// F6 (B3, R3): a successful `begin_grace(now)` and a successful
+/// `resume_peer(now)` record `now`, so a later pump at an earlier time is
+/// `TimeRegression` rather than silently rewinding the clock.
+#[test]
+fn grace_and_resume_record_the_callers_time() {
+    let mut rig = Rig::new(V2);
+    let q = rig.bind_snapshot(control(&[]), full_grants());
+    rig.host.issue_resume_ticket(q, proof_p()).expect("ticket");
+    assert_eq!(rig.host.begin_grace(q, 500), Ok(30_500));
+    assert_eq!(rig.host.pump(400), Err(HostError::TimeRegression));
+
+    let mut resumed = Rig::new(V2);
+    let p = resumed.bind_snapshot(control(&[]), full_grants());
+    resumed
+        .host
+        .issue_resume_ticket(p, proof_p())
+        .expect("ticket");
+    resumed.ack_all(p);
+    let epoch = epoch_of(1, p.get());
+    assert_eq!(
+        resumed.host.resume_peer(&req(epoch, 1, proof_p()), 500),
+        acc(p, epoch, 2, 0)
+    );
+    assert_eq!(resumed.host.pump(400), Err(HostError::TimeRegression));
+}
+
+// ---------------------------------------------------------------------------
+// Fix round 2b: surviving mutants F8–F13 (tests only).
+// ---------------------------------------------------------------------------
+
+/// F8 (B18): the grace deadline saturates at the `u64` ceiling instead of
+/// wrapping. Near `u64::MAX` a wrapping `now + 30_000` would fall below the
+/// call's own time, so the sweep inside the next resume would expire the
+/// grace at once; the saturated deadline holds until `u64::MAX`.
+#[test]
+fn grace_deadline_saturates_at_the_ceiling() {
+    let (mut rig, q, _) = s(V2);
+    assert_eq!(
+        rig.host.begin_grace(q, u64::MAX - 10),
+        Ok(u64::MAX),
+        "the deadline saturates, it does not wrap"
+    );
+    assert_eq!(rig.host.grace_deadline(q), Some(u64::MAX));
+    assert_eq!(
+        rig.host.resume_peer(&req(e1(), 1, proof_p()), u64::MAX - 5),
+        acc(q, e1(), 2, 1),
+        "a grace held at the ceiling survives the sweep"
+    );
+}
+
+/// F9 (R12, R13, R14): only a proof exactly equal to the stored one resumes.
+/// A longer proof with the stored one as its prefix and a shorter prefix of
+/// it are both `Denied` on a graced and on a live session, and the refusal
+/// moves neither the fence nor the grace.
+#[test]
+fn only_the_exact_proof_resumes() {
+    let mut longer = vec![0xA5; 32];
+    longer.push(0x00);
+    let longer = ResumeProof::new(longer).expect("valid proof");
+    let shorter = ResumeProof::new(vec![0xA5; 16]).expect("valid proof");
+
+    // A graced session: the deadline holds through both refusals.
+    let (mut rig, q, _) = s(V2);
+    assert_eq!(rig.host.begin_grace(q, 100), Ok(30_100));
+    for proof in [longer.clone(), shorter.clone()] {
+        assert_eq!(
+            rig.host.resume_peer(&req(e1(), 1, proof), 200),
+            denied(e1())
+        );
+        assert_eq!(
+            rig.host.grace_deadline(q),
+            Some(30_100),
+            "a refused attempt never extends or ends a grace"
+        );
+    }
+    assert_eq!(
+        rig.host.resume_peer(&req(e1(), 1, proof_p()), 300),
+        acc(q, e1(), 2, 1),
+        "the exact proof still resumes"
+    );
+
+    // A live session: the fence stays at the confirmed first tag.
+    let (mut live, lq, _) = s(V2);
+    for proof in [longer, shorter] {
+        assert_eq!(
+            live.host.resume_peer(&req(e1(), 1, proof), 200),
+            denied(e1())
+        );
+        assert_eq!(live.host.check_frame(lq, ConnectionFence::FIRST), Ok(()));
+        assert_eq!(live.host.grace_deadline(lq), None);
+    }
+    assert_eq!(
+        live.host.resume_peer(&req(e1(), 1, proof_p()), 300),
+        acc(lq, e1(), 2, 1)
+    );
+}
+
+/// F10 (R22, R38; G-7, Reading 9): a **live** v3 session's resume commits
+/// `plan_v3_stage` with `commit_v3_stage` and keeps its `InterestView`. G9
+/// only proves the graced path.
+#[test]
+fn live_v3_resume_keeps_its_views() {
+    let mut host = host_of_v3(&tb3_value());
+    let p = bind_p_v3(&mut host, 100);
+    host.issue_resume_ticket(p, proof_p()).expect("ticket");
+    host.set_grants(p, full_grants_v3(&[a(), c()]))
+        .expect("narrow");
+    let epoch = host.epoch(p).expect("bound");
+    let mut client = ClientV3::new(epoch);
+    let drained = client.drain(&mut host, p, 100);
+    let payload_n = drained
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == crpg_server::host::DeliveryKind::Transfer)
+        .filter_map(|entry| match decoded_v3(entry) {
+            TransferDown::Chunk(chunk) => Some(chunk.bytes.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("a chunk was staged");
+    // No grace: the session is live before and after the resume.
+    assert_eq!(host.grace_deadline(p), None);
+    assert_eq!(
+        host.resume_peer(&req(epoch_of(1, 1), 1, proof_p()), 200),
+        acc(p, epoch_of(1, 1), 2, 0)
+    );
+    assert_eq!(host.epoch(p), Ok(epoch_of(1, 1)));
+    assert_eq!(host.grace_deadline(p), None);
+    let entries = host.take_delivery_entries(p).expect("bound");
+    assert_eq!(
+        shape_v3(&entries),
+        vec![
+            (8, crpg_server::host::DeliveryKind::Transfer),
+            (9, crpg_server::host::DeliveryKind::Transfer),
+            (10, crpg_server::host::DeliveryKind::Transfer),
+            (11, crpg_server::host::DeliveryKind::Delta),
+        ]
+    );
+    assert!(is_cancel(
+        &entries[0],
+        epoch_of(1, 1),
+        2,
+        CancelReason::Superseded
+    ));
+    assert!(is_begin_of(&entries[1], 3));
+    assert_eq!(
+        match decoded_v3(&entries[2]) {
+            TransferDown::Chunk(chunk) => chunk.bytes,
+            other => panic!("expected Chunk, got {other:?}"),
+        },
+        payload_n,
+        "C keeps its interest id"
+    );
+    let delta = crpg_net::codec_v3::decode_delta(&entries[3].bytes).expect("v3 delta decodes");
+    assert_eq!(delta.event_seq, 3);
+    assert_eq!(
+        host.transfer_state(p),
+        Ok(Some(TransferState {
+            next_transfer: 4,
+            in_flight: Some(3),
+        }))
+    );
+}
+
+/// F12 (M8; G-7, G-8): a live resume retires the discarded log's ordinals
+/// (`delivered = next_ordinal - 1`), so a retried seq at the finalized point
+/// is answered with a fresh receipt and the acks stay exact. G2 covers only
+/// the graced path, where `begin_grace` already set the watermark.
+#[test]
+fn live_resume_retires_old_ordinals() {
+    let (mut rig, q, bytes) = s(V2);
+    assert_eq!(
+        rig.host.resume_peer(&req(e1(), 1, proof_p()), 200),
+        acc(q, e1(), 2, 1)
+    );
+    let entries = rig.host.take_delivery_entries(q).expect("bound");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.ordinal, entry.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (3, crpg_server::host::DeliveryKind::Transfer),
+            (4, crpg_server::host::DeliveryKind::Transfer),
+        ]
+    );
+    // The retried seq 1 is a cache hit with its original receipt and no
+    // execution; a stale watermark would treat the discarded ordinal as
+    // still deliverable and log nothing.
+    assert_eq!(
+        rig.host.ingest(q, &bytes, 300),
+        Ok(IngestDisposition::Staged)
+    );
+    let summary = rig.host.pump(300).expect("pump");
+    assert_eq!(summary.results.len(), 1);
+    assert_eq!(summary.results[0].peer, q);
+    assert_eq!(summary.results[0].seq, Some(1));
+    assert_eq!(summary.results[0].status, APPLIED);
+    assert!(summary.results[0].cached);
+    assert_eq!(rig.host.executions(), 1, "the retry never executes");
+    let entries = rig.host.take_delivery_entries(q).expect("bound");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.ordinal, entry.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (3, crpg_server::host::DeliveryKind::Transfer),
+            (4, crpg_server::host::DeliveryKind::Transfer),
+            (5, crpg_server::host::DeliveryKind::Delta),
+        ],
+        "exactly one fresh receipt delta follows the snapshot"
+    );
+    let last = entries.last().expect("the fresh receipt");
+    let frame = decode_frame(V2, &last.bytes);
+    assert_eq!(frame.event_seq, 3);
+    assert_eq!(
+        frame.ops,
+        for_version(V2, vec![receipt(e1(), 1, 0, APPLIED)])
+    );
+    // The discarded entries count as retired: the last old ordinal (2, the
+    // strike's receipt) acks as a no-op and pops nothing of the snapshot.
+    assert_eq!(rig.host.acknowledge_delivery(q, 2), Ok(()));
+    let entries = rig.host.take_delivery_entries(q).expect("bound");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.ordinal, entry.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (3, crpg_server::host::DeliveryKind::Transfer),
+            (4, crpg_server::host::DeliveryKind::Transfer),
+            (5, crpg_server::host::DeliveryKind::Delta),
+        ],
+        "the ack at the retired watermark retires nothing new"
+    );
+    // The acks keep ordinal meaning: the tail acks exactly, a repeat is a
+    // no-op, and one past the tail is refused exactly.
+    assert_eq!(rig.host.acknowledge_delivery(q, 5), Ok(()));
+    assert!(rig.host.take_delivery_entries(q).expect("bound").is_empty());
+    assert_eq!(rig.host.acknowledge_delivery(q, 5), Ok(()));
+    assert_eq!(rig.host.acknowledge_delivery(q, 0), Ok(()));
+    assert_eq!(
+        rig.host.acknowledge_delivery(q, 6),
+        Err(HostError::FutureDeliveryCursor {
+            requested: 6,
+            last: 5,
+        })
+    );
 }

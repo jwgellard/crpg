@@ -11116,4 +11116,439 @@ mod tests {
         );
         assert_eq!(host.egress_bytes, 70);
     }
+
+    // -- reconnect grace (T025b-i fix round 2a: mutants F2, F5, F7) --------
+
+    fn empty_control() -> ControlGrant {
+        ControlGrant { actors: Vec::new() }
+    }
+
+    fn resume_proof(seed: u8) -> ResumeProof {
+        ResumeProof::new(vec![seed; 32]).expect("valid proof")
+    }
+
+    fn resume_request(epoch: [u8; 16], fence: u64, proof: ResumeProof) -> ResumeRequest {
+        ResumeRequest {
+            epoch,
+            fence: ConnectionFence::new(fence).expect("nonzero fence"),
+            proof,
+            claims: vec![crpg_net::protocol_resume::LaneClaim {
+                lane: LANE_COMBAT,
+                receipted_through: 0,
+            }],
+        }
+    }
+
+    /// F2 (K10): `session_count` counts a held grace and loses the seat only
+    /// when the sweep expires it. A mutant that counts live sessions only
+    /// reports 1 during the grace.
+    #[test]
+    fn session_count_counts_held_graces() {
+        let mut host = fixture_host();
+        let graced = host
+            .bind_snapshot_peer(empty_control(), full_grants(), 0)
+            .expect("binds");
+        let _live = host
+            .bind_peer(empty_control(), full_grants(), 0)
+            .expect("binds");
+        assert_eq!(host.session_count(), 2);
+        host.issue_resume_ticket(graced, resume_proof(0xA5))
+            .expect("ticket");
+        assert_eq!(host.begin_grace(graced, 100), Ok(30_100));
+        assert_eq!(host.session_count(), 2, "a grace keeps its seat");
+        assert_eq!(host.pump(30_099).expect("pump").results.len(), 0);
+        assert_eq!(host.session_count(), 2, "an unexpired grace keeps its seat");
+        assert_eq!(host.pump(30_100).expect("pump").results.len(), 0);
+        assert_eq!(host.session_count(), 1, "expiry retires the seat");
+    }
+
+    /// F5 (B10, B11, B12): the purge releases the host `ingress_bytes`, the
+    /// host `ingress_frames` and the session's `ingress_bytes`, so the full
+    /// per-peer and host caps are available again after resume. A mutant that
+    /// keeps any one counter refuses the first frame after the resume.
+    #[test]
+    fn grace_purges_ingress_counters_and_resume_refills_no_cap() {
+        let mut host = fixture_host();
+        let q = host
+            .bind_snapshot_peer(empty_control(), full_grants(), 0)
+            .expect("binds");
+        host.issue_resume_ticket(q, resume_proof(0xA5))
+            .expect("ticket");
+        let epoch = host.epoch(q).expect("bound");
+        ack_all(&mut host, q);
+        host.ingress_caps = QueueCaps {
+            per_peer_frames: 4,
+            per_peer_bytes: 4,
+            host_frames: 4,
+            host_bytes: 4,
+        };
+        for _ in 0..4 {
+            assert_eq!(
+                host.ingest(q, &[0x00], 100),
+                Ok(IngestDisposition::Staged),
+                "the cap is exactly four frames"
+            );
+        }
+        assert_eq!(
+            host.ingest(q, &[0x00], 100),
+            Ok(IngestDisposition::Refused {
+                status: ReceiptStatus::Rejected(RejectionCode::QueueFull),
+            })
+        );
+        assert_eq!(host.begin_grace(q, 100), Ok(30_100));
+        let summary = host.pump(100).expect("pump");
+        assert_eq!(
+            summary.results.len(),
+            0,
+            "G-5: purged commands answer nothing"
+        );
+        assert_eq!(summary.admitted, 0);
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 100),
+            Ok(ResumeAnswer::Accepted { peer, .. }) if peer == q
+        ));
+        for _ in 0..4 {
+            assert_eq!(
+                host.ingest(q, &[0x00], 100),
+                Ok(IngestDisposition::Staged),
+                "the purge released every ingress counter"
+            );
+        }
+        assert_eq!(
+            host.ingest(q, &[0x00], 100),
+            Ok(IngestDisposition::Refused {
+                status: ReceiptStatus::Rejected(RejectionCode::QueueFull),
+            }),
+            "no counter leaked past the exact cap"
+        );
+    }
+
+    /// F7 (B4): `begin_grace` runs G-5's sweep itself. At `t + grace + 1`,
+    /// `begin_grace(B)` alone expires `A`: no pump or bind runs in between,
+    /// yet `A`'s deadline is gone and its seat is free.
+    #[test]
+    fn begin_grace_sweeps_expired_graces_before_holding_a_new_one() {
+        let mut host = fixture_host();
+        let a_peer = host
+            .bind_snapshot_peer(empty_control(), full_grants(), 0)
+            .expect("binds");
+        let b_peer = host
+            .bind_snapshot_peer(empty_control(), full_grants(), 0)
+            .expect("binds");
+        host.issue_resume_ticket(a_peer, resume_proof(1))
+            .expect("ticket");
+        host.issue_resume_ticket(b_peer, resume_proof(2))
+            .expect("ticket");
+        assert_eq!(host.begin_grace(a_peer, 100), Ok(30_100));
+        assert_eq!(host.session_count(), 2);
+        assert_eq!(host.begin_grace(b_peer, 30_101), Ok(60_101));
+        assert_eq!(host.grace_deadline(a_peer), None);
+        assert_eq!(host.grace_deadline(b_peer), Some(60_101));
+        assert_eq!(host.session_count(), 1, "the expired grace's seat is free");
+    }
+
+    // -- reconnect grace (T025b-i fix round 2b: mutants F8, F11, F13) --------
+
+    /// A live snapshot session with `seed`'s ticket, bound with an empty
+    /// control grant and full disclosure.
+    fn ticketed_snapshot(host: &mut Host, seed: u8) -> (PeerHandle, [u8; 16]) {
+        let peer = host
+            .bind_snapshot_peer(empty_control(), full_grants(), 0)
+            .expect("binds");
+        host.issue_resume_ticket(peer, resume_proof(seed))
+            .expect("ticket");
+        let epoch = host.epoch(peer).expect("bound");
+        (peer, epoch)
+    }
+
+    /// The live session's ledger observables: host egress, log frames, log
+    /// bytes, the acknowledged watermark, the next ordinal and the next event
+    /// sequence. A refused resume must leave every one of them.
+    fn live_state(host: &Host, peer: PeerHandle) -> (usize, usize, usize, u64, u64, u64) {
+        let session = host.sessions.get(&peer).expect("bound");
+        (
+            host.egress_bytes,
+            session.log.len(),
+            session.log_bytes,
+            session.delivered,
+            session.next_ordinal,
+            session.next_event_seq,
+        )
+    }
+
+    /// The same observables read from a held grace.
+    fn graced_state(host: &Host, peer: PeerHandle) -> (usize, usize, usize, u64, u64, u64) {
+        let session = &host.graces.get(&peer).expect("held").session;
+        (
+            host.egress_bytes,
+            session.log.len(),
+            session.log_bytes,
+            session.delivered,
+            session.next_ordinal,
+            session.next_event_seq,
+        )
+    }
+
+    fn resume_denied(epoch: [u8; 16]) -> Result<ResumeAnswer, HostError> {
+        Ok(ResumeAnswer::Rejected(ResumeRejected {
+            epoch,
+            reason: ResumeRejection::Denied,
+        }))
+    }
+
+    fn resume_busy(epoch: [u8; 16]) -> Result<ResumeAnswer, HostError> {
+        Ok(ResumeAnswer::Rejected(ResumeRejected {
+            epoch,
+            reason: ResumeRejection::Busy,
+        }))
+    }
+
+    /// F11 (M5, B14): both sites that discard a delivery log also release its
+    /// bytes from the host egress ledger. A mutant that keeps `log_bytes` in
+    /// `egress_bytes` leaves the ledger above the surviving log.
+    #[test]
+    fn discarding_a_log_releases_its_egress_bytes() {
+        // (i) `begin_grace`.
+        let mut host = fixture_host();
+        let (q, _epoch) = ticketed_snapshot(&mut host, 0xA5);
+        let before = host.egress_bytes;
+        let log_bytes = host.sessions.get(&q).expect("bound").log_bytes;
+        assert_eq!(log_bytes, 30, "binding a snapshot logs its state frames");
+        assert_eq!(before, 30, "only this session's log is held");
+        assert_eq!(host.begin_grace(q, 100), Ok(30_100));
+        assert_eq!(host.egress_bytes, 0, "the discarded bytes are released");
+        assert_eq!(host.egress_bytes, before - log_bytes);
+        let grace = host.graces.get(&q).expect("held");
+        assert!(grace.session.log.is_empty());
+        assert_eq!(grace.session.log_bytes, 0);
+
+        // (ii) a live resume: `commit_resume_snapshot`.
+        let mut host = fixture_host();
+        let (q, epoch) = ticketed_snapshot(&mut host, 0xA5);
+        let before = host.egress_bytes;
+        let log_bytes = host.sessions.get(&q).expect("bound").log_bytes;
+        assert_eq!(log_bytes, 30);
+        assert_eq!(before, 30);
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 100),
+            Ok(ResumeAnswer::Accepted { .. })
+        ));
+        let after = host.sessions.get(&q).expect("live").log_bytes;
+        assert_eq!(after, 69, "the resume snapshot is logged");
+        assert_eq!(host.egress_bytes, 69, "only the new snapshot is held");
+        assert_eq!(host.egress_bytes, before - log_bytes + after);
+    }
+
+    /// F13 (R23, R24, R26, R27, R28, P1–P7): every guard of the lane-0 resume
+    /// plan maps to the contract's refusal and changes nothing; the egress
+    /// caps accept exactly at the bound and refuse one byte over. A v3
+    /// session's plan has no egress-room guard (it stages into the outbox),
+    /// so the v3 `QueueFull` arm is unreachable by construction.
+    #[test]
+    fn resume_plan_refusals_leave_the_lane0_session_untouched() {
+        // Measure the plan's shape: a live resume stages `Begin` and one
+        // chunk over the cleared log.
+        let mut control = fixture_host();
+        let (cq, cepoch) = ticketed_snapshot(&mut control, 0xA5);
+        assert!(matches!(
+            control.resume_peer(&resume_request(cepoch, 1, resume_proof(0xA5)), 100),
+            Ok(ResumeAnswer::Accepted { peer, .. }) if peer == cq
+        ));
+        let (_, plan_frames, plan_bytes, _, _, _) = live_state(&control, cq);
+        assert_eq!(plan_frames, 2, "Begin and one chunk");
+        assert_eq!(plan_bytes, 69);
+
+        // (1) The transfer-id sentinel: CounterExhausted -> Denied.
+        let mut host = fixture_host();
+        let (q, epoch) = ticketed_snapshot(&mut host, 0xA5);
+        let before = live_state(&host, q);
+        host.sessions.get_mut(&q).expect("bound").next_transfer = u64::MAX;
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            resume_denied(epoch)
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+
+        // (2) The ordinal guard: room for exactly `plan_frames`.
+        host.sessions.get_mut(&q).expect("bound").next_transfer = 1;
+        host.sessions.get_mut(&q).expect("bound").next_ordinal = u64::MAX - 2;
+        let before = live_state(&host, q);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            resume_denied(epoch),
+            "room for one frame is not enough for two"
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+        host.sessions.get_mut(&q).expect("bound").next_ordinal = u64::MAX - 3;
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            Ok(ResumeAnswer::Accepted { .. })
+        ));
+
+        // (3) The per-peer frame cap.
+        let mut host = fixture_host();
+        let (q, epoch) = ticketed_snapshot(&mut host, 0xA5);
+        let caps = host.egress_caps;
+        host.egress_caps = QueueCaps {
+            per_peer_frames: plan_frames - 1,
+            ..caps
+        };
+        let before = live_state(&host, q);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            resume_busy(epoch)
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+        host.egress_caps = QueueCaps {
+            per_peer_frames: plan_frames,
+            ..caps
+        };
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            Ok(ResumeAnswer::Accepted { .. })
+        ));
+
+        // (4) The per-peer byte cap.
+        let mut host = fixture_host();
+        let (q, epoch) = ticketed_snapshot(&mut host, 0xA5);
+        let caps = host.egress_caps;
+        host.egress_caps = QueueCaps {
+            per_peer_bytes: plan_bytes - 1,
+            ..caps
+        };
+        let before = live_state(&host, q);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            resume_busy(epoch)
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+        host.egress_caps = QueueCaps {
+            per_peer_bytes: plan_bytes,
+            ..caps
+        };
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            Ok(ResumeAnswer::Accepted { .. })
+        ));
+
+        // (5) The host byte cap counts the cleared log out of the ledger: the
+        // bind's own log is exactly `plan_bytes`, so the cap holds it only
+        // when `- session.log_bytes` is inside the arithmetic.
+        let mut host = fixture_host();
+        let (q, epoch) = ticketed_snapshot(&mut host, 0xA5);
+        let caps = host.egress_caps;
+        let held = host.egress_bytes;
+        assert_eq!(held, host.sessions.get(&q).expect("bound").log_bytes);
+        assert!(held > 0);
+        host.egress_caps = QueueCaps {
+            host_bytes: plan_bytes - 1,
+            ..caps
+        };
+        let before = live_state(&host, q);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            resume_busy(epoch)
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+        host.egress_caps = QueueCaps {
+            host_bytes: plan_bytes,
+            ..caps
+        };
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            Ok(ResumeAnswer::Accepted { .. })
+        ));
+
+        // The same counter refusal on a graced session keeps the grace held.
+        let mut host = fixture_host();
+        let (q, epoch) = ticketed_snapshot(&mut host, 0xA5);
+        assert_eq!(host.begin_grace(q, 50), Ok(30_050));
+        let before = graced_state(&host, q);
+        host.graces.get_mut(&q).expect("held").session.next_transfer = u64::MAX;
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            resume_denied(epoch)
+        );
+        assert_eq!(host.grace_deadline(q), Some(30_050), "still graced");
+        assert!(!host.sessions.contains_key(&q));
+        assert_eq!(host.egress_bytes, before.0);
+        host.graces.get_mut(&q).expect("held").session.next_transfer = 1;
+        assert_eq!(graced_state(&host, q), before);
+    }
+
+    /// F13 (R23, R24, R26, R27, R28, P1–P7): the v3 arm's reachable guards.
+    /// Its `QueueFull` arm cannot be driven from a v3 plan, which stages into
+    /// the outbox and never checks egress room.
+    #[test]
+    fn resume_plan_refusals_leave_the_v3_session_untouched() {
+        // The v3 plan is a `Begin`, one chunk and the host-facts delta.
+        let (mut control, cq) = drained_v3_host();
+        let cepoch = control.epoch(cq).expect("bound");
+        control
+            .issue_resume_ticket(cq, resume_proof(0xA5))
+            .expect("ticket");
+        assert!(matches!(
+            control.resume_peer(&resume_request(cepoch, 1, resume_proof(0xA5)), 100),
+            Ok(ResumeAnswer::Accepted { .. })
+        ));
+        let (_, plan_frames, plan_bytes, _, _, _) = live_state(&control, cq);
+        assert_eq!(plan_frames, 4, "Cancel, Begin, one chunk and the delta");
+        assert_eq!(plan_bytes, 259);
+
+        // (1) The transfer-id sentinel.
+        let (mut host, q) = drained_v3_host();
+        let epoch = host.epoch(q).expect("bound");
+        host.issue_resume_ticket(q, resume_proof(0xA5))
+            .expect("ticket");
+        host.sessions.get_mut(&q).expect("bound").next_transfer = u64::MAX;
+        let before = live_state(&host, q);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 100),
+            resume_denied(epoch)
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+        assert_eq!(host.grace_deadline(q), None);
+
+        // (2) The delta `event_seq` sentinel.
+        let (mut host, q) = drained_v3_host();
+        let epoch = host.epoch(q).expect("bound");
+        host.issue_resume_ticket(q, resume_proof(0xA5))
+            .expect("ticket");
+        host.sessions.get_mut(&q).expect("bound").next_event_seq = u64::MAX;
+        let before = live_state(&host, q);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 100),
+            resume_denied(epoch)
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+        assert_eq!(host.grace_deadline(q), None);
+
+        // (3) The ordinal guard: room for exactly `plan_frames`.
+        let (mut host, q) = drained_v3_host();
+        let epoch = host.epoch(q).expect("bound");
+        host.issue_resume_ticket(q, resume_proof(0xA5))
+            .expect("ticket");
+        host.sessions.get_mut(&q).expect("bound").next_ordinal = u64::MAX - 4;
+        let before = live_state(&host, q);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 100),
+            resume_denied(epoch),
+            "room for three frames is not enough for four"
+        );
+        assert_eq!(live_state(&host, q), before);
+        assert_eq!(host.check_frame(q, ConnectionFence::FIRST), Ok(()));
+        assert_eq!(host.grace_deadline(q), None);
+        host.sessions.get_mut(&q).expect("bound").next_ordinal = u64::MAX - 5;
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 100),
+            Ok(ResumeAnswer::Accepted { .. })
+        ));
+    }
 }
