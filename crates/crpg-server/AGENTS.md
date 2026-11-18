@@ -80,7 +80,16 @@ T025b's additive `host` items (reconnect grace, host side only):
 `HostError::{NotResumable, SessionFenced}` and
 `Host::{issue_resume_ticket, begin_grace, grace_deadline, resume_peer,
 check_frame}`. The per-session fence and proof and the `graces` map are
-private in `src/host.rs`; `quic.rs` is untouched.
+private in `src/host.rs`.
+
+T025b-q's additive `quic` items (the resumable adapter): `QuicHost::
+{start_resumable, is_resumable}`, `ResumeReport`, `ResumeOutcome`,
+`QuicPumpReport::resumes`, `HostCall::{IssueResumeTicket, CheckFrame,
+BeginGrace, ResumePeer}` and `FenceCause::Resumed`. The `resumable` flag,
+`InvitationRecord::graced`, `Bound::fence` and `resume_proof` are private in
+`src/quic.rs`; the keyed-BLAKE3 proof derivation adds the `blake3` workspace
+edge (D68 Question 1 (b)), and a refused resume closes at once with code 5
+or 7 (Question 2 (b)).
 
 ## Invariants
 
@@ -310,10 +319,13 @@ git diff --check
   `Transfer` frame at the head of a retired connection reads as `Ok(None)`
   for ever, leaking the record (T024h2).
 - **`QuicHost::start` takes a server from `bind` or `bind_dual`, never
-  `bind_resumable`, until T025b.** The adapter polls only `poll_event`,
-  which stops for good at a resume notice, and no public call tells a
-  resumable server apart, so this is a documented precondition on `start`
-  (T024h2).
+  `bind_resumable`.** The `start` route still polls only `poll_event`,
+  which stops for good at a resume notice (T024h2's precondition stands).
+  `QuicHost::start_resumable` is the resume route: it accepts a server from
+  any `bind*` (`bind_resumable` included), polls `poll_notice`, and only on
+  that adapter do the ticket-after-`/2`-welcome, fence-tag, resume-answer
+  and grace paths run; `start` keeps every byte and call it has today, and
+  `is_resumable()` reports which route built the adapter (T025b-q).
 - **Staging is atomic, never pending.** Narrowing and an honoured `Resync`
   determine, check room against the cleared log, then commit in the same
   call, or change nothing. No stage point exists in `pump` or
@@ -470,3 +482,4 @@ git diff --check
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T037b · Recorded fix round 3b's six `host.rs` unit tests for the surviving mutants (s11, b07, w09, p12, p22, p24) and the b03/p06 equivalence reports, so the contract knows the suite pins the multi-frame staging count, the handle sentinel, per-session withheld publication, 256-op chunking, empty-page capture and the page `event_seq` sentinel.
 - 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the sixth module `run` to the surface (the loop, `Hosting`, the local link types and the errors) and the pause and no-blocking traps, so later parts extend an accurate contract instead of rediscovering that the loop never reads pause and must never block.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Recorded the host-side reconnect grace surface (ticket, grace, resume, fence), the grace-map bound in invariant 6 and the two T025b traps (a grace is not a binding; never build Accept without the proof), so the crate contract matches the reconnect code.
+- 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Recorded the resumable-adapter surface (`start_resumable`, `is_resumable`, `ResumeReport`/`ResumeOutcome`, `resumes`, the four `HostCall` variants, `FenceCause::Resumed`) and rewrote the `start`-precondition trap into the `start`/`start_resumable` split, so the crate contract matches the QUIC resume route the crate now speaks.

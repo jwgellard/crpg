@@ -652,15 +652,20 @@ shared with lane 0.
 A QUIC connection has no gameplay identity until the adapter binds it. The
 adapter keeps two private `BTreeMap`s. The first maps each registered
 invitation (32-byte credential, normalized control and disclosure grants,
-and its live connection) by a never-reused `InvitationId`. The second maps
-each mapped `ConnectionId` to either a bound entry (`PeerHandle`, epoch,
-acknowledged delivery watermark, frame ordinal, at most one held frame,
-stall start, transport-close state) or a retiring entry still being
-drained so the transport can forget it. A connection is mapped only after
-`accept` succeeds. One invitation has at most one bound connection, and a
-newer one supersedes it. `ConnectionId`s never enter host state: the host
-sees only `PeerHandle`s minted in bind order, so the same calls replayed in
-memory give the same handles and epochs.
+its live connection, and — on a resumable adapter — the handle of a session
+held through its grace, `graced: Option<PeerHandle>`) by a never-reused
+`InvitationId`. The second maps each mapped `ConnectionId` to either a
+bound entry (`PeerHandle`, epoch, acknowledged delivery watermark, frame
+ordinal, at most one held frame, stall start, transport-close state, and a
+`fence: ConnectionFence` — `FIRST` for a hello binding, the granted fence
+for a resume binding) or a retiring entry still being drained so the
+transport can forget it. A connection is mapped only after `accept` or
+`accept_resume` succeeds. One invitation has at most one bound connection,
+and a newer one supersedes it; a resumable adapter holds a `resumable`
+flag (`start_resumable` sets it) that turns on `poll_notice`, the ticket
+after a `/2` welcome, the fence tags and the grace. `ConnectionId`s never
+enter host state: the host sees only `PeerHandle`s minted in bind order, so
+the same calls replayed in memory give the same handles and epochs.
 
 ## Identity and delivery shape
 
@@ -775,8 +780,12 @@ a transfer frame cannot leak the transport record. A narrowing
 `set_invitation_grants` on a live `/2` binding stores the grants and
 returns `GrantChange::SnapshotStaged`; on `/1` it still fences
 (`Narrowed`). `QuicHost::start` takes a server from `QuicServer::bind` or
-`bind_dual`, never `bind_resumable` (T025b lifts this). `/1` connections
-carry only lane-0 frames and keep T023b's behaviour and trace.
+`bind_dual`, never `bind_resumable`; `QuicHost::start_resumable` accepts a
+server from any `bind*` (`bind_resumable` included), polls `poll_notice`,
+follows each `/2` welcome with a resume ticket, fence-tags every inbound
+frame, and starts a grace on a silent connection loss (see "Reconnect
+grace"). `/1` connections carry only lane-0 frames and keep T023b's
+behaviour and trace.
 
 ## Reconnect grace (T025b)
 
@@ -784,8 +793,8 @@ The host side of the 30-second reconnect grace: a disconnected snapshot
 session is held, without its binding, so the same session (same epoch) can
 resume on a new connection. Policy, never wire: `POLICY_RECONNECT_GRACE_MS`
 is 30_000 injected milliseconds. Exact contract:
-[T025b](../../tasks/T025b.md) (part i; the `quic.rs` adapter is a later
-part and untouched).
+[T025b](../../tasks/T025b.md) (part i, the host side below; part q, the
+`quic.rs` adapter, follows).
 
 - **State.** Each `Session` carries a `fence: SessionFence` (from
   `SessionFence::new(epoch)`) and a `proof: Option<ResumeProof>`; the host
@@ -831,6 +840,46 @@ part and untouched).
   counts both maps against `MAX_PEERS`, `pump` sweeps, `shutdown` clears
   graces, and `session_count` counts both. A swept session is gone as by
   `unbind_peer`: its handle and epoch retire for ever.
+
+The QUIC route (`start_resumable`) turns the host mechanism into the `0x91`
+wire, with `start` left byte-for-byte unchanged:
+
+- **Start.** `start_resumable(host, server, now)` has `start`'s precedence
+  (`HostClosed` → `HostInUse` → `TimeRegression`), `HostInUse` counting
+  graces; `is_resumable()` reports the flag. A resumable adapter polls
+  `poll_notice` and handles `ServerNotice::Resume` in phase 1.
+- **Ticket (N-3).** After a `/2` hello's `accept` succeeds and the binding
+  is recorded, the adapter calls `issue_resume_ticket(peer,
+  resume_proof(credential, epoch)?)` and sends the bytes on
+  `Channel::Resume`: the first frame after the welcome. A `/1` binding gets
+  no ticket, and a `start` adapter sends none.
+- **Fence tags (N-4).** A hello binding holds `ConnectionFence::FIRST`, a
+  resume binding its `granted`. In phase 2 each fresh frame (not a held
+  retry) is `check_frame`d before routing: `SessionFenced` retires the
+  connection with cause `Resumed`, `UnknownPeer` fences it `EpochClosed`,
+  and any other error poisons.
+- **Resume (N-5).** One `ServerNotice::Resume` is decoded, decided by
+  `resume_peer`, and answered: a `Rejected` closes at once with code 5
+  (`AuthRefused`, for `Denied`) or 7 (`ServerBusy`); an `Accepted` retires
+  a still-bound old connection with `retire_resumed` (no unbind), encodes
+  the answer, `accept_resume`s and binds the connection with `fence =
+  granted` and `Framing::V2`. The staged snapshot is delivered in phase 5,
+  after the answer.
+- **Grace on a silent loss (N-7).** Phase 6 starts a grace only for a
+  closed, drained, unheld `/2` binding whose reason is `IdleTimeout`,
+  `Transport` or `Reset`: `begin_grace` (traced `BeginGrace`), `Ok` →
+  `record.graced = Some(peer)`; `NotResumable` → unbind as today. Every
+  other binding unbinds exactly as today. Phase 4 also clears any
+  `record.graced` whose `grace_deadline` is `None` (the host swept it).
+- **Ending a grace (N-8).** A hello matching an invitation whose
+  `graced == Some(g)` unbinds `g` first (before supersession), and
+  `revoke_invitation`, `set_invitation_grants` and `set_invitation_control`
+  do the same, untraced.
+- **Proof (N-10).** `resume_proof(credential, epoch)` is the 32-byte
+  `blake3::keyed_hash(&credential, b"crpg-resume-proof/1" ++ epoch)` (the
+  credential must be exactly 32 bytes); the `blake3` edge is approved by
+  D68 Question 1 (b). No proof bytes reach a `HostCall`, report, `Debug` or
+  error.
 
 ## The run loop (T154)
 
@@ -967,3 +1016,4 @@ with T040/T041.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T037b · Noted fix round 3b's six `host.rs` unit tests for the surviving mutants (s11, b07, w09, p12, p22, p24) and the b03/p06 equivalence reports, so the doc records how the suite pins the multi-frame staging count, the handle sentinel, per-session withheld publication, 256-op chunking, empty-page capture and the page `event_seq` sentinel.
 - 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the run-loop section (one cycle order, the 20 Hz grid and skip-not-burst, the `Hosting` seam, local intake/deliver and bounded retirement, pause and the no-clock/no-thread fence) and updated Scope, so the doc describes the loop the crate now has instead of a host nothing drives.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Added the reconnect-grace section (ticket, grace, resume, fence, expiry, and the grace-is-not-a-binding rule), so the doc describes the 30-second host-side grace the crate now holds.
+- 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Extended the reconnect-grace section with the resumable-adapter route (`start_resumable`, the ticket after the `/2` welcome, fence tags, the resume answer, grace on a silent loss, what ends a grace, and the keyed-BLAKE3 proof), and updated the connection-to-binding map and the `bind_resumable` sentence to the as-built `graced`/`fence` fields and `poll_notice` polling, so the doc describes the QUIC side the crate now has.
