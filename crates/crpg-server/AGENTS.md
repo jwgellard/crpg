@@ -75,6 +75,13 @@ private, and `run.rs` names no `crpg_ai` type. T154c adds one `LinkStats`
 field; T154d adds `QuicHosting` and `QuicAiHook`; neither changes a signature
 here.
 
+T025b's additive `host` items (reconnect grace, host side only):
+`POLICY_RECONNECT_GRACE_MS`, `ResumeAnswer` (with `result`),
+`HostError::{NotResumable, SessionFenced}` and
+`Host::{issue_resume_ticket, begin_grace, grace_deadline, resume_peer,
+check_frame}`. The per-session fence and proof and the `graces` map are
+private in `src/host.rs`; `quic.rs` is untouched.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
@@ -106,7 +113,9 @@ here.
    monotonically per session and retire on revocation.
 6. **Every ledger is bounded in entries and bytes** (T022 §2). New state
    needs a cap, an accounting unit and a retirement path, or it does not go
-   in.
+   in. The T025b grace map holds at most `MAX_PEERS` sessions (counted with
+   live bindings) with injected-time expiry as its retirement path; proofs
+   and fences never enter a checkpoint.
 7. **Time is injected; I/O is fenced.** `now_ms` only; no clock, thread,
    sleep or socket in `crpg-server` source. Filesystem I/O exists **only**
    in `save.rs`, only through `crpg_persist::save_file`/`load_file`; network
@@ -418,6 +427,17 @@ git diff --check
   always has room; a `Rejected` receipt spends the shared failure buckets and
   is queued anyway, unlike a lane-0 rejection. Only the egress caps bound the
   queue (128 frames), and a resend that does not fit is `resent: false`.
+- **A grace is not a binding (T025b).** A graced handle answers every
+  per-peer call as an unbound handle (`ingest` is `Unauthenticated`,
+  `ingest_transfer` is `Unbound`, the rest `UnknownPeer`); only `unbind_peer`
+  (drops it), `grace_deadline` and `resume_peer` see it. It holds a
+  `MAX_PEERS` seat and no egress, gets no publication, receipt or capture
+  post-state, and its staged commands were purged at `begin_grace`.
+- **Never build `Accept` without the proof (T025b).** `resume_peer` checks
+  the stored proof in constant time before the fence and plans the snapshot
+  reading-only before `resolve` moves the fence, so a refusal (`Denied`,
+  `Busy`) moves neither the fence nor a deadline and the ticket bytes never
+  reach `Debug`, an error, a report or a checkpoint.
 
 - **The loop never reads pause (T154a, Reading 4).** `HostLoop` and
   `LocalHost` never call `paused()`: intake, the AI hook and deliver run on
@@ -449,3 +469,4 @@ git diff --check
 - 2026-11-16 (UTC) · opencode-go/deepseek-v4.1-flash + T037d · Recorded the lane-1 surface (`MoveAdmission`, `Host::ingest_move`, `Host::take_move_receipts`) and its four traps (lane 1 keeps its own state, decisions happen only in `advance`, steps 1–8 never consume a sequence, a lane-1 receipt is never dropped), and corrected the T037c egress trap to `V4State::lane1_egress`, so the crate contract matches the lane the host now admits and decides.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T037b · Recorded fix round 3b's six `host.rs` unit tests for the surviving mutants (s11, b07, w09, p12, p22, p24) and the b03/p06 equivalence reports, so the contract knows the suite pins the multi-frame staging count, the handle sentinel, per-session withheld publication, 256-op chunking, empty-page capture and the page `event_seq` sentinel.
 - 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the sixth module `run` to the surface (the loop, `Hosting`, the local link types and the errors) and the pause and no-blocking traps, so later parts extend an accurate contract instead of rediscovering that the loop never reads pause and must never block.
+- 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Recorded the host-side reconnect grace surface (ticket, grace, resume, fence), the grace-map bound in invariant 6 and the two T025b traps (a grace is not a binding; never build Accept without the proof), so the crate contract matches the reconnect code.

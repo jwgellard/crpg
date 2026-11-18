@@ -778,6 +778,60 @@ returns `GrantChange::SnapshotStaged`; on `/1` it still fences
 `bind_dual`, never `bind_resumable` (T025b lifts this). `/1` connections
 carry only lane-0 frames and keep T023b's behaviour and trace.
 
+## Reconnect grace (T025b)
+
+The host side of the 30-second reconnect grace: a disconnected snapshot
+session is held, without its binding, so the same session (same epoch) can
+resume on a new connection. Policy, never wire: `POLICY_RECONNECT_GRACE_MS`
+is 30_000 injected milliseconds. Exact contract:
+[T025b](../../tasks/T025b.md) (part i; the `quic.rs` adapter is a later
+part and untouched).
+
+- **State.** Each `Session` carries a `fence: SessionFence` (from
+  `SessionFence::new(epoch)`) and a `proof: Option<ResumeProof>`; the host
+  carries `graces: BTreeMap<PeerHandle, Grace>` with
+  `Grace { session, deadline_ms }`. A grace holds at most `MAX_PEERS`
+  sessions counted together with live bindings, and injected-time expiry
+  in `sweep_graces` is its retirement path; proofs and fences never enter
+  a checkpoint.
+- **Ticket (`issue_resume_ticket`).** Stores the proof on a live resumable
+  session and returns its ticket bytes. Precedence: `Closed`, then
+  `UnknownPeer` for no live session (a graced handle included), then
+  `NotResumable` for a `bind_peer` session or a v4 session. Only
+  snapshot sessions (`bind_snapshot_peer`, `bind_v3_peer`) with no v4
+  state are ever resumable.
+- **Grace (`begin_grace`, `grace_deadline`).** Moves a live resumable
+  session with a stored proof into the grace map with
+  `deadline_ms = now_ms.saturating_add(POLICY_RECONNECT_GRACE_MS)` and
+  returns the deadline. Precedence: `Closed`, `TimeRegression`, then the
+  sweep, `UnknownPeer`, `NotResumable` (non-snapshot, v4, or no proof).
+  Commit purges the peer's staged commands, discards its delivery log as
+  `stage_snapshot`'s commit does, and moves nothing else.
+  `grace_deadline` is `Some(deadline)` while held, `None` otherwise
+  (`None` on a closed host).
+- **Resume (`resume_peer`).** Decides one `ResumeRequest` by epoch, live
+  or graced. `Closed` and `TimeRegression` are errors; every later
+  refusal is `Ok(Rejected(..))` with `request.epoch` and no state change
+  but the recorded time and the sweep. In order: unknown epoch is
+  `Denied`; missing proof or a constant-time proof mismatch is `Denied`;
+  a failing fence check is `Denied`; planning the resume snapshot
+  read-only is `Busy` on `QueueFull`, `Denied` on `CounterExhausted`,
+  `Err` on `Invariant`. Commit moves a graced session back to live,
+  stages the resume snapshot (`SnapshotCause::Resume`, cancel reason
+  `Superseded`) and returns `Accepted { peer, accepted }` with the epoch,
+  the granted fence and lane-0 progress (`finalized_through` is the last
+  new sequence). A refusal moves neither fence nor deadline.
+- **Fence (`check_frame`).** Confirms one frame's connection tag against
+  the session's current fence: `Closed`, then `UnknownPeer` for no live
+  session (a graced handle included), then `SessionFenced` on mismatch.
+- **A grace is not a binding.** A graced handle answers every per-peer
+  call as an unbound handle and gets no publication, receipt or capture
+  post-state; only `unbind_peer` (drops it), `grace_deadline` and
+  `resume_peer` see it. `unbind_peer` also drops a grace, every `bind_*`
+  counts both maps against `MAX_PEERS`, `pump` sweeps, `shutdown` clears
+  graces, and `session_count` counts both. A swept session is gone as by
+  `unbind_peer`: its handle and epoch retire for ever.
+
 ## The run loop (T154)
 
 T154a adds `run`, the module that actually runs the world. Nothing ran it
@@ -912,3 +966,4 @@ with T040/T041.
 - 2026-11-16 (UTC) · opencode-go/deepseek-v4.1-flash + T037d · Added "Lane 1 (T037d)" (synchronous admission before HM-2, HM-2's checks and actor resolution, the `advance` decision window with supersede and HM-4's outcomes, release and the 256-entry cache, duplicates, receipts, lane-1 egress and samples' `processed_seq`) and amended the T037c sample and egress notes that named a placeholder `processed_seq` and the removed `V4State.egress` field, so the doc describes the lane the host now admits and decides.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T037b · Noted fix round 3b's six `host.rs` unit tests for the surviving mutants (s11, b07, w09, p12, p22, p24) and the b03/p06 equivalence reports, so the doc records how the suite pins the multi-frame staging count, the handle sentinel, per-session withheld publication, 256-op chunking, empty-page capture and the page `event_seq` sentinel.
 - 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the run-loop section (one cycle order, the 20 Hz grid and skip-not-burst, the `Hosting` seam, local intake/deliver and bounded retirement, pause and the no-clock/no-thread fence) and updated Scope, so the doc describes the loop the crate now has instead of a host nothing drives.
+- 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Added the reconnect-grace section (ticket, grace, resume, fence, expiry, and the grace-is-not-a-binding rule), so the doc describes the 30-second host-side grace the crate now holds.

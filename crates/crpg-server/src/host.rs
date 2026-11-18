@@ -30,6 +30,7 @@ use std::fmt;
 
 use crpg_core::{EntityId, Fx16_16, Ulid};
 use crpg_net::codec::{self, CodecError};
+use crpg_net::codec_resume;
 use crpg_net::codec_transfer;
 use crpg_net::codec_v2;
 use crpg_net::codec_v3;
@@ -54,6 +55,10 @@ use crpg_net::protocol::{
     MAX_INTENT_FRAME_BYTES, MAX_VISIBLE_ENTITIES, POLICY_OBSERVED_TICK_WINDOW, POLICY_PROOF_PEERS,
     POLICY_RETRY_CACHE_BYTES_PER_PEER_LANE, POLICY_RETRY_CACHE_PER_PEER_LANE, SEQ_LAST,
 };
+use crpg_net::protocol_resume::{
+    ConnectionFence, LaneProgress, ResumeAccepted, ResumeDown, ResumeProof, ResumeRejected,
+    ResumeRejection, ResumeRequest, ResumeResult, ResumeTicket,
+};
 use crpg_net::protocol_transfer::{
     CancelReason, HealthFact, SnapshotBody, SnapshotEntity, TransferDown, TransferId, TransferUp,
     TurnFact,
@@ -68,6 +73,7 @@ use crpg_net::protocol_v4::{
     DeltaFrame as DeltaFrameV4, DeltaOp as DeltaOpV4, IntentBody as IntentBodyV4,
     IntentFrame as IntentFrameV4, Point, SessionEpoch,
 };
+use crpg_net::resume::{ResumeDecision, SessionFence};
 use crpg_net::sim::{QueueCaps, RateCaps, TokenBucket};
 use crpg_net::transfer_v3;
 use crpg_sim::{
@@ -120,6 +126,10 @@ pub const HOST_ROUTE_TAG: RouteTag = RouteTag(0);
 /// Ticks between full position refreshes in samples (ADR-0036 H4, Reading
 /// 20; T037c). One second at 20 Hz (spec §2.5). Policy, never wire.
 pub const POLICY_SAMPLE_REFRESH_TICKS: u64 = 20;
+
+/// D12: how long a disconnected session is held, in injected milliseconds
+/// (`tasks/POST-T018-DECISIONS.md:294`). Policy, never wire.
+pub const POLICY_RECONNECT_GRACE_MS: u64 = 30_000;
 
 /// Segments packed into each snapshot-transfer chunk (S§7). Every valid v1
 /// body fits in one chunk, so a transfer is one `Begin` plus one `Chunk`.
@@ -376,6 +386,30 @@ pub struct TransferState {
     pub in_flight: Option<u64>,
 }
 
+/// What `Host::resume_peer` decided. Never carries a proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeAnswer {
+    /// `peer` is live again; `accepted` is the `0x31` result to send.
+    Accepted {
+        /// The resumed handle.
+        peer: PeerHandle,
+        /// The `0x31` result to send.
+        accepted: ResumeAccepted,
+    },
+    /// Refused; nothing changed but the recorded time and the sweep (G-6).
+    Rejected(ResumeRejected),
+}
+
+impl ResumeAnswer {
+    /// `ResumeResult::Accepted(accepted)` or `ResumeResult::Rejected(r)`.
+    pub fn result(&self) -> ResumeResult {
+        match self {
+            Self::Accepted { accepted, .. } => ResumeResult::Accepted(accepted.clone()),
+            Self::Rejected(rejected) => ResumeResult::Rejected(*rejected),
+        }
+    }
+}
+
 /// The byte-level outcome of [`Host::ingest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestDisposition {
@@ -598,6 +632,10 @@ pub enum HostError {
     Move(MoveError),
     /// The call needs a session bound with `bind_v4_peer`.
     NotV4Peer,
+    /// The session cannot be held through a grace (G-2, G-3).
+    NotResumable,
+    /// A frame's connection fence is not the session's current one (G-1).
+    SessionFenced,
 }
 
 impl fmt::Display for HostError {
@@ -626,6 +664,8 @@ impl fmt::Display for HostError {
             Self::NoPath(_) => "NoPath",
             Self::Move(_) => "Move",
             Self::NotV4Peer => "NotV4Peer",
+            Self::NotResumable => "NotResumable",
+            Self::SessionFenced => "SessionFenced",
         };
         write!(f, "{name} at host/admission")
     }
@@ -678,13 +718,15 @@ enum SnapshotCause {
     Narrowed,
     /// Upstream `Resync`: `Cancel(Superseded)`.
     Resync,
+    /// Resume: `Cancel(Superseded)`.
+    Resume,
 }
 
 impl SnapshotCause {
     fn cancel_reason(self) -> CancelReason {
         match self {
             Self::Narrowed => CancelReason::Aborted,
-            Self::Resync => CancelReason::Superseded,
+            Self::Resync | Self::Resume => CancelReason::Superseded,
         }
     }
 }
@@ -693,6 +735,12 @@ impl SnapshotCause {
 #[derive(Debug)]
 struct Session {
     epoch: [u8; 16],
+    /// The session's connection fence (T025b G-1): `SessionFence::new(epoch)`
+    /// at bind, kept for the session's life and never re-created. Only a
+    /// resume moves it.
+    fence: SessionFence,
+    /// The stored resume proof (T025b G-2), if a ticket was issued.
+    proof: Option<ResumeProof>,
     control: Vec<EntityId>,
     grants: DisclosureGrants,
     map: BTreeMap<EntityId, NetId>,
@@ -867,6 +915,13 @@ enum Step {
     Blocked,
 }
 
+/// A disconnected session held through its grace (T025b G-3).
+#[derive(Debug)]
+struct Grace {
+    session: Session,
+    deadline_ms: u64,
+}
+
 // ---------------------------------------------------------------------------
 // The host.
 // ---------------------------------------------------------------------------
@@ -884,6 +939,9 @@ pub struct Host {
     last_now_ms: u64,
     next_handle: u64,
     sessions: BTreeMap<PeerHandle, Session>,
+    /// Disconnected sessions held through their grace (T025b G-3): each holds
+    /// one `MAX_PEERS` slot and no egress. A graced handle is not bound.
+    graces: BTreeMap<PeerHandle, Grace>,
     ingress: VecDeque<StagedCommand>,
     ingress_bytes: usize,
     egress_bytes: usize,
@@ -938,6 +996,7 @@ impl Host {
             last_now_ms: now_ms,
             next_handle: 1,
             sessions: BTreeMap::new(),
+            graces: BTreeMap::new(),
             ingress: VecDeque::new(),
             ingress_bytes: 0,
             egress_bytes: 0,
@@ -993,6 +1052,7 @@ impl Host {
     }
 
     /// The bound session epoch: `incarnation` LE bytes then handle LE bytes.
+    /// A graced handle is [`UnknownPeer`](HostError::UnknownPeer).
     pub fn epoch(&self, peer: PeerHandle) -> Result<[u8; 16], HostError> {
         self.sessions
             .get(&peer)
@@ -1106,9 +1166,10 @@ impl Host {
         !self.ingress.is_empty()
     }
 
-    /// Live bindings (T023b `start`'s `HostInUse` check).
+    /// Live bindings plus held graces (T023b `start`'s `HostInUse` check;
+    /// T025b G-4, G-12: a graced session holds its `MAX_PEERS` slot).
     pub(crate) fn session_count(&self) -> usize {
-        self.sessions.len()
+        self.sessions.len() + self.graces.len()
     }
 
     /// The last accepted `now_ms` (T023b `start`'s `TimeRegression` check).
@@ -1167,7 +1228,8 @@ impl Host {
         self.check_time(now_ms)?;
         let control = normalize_control(control)?;
         let grants = normalize_grants(grants)?;
-        if self.sessions.len() >= MAX_PEERS {
+        self.sweep_graces(now_ms);
+        if self.sessions.len() + self.graces.len() >= MAX_PEERS {
             return Err(HostError::ServerBusy);
         }
         if self.next_handle == u64::MAX {
@@ -1207,6 +1269,8 @@ impl Host {
     ) -> Session {
         Session {
             epoch,
+            fence: SessionFence::new(epoch),
+            proof: None,
             control,
             grants,
             map: BTreeMap::new(),
@@ -1274,7 +1338,8 @@ impl Host {
         let control = normalize_control(control)?;
         let grants = normalize_grants(grants)?;
         let facts = normalize_fact_grants(facts)?;
-        if self.sessions.len() >= MAX_PEERS {
+        self.sweep_graces(now_ms);
+        if self.sessions.len() + self.graces.len() >= MAX_PEERS {
             return Err(HostError::ServerBusy);
         }
         if self.next_handle == u64::MAX {
@@ -1317,7 +1382,8 @@ impl Host {
         let control = normalize_control(control)?;
         let grants = normalize_grants(grants)?;
         let facts = normalize_fact_grants(facts)?;
-        if self.sessions.len() >= MAX_PEERS {
+        self.sweep_graces(now_ms);
+        if self.sessions.len() + self.graces.len() >= MAX_PEERS {
             return Err(HostError::ServerBusy);
         }
         if self.next_handle == u64::MAX {
@@ -1456,8 +1522,11 @@ impl Host {
     /// Closes one binding (its handle and epoch retire forever) and discards
     /// its delivery log, cache, and map. Commands it already staged are
     /// refused as `SessionExpired` by the next pump, never executed. Unknown
-    /// handles are a no-op.
+    /// handles are a no-op. On a graced handle it drops the grace (G-12).
     pub fn unbind_peer(&mut self, peer: PeerHandle) {
+        // A graced session holds no egress (its log was released when the
+        // grace started), so dropping it changes no ledger.
+        self.graces.remove(&peer);
         self.fence(peer);
     }
 
@@ -1669,6 +1738,7 @@ impl Host {
         }
         self.check_time(now_ms)?;
         self.last_now_ms = now_ms;
+        self.sweep_graces(now_ms);
         while let Some(staged) = self.ingress.pop_front() {
             self.release_ingress(&staged);
             match self.admit(&staged, now_ms)? {
@@ -5075,9 +5145,497 @@ impl Host {
             .collect();
         self.ingress_bytes = 0;
         self.sessions.clear();
+        self.graces.clear();
         self.egress_bytes = 0;
         self.closed = true;
         results
+    }
+
+    // -- reconnect grace (T025b) ----------------------------------------------
+
+    /// G-2: store `proof` for a resumable session and return its ticket bytes.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then
+    /// [`UnknownPeer`](HostError::UnknownPeer) for no live session (a graced
+    /// handle included), then [`NotResumable`](HostError::NotResumable) for a
+    /// `bind_peer` session or a v4 session. The proof replaces any earlier
+    /// one. An encode failure is `Invariant("resume ticket failed to encode")`.
+    pub fn issue_resume_ticket(
+        &mut self,
+        peer: PeerHandle,
+        proof: ResumeProof,
+    ) -> Result<Vec<u8>, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let epoch = self
+            .sessions
+            .get(&peer)
+            .ok_or(HostError::UnknownPeer)?
+            .epoch;
+        if !Self::resumable_kind(self.sessions.get(&peer).expect("checked above")) {
+            return Err(HostError::NotResumable);
+        }
+        let ticket_proof = proof.clone();
+        self.sessions.get_mut(&peer).expect("checked above").proof = Some(proof);
+        codec_resume::encode_down(&ResumeDown::Ticket(ResumeTicket {
+            epoch,
+            proof: ticket_proof,
+        }))
+        .map_err(|_| HostError::Invariant("resume ticket failed to encode"))
+    }
+
+    /// G-3: hold `peer`'s disconnected session through its grace.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then
+    /// [`TimeRegression`](HostError::TimeRegression) (nothing changes), then
+    /// the recorded `now_ms` and the sweep, then
+    /// [`UnknownPeer`](HostError::UnknownPeer) for no live session, then
+    /// [`NotResumable`](HostError::NotResumable) for a non-snapshot or v4
+    /// session or one with no stored proof. Commits by purging the peer's
+    /// staged commands, discarding its delivery log exactly as
+    /// `stage_snapshot`'s commit does, and moving the session to the grace map
+    /// with `deadline_ms = now_ms.saturating_add(POLICY_RECONNECT_GRACE_MS)`.
+    /// Returns the grace deadline. Nothing else in the session changes.
+    pub fn begin_grace(&mut self, peer: PeerHandle, now_ms: u64) -> Result<u64, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        self.last_now_ms = now_ms;
+        self.sweep_graces(now_ms);
+        if !self.sessions.contains_key(&peer) {
+            return Err(HostError::UnknownPeer);
+        }
+        let resumable = {
+            let session = self.sessions.get(&peer).expect("checked above");
+            Self::resumable_kind(session) && session.proof.is_some()
+        };
+        if !resumable {
+            return Err(HostError::NotResumable);
+        }
+        // Purge the peer's staged commands in place, releasing the host and
+        // session ingress counters with no result and no sequence consumed.
+        let mut kept = VecDeque::new();
+        while let Some(staged) = self.ingress.pop_front() {
+            if staged.peer == peer {
+                self.ingress_bytes -= staged.bytes.len();
+                if let Some(session) = self.sessions.get_mut(&peer) {
+                    session.ingress_frames -= 1;
+                    session.ingress_bytes -= staged.bytes.len();
+                }
+            } else {
+                kept.push_back(staged);
+            }
+        }
+        self.ingress = kept;
+        // Discard the delivery log exactly as `stage_snapshot`'s commit does.
+        {
+            let session = self.sessions.get_mut(&peer).expect("checked above");
+            self.egress_bytes -= session.log_bytes;
+            session.log.clear();
+            session.log_bytes = 0;
+            session.delivered = session.next_ordinal - 1;
+        }
+        let deadline_ms = now_ms.saturating_add(POLICY_RECONNECT_GRACE_MS);
+        let session = self.sessions.remove(&peer).expect("checked above");
+        self.graces.insert(
+            peer,
+            Grace {
+                session,
+                deadline_ms,
+            },
+        );
+        Ok(deadline_ms)
+    }
+
+    /// G-5: `Some(deadline)` while `peer`'s grace is held (a past deadline
+    /// included until a sweep), else `None` (`None` on a closed host).
+    pub fn grace_deadline(&self, peer: PeerHandle) -> Option<u64> {
+        if self.closed {
+            return None;
+        }
+        self.graces.get(&peer).map(|grace| grace.deadline_ms)
+    }
+
+    /// G-6, G-7: decide one resume request, fencing and snapshotting on
+    /// acceptance.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then
+    /// [`TimeRegression`](HostError::TimeRegression) (nothing changes), then
+    /// the recorded `now_ms` and the sweep; every later refusal is
+    /// `Ok(ResumeAnswer::Rejected(..))` with `request.epoch` and no state
+    /// change but the recorded time and the sweep. In order: no live or
+    /// graced session with `request.epoch` is `Denied`; no stored proof or a
+    /// proof mismatch is `Denied`; `fence.check_request(request)` failing is
+    /// `Denied`; planning the resume snapshot reading only is `Busy` on
+    /// `QueueFull`, `Denied` on `CounterExhausted` and `Err` on `Invariant`;
+    /// `fence.resolve` failing after a passed check is
+    /// `Invariant("resume resolve after check")`. Commit (G-7) returns
+    /// `Accepted`.
+    pub fn resume_peer(
+        &mut self,
+        request: &ResumeRequest,
+        now_ms: u64,
+    ) -> Result<ResumeAnswer, HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        self.check_time(now_ms)?;
+        self.last_now_ms = now_ms;
+        self.sweep_graces(now_ms);
+        let denied = |epoch: [u8; 16]| {
+            Ok(ResumeAnswer::Rejected(ResumeRejected {
+                epoch,
+                reason: ResumeRejection::Denied,
+            }))
+        };
+        // (4) Find the session by epoch, live or graced.
+        let live = self
+            .sessions
+            .iter()
+            .find(|(_, session)| session.epoch == request.epoch)
+            .map(|(handle, _)| *handle);
+        let graced = if live.is_none() {
+            self.graces
+                .iter()
+                .find(|(_, grace)| grace.session.epoch == request.epoch)
+                .map(|(handle, _)| *handle)
+        } else {
+            None
+        };
+        let (peer, is_graced) = match (live, graced) {
+            (Some(peer), _) => (peer, false),
+            (None, Some(peer)) => (peer, true),
+            (None, None) => return denied(request.epoch),
+        };
+        // (5) Proof.
+        let proof_ok = if is_graced {
+            self.graces
+                .get(&peer)
+                .and_then(|grace| grace.session.proof.as_ref())
+                .is_some_and(|stored| request.proof.ct_eq(stored.as_bytes()))
+        } else {
+            self.sessions
+                .get(&peer)
+                .and_then(|session| session.proof.as_ref())
+                .is_some_and(|stored| request.proof.ct_eq(stored.as_bytes()))
+        };
+        if !proof_ok {
+            return denied(request.epoch);
+        }
+        // (6) Fence check.
+        let check = if is_graced {
+            self.graces
+                .get(&peer)
+                .expect("found above")
+                .session
+                .fence
+                .check_request(request)
+        } else {
+            self.sessions
+                .get(&peer)
+                .expect("found above")
+                .fence
+                .check_request(request)
+        };
+        if check.is_err() {
+            return denied(request.epoch);
+        }
+        // (7) Plan the resume snapshot, reading only.
+        let snapshot_v3 = if is_graced {
+            self.graces
+                .get(&peer)
+                .expect("found above")
+                .session
+                .v3
+                .is_some()
+        } else {
+            self.sessions.get(&peer).expect("found above").v3.is_some()
+        };
+        if snapshot_v3 {
+            let stage = {
+                let (session, grants) = if is_graced {
+                    let grace = self.graces.get(&peer).expect("found above");
+                    (&grace.session, grace.session.grants.clone())
+                } else {
+                    let session = self.sessions.get(&peer).expect("found above");
+                    (session, session.grants.clone())
+                };
+                self.plan_stage(session, &grants, SnapshotCause::Resume)
+            };
+            let stage = match stage {
+                Ok(stage) => stage,
+                Err(HostError::QueueFull) => {
+                    return Ok(ResumeAnswer::Rejected(ResumeRejected {
+                        epoch: request.epoch,
+                        reason: ResumeRejection::Busy,
+                    }));
+                }
+                Err(HostError::CounterExhausted) => return denied(request.epoch),
+                Err(error) => return Err(error),
+            };
+            let _ = stage;
+        } else {
+            match self.plan_resume_snapshot(peer, is_graced) {
+                Ok(()) => {}
+                Err(HostError::QueueFull) => {
+                    return Ok(ResumeAnswer::Rejected(ResumeRejected {
+                        epoch: request.epoch,
+                        reason: ResumeRejection::Busy,
+                    }));
+                }
+                Err(HostError::CounterExhausted) => return denied(request.epoch),
+                Err(error) => return Err(error),
+            }
+        }
+        // The retained ledger's per-lane progress: lane 0 finalized through
+        // the last new sequence.
+        let finalized_through = if is_graced {
+            self.graces
+                .get(&peer)
+                .expect("found above")
+                .session
+                .next_new_seq
+                .saturating_sub(1)
+        } else {
+            self.sessions
+                .get(&peer)
+                .expect("found above")
+                .next_new_seq
+                .saturating_sub(1)
+        };
+        let progress = vec![LaneProgress {
+            lane: LANE_COMBAT,
+            finalized_through,
+        }];
+        // (8) Resolve.
+        let granted = {
+            let fence = if is_graced {
+                &mut self
+                    .graces
+                    .get_mut(&peer)
+                    .expect("found above")
+                    .session
+                    .fence
+            } else {
+                &mut self.sessions.get_mut(&peer).expect("found above").fence
+            };
+            match fence.resolve(
+                request,
+                &ResumeDecision::Accept {
+                    progress: progress.clone(),
+                },
+            ) {
+                Ok(ResumeResult::Accepted(accepted)) => accepted.granted,
+                Ok(ResumeResult::Rejected(_)) => {
+                    return Err(HostError::Invariant("resume resolve after check"));
+                }
+                Err(_) => {
+                    return Err(HostError::Invariant("resume resolve after check"));
+                }
+            }
+        };
+        // (9) Commit (G-7).
+        if is_graced {
+            let grace = self.graces.remove(&peer).expect("found above");
+            self.sessions.insert(peer, grace.session);
+        }
+        let epoch = self.sessions.get(&peer).expect("live above").epoch;
+        if snapshot_v3 {
+            let stage = {
+                let session = self.sessions.get(&peer).expect("live above");
+                let grants = session.grants.clone();
+                self.plan_stage(session, &grants, SnapshotCause::Resume)
+                    .map_err(|_| HostError::Invariant("resume resolve after check"))?
+            };
+            let session = self.sessions.get_mut(&peer).expect("live above");
+            commit_v3_stage(
+                &mut self.egress_bytes,
+                &self.egress_caps,
+                session,
+                stage,
+                None,
+            );
+        } else {
+            self.commit_resume_snapshot(peer)?;
+        }
+        Ok(ResumeAnswer::Accepted {
+            peer,
+            accepted: ResumeAccepted {
+                epoch,
+                granted,
+                progress,
+            },
+        })
+    }
+
+    /// G-1 (H2): check one frame's connection fence before routing it.
+    ///
+    /// Precedence: [`Closed`](HostError::Closed), then
+    /// [`UnknownPeer`](HostError::UnknownPeer) for no live session (a graced
+    /// handle included), then [`SessionFenced`](HostError::SessionFenced)
+    /// when the tag is not the session's current fence. `Ok(())` confirms
+    /// the tag.
+    pub fn check_frame(&mut self, peer: PeerHandle, tag: ConnectionFence) -> Result<(), HostError> {
+        if self.closed {
+            return Err(HostError::Closed);
+        }
+        let session = self.sessions.get_mut(&peer).ok_or(HostError::UnknownPeer)?;
+        session
+            .fence
+            .check_frame(tag)
+            .map_err(|_| HostError::SessionFenced)
+    }
+
+    /// G-5: remove every grace with `deadline_ms <= now`. A removed session is
+    /// gone as by `unbind_peer` (its handle and epoch retire for ever).
+    fn sweep_graces(&mut self, now_ms: u64) {
+        let expired: Vec<PeerHandle> = self
+            .graces
+            .iter()
+            .filter(|(_, grace)| grace.deadline_ms <= now_ms)
+            .map(|(handle, _)| *handle)
+            .collect();
+        for handle in expired {
+            self.graces.remove(&handle);
+        }
+    }
+
+    /// Whether a session kind can ever hold a grace: a live snapshot session
+    /// (`bind_snapshot_peer` or `bind_v3_peer`), and never v4 (Reading 3).
+    fn resumable_kind(session: &Session) -> bool {
+        session.snapshot && !session.v3.as_ref().is_some_and(|v3| v3.v4.is_some())
+    }
+
+    /// G-6 step 7 for a lane-0 snapshot session: `stage_snapshot` steps 1–5
+    /// reading only. `Ok(())` means the commit would succeed.
+    fn plan_resume_snapshot(&self, peer: PeerHandle, is_graced: bool) -> Result<(), HostError> {
+        let session = if is_graced {
+            &self
+                .graces
+                .get(&peer)
+                .ok_or(HostError::UnknownPeer)?
+                .session
+        } else {
+            self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?
+        };
+        if session.next_transfer == u64::MAX {
+            return Err(HostError::CounterExhausted);
+        }
+        let transfer_id = session.next_transfer;
+        let epoch = session.epoch;
+        let cursor = session.next_event_seq - 1;
+        let cancel: Option<Vec<u8>> = match session.in_flight {
+            Some(old) => {
+                let message = TransferDown::Cancel {
+                    epoch,
+                    transfer: TransferId::new(old).expect("in-flight id is nonzero"),
+                    reason: SnapshotCause::Resume.cancel_reason(),
+                };
+                Some(
+                    codec_transfer::encode_down(&message)
+                        .map_err(|_| HostError::Invariant("snapshot transfer failed to encode"))?,
+                )
+            }
+            None => None,
+        };
+        let view = PeerView {
+            grants: &session.grants,
+            map: &session.map,
+        };
+        let body = view.snapshot_body(self.history.world());
+        let frames = codec_transfer::plan_transfer(
+            epoch,
+            TransferId::new(transfer_id).expect("nonzero by the step-1 check"),
+            self.server_tick(),
+            cursor,
+            SNAPSHOT_SEGMENTS_PER_CHUNK,
+            &body,
+        )
+        .map_err(|_| HostError::Invariant("snapshot transfer failed to encode"))?;
+        let count = frames.len() + usize::from(cancel.is_some());
+        let bytes: usize =
+            frames.iter().map(Vec::len).sum::<usize>() + cancel.as_ref().map_or(0, Vec::len);
+        let caps = self.egress_caps;
+        let ordinal_room = (u64::MAX - 1).saturating_sub(session.next_ordinal);
+        if count as u64 > ordinal_room {
+            return Err(HostError::CounterExhausted);
+        }
+        if count + session.lane1_egress().0 > caps.per_peer_frames
+            || bytes + session.lane1_egress().1 > caps.per_peer_bytes
+            || self.egress_bytes - session.log_bytes + bytes > caps.host_bytes
+        {
+            return Err(HostError::QueueFull);
+        }
+        Ok(())
+    }
+
+    /// G-7 for a lane-0 snapshot session: `stage_snapshot`'s step 6 for the
+    /// current grants, map and `next_net` with cause `Resume`.
+    fn commit_resume_snapshot(&mut self, peer: PeerHandle) -> Result<(), HostError> {
+        let (transfer_id, cancel, frames) = {
+            let session = self.sessions.get(&peer).ok_or(HostError::UnknownPeer)?;
+            if session.next_transfer == u64::MAX {
+                return Err(HostError::Invariant("resume resolve after check"));
+            }
+            let transfer_id = session.next_transfer;
+            let epoch = session.epoch;
+            let cursor = session.next_event_seq - 1;
+            let cancel: Option<Vec<u8>> =
+                match session.in_flight {
+                    Some(old) => {
+                        let message = TransferDown::Cancel {
+                            epoch,
+                            transfer: TransferId::new(old).expect("in-flight id is nonzero"),
+                            reason: SnapshotCause::Resume.cancel_reason(),
+                        };
+                        Some(codec_transfer::encode_down(&message).map_err(|_| {
+                            HostError::Invariant("snapshot transfer failed to encode")
+                        })?)
+                    }
+                    None => None,
+                };
+            let view = PeerView {
+                grants: &session.grants,
+                map: &session.map,
+            };
+            let body = view.snapshot_body(self.history.world());
+            let frames = codec_transfer::plan_transfer(
+                epoch,
+                TransferId::new(transfer_id).expect("nonzero by the step-1 check"),
+                self.server_tick(),
+                cursor,
+                SNAPSHOT_SEGMENTS_PER_CHUNK,
+                &body,
+            )
+            .map_err(|_| HostError::Invariant("snapshot transfer failed to encode"))?;
+            (transfer_id, cancel, frames)
+        };
+        let session = self.sessions.get_mut(&peer).expect("checked above");
+        self.egress_bytes -= session.log_bytes;
+        session.log.clear();
+        session.log_bytes = 0;
+        session.delivered = session.next_ordinal - 1;
+        let mut entries = Vec::new();
+        if let Some(cancel) = cancel {
+            entries.push(LoggedFrame {
+                ordinal: 0,
+                event_seq: None,
+                bytes: cancel,
+            });
+        }
+        for bytes in frames {
+            entries.push(LoggedFrame {
+                ordinal: 0,
+                event_seq: None,
+                bytes,
+            });
+        }
+        push_frames(&mut self.egress_bytes, session, entries)?;
+        session.in_flight = Some(transfer_id);
+        session.next_transfer += 1;
+        Ok(())
     }
 }
 
