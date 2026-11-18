@@ -1089,17 +1089,13 @@ impl QuicHost {
                         peer,
                         result: result.as_ref().map(|_| ()).map_err(Clone::clone),
                     });
-                    match result {
-                        Ok(bytes) => {
-                            if self
-                                .server
-                                .try_send_channel(conn, Channel::Resume, &bytes)
-                                .is_err()
-                            {
-                                report.frames_discarded += 1;
-                            }
-                        }
-                        Err(error) => return Err(error),
+                    let bytes = result?;
+                    if self
+                        .server
+                        .try_send_channel(conn, Channel::Resume, &bytes)
+                        .is_err()
+                    {
+                        report.frames_discarded += 1;
                     }
                 }
             }

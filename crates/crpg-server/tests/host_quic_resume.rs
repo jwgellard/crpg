@@ -276,13 +276,18 @@ fn connect_resume_async(
     std::thread::spawn(move || QuicClient::connect_resume(config, server, session, &request))
 }
 
+/// The outcome of `connect_resume`: the client and its ticket bytes on
+/// success (or the connect error), plus the pump steps observed while the
+/// resume opening was decided.
+type ResumeConnect = (Result<(QuicClient, Vec<u8>), ConnectError>, Vec<Step>);
+
 /// Opens a resume connection and pumps until its notice is decided.
 fn connect_resume(
     qh: &mut QuicHost,
     clock: &mut TestClock,
     session: Welcome,
     request: &[u8],
-) -> (Result<(QuicClient, Vec<u8>), ConnectError>, Vec<Step>) {
+) -> ResumeConnect {
     let pending = connect_resume_async(ClientLimits::v1(), qh.local_addr(), session, request);
     let steps = pump_until(qh, clock, 0, "resume decided", |_, report| {
         !report.resumes.is_empty()
@@ -511,7 +516,7 @@ fn ticket_follows_the_welcome() {
 
     // A `/1` client on the same adapter gets no ticket and no issue call.
     let (mut v1client, v1steps) = connect_hello_direct(&mut qh, &mut clock, Framing::V1);
-    v1client.read_until("v1 initial", |c| c.recv.len() >= 1);
+    v1client.read_until("v1 initial", |c| !c.recv.is_empty());
     assert!(
         v1client
             .recv
@@ -530,7 +535,7 @@ fn ticket_follows_the_welcome() {
     let (mut qh2, mut clock2) = start_dual_v2(ServerLimits::v1());
     let _aid2 = register_a(&mut qh2);
     let (mut plain, plain_steps) = connect_hello_direct(&mut qh2, &mut clock2, Framing::V2);
-    plain.read_until("plain initial", |c| c.recv.len() >= 1);
+    plain.read_until("plain initial", |c| !c.recv.is_empty());
     assert!(
         plain
             .recv
@@ -1078,7 +1083,7 @@ fn start_is_unchanged() {
     assert!(!qh.is_resumable());
     let _aid = register_a(&mut qh);
     let (mut c1, _) = connect_hello_direct(&mut qh, &mut clock, Framing::V2);
-    c1.read_until("initial", |c| c.recv.len() >= 1);
+    c1.read_until("initial", |c| !c.recv.is_empty());
     assert!(
         c1.recv
             .iter()
@@ -1091,7 +1096,7 @@ fn start_is_unchanged() {
     let aid2 = register_a(&mut qh2);
     let relay = UdpRelay::start(qh2.local_addr(), RelayConfig::clean());
     let (mut c2, _) = connect_hello(&mut qh2, &mut clock2, relay.addr(), Framing::V2);
-    c2.read_until("initial", |c| c.recv.len() >= 1);
+    c2.read_until("initial", |c| !c.recv.is_empty());
     let h2 = bound_peer(&qh2, aid2);
     relay.set_blackhole(true);
     let steps = pump_until(&mut qh2, &mut clock2, 100, "silent loss", |_, report| {
