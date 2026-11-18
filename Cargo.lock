@@ -248,6 +248,7 @@ dependencies = [
 name = "crpg-server"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crpg-core",
  "crpg-nav",
  "crpg-net",

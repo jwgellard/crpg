@@ -31,3 +31,8 @@ crpg-persist = { path = "../crpg-persist" }
 crpg-sim = { path = "../crpg-sim" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# T025b-q (D68 Question 1 (b)): the session-bound resume proof is a keyed
+# BLAKE3 derivation over the invitation credential and the session epoch.
+# Workspace edge only; blake3 is already in the workspace and the lock at
+# 1.8.7, no package is added.
+blake3 = { workspace = true }
