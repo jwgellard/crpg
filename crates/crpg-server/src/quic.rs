@@ -37,8 +37,8 @@ use crpg_net::protocol_resume::{
 };
 use crpg_net_quic::{
     Channel, ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionId, ConnectionStats,
-    Credential, Framing, QueueTotals, QuicServer, SendError, ServerError, ServerEvent, ServerNotice,
-    ShutdownReport, Welcome,
+    Credential, Framing, QueueTotals, QuicServer, SendError, ServerError, ServerEvent,
+    ServerNotice, ShutdownReport, Welcome,
 };
 
 use crate::checkpoint::CheckpointError;
@@ -849,9 +849,10 @@ impl QuicHost {
                     }
                 }
                 if invitation.is_none() {
-                    invitation = self.invitations.iter().find_map(|(id, record)| {
-                        (record.graced == Some(peer)).then_some(*id)
-                    });
+                    invitation = self
+                        .invitations
+                        .iter()
+                        .find_map(|(id, record)| (record.graced == Some(peer)).then_some(*id));
                 }
                 let invitation =
                     invitation.ok_or(HostError::Invariant("resumed session has no invitation"))?;
@@ -859,9 +860,9 @@ impl QuicHost {
                 if let Some(old) = old_conn {
                     self.retire_resumed(old, Some(report));
                 }
-                let answer = codec_resume::encode_down(&ResumeDown::Answer(ResumeResult::Accepted(
-                    accepted.clone(),
-                )))
+                let answer = codec_resume::encode_down(&ResumeDown::Answer(
+                    ResumeResult::Accepted(accepted.clone()),
+                ))
                 .map_err(|_| HostError::Invariant("resume answer failed to encode"))?;
                 let bound = Bound {
                     peer,
