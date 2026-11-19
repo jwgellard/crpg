@@ -365,6 +365,102 @@ this crate (`crates/crpg-sim/AGENTS.md:450–456`). No existing variant changes;
 otherwise untouched.
 
 ## Tests
+Public API in `crates/crpg-sim/tests/continuation.rs`; the two-keys writer's
+`continuation_contract.rs` is written from this contract alone and may copy
+the rig. Every case has a control differing in one input and a "fails if".
+Fixed ULIDs (all well-formed 26-char Crockford strings): graph
+`000000000000000000000001`, node `000000000000000000000002`, dialogue
+`000000000000000000000003`, dnode `000000000000000000000004`, quest
+`000000000000000000000005`, qstate `000000000000000000000006`,
+qstate2 `000000000000000000000007`. `W(seed)` is `World::new(seed)`;
+entities are arena indices 0, 1, 2… (generation 1 while live).
+
+- **C1 `spawns_enqueue_one_spawned`.** `W(1)`: `spawn_continuation({graph,
+  node, remaining: 10})` → entity 0; `spawn_dialogue({dialogue, dnode,
+  speaker: 0})` → entity 1; `spawn_quest({quest, qstate})` → entity 2. Queue
+  holds exactly three `Spawned` at tick 0; `len() == 3`;
+  `continuations().len() == dialogues().len() == quests().len() == 1`.
+  *Control:* a second `spawn_quest({quest, qstate2})` →
+  `Err(DuplicateQuest { quest })`, `len()` still 3, queue still three.
+  *Fails if:* a spawn enqueues anything but one `Spawned`, or the duplicate
+  quest publishes.
+- **C2 `setters_rewrite_one_field`.** From C1's world:
+  `set_remaining(0, 4)` → record `{graph, node, 4}`;
+  `set_dialogue_node(1, dnode)` (same value) → unchanged bytes;
+  `set_quest_state(2, qstate2)` → `{quest, qstate2}`. Queue still three
+  `Spawned`; `state_hash` differs from C1's only in the two changed words.
+  *Control:* `set_remaining(1, 4)` (entity 1 holds a dialogue, not a
+  continuation) → `Err(Absent { entity: 1 })`, bytes identical.
+  *Fails if:* a setter enqueues, touches another record, or accepts a
+  wrong-kind entity.
+- **C3 `despawn_strips_all_three`.** From C1's world: `despawn(0)` →
+  `continuations().is_empty()`, one `Despawned` appended (queue length 4).
+  *Control:* `despawn(7)` (never live) → `false`, queue length still 3.
+  *Fails if:* the record survives its entity, or a dead id enqueues.
+- **C4 `transfer_refuses_holders`.** Two `World::new_in_area(seed, area)`
+  worlds (`crates/crpg-sim/AGENTS.md:148–161`): source holds entity 0 with a
+  continuation; `transfer_entity` → the new final-preflight error, source
+  still holds it, destination empty. *Control:* the same move with the
+  continuation despawned first succeeds. *Fails if:* the record is silently
+  dropped (the T139 trap) or an earlier check's error is replaced.
+- **C5 `stage_five_counts_down`.** `W(2)` with continuations `remaining: 3`
+  (entity 0) and `remaining: 0` (entity 1): `tick` × 3 →
+  `remaining == [0, 0]`; `continuations_due` → `[0, 1]` after tick 3,
+  `[1]` before tick 1; `u64::MAX` is untouched by saturation only at the
+  boundary — *control:* `remaining: u64::MAX` ticks once → `u64::MAX - 1`,
+  never wraps. `end_turn` between ticks changes nothing.
+  *Fails if:* a tick decrements by anything but one, a zero goes nonzero, an
+  event is enqueued, or the order is not ascending.
+- **C6 `round_trip_and_load_rejection`.** C1's world → JSON → load: equal
+  records, equal `state_hash`, equal `continuations_due`. Hand-corrupted
+  inputs each fail to load: a continuation naming entity 9 (non-live); two
+  quest components naming `quest`; a dialogue with `speaker: 9`.
+  *Control:* the uncorrupted JSON loads. *Fails if:* any corruption loads,
+  or the round-trip hash moves.
+- **C7 `quest_single_flight_end_to_end`.** MVP shape
+  (`docs/CRPG_ENGINE_SPEC.md:1519`–`1526`): `spawn_quest({quest, started})`,
+  ticks pass, `set_quest_state(e, completed)`, `despawn(quest_npc)` (the NPC
+  may die without taking the quest — Reading 7). Final: quest reads
+  `completed`, NPC gone, hash stable across a save/load between the two
+  writes. *Control:* same run without the `despawn` → identical quest bytes.
+  *Fails if:* NPC lifetime affects quest state.
+- **C8 `history_wrappers_journal_spawns_only`.** `HistoryWorld` from
+  `W(3)`: `spawn_continuation` journals exactly one `Spawned`,
+  `version() == 1`; `set_remaining` journals nothing, `version() == 1`;
+  `history_hash` moves on both (bytes covered). A duplicate
+  `spawn_quest` commits nothing: no envelope, no entity, still version 1.
+  *Control:* the same ops on the bare `World` give equal records.
+  *Fails if:* a set journals, the version moves, or a failure commits.
+- **C9 `no_budgets_in_sim`.** A resumed-slice budget (1024 dispatches,
+  100_000 units, depth 32) appears nowhere in `crates/crpg-sim/src/`:
+  grep for `1024`, `100_000`/`100000` and `MAX_.*BUDGET` finds no new
+  definition; a due continuation ticked 2000 times stays due and unchanged
+  except `remaining` (already 0). *Fails if:* the sim counts, caps or clears
+  anything.
+- **G1 `continuation_golden`.** `tests/support/continuation_schedule.rs`
+  (also compiled by
+  `examples/generate_continuation_golden.rs`): seed 42, one continuation at
+  `remaining: 600`, one open dialogue, one quest stage, plus the T036b
+  movement walk so stage 5 runs beside stage 4. Save at tick 500, load, run
+  to 1000: per-step `state_hash` lines meet
+  `tests/goldens/continuation_v1.<target>.txt`, and equal the uninterrupted
+  1000-tick run's hashes step for step (B-9). *Control:* the same schedule
+  with no continuation entities reproduces the movement golden's hashes
+  exactly (absence-skip: no golden moves). *Fails if:* any of the 1001
+  lines differs, or the no-continuation run diverges from movement's
+  baseline.
+- **G2 `restart_keeps_waits`.** Host file-backed save at tick 500 with an
+  armed `remaining: 100` continuation, an open dialogue and quest stage
+  `started`; reload under a greater incarnation; run to tick 600. The
+  continuation is due exactly at tick 600 in both runs; dialogue node,
+  quest stage, authority hash and capture journal match the uninterrupted
+  run (B-10). *Control:* reload at tick 500 with `remaining: 0` already due:
+  due from the first tick after load. *Fails if:* any record, count or hash
+  differs.
+
+Expected survivors (declared, not gaps): the `Absent` arms for entities
+that can never be live in a loaded world (rejected at load, B-8); the
+saturating decrement at `remaining: 0` (no-op by construction).
 
 ## What must not change
 
