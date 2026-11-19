@@ -109,6 +109,32 @@ contract from.
 
 ## Authored dialogue, quest and event data today
 
+- `Dialogue` (`crates/crpg-data/src/document.rs:155`) — authored dialogue: `id`, `slug`, `name`, optional `_note`, `entry: Ulid`, `nodes: Vec<DialogueNode>`; every object is `#[serde(deny_unknown_fields)]` (`crates/crpg-data/src/document.rs:154`).
+- `DialogueNode` (`crates/crpg-data/src/document.rs:176`) — `id: Ulid` plus `body: DialogueBody`.
+- `DialogueBody` (`crates/crpg-data/src/document.rs:191`) — internally tagged `kind`: `NpcLine` (speaker, `text_key`, opaque `conditions`, `on_enter`, optional `next`), `PlayerChoice` (`text_key`, `conditions`, `on_select`, `next`), `Jump { target }`, `Link { target }`, `End`; its doc says "without presentation or execution semantics" (`crates/crpg-data/src/document.rs:184`).
+- `Required nullable next` (`crates/crpg-data/src/document.rs:204`) — an absent `NpcLine.next` must be written as explicit `null` (`required_nullable`), not omitted.
+- `Quest` (`crates/crpg-data/src/document.rs:239`) — authored quest state machine: `id`, `slug`, `name`, `entry: Ulid`, `states: Vec<QuestState>`.
+- `QuestState` (`crates/crpg-data/src/document.rs:260`) — `id`, display `name`, `terminal: bool`, `on_enter`, `transitions: Vec<QuestTransition>`.
+- `QuestTransition` (`crates/crpg-data/src/document.rs:277`) — opaque `condition: String` plus `target: Ulid`; conditions are not parsed here.
+- `TriggersDocument` (`crates/crpg-data/src/document.rs:354`) — an area-owned trigger aggregate: `area: Ulid` and `graphs: Vec<EventGraph>`.
+- `EventGraph` (`crates/crpg-data/src/ir.rs:13`) — `id`, `slug`, `name`, `_note`, `entry: Trigger`, `start: Ulid`, `nodes: Vec<Node>`, `edges: Vec<Edge>`, `locals: Vec<VarDecl>`.
+- `IR is data-only` (`crates/crpg-data/src/ir.rs:1`) — "Serializable authored event IR; execution and scheduling are external."
+- `Trigger` (`crates/crpg-data/src/ir.rs:44`) — `AreaEnter`, `AreaExit`, `Interact`, `DialogueNode`, `QuestStateChange`, `Timer { ticks: u64 }`, `CombatStart`, `CombatEnd`, `Death`, `ItemAcquired`, `Custom { id }`.
+- `Node` (`crates/crpg-data/src/ir.rs:78`) — `id: Ulid` plus `body: NodeBody`.
+- `NodeBody Wait` (`crates/crpg-data/src/ir.rs:117`) — `Wait { ticks: u64 }` ("Wait a relative tick count; no absolute scheduling occurs here"); the other variants are `Condition`, `Action`, `Branch`, `Sequence`, `CallScript`, `CallGraph` (`crates/crpg-data/src/ir.rs:92`).
+- `Edge` (`crates/crpg-data/src/ir.rs:161`) — `from: Ulid`, `port: Port`, `to: Ulid`; endpoint validation is deferred to T011.
+- `Port` (`crates/crpg-data/src/ir.rs:144`) — `Next`, `True`, `False`, `Case { index }`.
+- `ActionCall` (`crates/crpg-data/src/ir.rs:175`) — symbolic `action_id: String` plus named tagged `args`; no function pointers or registry.
+- `ActionSignature` (`crates/crpg-data/src/ir.rs:185`) — symbolic action id plus ordered `ActionParameter`s; declarations only.
+- `Document variants` (`crates/crpg-data/src/document.rs:403`) — `crpg.dialogue/1` (`:420`), `crpg.quest/1` (`:423`), `crpg.graph/1` (`:429`), `crpg.triggers/1` (`:450`).
+- `No continuation type` (`crates/crpg-data/src/ir.rs:116`) — no `ScriptContinuation` or saved-continuation type exists in `crpg-data` (none found); `Wait` carries only the relative tick count.
+- `Dialogue reachability` (`crates/crpg-data/src/validation.rs:2180`) — one diagnostic per dialogue node unreachable from a valid entry; emitted at `crates/crpg-data/src/validation.rs:2233`.
+- `Quest completion` (`crates/crpg-data/src/validation.rs:83`) — `QuestNoCompletionPath` "A quest has no reachable terminal state"; emitted at `crates/crpg-data/src/validation.rs:2281`.
+- `Locale keys` (`crates/crpg-data/src/validation.rs:2009`) — every name and dialogue text key must exist in every locale table.
+- `No campaign fixture` — no file under `campaigns/` uses `crpg.dialogue/1` or `crpg.quest/1` (none found; `campaigns/` holds only `combat_basic` and `combat_srd`).
+- `Broken-reference fixtures` (`crates/crpg-data/tests/fixtures/broken_references/dialogue/broken.json:1`) — a dialogue fixture with a broken entry; the quest counterpart is `crates/crpg-data/tests/fixtures/broken_references/quests/broken.json:1`.
+- `Planned fixtures` (`docs/CRPG_ENGINE_SPEC.md:1502`) — `dialogue_branching`, `quest_multistage` and `save_load_stress` are named as future fixture campaigns, not present today.
+
 ## Scripting today
 
 ## Determinism rules that bind it
