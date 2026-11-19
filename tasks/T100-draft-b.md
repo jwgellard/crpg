@@ -24,6 +24,22 @@ fake runs: no network, no model calls
 (`tools/agents/README.md:196`).
 
 ## Parts
+One part, **T100**, in `tools/`. Not S-set (`docs/IMPLEMENTATION_PLAN.md:86`–`docs/IMPLEMENTATION_PLAN.md:98`):
+no `World` field, tick order, wire byte, checkpoint, history version,
+schema or workspace manifest is touched; no Rust crate is touched at all.
+
+Order: one part; nothing to serialize.
+
+### T100 owns
+- `tools/author_bench/run_bench.py` (new; the only executable entry)
+- `tools/author_bench/score.py` (new; validity/playability scoring over
+  captured `crpgc` outputs — no subprocess, no network)
+- `tools/author_bench/briefs/b1_single_file.md` (new)
+- `tools/author_bench/briefs/b2_small_campaign.md` (new)
+- `tools/author_bench/briefs/b3_full_campaign.md` (new)
+- `tools/author_bench/briefs/b4_rule_system.md` (new)
+- `tools/tests/test_author_bench.py` (new; the only test file)
+- goldens: none.
 
 ## Readings
 
