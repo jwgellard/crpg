@@ -241,6 +241,24 @@ Normative. Each item names the tests that prove it. "Run" below is one
   checked-in fake. *Tests:* F10 (plus every F-case, which uses fakes).
 
 ## Errors
+Every variant, and when. Exit buckets follow
+`tools/agents/README.md:5`–`tools/agents/README.md:7`.
+
+| Value | When |
+|---|---|
+| exit 2 `usage: --models and --out are required` | scoring run without `--models` or `--out` |
+| exit 2 `usage: --compare takes exactly two record files` | `--compare` with other than two paths |
+| exit 2 `no-brief: <path> missing` | a `briefs/` file absent (mirrors `oc.py`'s `no-brief`, `tools/agents/README.md:125`–`tools/agents/README.md:126`) |
+| exit 2 `no-crpgc` | the `crpgc` binary missing or not executable |
+| exit 1 `worse: <brief>` (one line per regressed brief) | `--compare` finds any brief verdict `worse` |
+| record with `valid: false`, one synthetic diagnostic `unparsable validate output` | `validate --json` stdout is not JSON |
+| record with `playable: false` | `valid` false, `run_exit` nonzero, or sample lines malformed |
+
+No new exit bucket beyond 0/1/2; `oc.py`'s own causes (`quota`,
+`402`, `locked`, `spend`, `verify-timeout`, `bad-ref`, `empty-diff`
+never count against the model,
+`tools/agents/README.md:153`–`tools/agents/README.md:158`) propagate
+unchanged and are not rescored.
 
 ## Tests
 
