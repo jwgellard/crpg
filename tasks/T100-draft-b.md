@@ -261,6 +261,81 @@ never count against the model,
 unchanged and are not rescored.
 
 ## Tests
+In `tools/tests/test_author_bench.py`, stdlib `unittest`, fixed fakes
+only: a `fake_crpgc.py` (answers `validate --json` and `run` from
+argv-keyed canned bytes) and canned `oc.py` result-record dicts. No
+network, no model, no repo write outside `tempfile`. Every case has a
+control changing one input and a "fails if"; expected values below are
+hand-computed from the canned bytes.
+
+- F1 `stdlib_only`. Imports `run_bench` and `score`, asserts no module
+  source contains `socket`, `urllib`, `http`, `openai` or `subprocess`
+  inside `score.py` (grep over the two files). *Control:* the same grep
+  over `run_bench.py` allows `subprocess` (the launcher needs it).
+  *Fails if:* `score.py` shells out or touches the network.
+- F2 `baseline_writes_records_and_summary`. Fake: models `m-a,m-b`,
+  briefs `b1,b2`, validate `[]` exit 0, run two sample lines exit 0,
+  steps 4, no errors. Expects 4 records each `score == 100`
+  (50 + 30 + round(20·1)) and `summary.json` with 4 entries and a
+  `baseline_of` key. *Control:* rerun with `--compare` on the same
+  file twice: four `same` lines, exit 0. *Fails if:* a record is
+  missing or the summary lacks the array.
+- F3 `launch_argv_uses_oc_run_brief`. Fake launcher records argv;
+  expects
+  `oc.py run --task T100 --role grunt --model m-a --brief
+  tools/author_bench/briefs/b1_single_file.md` as a subsequence.
+  *Control:* brief `b4_rule_system.md` changes only the `--brief`
+  path. *Fails if:* the harness invents its own spawn flags.
+- F4 `brief_allow_lists_only_crpgc`. Reads each of the four briefs,
+  asserts each names `crpgc` and `schema`, and none names `cargo`,
+  `git push`, `curl` or a second crate path. *Control:* a scratch copy
+  with one added `cargo test` line fails the same assertion. *Fails
+  if:* a brief grants the model the repo.
+- F5 `validity_empty_diagnostics`. Canned `validate --json` stdout
+  `[]`, exit 0 → `valid == True`, `diagnostics == 0`,
+  `validate_exit == 0`. *Control:* stdout
+  `[{"severity":"error","message":"missing ruleset"}]`, exit 1 →
+  `valid == False`, `diagnostics == 1`. *Control 2:* stdout `not
+  json`, exit 0 → `valid == False` with the single synthetic
+  `unparsable validate output` diagnostic. *Fails if:* exit 0 alone
+  decides validity.
+- F6 `playability_two_samples`. Canned run stdout
+  `50 <"ab"*32>\n100 <"cd"*32>\n`, exit 0, with F5's valid case →
+  `playable == True`, `run_samples == 2`. *Control:* stdout with only
+  the `50` line (hash-every changed to 100 in one input) →
+  `run_samples == 1`, `playable == False`. *Control 2:* one line with
+  a 63-hex digest → `playable == False`. *Fails if:* a truncated or
+  malformed sample counts as playable.
+- F7 `steps_and_errors_order`. Canned record steps 4; transcript:
+  `validate` exit 1 (`last line: unknown stem`), then `validate`
+  exit 0 with one diagnostic message `missing ruleset`. Expects
+  `steps == 4` and `errors` of length 2 in transcript order (the
+  nonzero exit first). *Control:* transcript with both exits 0 and no
+  diagnostics → `errors == []`, `steps` unchanged. *Fails if:*
+  errors are counted but not ordered, or steps are recomputed.
+- F8 `score_arithmetic`. (a) valid + playable + 0 errors / 4 steps →
+  `100`. (b) valid + playable + 1 error / 4 steps →
+  `50 + 30 + round(15.0) == 95`. (c) invalid + unplayable + 2 errors
+  / 4 steps → `0 + 0 + round(10.0) == 10`. (d) 0 steps, 0 errors →
+  divisor is 1, score is 100 when valid and playable. *Control:* (b)
+  with 2 errors → `50 + 30 + round(10.0) == 90`, differing in one
+  input from (b). *Fails if:* any of the four is off by one.
+- F9 `compare_verdicts`. BASE brief `b2` score 80, CAND 95 → line
+  `m-a b2 80 95 +15 better`, exit 0. *Control:* CAND 80 → `same`,
+  exit 0. *Control 2:* CAND 60 → `worse`, exit 1. *Fails if:* a
+  regression exits 0 or a tie reports `better`.
+- F10 `no_subprocess_to_real_crpgc`. Runs the whole suite with `PATH`
+  stripped of `crpgc` and no DNS (socket disabled by fixture):
+  everything still passes because every external byte comes from
+  `fake_crpgc.py` argv keys. *Control:* point the fixture at the
+  real binary name and the test errors instead of silently passing.
+  *Fails if:* any test shells to a real tool or the network.
+
+Run command: `python -m unittest discover -s tools/tests -p
+"test_author_bench.py" -v`. All ten pass; the pre-existing suites
+(`test_oc.py` against `tools/tests/fake_opencode.py`,
+`tools/agents/README.md:189`–`tools/agents/README.md:200`) are
+untouched and still pass.
 
 ## What must not change
 
