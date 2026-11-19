@@ -373,7 +373,134 @@ decode are the frozen codecs the harness calls by path and never re-implements.
 
 ## Behaviour
 
-_(filled next edit)_
+Normative. Each item names the tests that prove it. "Clean rejection" means a
+`ReceiptStatus::Rejected(code)` with the pinned `code` and no host-state
+change; never a panic. **First failure wins** in every ordered list. Codes
+are `RejectionCode`'s frozen v1 values (`crates/crpg-net/src/protocol.rs:393`):
+`RateLimited` 8, `SeqConflict` 11, `SeqGap` 12, `StaleSeq` 13, `StaleTick` 15,
+`FutureTick` 16, `NotAuthorized` 17, `IllegalAction` 18.
+
+### T041a — the harness
+
+B-1. **`attach`.** Attaches `peer` through `LocalHost::attach` and sorts
+`control` ascending; the replica and outbox start empty for `epoch`. An
+`UnknownPeer` or `AlreadyAttached` `LocalError` propagates unchanged and
+attaches nothing. *Tests:* H1.
+
+B-2. **`drain` classification.** Frames are read in link order and applied by
+first byte: `4` → `codec_v4::decode_delta` → `replica.apply_delta` (counted
+`deltas`); `0xA1` → `movement_v4::decode_down` → `MoveDown::Receipt(r)` →
+`outbox.receive(&r)` (counted `receipts`); any other first byte is a sample
+datagram → decode entries → `replica.apply_sample` (counted `samples`). A
+frame that fails decode or apply is `skipped` + 1 and the client state is
+unchanged by that frame; `drain` never panics. A lane-1 receipt that
+`outbox.receive` refuses (`WrongEpoch`/`Unexpected`/`WrongActor`) is
+`skipped`, not retried. *Tests:* H2.
+
+B-3. **`own_net`.** The client's actor `NetId` is the `net_id` of the first
+replica row (ascending) whose disclosed entity equals `control[0]`'s
+authoring `EntityId`; `None` before any delta discloses it, and `None` for an
+empty `control`. *Tests:* H3.
+
+B-4. **`drive_tick`.** One `host_loop.step(now_ms)` (intake → `drive_ai` →
+`advance` → deliver → retire, `crates/crpg-server/src/run.rs:185–192`), then
+each client's `drain()` in the slice order. Nothing else runs; no clock is
+read. *Tests:* H1, H2, H3.
+
+### T041b — the desync run
+
+B-5. **The fixture.** Two combatants over an in-memory `Host` from
+`crates/crpg-server/tests/fixtures/three_combatants.json` edited to two
+participants (A, B; health 10/10) with the T148 movement block, started
+`first-blood` through `crpg-sim` and wrapped `Host::from_history` (the
+T037e shape, `crates/crpg-testkit/AGENTS.md:207–228`). Client A's
+`DisclosureGrants` disclose A fully (health) and B presence-only; client B
+the mirror. Both control their own actor. *Tests:* D1, D2.
+
+B-6. **The 5,000-tick run.** `now_ms` runs 0, 50, …, 249,950. Each tick, in
+order: (1) each client's scripted step — at every 50th tick a lane-0 attack
+or `EndTurn` from whichever client holds the turn (the conformance cadence,
+`crates/crpg-net/tests/conformance.rs:1304–1332`), plus one lane-1 `MoveTo`
+at tick 60 and its `Halt` at tick 90 (so loss/dup exercises a recovery);
+(2) `drive_tick` with `FaultSchedule { loss_every: Some(7), dup_every:
+Some(11), reorder_depth: 2, seed: 99 }`; (3) at every 1,000th tick record
+`local.host().authority_hash()`. No wall time, no RNG beyond the seeded
+fault stream; two runs give equal hashes and equal canonical views. The loss
+of a lane-0 frame is recovered by the host's retry/dedup, so the run reaches
+5,000 ticks without a client fencing or a capture backpressure stall (the
+script acknowledges captures each 1,000th tick if the host's admission
+reports them). *Tests:* D1, D3.
+
+B-7. **The desync check.** At every 1,000th tick, for each client,
+`replica_view(client.replica) == expected_view(view, ctx)`, where `ctx.facts`
+is the test's own disclosure table (A full, B presence-only, or the mirror)
+derived from `local.host().host().world()`'s public combatant reads — never
+from `take_delivery_entries`. A divergence means the host's projection and
+the replica disagree, and the test fails naming the first differing `NetId`
+and tick. *Tests:* D1.
+
+B-8. **Identical visible state.** At the last tick,
+`replica_view(&a.replica) == replica_view(&b.replica)`, and each equals the
+projection (B-7). Because both clients share disclosure and only differ in
+control, their canonical views coincide. *Tests:* D2.
+
+B-9. **No panic, determinism.** The whole run is one test body with no
+`#[should_panic]`; a panic anywhere fails. The run is repeated on a fresh
+rig and produces byte-equal recorded hashes (same build). *Tests:* D3.
+
+### T041c — the host-level malicious suite
+
+B-10. **Ownership.** A well-formed lane-0 intent whose `actor` is a `NetId`
+the client's `ControlGrant` does not name → `NotAuthorized` (17); the host
+state, sequences, receipts and `last_combat_error` are unchanged. *Tests:*
+M1.
+
+B-11. **Timing.** An intent with `observed_tick` older than the freshness
+window → `StaleTick` (15); ahead of `server_tick` → `FutureTick` (16); a
+gameplay-illegal intent at the current tick (an out-of-turn attack, or a
+`DeclareMove` whose actor is not the active head) → `IllegalAction` (18).
+Each leaves the state unchanged. *Tests:* M2.
+
+B-12. **Interest.** An intent that names an entity outside the client's
+disclosure grant (a hidden or foreign id) → `NotAuthorized` (17). A revoked
+visibility id is `NotAuthorized`, never resolved to a row. *Tests:* M3.
+
+B-13. **Flooding.** A burst over the peer's rate budget → `RateLimited` (8)
+for the over-budget intents, with the retained head re-admitted only after
+the injected clock advances (the bucket replenishes stepwise,
+`crates/crpg-net/src/sim.rs:157`). *Tests:* M4.
+
+B-14. **Replay.** A same-`seq` retry whose canonical bytes equal the retained
+intent returns the retained outcome (cached, never re-executed); a same-`seq`
+retry with different canonical bytes → `SeqConflict` (11); a `seq` older than
+the cache → `StaleSeq` (13); a `seq` skipping ahead → `SeqGap` (12), which
+does not advance the next-expected sequence. *Tests:* M5.
+
+B-15. **Canonical retry.** The same intent re-encoded with a non-minimal
+varint (a length or `seq` byte re-encoded longer than minimal) or a ULID
+case/`I`/`L`/`O` alias (`crates/crpg-core/src/ulid.rs:111–122`) that
+`Host::canonical` re-encodes to the retained bytes is a cached retry, never a
+`SeqConflict` (`crates/crpg-server/src/host.rs:1588–1590`, `:1666–1668`).
+*Tests:* M6.
+
+B-16. **Clean, never a panic.** Every case above is a `ReceiptStatus` with
+the pinned code, no new `HostError` variant, no `Display` text change, and
+the authority hash is byte-equal to the pre-intent hash after each rejection.
+*Tests:* M1–M6.
+
+### T041d — the gate 13 dedicated smoke
+
+B-17. **Dedicated smoke.** Spawn the `crpg-server` binary (T040) with a
+config naming an invitation with two control grants, connect two
+`QuicClient`s over loopback (`crates/crpg-net-quic/src/client.rs:118`),
+script move/fight, and assert both clients end with identical canonical
+views (the harness's `replica_view` over each client's replica). The smoke
+then writes `quit` and asserts exit 0 and the save. Windows dedicated and
+Linux dedicated run the same binary shape (ADR-0012); the embedded leg is
+B-8's in-process two-client run. *Tests:* S1.
+
+B-18. **No placeholder.** The smoke drives the real program end to end; a
+skipped or `todo!()` leg fails. *Tests:* S1.
 
 ## Errors
 
