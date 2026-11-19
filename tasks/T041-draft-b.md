@@ -373,6 +373,17 @@ survivor is a finding):
   the existing workspace-test matrix on both legs).
 
 ## Dependency edges
+| Edge | Section | `ALLOWED` |
+|---|---|---|
+| (none new by default) | — | `crpg-testkit: (None, {"crpg-godot"})` (`tools/lint/deps.py:68`): every crate T041 touches — `crpg-server`, `crpg-net`, `crpg-nav`, `crpg-ai`, `crpg-data`, `crpg-rules`, `crpg-core`, `crpg-sim` — is already a normal or dev-dependency (`crates/crpg-testkit/Cargo.toml:11-39`), so the lockfile is untouched |
+| `crpg-testkit` → `crpg-net-quic` (dev-only, path; only if Q1 approved) | `[dev-dependencies]` | permitted: same `ALLOWED` row; needs the user's yes (`AGENTS.md:52`, "Do not add dependencies") |
+
+No external crate and no new lockfile package either way: `crpg-net-quic`
+is a workspace member already in the graph through `crpg-server`
+(`crates/crpg-testkit/AGENTS.md:141-143`). No cycle (`crpg-net-quic` may not
+reach `crpg-testkit`). `deps.py` is not edited. The no-new-dependency
+alternative is Reading 2's fallback: G1 deferred to T070's binary harness
+and the dedicated leg proved at the library level only.
 
 ## Out of scope
 
