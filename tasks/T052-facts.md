@@ -63,7 +63,7 @@ contract from.
 - `Serde shape` (`crates/crpg-sim/src/world.rs:69`) — `World` derives `Serialize`; deserialization goes through `WorldRepr` in the same field order (`crates/crpg-sim/src/world.rs:126`) with `#[serde(default = "ComponentStore::new")]` on each store (`crates/crpg-sim/src/world.rs:134`).
 - `Load validation` (`crates/crpg-sim/src/world.rs:150`) — `impl Deserialize for World` deserializes `WorldRepr`, then checks live ids and cross-field invariants before constructing a `World`.
 - `World::new` (`crates/crpg-sim/src/world.rs:940`) — constructs the empty stores; `spawn` is at `:1001`, `despawn` at `:1021`, the `tick` getter at `:1136`.
-- `Store getters` (`crates/crpg-sim/src/world.rs:1207`) — `creatures()`, `movers()` (`:1217`), plus crate-private mutable accessors (`world.rs:1202`, `:1212`, `:1223`).
+- `Store getters` (`crates/crpg-sim/src/world.rs:1207`) — `creatures()`, `movers()` (`:1217`), plus crate-private mutable accessors (`crates/crpg-sim/src/world.rs:1202`, `crates/crpg-sim/src/world.rs:1212`, `crates/crpg-sim/src/world.rs:1223`).
 - `Last field rule` (`tasks/T139.md:295`) — "Each new field is the **last** field of its struct, and each new variant comes after the existing ones"; the T139 package touched "the `World` struct, serde shapes and the meaning of a release" (`tasks/T139.md:59`).
 - `T139 field mechanics` (`tasks/T139.md:568`) — `World` gains `creatures` as the last field after `area`, `WorldRepr` gains the matching defaulted entry, `despawn_tracked` gains `self.creatures.remove(id)` (`tasks/T139.md:584`), and `transfer_entity` copies the record (`tasks/T139.md:589`).
 - `Architecture, creature store` (`docs/architecture/crpg-sim.md:387`) — `World.creatures` is a `ComponentStore<CreatureState>`, the last field after `area`, skipped when empty.
@@ -159,8 +159,34 @@ contract from.
 - `Script architecture` (`docs/architecture/crpg-script.md:43`) — `dispatch(world, actor, identity, call)` is the fixed pipeline; the context carries `&World` and the actor and "cannot reach `&mut World`, RNG, stores or host capability" (`docs/architecture/crpg-script.md:51`).
 - `Legacy World only` (`docs/architecture/crpg-script.md:55`) — dispatch targets the legacy `World`, not `HistoryWorld`; a history-aware consumer needs its own sim batch boundary.
 - `Saving semantics` (`docs/architecture/crpg-script.md:75`) — "Saving means saving the `World` between completed invocations and rebuilding identical bindings at startup; no table or partial call is persisted."
-- `Execution needs a turn` (`crates/crpg-script/AGENTS.md:33`) — dispatch validates `validate_action(EndTurn { actor })`; a handler cannot run outside an active turn.
+- `Execution needs a turn` (`crates/crpg-script/AGENTS.md:28`) — dispatch validates `validate_action(EndTurn { actor })`; a handler cannot run outside an active turn.
 
 ## Determinism rules that bind it
 
+- `Lint scope` (`tools/lint/determinism.py:4`) — scans every `.rs` file under `crates/crpg-core/`, `crpg-rules/`, `crpg-sim/`, `crpg-nav/` and `crpg-ai/`; a missing linted crate is a `missing-crate` violation (`tools/lint/determinism.py:45`).
+- `Both-scope rules` (`tools/lint/determinism.py:8`) — `HashMap`/`HashSet` iteration, `SystemTime`/`Instant`/`std::time::`, `std::thread`, and `rand::`/`thread_rng` fail in all five crates; the regexes are at `tools/lint/determinism.py:73`–`77`.
+- `Sim float rule` (`tools/lint/determinism.py:19`) — `crpg-sim` bans `f64` only (`no-f64`, regex at `tools/lint/determinism.py:86`); `f32` spatial positions stay allowed and unsuffixed literals infer at `f32` sites.
+- `Rule application` (`tools/lint/determinism.py:272`) — `crpg-sim` gets `("both", "no-f64-crates")`; `crpg-core`, `crpg-rules`, `crpg-nav` and `crpg-ai` get the full `no-float-crates` set (`tools/lint/determinism.py:69`).
+- `Doctests are code` (`tools/lint/determinism.py:27`) — compiled doctest fences inside `///`/`//!` are scanned; fences tagged `text` or `ignore` are not (`tools/lint/determinism.py:111`).
+- `Escape` (`tools/lint/determinism.py:106`) — a line ending `// determinism-ok: <reason>` is skipped, and an empty reason is itself a violation.
+- `Root hash ban` (`AGENTS.md:43`) — no `HashMap`/`HashSet` in `crpg-core`, `crpg-rules`, `crpg-sim` or `crpg-ai`; use `IndexMap`/`BTreeMap`.
+- `Root float ban` (`AGENTS.md:45`) — no `f32`/`f64` in `crpg-core`, `crpg-rules` or `crpg-ai`; `crpg-sim` may use `f32` for spatial positions only, never in a rules path, and `f64` is banned in `crpg-sim` too (`AGENTS.md:47`).
+- `Bans cover tests` (`AGENTS.md:49`) — both bans apply to doctests and to `tests/`/`#[cfg(test)]` modules.
+- `Replay determinism` (`AGENTS.md:20`) — exact-build, not cross-platform lockstep: Windows and Linux compare their own target-scoped goldens with the pinned toolchain and default features, never each other's hashes; no tolerance or missing-baseline skips.
+- `ADR-0009 promise` (`docs/adr/0009-determinism-scope.md:20`) — same binary + same inputs ⇒ same hash sequence, tick for tick; cross-platform and cross-build sameness are explicitly not promised (`docs/adr/0009-determinism-scope.md:26`).
+- `Golden scoping` (`docs/adr/0009-determinism-scope.md:33`) — golden files carry toolchain, platform and profile in the filename; CI compares goldens on canonical Linux only.
+- `Hash exclusions` (`docs/adr/0009-determinism-scope.md:38`) — the exclusion list starts empty and an exclusion needs a test proving the field cannot affect behaviour; `state_hash` has no exclusions (`crates/crpg-sim/src/hash.rs:10`).
+- `Sim invariant 5` (`crates/crpg-sim/AGENTS.md:205`) — `Transform` is `f32`-only for positions/velocities, is never rules input, and "No `f64` anywhere in the crate".
+- `Sim invariant 8` (`crates/crpg-sim/AGENTS.md:220`) — "No `HashMap`/`HashSet` — anywhere, including tests. No clock, no threads, no I/O"; `DeterministicRng` with explicit stream names is the only randomness.
+- `Hash panic` (`crates/crpg-sim/AGENTS.md:368`) — `state_hash` panics on non-finite floats by design; do not add a scrubbing pass.
+- `crpg-sim goldens` (`crates/crpg-sim/tests/goldens/`) — `history_v1.x86_64-pc-windows-msvc.txt`, `history_v1.x86_64-unknown-linux-gnu.txt`, `history_v2.x86_64-pc-windows-msvc.txt`, `history_v2.x86_64-unknown-linux-gnu.txt`, `history_v3.x86_64-pc-windows-msvc.txt`, `history_v3.x86_64-unknown-linux-gnu.txt`, `movement_v1.x86_64-pc-windows-msvc.txt`, `movement_v1.x86_64-unknown-linux-gnu.txt`, `surface_v1.x86_64-pc-windows-msvc.txt`, `surface_v1.x86_64-unknown-linux-gnu.txt`.
+- `history_v1 golden` (`crates/crpg-sim/tests/history_golden.rs:10`) — one `<step> <64-lowercase-hex-hash>` line per step from zero, final LF; target selection is compile-time and "a missing baseline fails, never passes".
+- `history_v2 golden` (`crates/crpg-sim/tests/history_v2_golden.rs:9`) — the v2 wrapper's per-step hashes; `history_v3 golden` (`crates/crpg-sim/tests/history_v3_golden.rs:10`) is the v3 equivalent.
+- `movement_v1 golden` (`crates/crpg-sim/tests/movement_golden.rs:10`) — the stage-4 movement schedule's per-step hashes; `surface_v1 golden` (`crates/crpg-sim/tests/surface_golden.rs:10`) is the T137 surface schedule's.
+- `crpg-testkit goldens` (`crates/crpg-testkit/goldens/`) — `combat_basic_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden`, `combat_basic_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden`, `replay_basic_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden`, `replay_basic_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden`, `srd_lite_rust-1.98.0_x86_64-pc-windows-msvc_test-default.golden`, `srd_lite_rust-1.98.0_x86_64-unknown-linux-gnu_test-default.golden`.
+- `Testkit golden readers` (`crates/crpg-testkit/tests/support/combat.rs:65`) — the combat_basic baselines; `replay_basic` is read at `crates/crpg-testkit/tests/support/mod.rs:36` and `srd_lite` at `crates/crpg-testkit/tests/support/srd.rs:68`.
+- `S golden review` (`docs/IMPLEMENTATION_PLAN.md:415`) — the wave table schedules T052 with "Golden review for T052 if hashes move".
+
 ## Agent log
+
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T052 facts · Recorded the binding requirements, World and save shapes, authored dialogue/quest/IR data, scripting surface and determinism goldens with checked `path:line` citations so the architect can write T052 without re-deriving them.
