@@ -429,8 +429,31 @@ invariant; if the implementer finds a doc mismatch, it stops and reports it
 as an open question (S-1).
 
 ## Errors
+No new error type or variant. Every refusal is an existing `CodecError`
+(`crates/crpg-net/src/codec.rs:52-70`); its `Display` is the "log line"
+material (Reading 7):
 
-TODO (draft B): each exact variant and when.
+| Variant | `Display` (exact) | What the client does with it |
+|---|---|---|
+| `FrameTooLarge` | `frame exceeds its byte cap` | fence 52 (`crates/crpg-godot/src/core/errors.rs:46`) |
+| `UnsupportedVersion` | `unsupported protocol version` | fence 52 |
+| `WrongDirection` | `wrong lane or direction` | fence 52 |
+| `UnknownMessage` | `unknown message discriminant` | fence 52 |
+| `Malformed` | `malformed frame` | fence 52 |
+| `LimitExceeded` | `wire bound exceeded` | fence 52 |
+
+A decoded-but-inapplicable value is the replica's `ReplicaRejected` (53,
+`crates/crpg-godot/src/core/errors.rs:48`); a bad welcome closes the
+connection with `ProtocolViolation`
+(`crates/crpg-net-quic/src/client.rs:1064-1065`). The welcome's own errors
+are `HandshakeError` (`crates/crpg-net-quic/src/handshake.rs:362-371`):
+`Malformed`, `UnsupportedWireVersion`, `CredentialLength`, displayed as
+`"<Name> at quic/handshake"`
+(`crates/crpg-net-quic/src/handshake.rs:416-425`) — indexed, not re-tested
+(Reading 3).
+
+A failing case is never answered by a new variant, a changed text or a
+decoder change in T042b (S-1).
 
 ## Tests
 
