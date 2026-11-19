@@ -580,6 +580,29 @@ identity.
 
 ## What must not change
 
+- Goldens, byte for byte (none added, none moved): every
+  `crates/crpg-sim/tests/goldens/*`, `crates/crpg-testkit/goldens/*`, and any
+  other `*.golden`/`.txt` under `crates/*/tests/goldens`.
+- Every existing `crpg-server` test file, byte for byte and passing:
+  `host_capture.rs`, `host_save.rs`, `host_quic.rs`, `host_quic_transfer.rs`,
+  `host_legal.rs`, `host_nav.rs`, `host_ops.rs`, `host_pause.rs`,
+  `host_records.rs`, `host_records_contract.rs`, `host_transfer.rs`,
+  `host_v3_publish.rs`, `host_v3_session.rs`, `host_v3_timing.rs`, `support/`,
+  `fixtures/`, and every `#[cfg(test)]` case in `host.rs`, `checkpoint.rs`,
+  `capture.rs`, `nav.rs`, `save.rs`, `quic.rs`, `run.rs`, `runner.rs`.
+- Frozen library sources: `src/{host,capture,checkpoint,nav,host_v3,save,lib}.rs`
+  and every line of `src/run.rs`, `src/runner.rs` and `src/quic.rs` except
+  the one `last_report` item (Reading 8). `main.rs` is replaced, not frozen.
+- Every public library shape: `HostError`, `QuicHostError`, `SaveError` and
+  every `Display` text; `AdvanceReport`, `AdmissionResult`, `DeliveryKind`,
+  `HostOp`, `HostRecord`, `NavBinding`, `HostSettings`, `ControlGrant`,
+  `QuicPumpReport`, `HostCall`, `Lane1Call`; checkpoint versions 1 and 2 and
+  their bytes; `World` and tick order.
+- `Cargo.toml` (no new `[dependencies]`/`[dev-dependencies]`), `Cargo.lock`,
+  `deny.toml`, `rust-toolchain.toml`, `crpg-contracts`, `tools/`. Every other
+  crate, `.github/workflows/ci.yml` except the new `server-artifacts` job,
+  and the determinism lint.
+
 ## Dependency edges
 
 ## Definition of done
