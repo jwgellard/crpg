@@ -30,23 +30,16 @@ Order: one part. T053 (`crpg-script` interpreter,
 machine, `:284`) build on it and need no rebase discipline with it.
 
 ### T052 owns
-- `crates/crpg-sim/src/continuation.rs` (new: the three component types,
-  the stage-5 countdown, the due query)
-- `crates/crpg-sim/src/world.rs` (three last fields, `WorldRepr` entries,
-  load validation, `despawn_tracked`, transfer preflight, getters)
-- `crates/crpg-sim/src/tick.rs` (one stage-5 call in `run_systems`)
-- `crates/crpg-sim/src/history.rs` (three spawn wrappers, three zero-event
-  setters; no new event variant, no version change)
-- `crates/crpg-sim/src/lib.rs` (re-exports)
+- `crates/crpg-sim/src/continuation.rs` (new), `world.rs` (three last
+  fields, `WorldRepr`, validation, `despawn_tracked`, transfer preflight,
+  getters), `tick.rs` (one stage-5 call), `history.rs` (three spawn
+  wrappers, three zero-event setters), `lib.rs` (re-exports)
 - `crates/crpg-sim/tests/continuation.rs` (implementer, new),
-  `crates/crpg-sim/tests/continuation_contract.rs` (two-keys writer, new)
-- `crates/crpg-sim/tests/goldens/` (continuation schedule goldens, new; see
-  Tests), `crates/crpg-sim/examples/generate_continuation_golden.rs` (new,
-  shares the schedule source)
-- `docs/architecture/crpg-sim.md` (a new section "Persisted continuation
-  state (T052)"), `crates/crpg-sim/AGENTS.md` (public surface, traps)
-- goldens: none moved (absence-skip keeps every continuation-free world
-  byte-identical); two new per-target baselines added.
+  `continuation_contract.rs` (two-keys writer, new),
+  `tests/support/continuation_schedule.rs` (new),
+  `examples/generate_continuation_golden.rs` (new, shares the schedule)
+- `docs/architecture/crpg-sim.md` (new section), `crates/crpg-sim/AGENTS.md`
+- goldens: none moved; `tests/goldens/continuation_v1.<target>.txt` added.
 
 ## Readings
 Design decisions this contract makes. Each needs approval with the contract.
@@ -110,12 +103,11 @@ Design decisions this contract makes. Each needs approval with the contract.
    checkpoint pair (`crates/crpg-server/src/checkpoint.rs:54`). The spec
    still demands a schema version in saves
    (`docs/CRPG_ENGINE_SPEC.md:851`). `HOST_SAVE_VERSION` goes 1 → 2; the
-   loader accepts 1 and 2 and validates both identically, because absence
-   means empty: every new `World` field is skipped when empty
-   (`crates/crpg-sim/src/world.rs:83`–`:113` pattern) and defaults on load
-   (`:134` pattern), so a version-1 save loads as a world with no
-   continuations, no open dialogues and no quest stages. That absence *is*
-   the migration. Content renames/removals stay T111's
+   loader accepts both and validates both identically, because absence
+   means empty (the skip-when-empty / default-on-load patterns,
+   `crates/crpg-sim/src/world.rs:83`–`:113`, `:134`): a version-1 save
+   loads as a world with no continuations, dialogues or quest stages. That
+   absence *is* the migration. Content renames stay T111's
    (`docs/IMPLEMENTATION_PLAN.md:337`).
    *Rejected:* a third checkpoint version (checkpoints version the host
    wrapper, not the `World` schema); a `WORLD_SCHEMA_VERSION` inside
@@ -139,14 +131,13 @@ Design decisions this contract makes. Each needs approval with the contract.
    *Rejected:* journaling sets as new history events (a version-4 decision
    with no consumer before T053/T054).
 7. **Quest progress is one component per quest, keyed by authored quest
-   ULID.** A quest's stage is world-global, not per-entity: the component
-   holds `quest: Ulid` and `state: Ulid`, and at most one live component per
-   quest ULID (load rejects duplicates; spawn of a second fails). MVP needs
-   one quest with `started` and `completed`
+   ULID.** The component holds `quest: Ulid` and `state: Ulid`; at most one
+   live component per quest ULID (load rejects duplicates; a second spawn
+   fails). MVP needs one quest with `started` and `completed`
    (`docs/CRPG_ENGINE_SPEC.md:1520`); the D27f completion rule ("on this
    creature's death, set the quest to completed",
    `tasks/DECISIONS-2026-10-04.md:91`) is T053's trigger to evaluate and
-   T054's transition to write — T052 only stores the stage they agree on.
+   T054's transition to write — T052 only stores the agreed stage.
    *Rejected:* quest state on the quest-giver's entity (despawn of the NPC
    would take the quest with it; completion is observed after the enemy's
    death, whose despawn is unrelated).
@@ -165,34 +156,34 @@ never seconds/rounds/turns (`docs/CRPG_ENGINE_SPEC.md:625`).
 /// are left. Data only; resumption is T053's (Reading 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptContinuation {
-    /// The authored `EventGraph.id` (`crates/crpg-data/src/ir.rs:13`).
+    /// Authored `EventGraph.id` (`crates/crpg-data/src/ir.rs:13`).
     pub graph: Ulid,
     /// The authored `Wait` node id (`crates/crpg-data/src/ir.rs:117`).
     pub node: Ulid,
-    /// Ticks left before the continuation is due; decremented by stage 5.
+    /// Ticks left before due; decremented by stage 5.
     pub remaining: u64,
 }
 
-/// An open dialogue: which authored dialogue, which node, who is talking.
-/// Node kinds are `crates/crpg-data/src/document.rs:191`'s; checks resolve
-/// through `ResolutionRequest` (`docs/CRPG_ENGINE_SPEC.md:647`) in T054.
+/// An open dialogue: which authored dialogue, which node, who is talking
+/// (`crates/crpg-data/src/document.rs:191` for the node kinds;
+/// `docs/CRPG_ENGINE_SPEC.md:647` for checks; the engine is T054's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenDialogue {
-    /// The authored `Dialogue.id` (`crates/crpg-data/src/document.rs:155`).
+    /// Authored `Dialogue.id` (`crates/crpg-data/src/document.rs:155`).
     pub dialogue: Ulid,
-    /// The current `DialogueNode.id` (`:176`).
+    /// Current `DialogueNode.id` (`:176`).
     pub node: Ulid,
-    /// The live interlocutor entity (load-checked like any store key).
+    /// Live interlocutor entity (load-checked like any store key).
     pub speaker: EntityId,
 }
 
-/// A quest's persisted stage: which authored quest, which state. The state
-/// machine itself is T054's (`docs/IMPLEMENTATION_PLAN.md:284`).
+/// A quest's persisted stage (the state machine is T054's,
+/// `docs/IMPLEMENTATION_PLAN.md:284`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestProgress {
-    /// The authored `Quest.id` (`crates/crpg-data/src/document.rs:239`).
+    /// Authored `Quest.id` (`crates/crpg-data/src/document.rs:239`).
     pub quest: Ulid,
-    /// The current `QuestState.id` (`:260`).
+    /// Current `QuestState.id` (`:260`).
     pub state: Ulid,
 }
 ```
@@ -401,13 +392,12 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
   still holds it, destination empty. *Control:* the same move with the
   continuation despawned first succeeds. *Fails if:* the record is silently
   dropped (the T139 trap) or an earlier check's error is replaced.
-- **C5 `stage_five_counts_down`.** `W(2)` with continuations `remaining: 3`
-  (entity 0) and `remaining: 0` (entity 1): `tick` × 3 →
-  `remaining == [0, 0]`; `continuations_due` → `[0, 1]` after tick 3,
-  `[1]` before tick 1; `u64::MAX` is untouched by saturation only at the
-  boundary — *control:* `remaining: u64::MAX` ticks once → `u64::MAX - 1`,
-  never wraps. `end_turn` between ticks changes nothing.
-  *Fails if:* a tick decrements by anything but one, a zero goes nonzero, an
+- **C5 `stage_five_counts_down`.** `W(2)` with `remaining: 3` (entity 0)
+  and `remaining: 0` (entity 1): three `tick`s → `[0, 0]`;
+  `continuations_due` is `[1]` before tick 1, `[0, 1]` after tick 3.
+  *Control:* `remaining: u64::MAX` ticks once → `u64::MAX - 1`, never wraps;
+  `end_turn` between ticks changes nothing.
+  *Fails if:* a tick moves by anything but one, a zero goes nonzero, an
   event is enqueued, or the order is not ascending.
 - **C6 `round_trip_and_load_rejection`.** C1's world → JSON → load: equal
   records, equal `state_hash`, equal `continuations_due`. Hand-corrupted
@@ -446,12 +436,11 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
   exactly (absence-skip: no golden moves). *Fails if:* any line differs.
 - **G2 `restart_keeps_waits`.** Host file-backed save at tick 500 with an
   armed `remaining: 100` continuation, an open dialogue and quest stage
-  `started`; reload under a greater incarnation; run to tick 600. The
-  continuation is due exactly at tick 600 in both runs; dialogue node,
-  quest stage, authority hash and capture journal match the uninterrupted
-  run (B-10). *Control:* reload at tick 500 with `remaining: 0` already due:
-  due from the first tick after load. *Fails if:* any record, count or hash
-  differs.
+  `started`; reload under a greater incarnation; run to 600. Due exactly at
+  tick 600 in both runs; dialogue node, quest stage, authority hash and
+  capture journal match the uninterrupted run (B-10). *Control:* reload
+  with `remaining: 0`: due from the first tick after load. *Fails if:* any
+  record, count or hash differs.
 
 Expected survivors (declared, not gaps): the `Absent` arms for entities
 that can never be live in a loaded world (rejected at load, B-8); the
