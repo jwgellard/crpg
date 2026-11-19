@@ -213,7 +213,7 @@ B-4. **Gate-13 dedicated smoke.** `dedicated_smoke`: `QuicHost` started with
 `start_resumable` on loopback, two scripted real-QUIC clients (Q1) connect,
 move, fight and end with identical views; the suite passes at 1x contention
 on Windows/MSVC and Linux/GNU with no wall-clock pacing — only the rig's own
-deadline guards. `two_client` (B-1) is the embedded leg. *Tests:* G1, G2.
+deadline guards. `two_client` (D1) is the embedded leg. *Tests:* G1.
 B-5. **Unowned intents are rejected, never applied.** An intent naming an
 entity outside the sender's control grant is refused (`NotAuthorized`), the
 host reports its `Rejection` with the fixed `Display`, and the authority is
@@ -273,6 +273,87 @@ fix in T041 (the T042 S-1 rule, `tasks/T042.md:425-428`, applies at the host
 level too): the implementer stops and reports the case with its input bytes.
 
 ## Tests
+Public API only, plus the suite-local `headless.rs` shapes of "Interface".
+Every case has a control that changes one input and flips the expectation;
+each assertion message names the tick, the peer and the script index. No
+clock, sleep, thread, `#[should_panic]` or unseeded RNG. No golden reads or
+writes anywhere (Reading 8). Fixture: `combat_basic` through the T016c
+loader with T037e's in-memory movement edit (Reading 7); `now_ms = 50 * t`.
+
+- **D1 `scripted_pair_fights_to_identical_views`** (B-1, embedded gate-13
+  leg). Two clients, scripted fight to the terminal tick: after every tick
+  both views match the host projection op-for-op. *Control:* a third run
+  with client B's script replaced by all-`Idle` ends with views that differ
+  (the fight resolves differently). *Fails if:* any tick matches for one
+  client but not the other, or order of `drive_tick` matters.
+- **D2 `five_thousand_tick_loss_jitter_desync`** (B-2). 5,000 ticks under
+  `{ loss_every: 7, dup_every: 11, reorder_depth: 2 }`, one scripted `Act`
+  every 50 ticks (100 acts) and one rejected input every 200 ticks (25
+  rejections); views match after every tick; 5 authority hashes recorded
+  (every 1,000 ticks). *Control:* the same script with no faults gives the
+  same 5 hashes and the same terminal views. *Fails if:* any tick's view
+  differs, or the lossless control diverges from the impaired run's
+  authority.
+- **D3 `resume_within_grace_rejoins_identical`** (B-3). Client B's link drops
+  at tick 1,000 of D2's script and resumes at 1,100 with a live fence: at
+  tick 1,101 both views match op-for-op. *Control:* the same resume with an
+  expired fence is refused and B's view stays behind. *Fails if:* the
+  rejoined view skips or duplicates a delta.
+- **D4 `seeded_rerun_is_identical`** (B-11). D2's script twice: identical
+  views every tick and identical 5 hashes; plus the generator check —
+  `XorShift64(SCRIPT_SEED)` yields T042's pinned triple in order. *Control:*
+  seed `SCRIPT_SEED ^ 1` gives a different first value
+  (`!= 0x4B10DA10A18C50C2`). *Fails if:* any tick differs between reruns.
+- **H1 `unowned_intent_rejected_without_mutation`** (B-5, B-12). Client A
+  sends an intent for B's actor: refused `NotAuthorized`, one `Rejection`
+  with its fixed text, `authority_before == authority_after`. *Control:* A's
+  intent for its own actor is admitted. *Fails if:* the authority moves or
+  no `Rejection` surfaces.
+- **H2 `illegal_time_intent_rejected`** (B-6, B-12). The same intent with
+  `observed_tick` 500 behind and 500 ahead of admission: both refused.
+  *Control:* at the current tick it is admitted. *Fails if:* either
+  off-window intent applies.
+- **H3 `flood_is_held_never_lost`** (B-7, B-12). A burst of 3x the queue
+  capacity in one tick: the excess is held `QueueFull` and retried on later
+  ticks — every sent frame ends admitted or cleanly rejected, none
+  vanish. *Control:* the same burst at 1x is admitted at once. *Fails if:*
+  any frame is neither admitted nor rejected after the drain.
+- **H4 `noncanonical_retry_is_cached`** (B-8, B-12). A sent intent retried
+  with identical bytes, then re-encoded with a non-minimal varint and with
+  a ULID alias: all three are cached retries, never `SeqConflict`, and the
+  authority applies the intent once. *Control:* a new `seq` with a different
+  intent is admitted as new. *Fails if:* an alias retry conflicts or
+  double-applies.
+- **H5 `out_of_interest_request_rejected`** (B-9, B-12). A request naming an
+  entity outside the peer's interest set is refused with its fixed text.
+  *Control:* a granted entity resolves. *Fails if:* the ungranted entity is
+  disclosed.
+- **H6 `oversize_and_malformed_fail_clean`** (B-10, B-12). A 4,097-byte frame
+  (`FrameTooLarge`: cap beats version, `tasks/T042.md:282-290`) and a
+  one-byte `[0xFF]` frame against a v1 session: both refused with their
+  fixed texts, authority unchanged. *Control:* the session's valid frame is
+  admitted. *Fails if:* anything panics or half-applies.
+- **G1 `dedicated_smoke_loopback_quic`** (B-4). `QuicHost` via
+  `start_resumable` on `127.0.0.1:0`, two scripted real-QUIC clients connect,
+  move, fight 200 ticks and end with identical views, at 1x contention with
+  only the rig's deadline guards. *Control:* a third client with a wrong
+  credential gets `AuthRefused` (`CloseCode` code 5, the T040 T1 shape,
+  `tasks/T040.md:528-534`) plus its reject material. *Fails if:* the smoke
+  needs any sleep, or flakes twice in a row at 1x.
+
+**Mutant table** (the reviewer plants each in a scratch copy of
+`tests/support/headless.rs`, runs the named suite, expects failure; a
+survivor is a finding):
+
+| # | Mutant | Killed by |
+|---|---|---|
+| MU1 | `drive_tick` feeds deltas to the first client only | D1, D2 |
+| MU2 | `drive_tick` drives clients in script order, not ascending `PeerHandle` | D1 (control), D4 |
+| MU3 | `probe` maps alias-encoded retries to `SeqConflict` | H4 |
+| MU4 | `probe` drops `QueueFull`-held frames instead of retrying | H3 |
+| MU5 | `attach_clients` accepts resumes past the fence | D3 (control) |
+| MU6 | `assert_view_matches` compares entity counts only, not ops | H5, D2 |
+| MU7 | `XorShift64::next` shifts 13, 7, 15 | D4 |
 
 ## What must not change
 
