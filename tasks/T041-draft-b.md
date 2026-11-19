@@ -356,6 +356,21 @@ survivor is a finding):
 | MU7 | `XorShift64::next` shifts 13, 7, 15 | D4 |
 
 ## What must not change
+- Goldens, byte for byte (none added, none read): the six files under
+  `crates/crpg-testkit/goldens/` (`replay_basic`, `combat_basic`,
+  `srd_lite`, each `rust-1.98.0_x86_64-pc-windows-msvc` and
+  `x86_64-unknown-linux-gnu`, `test-default`).
+- Every existing test file and `tests/support/` in every crate, byte for
+  byte and passing — including `crates/crpg-net/tests/conformance.rs` and
+  `malicious_client.rs`, `crates/crpg-server/tests/host_quic.rs` and
+  `crates/crpg-testkit/tests/host_movement.rs`.
+- No `src/` change in any crate; no public item, error variant or `Display`
+  text changes anywhere; `crates/crpg-testkit/src/` stays exactly as is.
+- `crates/crpg-testkit/Cargo.toml` except the one conditional Q1 line;
+  `Cargo.lock` grows by at most that edge entry; `deny.toml`, workflows,
+  `rust-toolchain.toml`, `crpg-contracts`, `tools/` untouched.
+- Every existing CI job, step and trigger; no new job (gate 13 runs inside
+  the existing workspace-test matrix on both legs).
 
 ## Dependency edges
 
