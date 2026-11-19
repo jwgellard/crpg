@@ -98,6 +98,12 @@ BeginGrace, ResumePeer}` and `FenceCause::Resumed`. The `resumable` flag,
 edge (D68 Question 1 (b)), and a refused resume closes at once with code 5
 or 7 (Question 2 (b)).
 
+T150c's additive `quic` items (the `/3` movement route): `V4Invitation`,
+`Lane1Call` (with its four variants), `Lane1Trace`,
+`QuicHost::{register_v4_invitation, advance}`, `QuicPumpReport`'s `lane1`,
+`lane1_sent`, `datagrams_sent`, `lane1_refused`, `lane1_discarded` and
+`lane1_held`, and `QuicHostShutdown::undelivered_receipts`.
+
 T153's additive `host` items (D65f): `AiBudget`, `AiReport`, `AiStep`,
 `MVP_AI_BUDGET` and `Host::drive_ai`. `drive_ai` runs `crpg_ai::decide` for
 the caller's AI-controlled `actors` and maps each decision through the host's
@@ -179,6 +185,7 @@ cargo clippy -p crpg-server --all-targets --locked -- -D warnings
 cargo test -p crpg-server --test host_capture --locked
 cargo test -p crpg-server --test host_save --locked
 cargo test -p crpg-server --test host_quic --locked
+cargo test -p crpg-server --test host_quic_move --locked
 cargo test -p crpg-server --locked
 python tools/lint/deps.py
 python tools/lint/determinism.py
@@ -498,6 +505,10 @@ git diff --check
   no thread, sleeps nowhere and uses only `try_send`/`try_recv`; the one
   thread and the `Instant` reads are T154b's `runner.rs`. A blocking call
   in `run.rs` would put the frame loop behind a peer's socket or queue.
+- **A lane-1 call is traced in `lane1` with its `at`, never in `calls` (T150c).**
+- **Receipts are taken only when the transport's lane-1 queue is empty (T150c).**
+- **Never hold or retry a sample (T150c).**
+- **`quic.rs` reaches lane 1 only through `crpg-net-quic`'s lane-1 API (T150c).**
 
 ## Agent log
 
@@ -524,3 +535,4 @@ git diff --check
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Added the seventh module `runner` to the surface (the `Clock`, `SystemClock`, `spawn` and `RunnerHandle` items) and amended invariant 7 with R-6's fenced exception, so the contract names the one thread and clock the crate now owns.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Named `LinkStats::held_moves` in the surface, so the contract records the lane-1 hold counter the local link now reports.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added the AI-driver surface (`AiBudget`, `AiReport`, `AiStep`, `MVP_AI_BUDGET`, `Host::drive_ai`), the approved `crpg-ai` edge, the caller's-actors note on the T141a trap, and the four T153 traps (one turn-based step per call; `ai_turn` is host state that a restore restarts; `decide` gets the host's own mesh or `None`; only `Closed` is an `Err`, refusals are steps), so the crate contract matches the AI driver the host now runs.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Recorded the `/3` movement route's `quic` surface (`V4Invitation`, `Lane1Call`, `Lane1Trace`, `register_v4_invitation`, `advance`, the five lane-1 report counts, `undelivered_receipts`), added its gate and the four lane-1 traps, so the crate contract matches the route the adapter now serves beside `/1` and `/2`.

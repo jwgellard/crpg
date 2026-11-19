@@ -669,6 +669,81 @@ after a `/2` welcome, the fence tags and the grace. `ConnectionId`s never
 enter host state: the host sees only `PeerHandle`s minted in bind order, so
 the same calls replayed in memory give the same handles and epochs.
 
+## QUIC v4 sessions (T150c)
+
+The adapter serves `QuicServer::bind_movement` endpoints — `crpg-lane0/3`,
+wire version 4, lane 1 plus downstream datagram samples (T150b) — beside the
+`/1` and `/2` routes it already served, without changing either. A movement
+connection's lane stream is `Framing::V2`, so every lane-0 path keeps its
+current shape; `QuicServer::movement(conn)` — not the framing — says whether
+lane 1 exists. `QuicHost::start` accepts such a server as it accepts `bind`
+and `bind_dual`.
+
+- **Invitations.** `register_v4_invitation(V4Invitation)` stores the fact
+  grants and pause rights `Host::bind_v4_peer` needs beside the control and
+  disclosure grants; the record's private `v4` slot is `None` from
+  `register_invitation`. Its precedence is `Poisoned` → `InvitationLimit` →
+  `InvalidCredential` (length ≠ 32) → `Host(InvalidControl)` →
+  `Host(InvalidGrants)` (disclosure grants by `normalize_grants`, then fact
+  grants by `normalize_fact_grants`) → `DuplicateCredential`; both kinds
+  share the cap, the id sequence and the duplicate check, and revocation,
+  grant/control updates and `invitation_binding` work on both.
+- **Hello precedence (C-2).** Credential match (`AuthRefused`) → the
+  connection's movement flag (`Lost { EndpointFailed }` on an error) →
+  version (a movement connection needs `MOVEMENT_WIRE_VERSION` 4; others
+  keep `host.protocol()`) → a movement connection whose matched record has
+  `v4: None` is `AuthRefused`, with no supersession and no bind →
+  supersession as today → bind: a movement connection calls `bind_v4_peer`
+  and traces `Lane1Call::BindV4Peer` in `lane1`, never in `calls`, while
+  other connections trace `HostCall::BindPeer`/`BindSnapshotPeer` as before
+  → the welcome carries version 4 on a movement connection → `accept` and
+  the `Bound` entry record `movement`.
+- **Lane-1 drain (C-3, phase 2).** After the unchanged `drain_bound`, a
+  still-bound movement connection retries one held frame and then takes at
+  most `MAX_DRAIN_PER_CONNECTION` frames with `try_recv_lane1`, each traced
+  as `Lane1Call::IngestMove { conn, peer, frame, len, result }` with
+  `frame` the 1-based stream ordinal (a held retry repeats it). `Admitted`,
+  `Rejected` and `Duplicate` continue; `Refused { QueueFull }` holds the
+  frame and stops that connection's lane-1 drain; `Refused {
+  Unauthenticated }` counts `lane1_refused` and fences `EpochClosed`; any
+  other refusal counts and continues. `Ok(None)` stops; `Closed` and
+  `UnknownConnection` record the transport close (first wins) and mark
+  `lane1_drained`; `NotAccepted`/`NotPending`/`InvalidWelcome` fence. The
+  two lanes never gate each other, and a host error returns from the pump
+  and poisons.
+- **Lane-1 delivery (C-4/C-5, phase 5).** After the unchanged `deliver`, a
+  movement binding whose transport is open takes receipts only when
+  `lane1_stats(conn).outbound_frames == 0` (one take then fits the 128-frame
+  transport cap), traces `TakeMoveReceipts`, and sends each in order with
+  `try_send_lane1` (`lane1_sent`); a closed/unknown send records the close
+  (first wins) and this and later receipts count `lane1_discarded`. Samples
+  are taken every pump, traced as `TakeSamples` and sent once with
+  `try_send_datagram` (`datagrams_sent`) — never held, never retried. A
+  departed peer's receipts and samples are taken (both traced), discarded
+  and counted, so they never hold host egress.
+- **Retire and fence (C-6/C-7).** A movement binding retires only when its
+  transport is closed, lane 0 is drained, `lane1_drained` holds and neither
+  hold is set; `drain_retiring` also drains and discards lane-1 frames
+  (`lane1_discarded`), and the record leaves once both lanes report an error
+  and its `Closed` was polled. A fence discards a held lane-1 frame too.
+  On `/1` and `/2` `try_recv_lane1` reports `Ok(None)` then the lane-0
+  error, so retirement is exactly today's.
+- **`shutdown` (C-8).** After the lane-0 flush, each open movement binding's
+  released receipts are taken once and sent until the first error;
+  `undelivered_receipts` counts the rest. No sample is taken.
+- **The side trace (Reading 13).** `QuicPumpReport.lane1` holds
+  `Lane1Trace { at, call }`; `at` is `calls.len()` when the call was made,
+  so a replay interleaves both lists exactly (equal `at`s keep list order),
+  and the existing `calls` replay stays exhaustive. The report adds
+  `lane1_sent`, `datagrams_sent`, `lane1_refused`, `lane1_discarded` and
+  `lane1_held` (bound connections holding a refused lane-1 frame at the end
+  of the pump).
+- **`advance` (C-9).** `QuicHost::advance(now_ms)` is an untraced
+  pass-through to `Host::advance`: `Poisoned` → `TimeRegression` (below the
+  adapter's last accepted `now_ms`; nothing changes) → record the time →
+  the host call, whose error goes through `host_error` (an `Invariant`
+  poisons). Lane-1 intents are decided only there.
+
 ## Identity and delivery shape
 
 A session epoch is `incarnation` (LE) followed by the never-reused handle
@@ -1107,3 +1182,4 @@ with T040/T041.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Extended the run-loop section with the background runner (the injected `Clock`, `SystemClock::starting_at`, the `crpg-server-loop` step/closure/wait thread, the `RunnerHandle` rendezvous and stop, the step-error and panic exits, and the join-and-respawn), so the doc describes the thread and clock the crate now owns.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Extended the run-loop section with lane 1 on the local link (the `0xA1` intake arms and the hold queue, the receipt backlog that never drops, the samples that do, and the v1–v3 no-lane-1 mark), so the doc describes the receipts and samples the loop now delivers.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added "The MVP AI driver (T153)" (the `drive_ai` host operation, one turn-based step per call with a cross-call 16-decision cap, real-time decisions for every live controlled combatant rotated by the world tick, caller-supplied `Sides` and controlled set, the host's own mesh or `None`, refusals as steps with `Closed` the only `Err`, pause ignored, route parity pinned by a compile-time tag check and a unit test, and the never-saved `ai_turn` that a restore restarts) and the `crpg-ai` edge to the diagram and edge paragraph, so the doc describes the AI driver the host now runs.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Added "QUIC v4 sessions (T150c)" (the `/3` route's v4 invitations, hello precedence, lane-1 drain and delivery, retire and fence, shutdown flush, the side trace and its `at`, and the untraced `advance`), so the doc describes the movement route the adapter now serves beside `/1` and `/2`.
