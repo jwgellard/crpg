@@ -504,7 +504,22 @@ skipped or `todo!()` leg fails. *Tests:* S1.
 
 ## Errors
 
-_(filled next edit)_
+No new error type, variant or `Display` text in any crate. The harness and
+suites return only existing errors:
+
+| Item | Value |
+|---|---|
+| `attach` on an unbound/duplicate peer | `LocalError::{UnknownPeer, AlreadyAttached}` (`crates/crpg-server/src/run.rs`) |
+| an outbox send at `SEQ_LAST`/full | `OutboxError::{Exhausted, Full}` (`crates/crpg-net/src/outbox_v4.rs`) |
+| an outbox receipt out of order/epoch | `OutboxError::{WrongEpoch, Unexpected, WrongActor}` |
+| a replica frame out of sequence | `ReplicaError::EventSeq` etc. (`crates/crpg-net/src/replica_v4.rs`), skipped by `drain`, not retried |
+| a hostile intent (T041c) | the `ReceiptStatus::Rejected(code)` of Behaviour, codes pinned in `protocol.rs:393` |
+| a hostile frame at the harness | `skipped` + 1, never a panic |
+
+The D67a "log line" for a rejected client message is **not written here**: the
+in-memory host has no logging, and D67a assigns writing the line to the server
+program (T040's binary) with a log-destination decision (Open question 3). No
+credential byte appears in any assertion message or error.
 
 ## Tests
 
