@@ -11551,4 +11551,558 @@ mod tests {
             Ok(ResumeAnswer::Accepted { .. })
         ));
     }
+
+    // -- T037c fix round: survivors F1-F11 (tests only) ----------------------
+
+    /// A real-time mover authority: `mv_value` with the clock and timeline a
+    /// real-time encounter needs (the integration suite's `MV3rt`).
+    fn rt_mv_host() -> Host {
+        let mut value = mv_value();
+        value["version"] = serde_json::json!(2);
+        value["world"]["combat"]["clock"] = serde_json::json!({"round_ticks": 4, "elapsed": 0});
+        value["world"]["combat"]["mode"] = serde_json::json!("real_time");
+        value["world"]["combat"]["active"] = serde_json::Value::Null;
+        for entry in value["world"]["timeline"].as_array_mut().expect("timeline") {
+            entry[0] = serde_json::json!(0);
+        }
+        let mut history: HistoryWorld =
+            serde_json::from_value(value).expect("real-time mover fixture loads");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        Host::from_history(
+            history,
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 1,
+            },
+            0,
+        )
+        .expect("wraps an acknowledged authority")
+    }
+
+    /// `M10` on the host, so `move_to` and `DeclareMove` can plan routes.
+    fn bind_m10(host: &mut Host) {
+        let mesh = area_mesh(
+            [Fx16_16::ZERO, Fx16_16::ZERO, Fx16_16::ZERO],
+            [Fx16_16::from_int(10), Fx16_16::ZERO, Fx16_16::from_int(10)],
+        )
+        .expect("bakes");
+        host.bind_nav_mesh(mesh).expect("binds");
+    }
+
+    /// A v4 session on `host`, its binding pages drained and acknowledged.
+    fn bind_drained_v4(host: &mut Host) -> PeerHandle {
+        let peer = bind_v4(host, full_grants());
+        ack_all(host, peer);
+        peer
+    }
+
+    /// A whole-metre floor point `[x, 0, z]`.
+    fn metres(x: i32, z: i32) -> [Fx16_16; 3] {
+        [Fx16_16::from_int(x), Fx16_16::ZERO, Fx16_16::from_int(z)]
+    }
+
+    /// F1 (q01, q03): a new tick's datagrams replace the old queue and free
+    /// its egress; a queue that cannot fit is dropped whole, leaving the
+    /// session empty and the host's egress at the log's bytes alone.
+    #[test]
+    fn queue_samples_replaces_and_releases() {
+        let (mut host, peer) = v4_host_with_log(1);
+        let caps = host.egress_caps;
+        // A (10 bytes): one lane frame and 10 bytes beside the 1-byte log.
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![1u8; 10]]);
+        }
+        assert_eq!(host.egress_bytes, 1 + 10);
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, 10)
+        );
+        // B (7 bytes): the old 10 are released, not kept (q01).
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![2u8; 7]]);
+        }
+        assert_eq!(host.egress_bytes, 1 + 7);
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, 7),
+            "B replaced A instead of appending (q03)"
+        );
+        // C cannot fit beside the log: the old queue is freed and C is
+        // dropped whole, so nothing remains (q03 keeps B here).
+        host.egress_caps.per_peer_bytes = 1;
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![3u8; 5]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (0, 0)
+        );
+        assert_eq!(host.take_samples(peer), Ok(Vec::new()));
+        assert_eq!(host.egress_bytes, 1);
+    }
+
+    /// F2 (q14, q15, q16): the host byte cap is inclusive (90 + 10 = 100
+    /// queues) and refuses a datagram one byte over, dropping it whole with
+    /// the egress unchanged.
+    #[test]
+    fn queue_samples_host_cap_boundary() {
+        let caps = QueueCaps {
+            per_peer_frames: 128,
+            per_peer_bytes: 1 << 20,
+            host_frames: usize::MAX,
+            host_bytes: 100,
+        };
+        let (mut host, peer) = v4_host_with_log(0);
+        host.egress_bytes = 90;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![1u8; 10]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, 10),
+            "90 + 10 lands exactly on the cap (q14)"
+        );
+        assert_eq!(host.egress_bytes, 100);
+        // One byte over: the old 10 are released first (back to 90) and the
+        // 11-byte datagram is dropped whole, so the host is unchanged.
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![2u8; 11]]);
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (0, 0),
+            "the over-cap datagram was dropped whole (q15, q16)"
+        );
+        assert_eq!(host.egress_bytes, 90);
+        // Control: 10 bytes fit exactly again.
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![3u8; 10]]);
+        }
+        assert_eq!(host.egress_bytes, 100);
+        assert_eq!(host.take_samples(peer), Ok(vec![vec![3u8; 10]]));
+        assert_eq!(host.egress_bytes, 90);
+    }
+
+    /// F3 (q19, t09): datagram order is kept and lane-1 frames and bytes are
+    /// exactly the three datagrams' lengths.
+    #[test]
+    fn samples_keep_datagram_order() {
+        let (mut host, peer) = v4_host_with_log(0);
+        let caps = host.egress_caps;
+        let queue = vec![vec![1u8; 3], vec![2u8; 4], vec![3u8; 5]];
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, queue.clone());
+        }
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (3, 12)
+        );
+        assert_eq!(host.take_samples(peer), Ok(queue));
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (0, 0)
+        );
+        assert_eq!(host.take_samples(peer), Ok(Vec::new()));
+        assert_eq!(host.egress_bytes, 0);
+    }
+
+    /// F4a (s18): a tram's sample step applies the session's frame cap; a
+    /// changed mover with a full log queues nothing, and the same tick with
+    /// room queues exactly one datagram.
+    #[test]
+    fn project_tick_samples_frame_cap_drops_the_sample() {
+        let mut host = rt_mv_host();
+        bind_m10(&mut host);
+        let peer = bind_drained_v4(&mut host);
+        assert_eq!(host.move_to(eid(0), metres(4, 1)), Ok(None));
+        let log_len = host.sessions.get(&peer).expect("bound").log.len();
+        assert_eq!(log_len, 0);
+        host.egress_caps.per_peer_frames = log_len;
+        assert_eq!(host.tick(), Ok(()));
+        assert_eq!(host.take_samples(peer), Ok(Vec::new()));
+        // Control: with room the same tick queues the mover's datagram.
+        let mut host = rt_mv_host();
+        bind_m10(&mut host);
+        let peer = bind_drained_v4(&mut host);
+        assert_eq!(host.move_to(eid(0), metres(4, 1)), Ok(None));
+        assert_eq!(host.tick(), Ok(()));
+        let taken = host.take_samples(peer).expect("a v4 session");
+        assert_eq!(taken.len(), 1);
+        match crpg_net::movement_v4::decode_down(&taken[0]).expect("a move-down datagram") {
+            MoveDown::Sample(sample) => {
+                assert_eq!(sample.server_tick, 1);
+                assert_eq!(sample.entries.len(), 1);
+                assert_eq!(sample.entries[0].entity, net(1));
+                assert_eq!(
+                    sample.entries[0].point,
+                    Point::new([131072, 0, 65536]).expect("wire")
+                );
+            }
+            other => panic!("expected a sample, got {other:?}"),
+        }
+    }
+
+    /// F4b (s17): with the host byte cap allowing exactly one sample queue
+    /// beyond the tick's pages, the lower handle's session queues and the
+    /// higher one's does not; pages and sample bytes come from a dry run.
+    #[test]
+    fn project_tick_samples_host_cap_serves_the_lower_handle() {
+        let mut dry = rt_mv_host();
+        bind_m10(&mut dry);
+        let first = bind_drained_v4(&mut dry);
+        let second = bind_drained_v4(&mut dry);
+        assert_eq!(dry.move_to(eid(0), metres(4, 1)), Ok(None));
+        assert_eq!(dry.tick(), Ok(()));
+        let (page1, page2) = {
+            let one = dry.sessions.get(&first).expect("bound");
+            let two = dry.sessions.get(&second).expect("bound");
+            (one.log_bytes, two.log_bytes)
+        };
+        assert!(page1 > 0 && page2 > 0, "the tick published a page");
+        let sample_bytes: usize = dry
+            .take_samples(first)
+            .expect("a v4 session")
+            .iter()
+            .map(Vec::len)
+            .sum();
+        assert!(sample_bytes > 0);
+        assert_eq!(dry.take_samples(second).expect("a v4 session").len(), 1);
+
+        let mut host = rt_mv_host();
+        bind_m10(&mut host);
+        let first = bind_drained_v4(&mut host);
+        let second = bind_drained_v4(&mut host);
+        assert_eq!(host.move_to(eid(0), metres(4, 1)), Ok(None));
+        host.egress_caps.host_bytes = page1 + page2 + sample_bytes;
+        assert_eq!(host.tick(), Ok(()));
+        assert_eq!(host.egress_bytes, page1 + page2 + sample_bytes);
+        assert_eq!(host.take_samples(first).expect("a v4 session").len(), 1);
+        assert_eq!(
+            host.take_samples(second),
+            Ok(Vec::new()),
+            "the higher handle's datagram did not fit after the lower's"
+        );
+    }
+
+    /// F4c (s03): the tick's own page is logged first. With the frame cap at
+    /// that page's length, the page is in the log and the sample is dropped;
+    /// a sample queued first would have blocked the page.
+    #[test]
+    fn project_tick_samples_after_the_tick_page() {
+        let mut dry = rt_mv_host();
+        bind_m10(&mut dry);
+        let dry_peer = bind_drained_v4(&mut dry);
+        assert_eq!(dry.move_to(eid(0), metres(4, 1)), Ok(None));
+        assert_eq!(dry.tick(), Ok(()));
+        let frames = dry.sessions.get(&dry_peer).expect("bound").log.len();
+        assert!(frames > 0, "the tick published a page");
+
+        let mut host = rt_mv_host();
+        bind_m10(&mut host);
+        let peer = bind_drained_v4(&mut host);
+        assert_eq!(host.move_to(eid(0), metres(4, 1)), Ok(None));
+        host.egress_caps.per_peer_frames = frames;
+        assert_eq!(host.tick(), Ok(()));
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").log.len(),
+            frames,
+            "the tick's page took the frame room"
+        );
+        assert_eq!(host.take_samples(peer), Ok(Vec::new()));
+    }
+
+    /// F5 (s05): a tick refused `CaptureFull` samples nothing, so the last
+    /// committed tick's queue survives untouched.
+    #[test]
+    fn refused_tick_keeps_the_old_sample_queue() {
+        let mut host = rt_mv_host();
+        bind_m10(&mut host);
+        let peer = bind_drained_v4(&mut host);
+        assert_eq!(host.move_to(eid(0), metres(4, 1)), Ok(None));
+        assert_eq!(host.tick(), Ok(()));
+        assert_eq!(host.server_tick(), 1);
+        host.capture_bytes = MAX_CAPTURE_BYTES;
+        assert_eq!(host.tick(), Err(HostError::CaptureFull));
+        assert_eq!(host.server_tick(), 1, "the refused tick did not commit");
+        let taken = host.take_samples(peer).expect("a v4 session");
+        assert_eq!(taken.len(), 1);
+        match crpg_net::movement_v4::decode_down(&taken[0]).expect("a move-down datagram") {
+            MoveDown::Sample(sample) => {
+                assert_eq!(sample.server_tick, 1);
+                assert_eq!(sample.entries.len(), 1);
+                assert_eq!(
+                    sample.entries[0].point,
+                    Point::new([131072, 0, 65536]).expect("wire")
+                );
+            }
+            other => panic!("expected a sample, got {other:?}"),
+        }
+    }
+
+    /// F7 (f03, f04): `room_for` counts the session's queued lane-1 bytes
+    /// beside the log; the boundary is exact and frames do not stand in for
+    /// bytes.
+    #[test]
+    fn room_for_counts_lane1_bytes() {
+        let caps = QueueCaps {
+            per_peer_frames: 128,
+            per_peer_bytes: 100,
+            host_frames: usize::MAX,
+            host_bytes: 1 << 20,
+        };
+        let (mut host, peer) = v4_host_with_log(1);
+        host.egress_caps = caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![1u8; 10]]);
+        }
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert_eq!(session.lane1_egress(), (1, 10));
+            assert!(
+                host.room_for(session, 1, 89),
+                "1 log + 10 lane + 89 = 100 exactly (f04)"
+            );
+        }
+        {
+            let session = host.sessions.get(&peer).expect("bound");
+            assert!(
+                !host.room_for(session, 1, 90),
+                "one byte over the per-peer cap (f03)"
+            );
+        }
+        // Control: the same numbers with no queued sample accept 90.
+        let (host, peer) = v4_host_with_log(1);
+        let session = host.sessions.get(&peer).expect("bound");
+        assert_eq!(session.lane1_egress(), (0, 0));
+        assert!(host.room_for(session, 1, 90));
+    }
+
+    /// F8 (p03, p05): pacing counts the lane's 100 bytes and its frame beside
+    /// the 30 logged frames, separately. One byte short of the byte cap waits;
+    /// exactly on it moves.
+    #[test]
+    fn pace_session_counts_lane1_bytes_and_frames_separately() {
+        let (mut host, peer) = v4_host_with_log(30);
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![1u8; 100]]);
+        }
+        assert_eq!(host.egress_bytes, 30 + 100);
+        host.egress_caps = QueueCaps {
+            per_peer_frames: 128,
+            per_peer_bytes: 30 + 100 + 20 - 1,
+            host_frames: usize::MAX,
+            host_bytes: 1 << 20,
+        };
+        load_sizes(&mut host, peer, &[20]);
+        host.pace(peer);
+        assert_eq!(
+            logged(&host, peer).len(),
+            30,
+            "the entry waits: 149 < 150 (p03)"
+        );
+        assert_eq!(outbox_len(&host, peer), 1);
+        assert_eq!(host.egress_bytes, 30 + 100);
+
+        // Exact: 30 log + 100 lane + 20 = 150 moves. A swapped pair would
+        // refuse on frames (30 + 100 >= 128) (p05).
+        let (mut host, peer) = v4_host_with_log(30);
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![1u8; 100]]);
+        }
+        host.egress_caps = QueueCaps {
+            per_peer_frames: 128,
+            per_peer_bytes: 30 + 100 + 20,
+            host_frames: usize::MAX,
+            host_bytes: 1 << 20,
+        };
+        load_sizes(&mut host, peer, &[20]);
+        host.pace(peer);
+        assert_eq!(logged(&host, peer).len(), 31);
+        assert_eq!(outbox_len(&host, peer), 0);
+        assert_eq!(host.egress_bytes, 30 + 100 + 20);
+    }
+
+    /// F9 (n01-n05): a stage's room check counts the session's sample frames
+    /// and bytes: the frame cap at `count` refuses, `count + 1` accepts; the
+    /// byte cap at `bytes + 9` refuses, `bytes + 10` accepts; and the frame
+    /// cap alone (bytes large) accepts, so the two terms are not swapped.
+    #[test]
+    fn stage_room_counts_lane1() {
+        fn stage(host: &mut Host, peer: PeerHandle) -> Result<(), HostError> {
+            let session = host.sessions.get(&peer).expect("bound");
+            let grants = session.grants.clone();
+            let map = session.map.clone();
+            let next_net = session.next_net;
+            host.stage_snapshot(peer, grants, map, next_net, SnapshotCause::Narrowed)
+        }
+        // Dry run: the plan's count and bytes for this fixture.
+        let (mut dry, dry_peer) = v4_host_with_log(0);
+        dry.egress_caps = QueueCaps {
+            per_peer_frames: usize::MAX,
+            per_peer_bytes: usize::MAX,
+            host_frames: usize::MAX,
+            host_bytes: usize::MAX,
+        };
+        assert_eq!(stage(&mut dry, dry_peer), Ok(()));
+        let (count, bytes) = {
+            let session = dry.sessions.get(&dry_peer).expect("bound");
+            (session.log.len(), session.log_bytes)
+        };
+        assert!(count > 0 && bytes > 0);
+
+        fn with_sample(frames: usize, per_peer_bytes: usize) -> (Host, PeerHandle) {
+            let (mut host, peer) = v4_host_with_log(0);
+            let caps = host.egress_caps;
+            {
+                let session = host.sessions.get_mut(&peer).expect("bound");
+                queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![7u8; 10]]);
+            }
+            assert_eq!(host.egress_bytes, 10);
+            host.egress_caps = QueueCaps {
+                per_peer_frames: frames,
+                per_peer_bytes,
+                host_frames: usize::MAX,
+                host_bytes: 1 << 20,
+            };
+            (host, peer)
+        }
+
+        // Frames: count + 1 accepts; count refuses and changes nothing.
+        let (mut host, peer) = with_sample(count + 1, usize::MAX);
+        assert_eq!(stage(&mut host, peer), Ok(()));
+        assert_eq!(logged(&host, peer).len(), count);
+        assert_eq!(host.egress_bytes, 10 + bytes);
+        let (mut host, peer) = with_sample(count, usize::MAX);
+        assert_eq!(stage(&mut host, peer), Err(HostError::QueueFull));
+        assert_eq!(
+            logged(&host, peer).len(),
+            0,
+            "nothing was staged (n01, n02)"
+        );
+        assert_eq!(host.egress_bytes, 10);
+        assert_eq!(
+            host.sessions.get(&peer).expect("bound").lane1_egress(),
+            (1, 10)
+        );
+
+        // Bytes: bytes + 10 accepts; bytes + 9 refuses.
+        let (mut host, peer) = with_sample(128, bytes + 10);
+        assert_eq!(stage(&mut host, peer), Ok(()));
+        assert_eq!(logged(&host, peer).len(), count);
+        assert_eq!(host.egress_bytes, 10 + bytes);
+        let (mut host, peer) = with_sample(128, bytes + 9);
+        assert_eq!(stage(&mut host, peer), Err(HostError::QueueFull));
+        assert_eq!(
+            logged(&host, peer).len(),
+            0,
+            "nothing was staged (n03, n04)"
+        );
+        assert_eq!(host.egress_bytes, 10);
+
+        // Frames alone accept with bytes wide: no swapped term (n05).
+        let (mut host, peer) = with_sample(count + 1, 1 << 20);
+        assert_eq!(stage(&mut host, peer), Ok(()));
+        assert_eq!(logged(&host, peer).len(), count);
+    }
+
+    /// F10 (n09): `shutdown` releases the log and every sample's egress and
+    /// clears the session, so its handle is unknown.
+    #[test]
+    fn shutdown_releases_all_egress() {
+        let (mut host, peer) = v4_host_with_log(1);
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![1u8; 10]]);
+        }
+        assert_eq!(host.egress_bytes, 1 + 10);
+        host.shutdown();
+        assert_eq!(host.egress_bytes, 0);
+        assert_eq!(host.take_samples(peer), Err(HostError::UnknownPeer));
+    }
+
+    /// A v4 `DeclareMove` frame for `peer`.
+    fn v4_declare_move(
+        host: &Host,
+        peer: PeerHandle,
+        seq: u64,
+        actor: u64,
+        destination: [i32; 3],
+    ) -> Vec<u8> {
+        codec_v4::encode_intent(&IntentFrameV4 {
+            epoch: host.epoch(peer).expect("bound"),
+            lane: LANE_COMBAT,
+            seq,
+            observed_tick: host.server_tick(),
+            actor: net(actor),
+            body: IntentBodyV4::DeclareMove {
+                destination: Point::new(destination).expect("within the wire bound"),
+            },
+        })
+        .expect("encodes")
+    }
+
+    /// F11 (c13, c14): `validate_move` runs before the accepted-class
+    /// reservation, so an unaffordable move is rejected as `IllegalAction`
+    /// even with the capture window full; an affordable one is `Blocked`.
+    #[test]
+    fn unaffordable_move_is_rejected_with_a_full_accepted_class() {
+        // Unaffordable `m(9, 9)` (cost 2 of 1) with no capture room.
+        let mut host = mv_host();
+        bind_m10(&mut host);
+        let peer = bind_drained_v4(&mut host);
+        host.capture_bytes = MAX_CAPTURE_BYTES;
+        let bytes = v4_declare_move(&host, peer, 1, 1, [589824, 0, 589824]);
+        assert_eq!(host.ingest(peer, &bytes, 1), Ok(IngestDisposition::Staged));
+        let summary = host.pump(1).expect("pumps");
+        assert_eq!(summary.results.len(), 1);
+        assert_eq!(
+            summary.results[0].status,
+            ReceiptStatus::Rejected(RejectionCode::IllegalAction),
+            "the move refusal won before the reservation"
+        );
+        assert_eq!(summary.results[0].seq, Some(1));
+        assert!(!summary.results[0].retained_in_ingress);
+        assert_eq!(
+            host.cached_status_v3(peer, 1),
+            Ok(Some(ReceiptV3::Rejected(CodeV3::IllegalAction)))
+        );
+        assert_eq!(host.executions(), 0);
+        assert_eq!(host.last_capture(), 0);
+        assert_eq!(host.last_combat_error(), None);
+
+        // Control: an affordable move under the same full window is Blocked.
+        let mut host = mv_host();
+        bind_m10(&mut host);
+        let peer = bind_drained_v4(&mut host);
+        host.capture_bytes = MAX_CAPTURE_BYTES;
+        let bytes = v4_declare_move(&host, peer, 1, 1, [262144, 0, 65536]);
+        assert_eq!(host.ingest(peer, &bytes, 1), Ok(IngestDisposition::Staged));
+        let summary = host.pump(1).expect("pumps");
+        assert_eq!(summary.results.len(), 1);
+        assert_eq!(
+            summary.results[0].status,
+            ReceiptStatus::Rejected(RejectionCode::QueueFull)
+        );
+        assert!(summary.results[0].retained_in_ingress);
+        assert_eq!(host.cached_status_v3(peer, 1), Ok(None));
+        assert_eq!(host.executions(), 0);
+        assert_eq!(host.last_capture(), 0);
+        assert_eq!(host.last_combat_error(), None);
+    }
 }

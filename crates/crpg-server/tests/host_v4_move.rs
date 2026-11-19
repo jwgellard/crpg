@@ -1502,3 +1502,78 @@ fn c7_samples_reach_the_replica() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// T037c fix round: F6 (s21), the withheld list inside the sample step.
+// ---------------------------------------------------------------------------
+
+/// F6 (s21): a withheld position is absent from that viewer's sample while a
+/// second, non-withholding viewer still receives it; clearing the list lets
+/// the next change through again.
+#[test]
+fn samples_respect_the_withheld_list() {
+    let mut rig = Rig::new(&mv3rt_value());
+    rig.bind_nav();
+    let p = rig.bind_p();
+    let q = rig
+        .host
+        .bind_v4_peer(
+            control(&[]),
+            full_grants(&[a(), b(), c()]),
+            facts(),
+            r1(),
+            0,
+        )
+        .expect("binds");
+    drain(&mut rig.host, p);
+    drain(&mut rig.host, q);
+    assert_eq!(rig.host.move_to(a(), m(4, 1)), Ok(None));
+    rig.mirror_route(a(), &[m(1, 1), m(4, 1)]);
+    rig.advance(10);
+    assert_eq!(samples(&mut rig.host, p).len(), 1);
+    assert_eq!(samples(&mut rig.host, q).len(), 1);
+    drain(&mut rig.host, p);
+    drain(&mut rig.host, q);
+
+    // Tick 2: A moves, but only q is told of its position.
+    assert_eq!(rig.host.set_position_withheld(p, vec![a()]), Ok(()));
+    drain(&mut rig.host, p);
+    rig.advance(20);
+    assert_eq!(
+        samples(&mut rig.host, p),
+        Vec::new(),
+        "a withheld position is not sampled (s21)"
+    );
+    assert_eq!(
+        samples(&mut rig.host, q),
+        vec![MoveSample {
+            server_tick: 2,
+            processed_seq: 0,
+            entries: vec![crpg_net::movement_v4::SampleEntry {
+                entity: n(1),
+                point: pt(196608, 0, 65536),
+                moving: true,
+            }],
+        }]
+    );
+    drain(&mut rig.host, p);
+    drain(&mut rig.host, q);
+
+    // Clear the list: the next change reaches p again.
+    assert_eq!(rig.host.set_position_withheld(p, Vec::new()), Ok(()));
+    drain(&mut rig.host, p);
+    rig.advance(30);
+    assert_eq!(
+        samples(&mut rig.host, p),
+        vec![MoveSample {
+            server_tick: 3,
+            processed_seq: 0,
+            entries: vec![crpg_net::movement_v4::SampleEntry {
+                entity: n(1),
+                point: pt(262144, 0, 65536),
+                moving: false,
+            }],
+        }]
+    );
+    rig.assert_authority();
+}
