@@ -97,6 +97,34 @@ Public items of `run.rs` (T154a–c, all built), one line each with signature, p
 
 ## Host start-up today
 
+How a `Host` is built, bound, and started, what it needs, and the checkpoint/save adapter (T039):
+
+- `Host::new` (`crates/crpg-server/src/host.rs:973`) — empty authority with no encounter; gameplay needs the `from_history` path.
+- `Host::from_history` (`crates/crpg-server/src/host.rs:980`) — wraps an embedding-choreographed authority; refuses a non-empty sim journal.
+- `Host::bind_area_bounds` (`crates/crpg-server/src/host.rs:4611`) — bakes an area's two bounds into a mesh and binds it; T040 calls this at area load.
+- `Host::nav_revision` (`crates/crpg-server/src/host.rs:4625`) — bound mesh revision, `None` before binding and after a restore.
+- `Host::place` (`crates/crpg-server/src/host.rs:4636`) — trusted placement of one entity; T040 calls this after transfers and spawns.
+- `bind_nav_mesh` places off-mesh movers; later-created movers are the caller's to `place` (`tasks/T037.md:160-165`) — T037 Reading 5 behind the backlog row.
+- `start_encounter` and encounter spawning are T040's (`tasks/T037-draft-a.md:464`) — movement-implied startup work filed at T040.
+- `QuicHost::start` (`crates/crpg-server/src/quic.rs:566`) — takes a host plus a server from `bind`/`bind_dual`, returning both on failure.
+- `QuicHost::start_resumable` (`crates/crpg-server/src/quic.rs:578`) — same for a server from any `bind*`, `bind_resumable` included.
+- `QuicHost::is_resumable` (`crates/crpg-server/src/quic.rs:587`) — reports which route built the adapter.
+- Dedicated server binds `bind_resumable` and calls `start_resumable` (`tasks/T025b.md:862-863`) — manager edit T040's row implies.
+- Invitation credential is opaque, 16..=128 bytes, length-checked by the transport, judged by the host adapter (`docs/adr/0025-lane0-quic-mapping-and-pinned-trust.md:65-69`) — what QUIC auth needs.
+- Certificate chain refused; rotation means a new invitation (`docs/adr/0025-lane0-quic-mapping-and-pinned-trust.md:56-59`) — certificate facts for T040's loading.
+- Certificate/key loading, credential generation, invitation format, operator configuration and tooling are T040's (`tasks/T023b.md:1369-1371`) — explicitly out of the adapter's scope.
+- T040 needs a certificate, an invitation file, a save to load, and settings (`tasks/DECISIONS-D66.md:20`) — the four inputs named by D66b.
+- Campaign path: the crate has no `crpg-data` edge, so identity values are trusted caller facts (`crates/crpg-server/AGENTS.md:151-154`) — no campaign loading exists today.
+- `save` module interface (`tasks/T039.md:138`) — §2 exact public Rust for the save adapter.
+- `encode_host_save` (`tasks/T039.md:203`) — builds the §3 header plus verbatim checkpoint without inspecting it.
+- `decode_host_save` (`tasks/T039.md:207-212`) — validates and loads a checkpoint with a new incarnation.
+- `save_host_file` (`tasks/T039.md:215`) — saves a quiescent host through `crpg_persist::save_file`.
+- `load_host_file` (`tasks/T039.md:218-223`) — loads a host through `crpg_persist::load_file`.
+- Save payload layout (`tasks/T039.md:286`) — §3 normative binary header format.
+- Save behaviour (`tasks/T039.md:310`) — §4 exact encode/decode steps and precedence.
+- `encode_host_save` as built (`crates/crpg-server/src/save.rs:165`) — header then checkpoint verbatim, `TooLarge` before touching the filesystem.
+- A loaded host is unbound and `Restore`-paused under a greater incarnation (T154 Reading 11, save-into-dedicated half) (`tasks/T154.md:224-228`) — what start-up must unpause and rebind.
+
 ## Existing binaries and their layout
 
 ## CI today
