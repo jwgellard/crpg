@@ -90,12 +90,15 @@ RULES = [
     # leading-dot literal `.0` in a tuple field access like `self.0` is not
     # mistaken for a float. The leading-dot alternative also rejects a
     # preceding `.` so a range with a multi-digit bound (`0..120`) does not
-    # surface its tail (`.120`) as a float.
+    # surface its tail (`.120`) as a float, and a preceding `)` or `]` so a
+    # tuple field after a call or an index (`x.id().0`, `a[i].1`) is field
+    # access, as `self.0` already is.
     ("no-float-crates", "no-float", re.compile(
         r"(?:"
         r"(?<![A-Za-z0-9_])[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?"
         r"|(?<![A-Za-z0-9_])[0-9]+[eE][+-]?[0-9]+"
-        r"|(?<![A-Za-z0-9_])(?<!\.)\.[0-9]+(?:[eE][+-]?[0-9]+)?"
+        r"|(?<![A-Za-z0-9_])(?<!\.)(?<![)\]])"
+        r"\.[0-9]+(?:[eE][+-]?[0-9]+)?"
         r")\b"
     )),
 ]
