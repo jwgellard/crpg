@@ -53,7 +53,49 @@ the host through the dev-only `crpg-server` edge T037e already opened
 
 ## Parts
 
-_(filled next edit)_
+One crate (`AGENTS.md` "One task = one crate"), four parts, all tests-only in
+`crates/crpg-testkit`, none S-set (`docs/IMPLEMENTATION_PLAN.md:86–98`): no
+`World` field, tick order, wire byte, schema, workspace manifest or golden is
+touched, and nothing in `src/` changes.
+
+| Part | Crate | Scope | Size (tests + docs) | S-set | Review |
+|---|---|---|---|---|---|
+| T041a | `crpg-testkit` | the headless-client harness and the scripted driver in `tests/support/` | ~330 + ~40 | no | one OpenCode Go reviewer mutant run, one fix round |
+| T041b | `crpg-testkit` | the 5,000-tick loss/jitter desync and two-client identical-visible-state tests | ~360 | no | one OpenCode Go reviewer mutant run, one fix round |
+| T041c | `crpg-testkit` | the host-level malicious-client suite (T042's "Host level" column) | ~320 | no | one OpenCode Go reviewer mutant run, one fix round |
+| T041d | `crpg-testkit` | the gate 13 dedicated smoke (real `crpg-server` binary + two `QuicClient`s) | ~220 | no | reviewer reads the smoke; the binary's own gates prove the rest |
+
+Order: **T041a → T041b → T041c, serial** (T041b and T041c both consume
+T041a's harness; T041c is independent of T041b and may follow either).
+**T041d is cut after T040, T150c and T154d merge** (Open question 1); until
+then it is specified but not buildable.
+
+### T041a owns
+- `crates/crpg-testkit/tests/support/headless_client.rs` (new: the
+  `HeadlessClient` harness and the scripted two-client driver)
+- `crates/crpg-testkit/tests/support/mod.rs` (unchanged; nothing added)
+- `docs/architecture/crpg-testkit.md` (new section "Headless clients and the
+  desync suite (T041)"), `crates/crpg-testkit/AGENTS.md` (public-surface note
+  that the harness is tests-only, one new trap)
+- goldens: none new, none moved.
+
+### T041b owns
+- `crates/crpg-testkit/tests/desync.rs` (new)
+- `docs/architecture/crpg-testkit.md` (extends the T041a section)
+- goldens: none new, none moved.
+
+### T041c owns
+- `crates/crpg-testkit/tests/malicious_host.rs` (new)
+- `docs/architecture/crpg-testkit.md` (extends the T041a section)
+- goldens: none new, none moved.
+
+### T041d owns
+- `crates/crpg-testkit/tests/dedicated_smoke.rs` (new)
+- `crates/crpg-testkit/Cargo.toml` (one `[dev-dependencies]` line, the
+  `crpg-net-quic` edge; `Cargo.lock` grows by edge entries only — Open
+  question 2)
+- `docs/architecture/crpg-testkit.md` (extends the T041a section)
+- goldens: none new, none moved.
 
 ## Readings
 
