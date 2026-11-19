@@ -5944,7 +5944,7 @@ fn queue_samples(
 
 /// A fact-grant vector within its bound, sorted by entity, with no entity
 /// twice (C-1, C-4).
-fn normalize_fact_grants(facts: FactGrants) -> Result<FactGrants, HostError> {
+pub(crate) fn normalize_fact_grants(facts: FactGrants) -> Result<FactGrants, HostError> {
     if facts.entities.len() > MAX_GRANT_IDENTITIES {
         return Err(HostError::InvalidGrants);
     }
