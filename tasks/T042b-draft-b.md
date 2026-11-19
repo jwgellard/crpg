@@ -609,8 +609,13 @@ test to fail; a surviving mutant is a finding):
   dependency.
 
 ## Routing and size
-
-TODO (draft B).
+- **T042b** (~500 test lines: helpers and fixtures ~150, H1–H14 ~350;
+  ~60 doc lines): one OpenCode Go implementer run (DeepSeek V4 Pro or
+  Kimi K3), within 80 turns. Not S-set, so no two-keys writer.
+  Review: a free first-pass review, then one OpenCode Go reviewer runs
+  the mutant table; one fix round. Can start when its base has T042a
+  merged (it reuses T042a's `XorShift64`/`SEED` shape). Fits the plan's
+  idle-filler slot (`docs/IMPLEMENTATION_PLAN.md:425`).
 
 ## Open questions (each with a recommendation)
 
