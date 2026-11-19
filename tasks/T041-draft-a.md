@@ -660,7 +660,18 @@ is only whether it lands in T041 or T070.
 
 ## Out of scope
 
-_(filled next edit)_
+- Any `src/` change, public export, or production type in any crate; the
+  harness and suites are tests-only and never ship.
+- The wire-level malicious-client cases (T042, `crates/crpg-net/tests/malicious_client.rs`);
+  the QUIC-adapter oversize/malformed cases (`crates/crpg-server/tests/host_quic.rs`).
+- Reconnection within the 30-second grace (T025b's suites); save/load
+  equivalence (T039); the client decoders' hostile-input suite (T042 Question 2).
+- The full §17.2 acceptance and the all-three-host matrix (T070); the
+  `crpg-server` binary itself (T040); the v4 QUIC route (T150c) and the run
+  loop (`QuicHosting`, T154d), which T041d consumes but does not build.
+- Writing D67a's log line and its log-destination decision (Open question 3).
+- Any golden, re-baseline, or replay-format change; `crpg-data` content
+  loading beyond the existing T016c/T037e fixture.
 
 ## Open questions
 
