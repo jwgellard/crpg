@@ -340,6 +340,29 @@ counter, no budget field. The contract fails if it adds one. *Tests:* C9
 (compiles the constants' absence: a.resume draws nothing).
 
 ## Errors
+| Item | Value |
+|---|---|
+| second live `QuestProgress` for the same quest | `Err(ContinuationError::DuplicateQuest { quest: Ulid })`, unchanged |
+| setter on a dead, absent or wrong-kind entity | `Err(ContinuationError::Absent { entity: EntityId })`, unchanged |
+| transfer of a holder of any of the three components | the new final-preflight `AreaError` (Reading 1), neither side published |
+| incoherent save (dangling store id, duplicate quest, non-live `speaker`) | load fails before any `World` is built (B-8) |
+| history wrapper over a full journal or a gameplay failure | `HistoryError` (`EventLimit`, `ByteLimit`, …) or `HistoryError::Combat`-analogous `ContinuationError` mapping; commits nothing (`crates/crpg-sim/src/history.rs:276`–`309` lists the variants) |
+
+One new enum, additive only:
+```rust
+/// Failures of the continuation/dialogue/quest stores (T052).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationError {
+    /// A live `QuestProgress` already names this authored quest.
+    DuplicateQuest { quest: Ulid },
+    /// No live record of that kind on this entity.
+    Absent { entity: EntityId },
+}
+```
+`Display` pins locations in the per-field `spec/*` idiom already used in
+this crate (`crates/crpg-sim/AGENTS.md:450–456`). No existing variant changes; `CombatError`,
+`AreaError` (one additive variant), `HistoryError` and `HostError` are
+otherwise untouched.
 
 ## Tests
 
