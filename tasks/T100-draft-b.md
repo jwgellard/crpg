@@ -191,6 +191,54 @@ is the baseline. `--compare` prints one line per brief:
 `better|same|worse` on the score delta.
 
 ## Behaviour
+Normative. Each item names the tests that prove it. "Run" below is one
+(model, brief) pair; "record" is its score-record object.
+
+- B1. **Layout and stdlib.** The part owns exactly the files of "T100
+  owns"; every `tools/author_bench/*.py` imports stdlib only and makes
+  no socket, model-API or subprocess call from `score.py`.
+  *Tests:* F1, F8.
+- B2. **Baseline first.** A scoring run with no `--compare` writes one
+  record per (model, brief) plus `summary.json` carrying
+  `"baseline_of"`; a later `--compare BASE CAND` run reads both files
+  and prints one verdict line per brief. *Tests:* F2, F9.
+- B3. **Launch reuses `oc.py`.** Each run is started as
+  `python tools/agents/oc.py run --task T100 --role grunt --model M
+  --brief tools/author_bench/briefs/<b>.md`, inheriting slot auto-pick,
+  the occupied-slot guard, attempt claims and result records
+  (`tools/agents/README.md:33`–`tools/agents/README.md:54`).
+  *Tests:* F3.
+- B4. **Sandbox allow-list.** The brief given to the model permits only
+  the eleven `crpgc` subcommands, `crpgc schema` stems and the run's
+  output directory (Reading 3); the harness records the transcript of
+  every `crpgc` invocation (command, exit, last stderr line).
+  *Tests:* F4.
+- B5. **Validity.** `valid` is true iff `crpgc validate --json` on the
+  run's output exits 0 AND its parsed diagnostics list is empty
+  (`crates/crpg-cli/src/main.rs:1619`–`crates/crpg-cli/src/main.rs:1639`
+  renders diagnostics as JSON when `--json`); `diagnostics` is the list
+  length, `validate_exit` the exit. Unparsable stdout counts as
+  invalid with one synthetic diagnostic. *Tests:* F5.
+- B6. **Playability.** `playable` is true iff `valid` AND
+  `crpgc run --ticks N --hash-every M` exits 0 AND stdout holds exactly
+  the sample lines for ticks M, 2M, … ≤ N, each
+  `<tick> <64 lowercase hex>`
+  (`crates/crpg-cli/src/main.rs:2518`–`crates/crpg-cli/src/main.rs:2531`);
+  `run_samples` is the line count, `run_exit` the exit. With defaults
+  N=100, M=50 the expected lines are 2 (ticks 50 and 100). *Tests:* F6.
+- B7. **Steps and errors.** `steps` is the `oc.py` result record's
+  step count for the run; `errors` lists every nonzero-exit `crpgc`
+  invocation plus every `validate --json` diagnostic message, in
+  order. *Tests:* F7.
+- B8. **Score arithmetic.** `score = 50·valid + 30·playable +
+  round(20·max(0, 1 − errors/max(1, steps)))`, an integer 0–100; a
+  valid, playable, error-free run scores 100. *Tests:* F8.
+- B9. **Compare verdicts.** `--compare` verdict per brief is `better`
+  when `cand − base > 0`, `same` when 0, `worse` when < 0; it exits 1
+  when any brief is `worse`, else 0. *Tests:* F9.
+- B10. **No model, no network in tests.** The suite passes with the
+  network unavailable and no model configured; every subprocess is a
+  checked-in fake. *Tests:* F10 (plus every F-case, which uses fakes).
 
 ## Errors
 
