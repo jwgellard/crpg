@@ -450,82 +450,54 @@ each test's control is named. No clock, no sleep, no `#[should_panic]`
 the fixture and the input bytes (`{:02X?}`), so a failure is reproducible
 from the log alone.
 
-- **H1 `fixtures_are_pinned`** (W-1). For each of the 10 framed fixtures:
-  its encoder's bytes equal the literal of W-1, its length and `tag_at`
-  are the table's, and `verdict == Accepted(bytes)`. For `B81`: encoder
-  bytes equal `[0x00, 0x00]`. For `B82`: encoder bytes are `stable_body`
-  and decode to `Accepted`. The wire constants: `first_byte` equal
-  `PROTOCOL_VERSION` 1–4, `TRANSFER_VERSION`, `TRANSFER_VERSION_V3`,
-  `RESUME_VERSION`, `MOVEMENT_VERSION`
-  (`crates/crpg-net/src/protocol.rs:25`,
-  `crates/crpg-net/src/protocol_v2.rs:34`,
-  `crates/crpg-net/src/protocol_v3.rs:40`,
-  `crates/crpg-net/src/protocol_v4.rs:27`,
-  `crates/crpg-net/src/protocol_transfer.rs:19`,
-  `crates/crpg-net/src/transfer_v3.rs:39`,
-  `crates/crpg-net/src/protocol_resume.rs:18`,
-  `crates/crpg-net/src/movement_v4.rs:32`); `lane` equal `LANE_COMBAT`,
-  `LANE_SNAPSHOT`, `LANE_SESSION`, `LANE_MOVEMENT`.
-  *Control:* `M1`'s literal with byte 2 `0x01` is not `M1`'s encoding (it
-  is a sample header, refused as a receipt body).
-- **H2 `short_inputs_are_refused_exactly`** (W-2). Per-wire short-input
-  tables of W-2, exhaustively (framed wires: 1 + 256 + 65,536 inputs each).
-  *Control:* the rule's own branches (`[1]` vs `[2]` on `V1`: `Malformed`
-  vs `UnsupportedVersion`; `[0x91, 3]` vs `[0x91, 4]` on `J91`: `Malformed`
-  vs `WrongDirection`; `B81` `[0x00, 0x00]` vs `[0x00, 0x01]`: `Accepted`
-  vs `Malformed`).
-- **H3 `oversize_is_refused_first`** (W-3). Per-wire caps equal the named
-  constants; per wire the three inputs of W-3 (framed wires), and the cap /
-  cap+1 pair for bodies. *Control:* padded-to-cap vs padded-to-cap+1
-  differ by one byte and flip `Malformed` to the cap error. *Fails if:* a
-  cap is read after the version, or a body cap returns `FrameTooLarge`.
-- **H4 `every_truncation_is_malformed`** (W-4). 12 fixtures (bodies
-  included), every proper prefix. *Control:* the full fixture is
-  `Accepted`.
-- **H5 `trailing_bytes_are_malformed`** (W-5). 12 fixtures × 3. *Control:*
-  the fixture without the extra byte.
-- **H6 `foreign_first_bytes_are_unsupported`** (W-6). (a) 8 × 7
-  cross-wire cases; (b) 10 × 255 version-byte cases. *Control:* each
-  fixture to its own wire is `Accepted`.
+- **H1 `fixtures_are_pinned`** (W-1). Each framed fixture: encoder bytes
+  equal the W-1 literal, length and `tag_at` match, `verdict ==
+  Accepted(bytes)`. `B81` equals `[0x00, 0x00]`; `B82` is `stable_body`
+  and `Accepted`. Wire constants equal the named version/lane constants.
+  *Control:* `M1` with byte 2 `0x01` is not `M1`'s encoding (a sample
+  header, refused as a receipt body).
+- **H2 `short_inputs_are_refused_exactly`** (W-2). W-2's tables,
+  exhaustively. *Control:* the rule's own branches (`[1]` vs `[2]` on
+  `V1`; `B81` `[0x00, 0x00]` vs `[0x00, 0x01]`).
+- **H3 `oversize_is_refused_first`** (W-3). Caps equal the named
+  constants; per-wire W-3 inputs. *Control:* padded-to-cap vs
+  padded-to-cap+1 flip `Malformed` to the cap error. *Fails if:* a cap is
+  read after the version, or a body cap returns `FrameTooLarge`.
+- **H4 `every_truncation_is_malformed`** (W-4). All 12 fixtures, every
+  proper prefix. *Control:* the full fixture is `Accepted`.
+- **H5 `trailing_bytes_are_malformed`** (W-5). 12 fixtures × 3.
+  *Control:* the fixture without the extra byte.
+- **H6 `foreign_first_bytes_are_unsupported`** (W-6). 8 × 7 cross-wire
+  plus 10 × 255 version-byte cases. *Control:* each fixture to its own
+  wire is `Accepted`.
 - **H7 `foreign_lanes_are_wrong_direction`** (W-7). 10 × 255. *Control:*
   the lane value itself gives `Accepted(f)`.
-- **H8 `tag_kind_and_count_matrix`** (W-8). (a) The 3-byte inputs for
-  `C81`/`C82`/`J91`/`M1` against the table; (b) `F1`–`F4` count bytes
-  1–255 plus the 257-count input; (c) `A91` reason bytes all 256 values.
-  *Control:* the table's `Accepted` row (`A91` reason `0x02`,
-  `F1`–`F4` count 0).
+- **H8 `tag_kind_and_count_matrix`** (W-8). The 3-byte inputs, the
+  `F1`–`F4` count sweep plus the 257-count input, all 256 `A91` reason
+  bytes. *Control:* the `Accepted` rows (count 0, reason `0x02`).
 - **H9 `zero_ids_are_malformed`** (W-9). Every zero case `Malformed`.
-  *Control:* the unmodified field is `Accepted(f)`. *Fails if:* a zero
-  `NetId`, fence-adjacent length or `seq` check moves after the body.
+  *Control:* the unmodified field is `Accepted(f)`.
 - **H10 `hostile_lengths_are_bounded`** (W-10). (a)–(d), each exact.
-  *Control:* (a) vs (b) differ only in the count (257 vs 256) and flip
-  `LimitExceeded` to `Malformed`; `J91` proof length 16 is `Accepted`.
-  *Fails if:* a bound waits for its body.
-- **H11 `upstream_frames_sent_down_are_refused`** (W-11). The 4
-  upstream-into-downstream cases with literal bytes, verdicts and
-  downstream controls; then each framed fixture to every wire with another
-  first byte → `UnsupportedVersion`.
+  *Control:* 257 vs 256 flips `LimitExceeded` to `Malformed`; `J91`
+  proof length 16 is `Accepted`. *Fails if:* a bound waits for its body.
+- **H11 `upstream_frames_sent_down_are_refused`** (W-11). The 4 cases
+  with literals, verdicts and controls; then every framed fixture to
+  every foreign wire → `UnsupportedVersion`.
 - **H12 `single_byte_corruption_is_refused_or_stable`** (W-12). Every
-  fixture, every index, every value. Also asserts, so both branches of the
-  rule are exercised: at least one `Accepted` and one `Refused` verdict
-  across the corpus; every `J91` epoch-byte mutation `Accepted(m)`;
-  `M1` outcome byte mutations never alias. *Control:* `v == f[i]`
-  (unmutated) is `Accepted(f)`. *Fails if:* a decoder accepts an alias
-  outside canonical re-encoding, or accepts a value its encoder refuses.
+  fixture, index and value. At least one `Accepted` and one `Refused`
+  across the corpus; every `J91` epoch-byte mutation `Accepted(m)`.
+  *Control:* unmutated is `Accepted(f)`. *Fails if:* an alias outside
+  canonical re-encoding is accepted, or an encoder-refused value is.
 - **H13 `seeded_noise_is_stable`** (W-13). The three pinned `next()`
-  values first, then (a) 8 × 1,024 framed noise inputs `stable`, (b) 1,024
-  body noise inputs `stable_body` for both bodies, (c) 1,280 epoch-byte
-  inputs each `Accepted(m)`, (d) 2,560 body-byte inputs each `stable`; and
-  the number of `Accepted` verdicts in (c) and (d) together is at least
-  1,280 (so the re-encode branch of `stable` carries a fixed share of the
-  inputs, not one control). *Control:* `stable(Wire::C81,
-  &with_byte(&C81, 2, 0x12))` is `true` through the `Accepted` branch
-  (W-1), and a second `XorShift64(SEED)` repeats the three pinned values
-  and the same verdicts (the run is deterministic). *Fails if:* a decoder
-  reads the epoch with a check, or an accepted value re-encodes to other
-  bytes.
-- **H14 `refusal_texts_are_fixed`** (W-14). The six texts of "Errors",
-  `assert_eq!(CodecError::X.to_string(), "…")` each.
+  values, then (a) 8,192 framed noise inputs `stable`, (b) 1,024 body
+  noise inputs `stable_body` for both bodies, (c) 1,280 epoch-byte inputs
+  each `Accepted(m)`, (d) 2,560 body-byte inputs each `stable`; (c)+(d)
+  `Accepted` count ≥ 1,280. *Control:* H1's pinned `C81` encoding is
+  `stable` through the `Accepted` branch; a second `XorShift64(SEED)`
+  repeats the run. *Fails if:* the epoch is checked, or an accepted value
+  re-encodes differently.
+- **H14 `refusal_texts_are_fixed`** (W-14). The six texts of "Errors"
+  each.
 
 ## What must not change
 - Every file under `crates/crpg-net/src/`, byte for byte; every public
