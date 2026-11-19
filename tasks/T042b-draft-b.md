@@ -24,7 +24,22 @@ indexed neighbours (§"Readings" 3, §"Behaviour" D-1).
 
 ## Parts
 
-TODO (draft B): one part, one crate; owns list with full repository paths, goldens line, order, S-set.
+One part, one crate (`AGENTS.md` "One task = one crate").
+
+| Part | Crate | Scope | Size (tests + docs) | S-set | Review |
+|---|---|---|---|---|---|
+| T042b | `crpg-net` | `tests/hostile_server.rs` (H1–H14); one architecture section; one trap | ~500 test lines + ~60 doc lines | no | a free first-pass review, then one OpenCode Go reviewer mutant run on the mutant table ("Definition of done"), one fix round |
+
+T042b is not S-set (`docs/IMPLEMENTATION_PLAN.md:86–98`): it changes no
+wire byte, no public item, no `World`, no tick order, no workspace file.
+
+### T042b owns
+- `crates/crpg-net/tests/hostile_server.rs` (new; the whole suite)
+- `docs/architecture/crpg-net.md`: a new section "Hostile-server suite
+  (T042b)" after "Malicious-client suite (T042)" (D-1)
+- `crates/crpg-net/AGENTS.md`: one dated Known-traps entry (D-2) and an
+  agent-log entry
+- goldens: none new, none moved.
 
 ## Readings
 
