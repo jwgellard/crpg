@@ -1374,6 +1374,199 @@ fn non_codec_transfer_error_is_replica_rejected() {
     assert_eq!(control.view().revision(), 0);
 }
 
+/// M47 (`client_v4.rs` line 486): the revision rises when only the offered
+/// options' labels differ (B-A6). Targets, rows, health, turn and round stay
+/// equal; the control with the identical options keeps the `Rc`.
+#[test]
+fn revision_bumps_when_only_option_labels_differ() {
+    let other = Ulid::from_u128(11);
+    let other_id = other.to_string();
+    let first = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(
+            1,
+            IntentBody::DeclareAction {
+                ability: strike(),
+                target: id(2),
+            },
+        ),
+    ];
+    // Same length and the same targets `[0, 2]`; the second label changes
+    // from the mapped "Strike -> Goblin" to the unmapped ability's id plus
+    // the same target row name.
+    let second_label = format!("{other_id} -> Goblin");
+    let second = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(
+            1,
+            IntentBody::DeclareAction {
+                ability: other,
+                target: id(2),
+            },
+        ),
+    ];
+
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(
+        &link,
+        v4(
+            1,
+            0,
+            vec![
+                enter(1),
+                enter(2),
+                DeltaOp::V3(DeltaOpV3::Health {
+                    entity: id(1),
+                    health: 7,
+                    max_health: 9,
+                    dead: false,
+                }),
+                DeltaOp::V3(DeltaOpV3::Health {
+                    entity: id(2),
+                    health: 0,
+                    max_health: 7,
+                    dead: true,
+                }),
+                DeltaOp::V3(DeltaOpV3::Turn {
+                    active: Some(id(2)),
+                    round: 5,
+                }),
+            ],
+        ),
+    );
+    client.step(&mut end, &first, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 1);
+    assert_eq!(
+        client.view().option_labels(),
+        &["End turn".to_string(), "Strike -> Goblin".to_string()]
+    );
+    assert_eq!(client.view().option_targets(), &[0, 2]);
+    let held = client.view();
+
+    // Only the labels differ: the revision rises by exactly 1.
+    client.step(&mut end, &second, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 2);
+    assert!(!Rc::ptr_eq(&held, &client.view()));
+    assert_eq!(
+        client.view().option_labels(),
+        &["End turn".to_string(), second_label]
+    );
+    assert_eq!(client.view().option_targets(), &[0, 2]);
+    assert_eq!(client.view().net_ids(), &[1, 2]);
+    assert_eq!(client.view().health(), &[7, 0]);
+    assert_eq!(client.view().max_health(), &[9, 7]);
+    assert_eq!(client.view().health_known(), &[1, 1]);
+    assert_eq!(client.view().dead(), &[0, 1]);
+    assert_eq!(client.view().active(), 2);
+    assert_eq!(client.view().round(), 5);
+    drop(held);
+
+    // Control: the identical options change no column, so no bump.
+    let held = client.view();
+    client.step(&mut end, &second, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 2);
+    assert!(Rc::ptr_eq(&held, &client.view()));
+}
+
+/// M48 (`client_v4.rs` line 483): the revision rises when only the active
+/// actor differs (B-A6). Round, rows, health and options stay equal; the
+/// control with the same active actor keeps the `Rc`.
+#[test]
+fn revision_bumps_when_only_active_differs() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(
+            1,
+            IntentBody::DeclareAction {
+                ability: strike(),
+                target: id(2),
+            },
+        ),
+    ];
+
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(
+        &link,
+        v4(
+            1,
+            0,
+            vec![
+                enter(1),
+                enter(2),
+                DeltaOp::V3(DeltaOpV3::Health {
+                    entity: id(1),
+                    health: 7,
+                    max_health: 9,
+                    dead: false,
+                }),
+                DeltaOp::V3(DeltaOpV3::Health {
+                    entity: id(2),
+                    health: 0,
+                    max_health: 7,
+                    dead: true,
+                }),
+                DeltaOp::V3(DeltaOpV3::Turn {
+                    active: Some(id(2)),
+                    round: 5,
+                }),
+            ],
+        ),
+    );
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 1);
+    assert_eq!(client.view().active(), 2);
+    assert_eq!(client.view().round(), 5);
+    let held = client.view();
+
+    // Only the active actor differs: the revision rises by exactly 1.
+    push(
+        &link,
+        v4(
+            2,
+            1,
+            vec![DeltaOp::V3(DeltaOpV3::Turn {
+                active: Some(id(1)),
+                round: 5,
+            })],
+        ),
+    );
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 2);
+    assert!(!Rc::ptr_eq(&held, &client.view()));
+    assert_eq!(client.view().active(), 1);
+    assert_eq!(client.view().round(), 5);
+    assert_eq!(
+        client.view().option_labels(),
+        &["End turn".to_string(), "Strike -> Goblin".to_string()]
+    );
+    assert_eq!(client.view().option_targets(), &[0, 2]);
+    assert_eq!(client.view().net_ids(), &[1, 2]);
+    assert_eq!(client.view().health(), &[7, 0]);
+    assert_eq!(client.view().dead(), &[0, 1]);
+    drop(held);
+
+    // Control: the same active actor changes no column, so no bump.
+    push(
+        &link,
+        v4(
+            3,
+            2,
+            vec![DeltaOp::V3(DeltaOpV3::Turn {
+                active: Some(id(1)),
+                round: 5,
+            })],
+        ),
+    );
+    let held = client.view();
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 2);
+    assert!(Rc::ptr_eq(&held, &client.view()));
+}
+
 /// M63b, M64 (`client.rs` lines 337-341): `ViewMoveReceipt::entries()` gives
 /// seq, actor, outcome, code, processed_tick, start_tick in that order
 /// (Interface). Six distinct values catch any swap; the control differs in
