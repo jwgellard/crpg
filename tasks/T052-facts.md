@@ -80,6 +80,33 @@ contract from.
 
 ## Saving World today
 
+- `Persist scope` (`crates/crpg-persist/src/lib.rs:3`) — "a versioned, checksummed, `zstd`-compressed save envelope around opaque caller bytes", with the S001 input/decompressed caps and an atomic-replace file store (T038).
+- `Payload neutrality` (`crates/crpg-persist/src/lib.rs:7`) — "The envelope never encodes or inspects what it carries. The unit of save ... belongs to the caller."
+- `Envelope layout` (`crates/crpg-persist/src/envelope.rs:1`) — envelope v1: a fixed 68-byte header, then the raw payload or exactly one zstd frame.
+- `Save format version` (`crates/crpg-persist/src/envelope.rs:17`) — `SAVE_FORMAT_VERSION: u16 = 1`, "the only format version this build writes or reads"; `SAVE_MAGIC` is `CRPGSAVE` (`crates/crpg-persist/src/envelope.rs:15`).
+- `Envelope caps` (`crates/crpg-persist/src/envelope.rs:24`) — `MAX_PAYLOAD_BYTES` 16 MiB, `MAX_ENVELOPE_BYTES` 16,777,284 (`:26`), checked before parsing/decompression.
+- `Decode precedence` (`crates/crpg-persist/src/envelope.rs:6`) — the header is checked "in a fixed first-failure-wins order"; the decompressed-size cap is enforced while zstd produces bytes.
+- `Persist invariant 1` (`crates/crpg-persist/AGENTS.md:29`) — "The envelope never encodes or inspects a `World`, `HistoryWorld` or checkpoint, and the crate has no workspace path dependency."
+- `Checkpoint scope` (`crates/crpg-server/src/checkpoint.rs:1`) — in-memory host checkpoint bytes (T022 §7): full authoritative wrapper (world, sim journal and sequence/ack state), capture journal and watermark, protocol selection, incarnation identity.
+- `Checkpoint versions` (`crates/crpg-server/src/checkpoint.rs:54`) — `CHECKPOINT_VERSION: u32 = 1` and `CHECKPOINT_VERSION_HOST_RECORDS: u32 = 2` (`:56`); version 1 is written whenever no host record is retained (`:12`), and "a version-1 checkpoint is a version-2 checkpoint with no host record, so nothing is migrated" (`crates/crpg-server/src/checkpoint.rs:19`).
+- `Checkpoint cap` (`crates/crpg-server/src/checkpoint.rs:58`) — `MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024`, checked before any JSON parsing (`crates/crpg-server/src/checkpoint.rs:23`).
+- `Host save checkpoint` (`crates/crpg-server/src/host.rs:5123`) — `Host::save_checkpoint() -> Result<Vec<u8>, CheckpointError>`.
+- `Checkpoint loader` (`crates/crpg-server/src/checkpoint.rs:176`) — `load_checkpoint`; the reader entry point is at `:230` and is capped before parsing.
+- `Host save adapter` (`crates/crpg-server/src/save.rs:1`) — a host save is a `crpg-persist` envelope of kind `HOSTCKPT` whose payload is a fixed-order identity header followed by the checkpoint bytes "**verbatim**".
+- `Save header` (`crates/crpg-server/src/save.rs:9`) — 4-byte `save_version` (`HOST_SAVE_VERSION: u32 = 1`, `crates/crpg-server/src/save.rs:43`), 16-byte campaign id, campaign-version text and engine-version text (`ENGINE_VERSION`, `crates/crpg-server/src/save.rs:45`).
+- `Identity matching` (`crates/crpg-server/src/save.rs:19`) — campaign id and version are trusted caller facts that must match on load; the engine version is recorded and returned, never enforced (`crates/crpg-server/src/save.rs:263`).
+- `Save identity type` (`crates/crpg-server/src/save.rs:89`) — `SaveIdentity`; `LoadedSave` is at `:98`.
+- `Save entry points` (`crates/crpg-server/src/save.rs:272`) — `save_host_file` validates identity, takes `host.save_checkpoint()`, encodes, then calls `crpg_persist::save_file`; `load_host_file` is at `:287`.
+- `No SCHEMA_VERSION` (`crates/crpg-server/src/save.rs:43`) — a repository-wide grep for `SCHEMA_VERSION` finds no matches; the save-side versions are `SAVE_FORMAT_VERSION` (`crates/crpg-persist/src/envelope.rs:17`), `HOST_SAVE_VERSION` (`crates/crpg-server/src/save.rs:43`) and `CHECKPOINT_VERSION`/`CHECKPOINT_VERSION_HOST_RECORDS` (`crates/crpg-server/src/checkpoint.rs:54`).
+- `Spec save versioning` (`docs/CRPG_ENGINE_SPEC.md:851`) — "Save files carry engine version, campaign id and version, and a schema version." (The spec says this; no `SCHEMA_VERSION` constant exists in the tree.)
+- `Campaign-data migrations` (`crates/crpg-data/AGENTS.md:6`) — the semantic-validation layer and the T012a migration framework; `docs/architecture/crpg-data.md:91` says the `migrations` module holds one sorted fifteen-family registry with only `crpg.item` at version 2 behind an edge.
+- `Migration boundary` (`crates/crpg-data/AGENTS.md:42`) — a migration edge is required only when absence means exactly the old default; this is campaign-document migration, not save-file migration.
+- `CLI migrate` (`docs/architecture/crpg-cli.md:500`) — `crpgc migrate <campaign-root>` migrates campaign data; it is not a save-file migration.
+- `Gate 10` (`docs/architecture/crpg-server.md:975`) — spec §15.4 step 10 is active as "file-backed host save/load continuation equivalence": a host driven through `ingest → pump` is saved, dropped, reloaded under a strictly greater incarnation, and must match an uninterrupted run in authority hash, capture journal, watermarks and decoded delivery.
+- `Gate 10 code` (`crates/crpg-server/tests/host_save.rs:706`) — "Gate 10: file-backed continuation equivalence", cases built on `file_save_load_equivalence` (`crates/crpg-server/tests/host_save.rs:709`) and per-step `authority_hash` assertions (`crates/crpg-server/tests/host_save.rs:524`).
+- `Gate 10 non-claims` (`docs/architecture/crpg-server.md:987`) — not crash durability, Windows directory durability, cross-target byte equality, or the spec §8 breadth "every fixture campaign".
+- `Save determinism` (`crates/crpg-server/AGENTS.md:293`) — saves are deterministic per build and per target; never compare save bytes, digests or hashes across targets; gate 10 compares runs inside one process and adds no golden.
+
 ## Authored dialogue, quest and event data today
 
 ## Scripting today
