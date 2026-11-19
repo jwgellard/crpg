@@ -378,6 +378,23 @@ the no-new-dependency alternative IS the design. Reused tools
   baseline is a new scored run with its own `summary.json`.
 
 ## Open questions (each with a recommendation)
+1. **Should B3 also require a scripted headless combat (testkit) as a
+   second playability signal?** The T100 row says playability is
+   `crpgc run` (`docs/IMPLEMENTATION_PLAN.md:300`), and `run` never
+   loads the campaign (`crates/crpg-cli/src/main.rs:2518`–`crates/crpg-cli/src/main.rs:2519`),
+   so a combat check would exceed the row but catch campaigns that
+   validate yet cannot start an encounter. *Recommend:* no — keep the
+   row's definition; record the gap for T101 instead.
+2. **Which models run the baseline, and how many repeats?** Cost and
+   variance are not in the T100 row. *Recommend:* the manager picks
+   three models (one cheap, one mid, one strong) × one repeat for the
+   baseline; repeats become a T101 decision once variance is seen.
+3. **Where do baseline records live — in-repo or beside `oc.py`
+   records?** `oc.py` writes under `<repo>/.agents/runs/<ID>/`
+   (`tools/agents/README.md:41`–`tools/agents/README.md:49`), which is
+   run history, not reviewable content. *Recommend:* `--out` defaults
+   outside the repo (like slots); only the contract's briefs and tests
+   are committed, never the records.
 
 ## Agent log
 
