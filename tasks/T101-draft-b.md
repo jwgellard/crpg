@@ -646,4 +646,53 @@ Each decision is numbered and states the alternative it rejects.
 
 ## Open questions (each with a recommendation)
 
+1. **Is the intent layer a module of `crpg-edit` or a new crate?**
+   *Recommendation:* a module of `crpg-edit`, since T103 names it as the owner
+   (`docs/IMPLEMENTATION_PLAN.md:303`) and a separate crate would fragment the
+   one-implementation rule.
+2. **Does `create` reuse `crpgc new`'s scaffolding, or does the editor need
+   its own scaffold path?** `crpgc new` writes one typed document to stdout
+   (`docs/architecture/crpg-cli.md:610`). *Recommendation:* `create` reuses the
+   same document-building path but installs it via `CreateDocument`; the
+   scaffold is one code path, two entry points.
+3. **Is `link` a first-class verb or a `set` of an id string?** *Recommendation:*
+   keep `link` first-class (Decision 4 and § Intent command layer), because a
+   dangling reference is a receipt diagnostic, not an error, and that
+   distinction is worth a verb of its own.
+4. **Where do ruleset templates live, and how do overrides serialize?**
+   *Recommendation:* starters ship as the existing `rulesets/minimal-d6` and
+   `rulesets/srd-lite` (`rulesets/minimal-d6/ruleset.json:21`,
+   `rulesets/srd-lite/ruleset.json:31`); overrides are a diff stored in
+   `rules/overrides.json` (`docs/CRPG_ENGINE_SPEC.md:1070`), with the exact
+   diff schema left to T110.
+5. **Which asset formats in the MVP?** *Recommendation:* glTF models and
+   portraits first, audio and fonts deferred (MVP excludes music and the
+   broader pipeline, `docs/CRPG_ENGINE_SPEC.md:1531`); T105 decides the
+   specific rig packs before T047 (`docs/IMPLEMENTATION_PLAN.md:275`).
+6. **Are the intent layer's actionable errors a new public enum or serialized
+   triples?** *Recommendation:* a new error type in `crpg-edit` distinct from
+   `EditError`, serialized as `{ pointer, code, suggestion }` for `crpgc apply`,
+   because `EditError`'s 16 variants are pinned and must not grow for the
+   layer's did-you-mean diagnostics (`crates/crpg-edit/src/error.rs:28`).
+7. **Is the stable-address field a schema field name or a slug?**
+   *Recommendation:* schema field names; slugs are document identity, not
+   addresses, and the layer must not conflate them.
+8. **Do the runtime §17.2 items (6–12) need authoring flows or only
+   verification?** *Recommendation:* only the prerequisite-authoring flows as
+   written in § Task flows, with the runtime proof left to M7's acceptance
+   (`docs/IMPLEMENTATION_PLAN.md:336`).
+9. **Does this draft cover the event-authoring section T053 waits on?**
+   It does not; the MVP's trigger is "one line of Lua or a hardcoded quest
+   hook" (`docs/CRPG_ENGINE_SPEC.md:1531`) and the visual event graph is
+   excluded from Phase 6 (`docs/CRPG_ENGINE_SPEC.md:1608`). *Recommendation:*
+   the final ADR states that deferral explicitly so T053's dependency is
+   discharged, or adds the event-authoring section before acceptance.
+10. **Do the read-only commands (`explain`, `schema`, `validate`) join the
+    intent layer or stay in `crpgc`?** *Recommendation:* they stay as-is in
+    `crpgc` (`crates/crpg-cli/src/main.rs:110`); the layer adds only
+    mutations plus `plan`/`apply_plan`/`validate`, so the verb count stays
+    under twenty (R7, `docs/research/T099/R10-deep.md:42`).
+
 ## Agent log
+
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T101 draft b · Filed the blind authoring UX ADR draft: module authors first with agents equal (D28l), a scaffold-never-blank intent layer of fourteen verbs above T058's EditCommand shared by the GUI and crpgc apply, thirteen task flows covering every §17.2 item and ruleset-from-template, a three-region editor with generated forms and a continuous Problems panel, a conformance-gated asset-import flow, and measurable usability acceptance criteria per M6 package, each with a rejected alternative and unresolved items left as open questions.
