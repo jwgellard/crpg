@@ -4,17 +4,15 @@
 T052 adds persisted continuation state to `crpg-sim`'s `World` (D27f,
 `tasks/DECISIONS-2026-10-04.md:87`): the data over which the T053 event-IR
 interpreter and the T054 dialogue engine and quest state machine will run
-(`docs/IMPLEMENTATION_PLAN.md:283`–`284`). When this is done, a script graph
-paused in `Wait(ticks)` (`docs/CRPG_ENGINE_SPEC.md:617`), an open dialogue
-(`docs/CRPG_ENGINE_SPEC.md:642`) and a quest's current stage
-(`docs/CRPG_ENGINE_SPEC.md:239`–`260`, authored shape) all live in the
+(`docs/IMPLEMENTATION_PLAN.md:283`–`284`). A script graph paused in
+`Wait(ticks)` (`docs/CRPG_ENGINE_SPEC.md:617`), an open dialogue
+(`:642`) and a quest's current stage (`:239`–`260`) all live in the
 `World`, survive save/load and server restart, and resume exactly
-(`docs/CRPG_ENGINE_SPEC.md:624`–`625`); the save/load equivalence gate still
-holds (`docs/CRPG_ENGINE_SPEC.md:853`). `crpg-sim` stays free of
-`crpg-script`: the continuation is world-owned serializable IR state, and a
-live Lua stack/coroutine is never saved (`docs/CRPG_ENGINE_SPEC.md:624`;
-`crates/crpg-script/src/lib.rs:10`; `tasks/POST-T018-DECISIONS.md:381`). One
-part, in `crpg-sim` only.
+(`:624`–`625`); the save/load equivalence gate still holds (`:853`).
+`crpg-sim` stays free of `crpg-script`: the continuation is world-owned
+serializable IR state, and a live Lua stack/coroutine is never saved
+(`docs/CRPG_ENGINE_SPEC.md:624`; `crates/crpg-script/src/lib.rs:10`;
+`tasks/POST-T018-DECISIONS.md:381`). One part, in `crpg-sim` only.
 
 Citation convention (T153's): a bare `:N` or `:N–M` is a line of the file
 cited earlier in the same item or sentence. Every citation was checked on
@@ -476,21 +474,20 @@ No new external crate and no new lockfile package: the three new types use
 one crate (`crpg-sim`), per the working rules (root `AGENTS.md:57–58`).
 
 ## Out of scope
-- The T053 interpreter: resuming due continuations, node execution, edge
-  order (`docs/CRPG_ENGINE_SPEC.md:629`), fresh slice budgets (B-12),
-  `StartDialogue`/`AdvanceQuest` actions and the D17 budgets.
-- The T054 dialogue engine and quest state machine: checks through
-  `ResolutionRequest`, `PlayerChoice` branching, quest transitions and the
-  D27f death-completes-quest rule (`tasks/DECISIONS-2026-10-04.md:91`).
-- Locals values (Reading 2); any campaign fixture using
-  `crpg.dialogue/1` or `crpg.quest/1` (none exist today:
-  `tasks/T052-facts.md:134`); the `dialogue_branching`, `quest_multistage`
-  and `save_load_stress` fixtures (`docs/CRPG_ENGINE_SPEC.md:1502`).
+- The T053 interpreter (resuming due continuations, node execution, edge
+  order in `docs/CRPG_ENGINE_SPEC.md:629`, fresh slice budgets) and the
+  T054 dialogue engine and quest state machine (checks, branching,
+  transitions, the D27f death-completes-quest rule in
+  `tasks/DECISIONS-2026-10-04.md:91`).
+- Locals values (Reading 2); any `crpg.dialogue/1` or `crpg.quest/1`
+  fixture (none exist: `tasks/T052-facts.md:134`); the `dialogue_branching`,
+  `quest_multistage` and `save_load_stress` fixtures, all named at
+  `docs/CRPG_ENGINE_SPEC.md:1502`.
 - Format migration beyond absence-means-empty (Reading 5); content
-  renames/removals (T111, `docs/IMPLEMENTATION_PLAN.md:337`); autosave
-  wiring (`docs/CRPG_ENGINE_SPEC.md:854`); the T076 triggers/doors follow-on
+  renames (T111, `docs/IMPLEMENTATION_PLAN.md:337`); autosave wiring
+  (`docs/CRPG_ENGINE_SPEC.md:854`); the T076 follow-on
   (`docs/IMPLEMENTATION_PLAN.md:349`).
-- Any change to `crpg-godot`, dialogue UI or journal (T057,
+- `crpg-godot`, dialogue UI and journal (T057,
   `docs/IMPLEMENTATION_PLAN.md:286`); any new lint rule or `ALLOWED` entry.
 
 ## Open questions (each with a recommendation)
