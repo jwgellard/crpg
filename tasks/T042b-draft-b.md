@@ -541,8 +541,11 @@ from the log alone.
   `assert_eq!(CodecError::X.to_string(), "…")` each.
 
 ## What must not change
-
-TODO (draft B): existing goldens and suites.
+- Every file under `crates/crpg-net/src/`, byte for byte; every public
+  item and `Display` text.
+- Every existing test file and `tests/support/`, byte for byte, passing.
+- `Cargo.toml`, `Cargo.lock`, `crates/crpg-net/Cargo.toml`; every golden
+  (none is added or moved); every other crate.
 
 ## Dependency edges
 
