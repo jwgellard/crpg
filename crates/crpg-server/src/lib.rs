@@ -5,7 +5,7 @@
 //! `crpg-server` owns world state. This library is the one platform-neutral
 //! host that the Windows embedded single-player adapter and the
 //! Windows/Linux dedicated adapters reuse; the `crpg-server` binary stays a
-//! thin wiring shell over it. Five modules, no glob re-export:
+//! thin wiring shell over it. Six modules, no glob re-export:
 //!
 //! - [`host`]: the serial [`host::Host`] privately owning one
 //!   `crpg_sim::HistoryWorld` — peer bindings with per-session epochs,
@@ -25,6 +25,10 @@
 //!   one `crpg_net_quic::QuicServer` driven by a synchronous pump, with
 //!   invitation credentials checked in constant time, per-connection
 //!   backpressure, fencing with `SessionFenced`, and D02 shutdown.
+//! - [`run`]: the run loop (T154) — [`run::HostLoop`]'s one cycle order
+//!   (intake, AI stage, advance, deliver, retire captures) on a fixed grid
+//!   with skip-not-burst catch-up, and [`run::LocalHost`]/[`run::LocalClient`],
+//!   the in-memory hosting of one [`host::Host`].
 //!
 //! No client receives `&Host`, `&mut World`, or capture access: the
 //! client-facing capability is a copyable [`host::PeerHandle`] plus the
@@ -36,6 +40,8 @@ pub mod capture;
 pub mod checkpoint;
 pub mod host;
 mod host_v3;
+mod host_v4;
 mod nav;
 pub mod quic;
+pub mod run;
 pub mod save;

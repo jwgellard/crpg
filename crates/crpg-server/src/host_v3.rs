@@ -18,6 +18,7 @@ use crpg_net::facts_v3::{
 use crpg_net::interest::{
     EntityFact, EntityKey, FieldMask, InterestSet, InterestView, TurnState, ViewerContext,
 };
+use crpg_net::positions_v4::PositionView;
 use crpg_net::protocol::SessionEpoch;
 use crpg_net::protocol_transfer::HealthFact;
 use crpg_net::protocol_v3::{
@@ -31,6 +32,7 @@ use crate::host::{
     DisclosureGrants, EntityFactGrant, FactGrants, HOST_UNBOUND_AREA, POLICY_V3_IN_FLIGHT_BYTES,
     POLICY_V3_IN_FLIGHT_FRAMES, POLICY_V3_THROTTLE_TICKS,
 };
+use crate::host_v4::V4State;
 
 /// Most entries one staged plan holds in the outbox (H-7): a `Cancel`, the D5
 /// plan's 88 frames and the host-facts delta.
@@ -125,6 +127,18 @@ impl Throttle {
         }
     }
 
+    /// Delta frames logged since the staging, C-6's included (E-2).
+    #[cfg(test)]
+    pub(crate) fn frames(&self) -> usize {
+        self.frames
+    }
+
+    /// Encoded bytes of those frames (E-2).
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// Ends the session's deltas until its transfer ends.
     pub(crate) fn close(&mut self) {
         self.closed = true;
@@ -154,6 +168,9 @@ pub(crate) struct V3Session {
     /// The in-flight throttle, set by a staging and cleared when the
     /// transfer is `Published` (E-2).
     pub(crate) throttle: Option<Throttle>,
+    /// The v4 state of a session bound with `bind_v4_peer` (T037b Reading 1);
+    /// `None` for a v3 session.
+    pub(crate) v4: Option<Box<V4State>>,
 }
 
 impl V3Session {
@@ -169,6 +186,7 @@ impl V3Session {
             sent_host_facts: None,
             last_clock_tick: 0,
             throttle: None,
+            v4: None,
         }
     }
 }
@@ -181,18 +199,22 @@ pub(crate) struct V3Stage {
     pub(crate) view: InterestView,
     /// The projected clone of the fact view.
     pub(crate) facts: FactView,
+    /// The projected clone of the position view (a v4 session's anchors);
+    /// `None` for a v3 session.
+    pub(crate) positions: Option<PositionView>,
     /// The `Cancel` of the in-flight transfer, if any.
     pub(crate) cancel: Option<Vec<u8>>,
     /// The `Begin` and `Chunk` frames of the new transfer.
     pub(crate) frames: Vec<Vec<u8>>,
-    /// The host-facts delta (C-6) and the `event_seq` it took.
-    pub(crate) delta: Vec<u8>,
-    pub(crate) delta_seq: u64,
+    /// The staged delta frames of the plan: exactly one for a v3 session (C-6),
+    /// the anchoring page's `frame_spans` frames for a v4 session (B-7), each
+    /// with the `event_seq` it took.
+    pub(crate) deltas: Vec<(u64, Vec<u8>)>,
     /// The id the new transfer takes.
     pub(crate) transfer: u64,
     /// The server tick the plan was cut at.
     pub(crate) tick: u64,
-    /// The `Clock` op and facts image the delta carries.
+    /// The `Clock` op the deltas carry.
     pub(crate) clock: DeltaOp,
     pub(crate) image: HostFactsImage,
 }
@@ -207,6 +229,9 @@ pub(crate) struct PagePlan {
     pub(crate) view: InterestView,
     /// The projected clone of the fact view.
     pub(crate) facts: FactView,
+    /// The projected clone of the position view (a v4 session); `None` for a
+    /// v3 session.
+    pub(crate) positions: Option<PositionView>,
     /// One encoded frame per `frame_spans` span, ascending `event_seq`.
     pub(crate) frames: Vec<(u64, Vec<u8>)>,
     /// The `Clock` op the page carries, if it carries one.

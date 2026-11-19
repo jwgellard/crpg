@@ -379,16 +379,18 @@ A bake-off implementation run took 5–42 requests (median 10); a review took
 2–5. Kimi K3's 110 requests per 5 hours is about ten implementations but
 thirty reviews.
 
-| Work | First choice | Second, another lab | When Go limits run out |
-|---|---|---|---|
-| I outside the S-set, routine | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
-| I outside the S-set, harder or after one failure | `opencode-go/deepseek-v4-pro` | `opencode-go/mimo-v2.6-pro` | Claude `implementer` |
-| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode-go/deepseek-v4-pro` (T136b-tests, T138a-tests attempt 2) or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | `opencode/deepseek-v4.1-flash-free` |
-| First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13) | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | `opencode/deepseek-v4.1-flash-free` |
-| Scouting | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
-| Bookkeeping, commit and PR text | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
-| G: content through `crpgc validate --json` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | `opencode/glm-5.3-flash-free` |
-| S-set, A, C, core review | Claude only (`docs/AGENT_TEAM_PLAN.md` §§4.2–4.3) | — | — |
+**Free first (the user, 2026-11-16: "I want to use free quota up before real usage").** Every row that has a free Zen model starts there. Move a package to its paid Go ID only after a free-tier refusal (rate limit or quota), then stay on Go IDs until the next day (§1 item 10). A free-tier refusal is infrastructure, never an attempt. Free Zen caps: at most three free runs at once, at most one per model; when the free lane is full, the next package waits or takes paid Go, the manager's call.
+
+| Work | Free first (Zen) | Paid Go, first | Paid Go, second (another lab) | Then |
+|---|---|---|---|---|
+| I outside the S-set, routine | `opencode/deepseek-v4.1-flash-free`, or `opencode/muse-spark-1.3-contributor-free` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Claude `implementer` |
+| I outside the S-set, harder or after one failure | `opencode/muse-spark-1.3-contributor-free` (another lab than a failed DeepSeek run) | `opencode-go/deepseek-v4-pro` | `opencode-go/mimo-v2.6-pro` | Claude `implementer` |
+| Tests from a contract ("two keys") | A lab other than the implementer's: `opencode/deepseek-v4.1-flash-free` or `opencode/muse-spark-1.3-contributor-free` | `opencode-go/deepseek-v4-pro` (T136b-tests, T138a-tests attempt 2) or `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Claude `implementer` |
+| First-pass review | Up to three `opencode-go/beam-free` reviews, collated (§1 item 13; not evidence, D38), plus `opencode/deepseek-v4.1-flash-free` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4-pro` or `opencode-go/mimo-v2.6-pro` | — |
+| Scouting | `opencode/deepseek-v4.1-flash-free` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/muse-spark-1.3-contributor` | Built-in `Explore` |
+| Bookkeeping, commit and PR text | `opencode/muse-spark-1.3-contributor-free` | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/gpt-6-luna` | Claude `bookkeeper` |
+| G: content through `crpgc validate --json` | `opencode/glm-5.3-flash-free` or `opencode/deepseek-v4.1-flash-free` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/glm-5.3-flash` | — |
+| S-set, A, C, core review | Claude only (`docs/AGENT_TEAM_PLAN.md` §§4.2–4.3) | — | — | — |
 
 Beam (`opencode-go/beam-free`) is limited to doc-only work, fact sheets and first-pass review (D37b). Beam takes new-file work only (fact sheets, first blind drafts); never edits, moves or condensations of existing text, and its reports and reviews are never evidence (D38). While Go is over quota, implementation and tests go to free Zen models first, then the Claude `implementer` (D37c).
 
@@ -584,3 +586,4 @@ whenever Zen or Go changes its model list:
 - 2026-10-25 (UTC) · opencode-go/beam-free + D37-record · Recorded D37b/D37c: Beam is limited to doc-only work, fact sheets and first-pass review, and while Go is over quota implementation and tests go to free Zen models first then the Claude implementer, never Beam.
 - 2026-10-25 (UTC) · claude-code/opus-5.5 (manager) + D38 · Recorded in §4 the user's D38 narrowing of Beam to new-file work, with its reports never counted as evidence.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Recorded the session 28 field record in §4.1: MiMo-V2.6-Pro demoted from implement (hang 3/3), and DeepSeek V4.1 Flash first-attempt passes on T025a2, T145 and T146.
+- 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + user: free quota first · Put the free Zen models in the routing table's first column, ahead of paid Go, because the table listed them only for when Go ran out and sessions had been routing every run to paid Go.

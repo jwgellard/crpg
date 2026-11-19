@@ -30,18 +30,22 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use crpg_net::codec_resume;
 use crpg_net::protocol::{ReceiptStatus, RejectionCode, POLICY_INGRESS_FRAMES_PER_PEER};
+use crpg_net::protocol_resume::{
+    ConnectionFence, ResumeDown, ResumeProof, ResumeRejection, ResumeResult,
+};
 use crpg_net_quic::{
     Channel, ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionId, ConnectionStats,
     Credential, Framing, QueueTotals, QuicServer, SendError, ServerError, ServerEvent,
-    ShutdownReport, Welcome,
+    ServerNotice, ShutdownReport, Welcome,
 };
 
 use crate::checkpoint::CheckpointError;
 use crate::host::{
     is_narrowing, normalize_control, normalize_grants, AdmissionResult, ControlGrant, DeliveryKind,
     DisclosureGrants, GrantUpdate, Host, HostError, IngestDisposition, PeerHandle, PumpSummary,
-    TransferDisposition, TransferRefusal,
+    ResumeAnswer, TransferDisposition, TransferRefusal,
 };
 
 // ---------------------------------------------------------------------------
@@ -111,6 +115,8 @@ pub struct QuicPumpReport {
     pub frames_discarded: usize,
     /// Bound connections holding a refused frame when the pump ended.
     pub held: usize,
+    /// One per `ServerNotice::Resume` polled, in poll order.
+    pub resumes: Vec<ResumeReport>,
 }
 
 impl QuicPumpReport {
@@ -124,6 +130,7 @@ impl QuicPumpReport {
             frames_refused: 0,
             frames_discarded: 0,
             held: 0,
+            resumes: Vec::new(),
         }
     }
 }
@@ -206,6 +213,40 @@ pub enum HostCall {
         /// The acknowledged delivery ordinal.
         through: u64,
     },
+    /// `Host::issue_resume_ticket` (T025b-q N-3). The ticket bytes are never
+    /// traced.
+    IssueResumeTicket {
+        /// The binding the ticket belongs to.
+        peer: PeerHandle,
+        /// What `issue_resume_ticket` returned.
+        result: Result<(), HostError>,
+    },
+    /// `Host::check_frame` (T025b-q N-4).
+    CheckFrame {
+        /// The connection the frame arrived on.
+        conn: ConnectionId,
+        /// Its binding.
+        peer: PeerHandle,
+        /// The connection's fence tag.
+        fence: ConnectionFence,
+        /// What `check_frame` returned.
+        result: Result<(), HostError>,
+    },
+    /// `Host::begin_grace` (T025b-q N-7).
+    BeginGrace {
+        /// The disconnected binding.
+        peer: PeerHandle,
+        /// The grace deadline, or the error.
+        result: Result<u64, HostError>,
+    },
+    /// `Host::resume_peer` (T025b-q N-5). Never carries proof or credential
+    /// bytes.
+    ResumePeer {
+        /// The connection the resume arrived on.
+        conn: ConnectionId,
+        /// What `resume_peer` decided.
+        result: Result<ResumeAnswer, HostError>,
+    },
 }
 
 /// The decision made for one `HelloReceived`.
@@ -266,6 +307,42 @@ pub enum FenceCause {
     EpochClosed,
     /// Delivery refused by the transport for [`STALL_TIMEOUT_MS`].
     SlowConsumer,
+    /// A resume moved the session to another connection; the binding did not
+    /// end (T025b-q).
+    Resumed,
+}
+
+/// The decision made for one `ServerNotice::Resume` (T025b-q).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeReport {
+    /// The connection the resume arrived on.
+    pub conn: ConnectionId,
+    /// How it ended.
+    pub outcome: ResumeOutcome,
+}
+
+/// How a resume opening ended (T025b-q).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeOutcome {
+    /// Answered `Accepted`; the connection now holds `granted`.
+    Accepted {
+        /// The matched invitation.
+        invitation: InvitationId,
+        /// The resumed handle.
+        peer: PeerHandle,
+        /// The fence the new connection holds.
+        granted: ConnectionFence,
+    },
+    /// Refused with this close code (5 or 7).
+    Refused {
+        /// The close code.
+        code: CloseCode,
+    },
+    /// Accepted by the host, but the connection was gone (Reading 19).
+    Lost {
+        /// The transport's close reason.
+        reason: CloseReason,
+    },
 }
 
 /// What `set_invitation_grants` did.
@@ -373,6 +450,8 @@ struct InvitationRecord {
     control: ControlGrant,
     grants: DisclosureGrants,
     live: Option<ConnectionId>,
+    /// A session held through its grace (T025b-q), keyed by its handle.
+    graced: Option<PeerHandle>,
 }
 
 /// A bound connection.
@@ -382,6 +461,9 @@ struct Bound {
     invitation: InvitationId,
     /// The negotiated framing, fixed for the connection's life.
     framing: Framing,
+    /// The connection's fence tag (T025b-q): `FIRST` for a hello binding,
+    /// the granted fence for a resume binding.
+    fence: ConnectionFence,
     /// The ordinal of the last frame taken with `try_recv_channel`, over
     /// every channel.
     frames: u64,
@@ -415,6 +497,22 @@ fn poisons(error: &HostError) -> bool {
     )
 }
 
+/// N-10 (Question 1 (b)): the session-bound resume proof is the keyed BLAKE3
+/// derivation over the invitation credential and the session epoch. The
+/// credential must be exactly [`INVITATION_CREDENTIAL_BYTES`] long.
+fn resume_proof(credential: &Credential, epoch: [u8; 16]) -> Result<ResumeProof, HostError> {
+    let key = credential.as_bytes();
+    let key: &[u8; 32] = key
+        .try_into()
+        .map_err(|_| HostError::Invariant("invitation credential is not 32 bytes"))?;
+    let mut message = Vec::with_capacity(b"crpg-resume-proof/1".len() + 16);
+    message.extend_from_slice(b"crpg-resume-proof/1");
+    message.extend_from_slice(&epoch);
+    let digest = blake3::keyed_hash(key, &message);
+    ResumeProof::new(digest.as_bytes().to_vec())
+        .map_err(|_| HostError::Invariant("resume proof derivation failed"))
+}
+
 // ---------------------------------------------------------------------------
 // The adapter (B§3.2).
 // ---------------------------------------------------------------------------
@@ -435,6 +533,8 @@ pub struct QuicHost {
     next_invitation: u64,
     invitations: BTreeMap<InvitationId, InvitationRecord>,
     conns: BTreeMap<ConnectionId, Conn>,
+    /// Whether this adapter came from `start_resumable` (T025b-q).
+    resumable: bool,
 }
 
 impl fmt::Debug for QuicHost {
@@ -468,6 +568,35 @@ impl QuicHost {
         server: QuicServer,
         now_ms: u64,
     ) -> Result<QuicHost, Box<StartFailure>> {
+        Self::start_impl(host, server, now_ms, false)
+    }
+
+    /// As [`start`](Self::start) (same precedence and failure), for a server
+    /// from any `QuicServer::bind*`, `bind_resumable` included (N-1). The
+    /// adapter polls `poll_notice`, so a resumable server's resume openings
+    /// are handled, and `/2` hellos are followed by a resume ticket.
+    pub fn start_resumable(
+        host: Host,
+        server: QuicServer,
+        now_ms: u64,
+    ) -> Result<QuicHost, Box<StartFailure>> {
+        Self::start_impl(host, server, now_ms, true)
+    }
+
+    /// Whether this adapter came from [`start_resumable`](Self::start_resumable).
+    pub fn is_resumable(&self) -> bool {
+        self.resumable
+    }
+
+    /// The shared constructor: `start`'s precedence (`HostClosed` →
+    /// `HostInUse` — any binding, staged ingress or held grace — →
+    /// `TimeRegression`), returning both on failure.
+    fn start_impl(
+        host: Host,
+        server: QuicServer,
+        now_ms: u64,
+        resumable: bool,
+    ) -> Result<QuicHost, Box<StartFailure>> {
         let error = if host.is_closed() {
             Some(QuicHostError::HostClosed)
         } else if host.session_count() > 0 || host.has_staged_ingress() {
@@ -492,6 +621,7 @@ impl QuicHost {
             next_invitation: 1,
             invitations: BTreeMap::new(),
             conns: BTreeMap::new(),
+            resumable,
         })
     }
 
@@ -519,23 +649,19 @@ impl QuicHost {
     }
 
     fn run_phases(&mut self, now_ms: u64, report: &mut QuicPumpReport) -> Result<(), HostError> {
-        // 1. Events.
-        while let Some(event) = self.server.poll_event() {
-            match event {
-                ServerEvent::HelloReceived { conn, hello, .. } => {
-                    self.on_hello(conn, hello.wire_version, &hello.credential, now_ms, report)?;
-                }
-                ServerEvent::Closed { conn, reason } => {
-                    match self.conns.get_mut(&conn) {
-                        Some(Conn::Bound(bound)) => {
-                            bound.transport_closed.get_or_insert(reason);
-                            bound.event_seen = true;
-                        }
-                        Some(Conn::Retiring(retiring)) => retiring.event_seen = true,
-                        None => {}
+        // 1. Events and notices.
+        if self.resumable {
+            while let Some(notice) = self.server.poll_notice() {
+                match notice {
+                    ServerNotice::Event(event) => self.on_event(event, now_ms, report)?,
+                    ServerNotice::Resume(received) => {
+                        self.on_resume(received.conn, &received.request, now_ms, report)?;
                     }
-                    report.transport_closes.push((conn, reason));
                 }
+            }
+        } else {
+            while let Some(event) = self.server.poll_event() {
+                self.on_event(event, now_ms, report)?;
             }
         }
         // 2. Drain.
@@ -560,6 +686,23 @@ impl QuicHost {
                 self.fence(conn, FenceCause::EpochClosed, Some(report));
             }
         }
+        // N-6: a grace the host swept away is no longer held (read-only,
+        // untraced).
+        if self.resumable {
+            let swept: Vec<InvitationId> = self
+                .invitations
+                .iter()
+                .filter_map(|(id, record)| {
+                    let peer = record.graced?;
+                    (self.host.grace_deadline(peer).is_none()).then_some(*id)
+                })
+                .collect();
+            for id in swept {
+                if let Some(record) = self.invitations.get_mut(&id) {
+                    record.graced = None;
+                }
+            }
+        }
         // 5. Deliver.
         for conn in self.bound_ids() {
             self.deliver(conn, now_ms, report)?;
@@ -572,9 +715,43 @@ impl QuicHost {
             if bound.transport_closed.is_none() || !bound.drained || bound.held.is_some() {
                 continue;
             }
-            let (peer, invitation, event_seen) = (bound.peer, bound.invitation, bound.event_seen);
-            self.host.unbind_peer(peer);
-            report.calls.push(HostCall::UnbindPeer { peer });
+            let (peer, invitation, event_seen, framing, reason) = (
+                bound.peer,
+                bound.invitation,
+                bound.event_seen,
+                bound.framing,
+                bound.transport_closed.expect("checked above"),
+            );
+            // N-7: a silent loss of a `/2` connection starts a grace; every
+            // other binding unbinds exactly as today.
+            let silent_loss = self.resumable
+                && framing == Framing::V2
+                && matches!(
+                    reason,
+                    CloseReason::IdleTimeout | CloseReason::Transport | CloseReason::Reset
+                );
+            if silent_loss {
+                let result = self.host.begin_grace(peer, now_ms);
+                report.calls.push(HostCall::BeginGrace {
+                    peer,
+                    result: result.clone(),
+                });
+                match result {
+                    Ok(_deadline) => {
+                        if let Some(record) = self.invitations.get_mut(&invitation) {
+                            record.graced = Some(peer);
+                        }
+                    }
+                    Err(HostError::NotResumable) => {
+                        self.host.unbind_peer(peer);
+                        report.calls.push(HostCall::UnbindPeer { peer });
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                self.host.unbind_peer(peer);
+                report.calls.push(HostCall::UnbindPeer { peer });
+            }
             self.clear_live(invitation, conn);
             if event_seen {
                 self.conns.remove(&conn);
@@ -590,6 +767,175 @@ impl QuicHost {
             .filter(|entry| matches!(entry, Conn::Bound(bound) if bound.held.is_some()))
             .count();
         Ok(())
+    }
+
+    /// One `ServerEvent`, as phase 1 polled it.
+    fn on_event(
+        &mut self,
+        event: ServerEvent,
+        now_ms: u64,
+        report: &mut QuicPumpReport,
+    ) -> Result<(), HostError> {
+        match event {
+            ServerEvent::HelloReceived { conn, hello, .. } => {
+                self.on_hello(conn, hello.wire_version, &hello.credential, now_ms, report)
+            }
+            ServerEvent::Closed { conn, reason } => {
+                match self.conns.get_mut(&conn) {
+                    Some(Conn::Bound(bound)) => {
+                        bound.transport_closed.get_or_insert(reason);
+                        bound.event_seen = true;
+                    }
+                    Some(Conn::Retiring(retiring)) => retiring.event_seen = true,
+                    None => {}
+                }
+                report.transport_closes.push((conn, reason));
+                Ok(())
+            }
+        }
+    }
+
+    /// N-5: one `ServerNotice::Resume`, in exact order.
+    fn on_resume(
+        &mut self,
+        conn: ConnectionId,
+        request_bytes: &[u8],
+        now_ms: u64,
+        report: &mut QuicPumpReport,
+    ) -> Result<(), HostError> {
+        // (1) Decode; a malformed request is refused with no host call.
+        let request = match codec_resume::decode_request(request_bytes) {
+            Ok(request) => request,
+            Err(_) => {
+                self.refuse_resume(conn, CloseCode::AuthRefused, report);
+                return Ok(());
+            }
+        };
+        // (2) Decide.
+        let result = self.host.resume_peer(&request, now_ms);
+        report.calls.push(HostCall::ResumePeer {
+            conn,
+            result: result.clone(),
+        });
+        let answer = match result {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.refuse_resume(conn, CloseCode::Shutdown, report);
+                return Err(error);
+            }
+        };
+        match answer {
+            // (3) Refused: hang up at once (Question 2 (b)).
+            ResumeAnswer::Rejected(rejected) => {
+                let code = match rejected.reason {
+                    ResumeRejection::Denied => CloseCode::AuthRefused,
+                    ResumeRejection::Busy => CloseCode::ServerBusy,
+                };
+                self.refuse_resume(conn, code, report);
+            }
+            // (4) Accepted.
+            ResumeAnswer::Accepted { peer, accepted } => {
+                // The invitation: a bound connection whose peer matches,
+                // else the record whose grace holds it.
+                let mut old_conn: Option<ConnectionId> = None;
+                let mut invitation: Option<InvitationId> = None;
+                for (c, entry) in &self.conns {
+                    if let Conn::Bound(bound) = entry {
+                        if bound.peer == peer {
+                            old_conn = Some(*c);
+                            invitation = Some(bound.invitation);
+                            break;
+                        }
+                    }
+                }
+                if invitation.is_none() {
+                    invitation = self
+                        .invitations
+                        .iter()
+                        .find_map(|(id, record)| (record.graced == Some(peer)).then_some(*id));
+                }
+                let invitation =
+                    invitation.ok_or(HostError::Invariant("resumed session has no invitation"))?;
+                // H5: retire the old connection before the answer.
+                if let Some(old) = old_conn {
+                    self.retire_resumed(old, Some(report));
+                }
+                let answer = codec_resume::encode_down(&ResumeDown::Answer(
+                    ResumeResult::Accepted(accepted.clone()),
+                ))
+                .map_err(|_| HostError::Invariant("resume answer failed to encode"))?;
+                let bound = Bound {
+                    peer,
+                    epoch: accepted.epoch,
+                    invitation,
+                    framing: Framing::V2,
+                    fence: accepted.granted,
+                    frames: 0,
+                    held: None,
+                    stalled_since: None,
+                    transport_closed: None,
+                    drained: false,
+                    event_seen: false,
+                };
+                match self.server.accept_resume(conn, &answer) {
+                    Ok(()) => {
+                        self.conns.insert(conn, Conn::Bound(bound));
+                        if let Some(record) = self.invitations.get_mut(&invitation) {
+                            record.live = Some(conn);
+                            record.graced = None;
+                        }
+                        report.resumes.push(ResumeReport {
+                            conn,
+                            outcome: ResumeOutcome::Accepted {
+                                invitation,
+                                peer,
+                                granted: accepted.granted,
+                            },
+                        });
+                    }
+                    Err(ServerError::Closed(reason)) => {
+                        self.conns.insert(
+                            conn,
+                            Conn::Bound(Bound {
+                                transport_closed: Some(reason),
+                                ..bound
+                            }),
+                        );
+                        if let Some(record) = self.invitations.get_mut(&invitation) {
+                            record.live = Some(conn);
+                            record.graced = None;
+                        }
+                        report.resumes.push(ResumeReport {
+                            conn,
+                            outcome: ResumeOutcome::Lost { reason },
+                        });
+                    }
+                    Err(_) => {
+                        self.host.unbind_peer(peer);
+                        report.calls.push(HostCall::UnbindPeer { peer });
+                        if let Some(record) = self.invitations.get_mut(&invitation) {
+                            record.graced = None;
+                        }
+                        report.resumes.push(ResumeReport {
+                            conn,
+                            outcome: ResumeOutcome::Lost {
+                                reason: CloseReason::EndpointFailed,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// N-5: refuse a resume opening and record its outcome.
+    fn refuse_resume(&mut self, conn: ConnectionId, code: CloseCode, report: &mut QuicPumpReport) {
+        let _ = self.server.refuse(conn, code);
+        report.resumes.push(ResumeReport {
+            conn,
+            outcome: ResumeOutcome::Refused { code },
+        });
     }
 
     /// B§4.3: one `HelloReceived`, in exact precedence.
@@ -619,6 +965,18 @@ impl QuicHost {
         if wire_version != self.host.protocol().as_u8() {
             refuse(&mut self.server, report, CloseCode::VersionRefused);
             return Ok(());
+        }
+        // N-8: a new hello for a graced invitation ends the grace first.
+        if let Some(graced) = self
+            .invitations
+            .get(&invitation)
+            .and_then(|record| record.graced)
+        {
+            self.host.unbind_peer(graced);
+            report.calls.push(HostCall::UnbindPeer { peer: graced });
+            if let Some(record) = self.invitations.get_mut(&invitation) {
+                record.graced = None;
+            }
         }
         // 3. Supersession: the newest connection wins (B§16 Q3).
         let live = self
@@ -700,6 +1058,7 @@ impl QuicHost {
                         epoch,
                         invitation,
                         framing,
+                        fence: ConnectionFence::FIRST,
                         frames: 0,
                         held: None,
                         stalled_since: None,
@@ -715,6 +1074,30 @@ impl QuicHost {
                     conn,
                     outcome: HelloOutcome::Accepted { invitation, peer },
                 });
+                // N-3: a `/2` hello is followed by a resume ticket, the first
+                // frame after the welcome.
+                if self.resumable && framing == Framing::V2 {
+                    let proof = {
+                        let record = self
+                            .invitations
+                            .get(&invitation)
+                            .ok_or(HostError::Invariant("matched invitation vanished"))?;
+                        resume_proof(&record.credential, epoch)?
+                    };
+                    let result = self.host.issue_resume_ticket(peer, proof);
+                    report.calls.push(HostCall::IssueResumeTicket {
+                        peer,
+                        result: result.as_ref().map(|_| ()).map_err(Clone::clone),
+                    });
+                    let bytes = result?;
+                    if self
+                        .server
+                        .try_send_channel(conn, Channel::Resume, &bytes)
+                        .is_err()
+                    {
+                        report.frames_discarded += 1;
+                    }
+                }
             }
             Err(ServerError::Closed(reason)) => {
                 self.host.unbind_peer(peer);
@@ -791,6 +1174,36 @@ impl QuicHost {
                 Ok(Some((channel, frame))) => {
                     if let Some(bound) = self.bound_mut(conn) {
                         bound.frames += 1;
+                    }
+                    // N-4: fence-tag each fresh frame before routing it (a
+                    // held retry is exempt).
+                    if self.resumable {
+                        let Some((peer, fence)) =
+                            self.bound(conn).map(|bound| (bound.peer, bound.fence))
+                        else {
+                            return Ok(());
+                        };
+                        let check = self.host.check_frame(peer, fence);
+                        report.calls.push(HostCall::CheckFrame {
+                            conn,
+                            peer,
+                            fence,
+                            result: check.clone(),
+                        });
+                        match check {
+                            Ok(()) => {}
+                            Err(HostError::SessionFenced) => {
+                                report.frames_refused += 1;
+                                self.retire_resumed(conn, Some(report));
+                                return Ok(());
+                            }
+                            Err(HostError::UnknownPeer) => {
+                                report.frames_refused += 1;
+                                self.fence(conn, FenceCause::EpochClosed, Some(report));
+                                return Ok(());
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                     let disposition = match channel {
                         Channel::Lane0 => self.ingest_one(conn, &frame, now_ms, report)?,
@@ -1132,6 +1545,55 @@ impl QuicHost {
         }
     }
 
+    /// As [`fence`](Self::fence) without the unbind (T025b-q N-5, H5): the
+    /// session moved to another connection, so the host keeps the peer. Closes
+    /// with `SessionFenced` in `Discard` mode, discards a held frame, clears
+    /// the invitation's live binding, retires the entry and records the fence
+    /// with cause `Resumed`.
+    fn retire_resumed(
+        &mut self,
+        conn: ConnectionId,
+        report: Option<&mut QuicPumpReport>,
+    ) -> Option<Fence> {
+        let Some(Conn::Bound(bound)) = self.conns.remove(&conn) else {
+            return None;
+        };
+        let _ = self
+            .server
+            .close(conn, CloseCode::SessionFenced, CloseMode::Discard);
+        self.clear_live(bound.invitation, conn);
+        self.conns.insert(
+            conn,
+            Conn::Retiring(Retiring {
+                event_seen: bound.event_seen,
+            }),
+        );
+        let fence = Fence {
+            conn,
+            peer: bound.peer,
+            cause: FenceCause::Resumed,
+        };
+        if let Some(report) = report {
+            if bound.held.is_some() {
+                report.frames_discarded += 1;
+            }
+            report.fences.push(fence);
+        }
+        Some(fence)
+    }
+
+    /// N-8: an operator change (`set_invitation_grants`,
+    /// `set_invitation_control`) ends the grace it touches, untraced.
+    fn end_grace_for(&mut self, id: InvitationId) {
+        let graced = self.invitations.get(&id).and_then(|record| record.graced);
+        if let Some(graced) = graced {
+            self.host.unbind_peer(graced);
+            if let Some(record) = self.invitations.get_mut(&id) {
+                record.graced = None;
+            }
+        }
+    }
+
     fn bound_ids(&self) -> Vec<ConnectionId> {
         self.conns
             .iter()
@@ -1196,6 +1658,7 @@ impl QuicHost {
                 control: ControlGrant { actors },
                 grants,
                 live: None,
+                graced: None,
             },
         );
         Ok(id)
@@ -1212,6 +1675,10 @@ impl QuicHost {
             .invitations
             .remove(&id)
             .ok_or(QuicHostError::UnknownInvitation)?;
+        // N-8: revoking an invitation ends the grace it holds.
+        if let Some(graced) = record.graced {
+            self.host.unbind_peer(graced);
+        }
         Ok(record
             .live
             .and_then(|conn| self.fence(conn, FenceCause::Revoked, None)))
@@ -1228,6 +1695,8 @@ impl QuicHost {
         if self.poisoned {
             return Err(QuicHostError::Poisoned);
         }
+        // N-8: changing the grants of a graced invitation ends the grace.
+        self.end_grace_for(id);
         let record = self
             .invitations
             .get(&id)
@@ -1301,6 +1770,8 @@ impl QuicHost {
         if self.poisoned {
             return Err(QuicHostError::Poisoned);
         }
+        // N-8: changing the control of a graced invitation ends the grace.
+        self.end_grace_for(id);
         let record = self
             .invitations
             .get(&id)
@@ -1481,4 +1952,316 @@ enum Disposition {
     Hold,
     /// The binding was fenced: stop this connection.
     Stop,
+}
+
+// ---------------------------------------------------------------------------
+// Fix-round unit tests (F3, F5, F6): arms the public rig cannot race into.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::net::SocketAddr;
+    use std::time::Instant;
+
+    use crpg_net::protocol_resume::ResumeRequest;
+    use crpg_net_quic::{
+        ClientConfig, ClientLimits, QuicClient, ServerConfig, ServerIdentity, ServerLimits,
+    };
+    use crpg_sim::HistoryWorld;
+
+    use crate::host::{HostConfig, ProtocolSelection};
+
+    const NOW: u64 = 1_000;
+    const WAIT: Duration = Duration::from_secs(30);
+    const FIXTURE: &str = include_str!("../tests/fixtures/three_combatants.json");
+    const CERT: &[u8] = include_bytes!("../../crpg-net-quic/tests/fixtures/server_a.cert.der");
+    const KEY: &[u8] = include_bytes!("../../crpg-net-quic/tests/fixtures/server_a.key.pk8.der");
+    const CREDENTIAL: [u8; 32] = [0xA1; 32];
+
+    fn fixture() -> HistoryWorld {
+        let mut history: HistoryWorld =
+            serde_json::from_str(FIXTURE).expect("fixture loads through validated serde");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        history
+    }
+
+    fn server_identity() -> ServerIdentity {
+        ServerIdentity::new(CERT.to_vec(), KEY.to_vec())
+    }
+
+    fn client_config() -> ClientConfig {
+        ClientConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            pin: server_identity().pin(),
+            limits: ClientLimits::v1(),
+        }
+    }
+
+    fn credential() -> Credential {
+        Credential::new(CREDENTIAL.to_vec()).expect("credential length in transport bounds")
+    }
+
+    /// A resumable adapter over the fixture host, with A registered.
+    fn adapter() -> (QuicHost, u64) {
+        let host = Host::from_history(
+            fixture(),
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let server = QuicServer::bind_resumable(ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            identity: server_identity(),
+            limits: ServerLimits::v1(),
+        })
+        .expect("bind resumable server");
+        let qh = QuicHost::start_resumable(host, server, NOW).expect("starts over a fresh host");
+        let mut qh = qh;
+        qh.register_invitation(Invitation {
+            credential: credential(),
+            control: ControlGrant { actors: vec![] },
+            grants: DisclosureGrants::default(),
+        })
+        .expect("registers A");
+        (qh, NOW)
+    }
+
+    /// Pumps at `+100 ms` until `cond` holds; guards only.
+    fn pump_until(
+        qh: &mut QuicHost,
+        now: &mut u64,
+        what: &str,
+        mut cond: impl FnMut(&QuicPumpReport) -> bool,
+    ) -> QuicPumpReport {
+        let start = Instant::now();
+        loop {
+            *now += 100;
+            let report = qh.pump(*now).expect("pump");
+            if cond(&report) {
+                return report;
+            }
+            assert!(start.elapsed() < WAIT, "deadline: {what}");
+            qh.wait(Duration::from_millis(5));
+        }
+    }
+
+    /// Connects and accepts a `/2` hello of A through the adapter.
+    fn connect_v2(qh: &mut QuicHost, now: &mut u64) -> (QuicClient, ConnectionId, PeerHandle) {
+        let addr = qh.local_addr();
+        let hello = crpg_net_quic::Hello {
+            wire_version: 2,
+            credential: credential(),
+        };
+        let pending = std::thread::spawn(move || {
+            QuicClient::connect_framed(client_config(), addr, &hello, Framing::V2)
+        });
+        let report = pump_until(qh, now, "hello decided", |report| !report.hellos.is_empty());
+        assert_eq!(report.hellos.len(), 1, "{:?}", report.hellos);
+        let decision = report.hellos[0].clone();
+        let HelloOutcome::Accepted { peer, .. } = decision.outcome else {
+            panic!("expected Accepted, got {decision:?}");
+        };
+        let client = pending.join().expect("client thread").expect("connect");
+        (client, decision.conn, peer)
+    }
+
+    fn request(epoch: [u8; 16], proof_bytes: Vec<u8>) -> ResumeRequest {
+        ResumeRequest {
+            epoch,
+            fence: ConnectionFence::new(1).expect("first fence"),
+            proof: ResumeProof::new(proof_bytes).expect("32-byte proof"),
+            claims: Vec::new(),
+        }
+    }
+
+    /// F5a (C4): a frame on a connection whose session fence moved on is
+    /// refused and retired as `Resumed`; the host session stays bound.
+    #[test]
+    fn a_fenced_frame_retires_without_unbinding() {
+        let (mut qh, mut now) = adapter();
+        let (mut client, conn, peer) = connect_v2(&mut qh, &mut now);
+        let epoch = qh.host.epoch(peer).expect("bound");
+        // Move the session fence behind the adapter, as a live resume would.
+        let proof = resume_proof(&credential(), epoch).expect("proof");
+        let answer = qh
+            .host
+            .resume_peer(&request(epoch, proof.as_bytes().to_vec()), now)
+            .expect("resume decides");
+        assert!(matches!(answer, ResumeAnswer::Accepted { .. }));
+
+        client.try_send(&[2, 1, 0, 0]).expect("client lane-0 send");
+        let report = pump_until(&mut qh, &mut now, "frame refused", |report| {
+            report.frames_refused > 0
+        });
+        assert_eq!(report.frames_refused, 1);
+        assert_eq!(
+            report.fences,
+            vec![Fence {
+                conn,
+                peer,
+                cause: FenceCause::Resumed,
+            }]
+        );
+        assert!(
+            report
+                .calls
+                .iter()
+                .all(|call| !matches!(call, HostCall::UnbindPeer { .. })),
+            "the resumed binding is not unbound: {:?}",
+            report.calls
+        );
+        assert_eq!(qh.host().epoch(peer), Ok(epoch), "the peer stays bound");
+    }
+
+    /// F5b (C6): a frame for a session the host no longer has is refused and
+    /// fenced as `EpochClosed`, not `Resumed`.
+    #[test]
+    fn a_frame_for_an_unbound_peer_fences_as_epoch_closed() {
+        let (mut qh, mut now) = adapter();
+        let (mut client, conn, peer) = connect_v2(&mut qh, &mut now);
+        qh.host.unbind_peer(peer);
+        client.try_send(&[2, 1, 0, 0]).expect("client lane-0 send");
+        // Queue the frame before the pump: phase 2's fence check must see it
+        // before phase 4's epoch reconcile fences the connection.
+        let start = Instant::now();
+        while qh
+            .connection_stats(conn)
+            .map_or(0, |stats| stats.inbound_frames)
+            == 0
+        {
+            assert!(start.elapsed() < WAIT, "deadline: frame queued");
+            qh.wait(Duration::from_millis(5));
+        }
+        let report = pump_until(&mut qh, &mut now, "frame refused", |report| {
+            report.frames_refused > 0
+        });
+        assert_eq!(report.frames_refused, 1);
+        assert_eq!(
+            report.fences,
+            vec![Fence {
+                conn,
+                peer,
+                cause: FenceCause::EpochClosed,
+            }]
+        );
+        assert!(
+            report
+                .calls
+                .iter()
+                .all(|call| !matches!(call, HostCall::UnbindPeer { .. })),
+            "an unbound peer is not unbound again: {:?}",
+            report.calls
+        );
+        assert_eq!(qh.host().epoch(peer), Err(HostError::UnknownPeer));
+    }
+
+    /// X5: a held frame is discarded when a resumed binding retires. No
+    /// check-frame refusal can coincide with a held frame (the held retry
+    /// always runs first and stops the drain), so the private discard arm is
+    /// reached directly.
+    #[test]
+    fn a_held_frame_is_discarded_when_a_resumed_binding_retires() {
+        let (mut qh, mut now) = adapter();
+        let (client, conn, peer) = connect_v2(&mut qh, &mut now);
+        let _client = client;
+        match qh.conns.get_mut(&conn) {
+            Some(Conn::Bound(bound)) => bound.held = Some(vec![1, 2, 3]),
+            _ => panic!("expected a bound connection"),
+        }
+        let mut report = QuicPumpReport::new();
+        let fence = qh
+            .retire_resumed(conn, Some(&mut report))
+            .expect("a bound entry retires");
+        assert_eq!(
+            fence,
+            Fence {
+                conn,
+                peer,
+                cause: FenceCause::Resumed,
+            }
+        );
+        assert_eq!(report.frames_discarded, 1);
+        assert_eq!(report.fences, vec![fence]);
+    }
+
+    /// F6 (G2, G3): `Transport` and `Reset` losses start a grace too.
+    #[test]
+    fn transport_and_reset_losses_start_a_grace() {
+        for reason in [CloseReason::Transport, CloseReason::Reset] {
+            let (mut qh, mut now) = adapter();
+            let (_client, conn, peer) = connect_v2(&mut qh, &mut now);
+            match qh.conns.get_mut(&conn) {
+                Some(Conn::Bound(bound)) => {
+                    bound.transport_closed = Some(reason);
+                    bound.drained = true;
+                }
+                _ => panic!("expected a bound connection"),
+            }
+            let report = pump_until(&mut qh, &mut now, "grace from a silent loss", |report| {
+                report
+                    .calls
+                    .iter()
+                    .any(|call| matches!(call, HostCall::BeginGrace { result: Ok(_), .. }))
+            });
+            assert!(
+                report.calls.iter().any(|call| matches!(
+                    call,
+                    HostCall::BeginGrace {
+                        peer: p,
+                        result: Ok(_)
+                    } if *p == peer
+                )),
+                "a {reason:?} close is a silent loss: {:?}",
+                report.calls
+            );
+            assert!(qh.host().grace_deadline(peer).is_some());
+        }
+    }
+
+    /// F4b (O2): `end_grace_for` clears the grace record, not just the host
+    /// deadline. Phase 4's N-6 sweep clears a stale record on the next pump,
+    /// so the public hello path cannot distinguish the mutant; assert the
+    /// state directly after the public change, with no pump in between.
+    #[test]
+    fn a_grant_change_clears_the_grace_record() {
+        let (mut qh, mut now) = adapter();
+        let (client, conn, peer) = connect_v2(&mut qh, &mut now);
+        let _client = client;
+        match qh.conns.get_mut(&conn) {
+            Some(Conn::Bound(bound)) => {
+                bound.transport_closed = Some(CloseReason::IdleTimeout);
+                bound.drained = true;
+            }
+            _ => panic!("expected a bound connection"),
+        }
+        pump_until(&mut qh, &mut now, "begin grace", |report| {
+            report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::BeginGrace { result: Ok(_), .. }))
+        });
+        let invitation = qh
+            .invitations
+            .iter()
+            .find_map(|(id, record)| (record.graced == Some(peer)).then_some(*id))
+            .expect("the grace is recorded");
+        qh.set_invitation_grants(invitation, DisclosureGrants::default())
+            .expect("a valid grant change");
+        assert_eq!(qh.host().grace_deadline(peer), None);
+        assert!(
+            qh.invitations
+                .get(&invitation)
+                .expect("known invitation")
+                .graced
+                .is_none(),
+            "the ended grace's record is cleared"
+        );
+    }
 }

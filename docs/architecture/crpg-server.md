@@ -5,8 +5,9 @@
 `crpg-server` owns authoritative world state. As of T022 it is a library plus
 a thin dedicated binary (D02): the library is the one platform-neutral host
 that the Windows embedded single-player adapter and the Windows/Linux
-dedicated adapters will reuse, and the binary stays a wiring shell that
-still refuses to run until the dedicated product (T040) wires it. The exact contract —
+dedicated adapters reuse through the T154a run loop, and the binary stays a
+wiring shell that still refuses to run until the dedicated product (T040)
+wires it. The exact contract —
 API, error precedence, numeric caps, checkpoint shape and acceptance cases —
 is the "Specification revision — 2026-09-29" appendix of
 [T022](../../tasks/T022.md); the reasoning is
@@ -30,7 +31,9 @@ configuration (T040); reconnect, resume and the 30 s grace (T025a/T025b);
 production interest facts
 (T027a–c supply values for these grant shapes); save slot/autosave policy,
 the save directory and the incarnation source (T040); OS service
-integration; listen-server mixed mode; and the GM endpoint.
+integration; listen-server mixed mode; and the GM endpoint. The run loop and
+the in-memory local hosting exist since T154a, but nothing reads a clock or
+starts a thread yet (T154b) and the QUIC hosting of the same loop is T154d.
 
 ## Where it sits
 
@@ -461,20 +464,208 @@ and a validated mesh.
 | sim refuses `place`, `set_route`, `clear_route`, `validate_move` (trusted) | `Err(Move(e))` |
 | `host_move` turn check | `Err(Combat(e))` |
 
+## Protocol v4 sessions (T037b)
+
+A v4 session is a v3 session plus a v4 state (Reading 1): `V3Session` carries
+`v4: Option<Box<V4State>>` (`None` for a v3 session), and every v3 path —
+binding, staging, pacing, throttle, pages, receipts, the retry cache,
+`cached_status_v3` — serves it unchanged. Only the points that produce or read
+bytes branch on `v4`: the intent codec, the receipt frames, the page and the
+staging page. `bind_v4_peer` is `bind_v3_peer` with the same precedence and
+errors, plus `V4State { positions: PositionView::new(SessionEpoch(epoch)),
+withheld: [] }`; `session_wire` is `4`. Lane-0 intents decode with
+`codec_v4::decode_intent` and are cached as `codec_v4::encode_intent` bytes; a
+decoded `DeclareMove` resolves its actor like any other v4 intent and is a
+move request (T037c). A v1/v2/v3 intent body maps
+into the v4 vocabulary in one `Frame`, so the pipeline below `decode` has one
+shape.
+
+- **Positions (HM-6, Reading 16).** `V4State.positions` is the session's
+  `PositionView`, and `position_rows(world, grants, withheld)` is one
+  `PositionRow` per disclosure-grant entry, in stored order, whose entity is
+  present, live and has a mover: its key, `granted` exactly when the operator
+  has not withheld that entity from this viewer, its raw point and
+  `moving = mover.route().is_some()`. The withheld list is per session, empty
+  by default, so the default is HM-6's "presence minus nothing"; no authoring
+  setting or perception rule is implied.
+- **Pages (B-5, B-6).** A v4 page is the v3 layout built by
+  `project_page_v4` on clones of the interest, fact and position views, with
+  B-4's rows: `[V3(receipt)?] ++ enters ++ events ++ rest ++ [V3(Clock)?] ++
+  [V3(HostFacts)?]`, the `Position` ops being the page's tail, cut by
+  `codec_v4::frame_spans`. Committing the page installs all three clones; a
+  held page changes none. Each v3 event candidate is wrapped as
+  `EventCandidate::V4::V3`; a `HistoryEvent::Moved` becomes
+  `EventCandidate::Moved` with the post-page id, its raw points, and
+  `disclose` exactly when the same page's rows carry a granted row for that
+  entity. `Moved` never reaches a v3 session's page.
+- **Staging (HM-7, Reading 18).** A v4 staging projects the snapshot with
+  `project_snapshot_v4` on the same clones, then builds the anchoring page:
+  `project_page_v4` with B-4's rows followed by `[V3(Clock), V3(HostFacts)]`,
+  cut by `codec_v4::frame_spans`, one `event_seq` per frame. The whole plan
+  must fit `OUTBOX_MAX_ENTRIES_V4` (94) and `OUTBOX_MAX_BYTES_V4` (2,880,916),
+  else `Invariant("v4 plan exceeds the outbox bound")`; the commit queues
+  every frame after the transfer frames, moves `next_event_seq` past the last
+  and restarts the throttle with all of them counted. A v3 staging is still
+  the one `[Clock, HostFacts]` delta.
+- **Withholding (B-8).** `set_position_withheld(peer, entities)` checks
+  `Closed`, `UnknownPeer`, `NotV4Peer`, then `InvalidGrants` (more than
+  `MAX_GRANT_IDENTITIES` entries or a duplicate), stores the list sorted and
+  publishes to that session alone (`publish_v3(Some(peer), &[])`). Every
+  immediate consequence of the change is a `Position` op — a withdrawal for a
+  newly withheld entity, a fresh anchor for a re-granted one; an unchanged
+  list publishes a page with no ops and therefore no frame. `Moved` follows
+  the grant in the same page, so revoking after disclosure stops further
+  positions at once.
+- **Older wires unchanged (B-9).** A v1, v2 or v3 session has no `V4State`,
+  receives no `Position` or `Moved` op and keeps byte-identical entries and
+  capture views whether or not a v4 session shares the host.
+
+## The turn-based move and samples (T037c)
+
+`DeclareMove` is the turn-based player's move on lane 0 (H3, HM-9), and every
+committed tick publishes each v4 session's movement samples (H4, HM-5).
+Neither changes a v1–v3 session's bytes.
+
+- **Resolution and class (Readings 19).** A v4 `DeclareMove { destination }`
+  resolves its actor exactly as T141 D-2 (`InterestView`, `present &&
+  action_actor`, the control list; else `Rejected(NotAuthorized)`), then is a
+  move request for that actor with the raw `Fx16_16` destination. The class
+  checks run in order: `validate_action(EndTurn { actor })` (a refusal is
+  `code(e)` and sets `last_combat_error`), `plan_route(.., RouteTag(seq))`
+  (any refusal is `IllegalAction`, `last_combat_error` unchanged), then
+  `validate_move` (`Combat(e)` as the turn error, any other `MoveError`
+  `IllegalAction`). The turn check precedes navigation on purpose: an
+  out-of-turn player gets the turn error, not a spent query. Every terminal
+  refusal goes through the ordinary `reject` path, so the sequence is
+  consumed and one receipt is logged; lane 0's own rate window still applies
+  and the lane-1 per-window query cap does not.
+- **Execution (C-3).** An accepted move reserves the accepted class, runs
+  `history.perform_move` and ends in `commit_accepted` with evidence
+  `CombatAction::Stop { actor }` and no returned outcome: the
+  `CapturedRecord` carries `outcome: None` and the one `Moved` envelope,
+  `executions()` moves by one, the retry cache takes the lane-0 entry, and
+  every v3/v4 session gets its page (v1/v2 sessions get the permitted legacy
+  state ops only; `Moved` has no v2 form). The retry and dedup rules are lane
+  0's: identical bytes never move twice.
+- **Samples (C-5).** After every committed tick — `tick` step 4 and
+  `advance`'s tick, whether the record/publication tail returned `Ok` or an
+  `Invariant` — every v4 session, ascending by handle, computes
+  `position_rows` and `project_samples(view, positions, rows, refresh)` with
+  `refresh = server_tick % POLICY_SAMPLE_REFRESH_TICKS == 0` (20 ticks, one
+  second at 20 Hz), then `movement_v4::sample_datagrams(server_tick,
+  processed_seq, &entries)` (T037d's `MoveLane.processed_seq`; 0 before any
+  lane-1 receipt). The queue **replaces**
+  the previous tick's datagrams: the old ones are discarded and their egress
+  freed first, and the new ones are queued only if all of them fit the
+  session's egress room; otherwise none is (datagram loss, repaired by the
+  next change or refresh). Only positions the viewer was anchored are
+  sampled, and a withheld or ungranted row is skipped, so revocation is
+  immediate. Samples never enter the delivery log and consume no
+  `event_seq`; a refused tick, a paused `advance` and every other operation
+  produce none.
+- **Reading them (C-6).** `take_samples(peer)` checks `UnknownPeer` then
+  `NotV4Peer` and returns the queue, emptying it and freeing its egress; a
+  closed host has no sessions, so it is `UnknownPeer`.
+- **Lane-1 egress (C-7, Reading 23).** `V4State::lane1_egress` counts the
+  session's lane-1 frames and bytes — its sample datagrams, and from T037d its
+  released untaken receipts and one reservation per unreleased slot — and the
+  host's `egress_bytes` includes those bytes. `room_for` and `pace_session`
+  test `log.len() + lane1_frames` and `log_bytes + lane1_bytes`; a v1–v3
+  session counts zero, so its checks are unchanged. A fence, `unbind_peer` and
+  `shutdown` release lane-1 egress with the session. Lane 1 never fails on
+  those caps after admission, and taking a sample frees its room.
+
+## Lane 1 (T037d)
+
+Lane 1 is the real-time and exploration movement lane (HM-2, HM-3; Readings 9,
+10, 15). `Host::ingest_move(peer, bytes, now_ms)` admits at most the session's
+next intent, synchronously, and `advance` decides every admitted intent once per
+call. Lane 1 keeps its own sequence, cache, move bucket and receipt queue per
+session (HM-10, Reading 22); only the shared intent and failure buckets are
+shared with lane 0.
+
+- **Admission before HM-2 (D-1).** `Closed`; `TimeRegression` (then `now_ms` is
+  recorded); an unbound handle is `Refused { None, Unauthenticated }`; both
+  shared intent buckets consume (`RateLimited`); the 4,096-byte frame cap
+  (`FrameTooLarge`); then per-peer and host ingress room (`QueueFull`). Nothing
+  is staged: a lane-1 frame spends the session's intent buckets per attempt but
+  never occupies the lane-0 FIFO (Reading 9).
+- **HM-2 (D-2).** After D-1: the session must be v4 (`UnsupportedVersion`),
+  the frame decodes with `movement_v4::decode_intent` (its code is
+  `move_codec_code`), its epoch must match (`SessionExpired`), and a `seq` that
+  is a slot or a cache entry is a duplicate (D-4) or, with other canonical
+  bytes, `SeqConflict` **and a fence**. Then the sequence range
+  (`SeqExhausted`, `SeqGap`, `StaleSeq`), the session's move bucket
+  (`TokenBucket::new(40, 20)`, `RateLimited`), the in-flight window
+  (`unreceipted + 1 > POLICY_MOVE_IN_FLIGHT`, 8) and the session's egress room
+  for one `MAX_MOVE_RECEIPT_BYTES` (60) reservation (`QueueFull`). Steps 1–8
+  consume no sequence and queue no receipt; the buckets keep what they spent.
+  Step 9 resolves the actor with T141 D-2's rule (the `InterestView`,
+  `present && action_actor`, the control list): without one the sequence is
+  consumed and a slot decided at once as `Rejected(NotAuthorized)` is appended;
+  otherwise `next_seq = seq + 1` and a pending slot takes the next host-wide
+  admission order.
+- **The decision window (D-5, D-6, D-7; Readings 12–14).** `advance` runs the
+  window after recording `now_ms` and before the timer, paused or running, at
+  `server_tick()`; `tick` never decides. Pending slots are taken in host-wide
+  admission order and, for each actor, only the last admitted one is decided —
+  every earlier one is `Superseded`, whichever session sent it. A winner that
+  is a combatant of a turn-based encounter is `Rejected(WrongMode)`; `MoveTo`
+  plans its route with `plan_route(.., RouteTag(seq))` (any refusal
+  `IllegalAction`) and sets it (`TurnBased` is `WrongMode`, any other refusal
+  `IllegalAction`); `Halt` clears it (any refusal `IllegalAction`); else the
+  outcome is `Accepted { start_tick: t + 1 }`, so the route starts in the stage
+  4 of the next tick in the same call when running, or on the first tick after
+  unpause. Decisions journal nothing, make no record and publish no lane-0
+  frame (Reading 21).
+- **Release and the cache (D-3).** Whenever a slot is decided, the session
+  releases from the front while the front is decided: the reservation becomes
+  the receipt's own length, the encoded
+  `MoveDown::Receipt(MoveReceipt { epoch, seq, actor, processed_tick, outcome })`
+  enters the receipt queue, `processed_seq` advances, and the slot moves into
+  the lane-1 cache (256 entries or 2 MiB of canonical plus receipt, oldest
+  evicted first). Receipts leave in `seq` order, one per consumed sequence. A
+  `Rejected` receipt spends the shared failure buckets and is never dropped by
+  them (Reading 15), unlike a lane-0 rejection.
+- **Duplicates (D-4).** A pending or held slot, or a cached entry whose receipt
+  is still queued, is `Duplicate { resent: false }`. A cached receipt is queued
+  again only if the session has egress room for it (`resent: true`), spending
+  the failure buckets when it is a rejection; without room it is
+  `resent: false`.
+- **Receipts and lifecycle (D-8 to D-10).** `take_move_receipts(peer)` checks
+  `UnknownPeer` then `NotV4Peer` and returns the queue in release order,
+  emptying it and freeing its egress. The queue is bounded by the egress frame
+  cap (128) through the same `room_for` checks. `unbind_peer`, a fence and
+  `shutdown` discard the session's lane-1 state; its pending slots are never
+  decided and get no receipt.
+- **Egress (C-7, Reading 23).** A session's lane-1 egress is its sample
+  datagrams, its released untaken receipts at their length and one frame plus
+  `MAX_MOVE_RECEIPT_BYTES` per unreleased slot; `room_for` and `pace_session`
+  count them beside the delivery log and the host's `egress_bytes` includes
+  them. Lane 1 never fails on the caps after admission: a slot's room is
+  reserved when it is admitted, so its receipt is never dropped.
+- **Samples (D-12).** A sample's `processed_seq` is the session's
+  `MoveLane.processed_seq`, the highest lane-1 `seq` receipted to it.
+
 ## Connections and bindings (T023b)
 
 A QUIC connection has no gameplay identity until the adapter binds it. The
 adapter keeps two private `BTreeMap`s. The first maps each registered
 invitation (32-byte credential, normalized control and disclosure grants,
-and its live connection) by a never-reused `InvitationId`. The second maps
-each mapped `ConnectionId` to either a bound entry (`PeerHandle`, epoch,
-acknowledged delivery watermark, frame ordinal, at most one held frame,
-stall start, transport-close state) or a retiring entry still being
-drained so the transport can forget it. A connection is mapped only after
-`accept` succeeds. One invitation has at most one bound connection, and a
-newer one supersedes it. `ConnectionId`s never enter host state: the host
-sees only `PeerHandle`s minted in bind order, so the same calls replayed in
-memory give the same handles and epochs.
+its live connection, and — on a resumable adapter — the handle of a session
+held through its grace, `graced: Option<PeerHandle>`) by a never-reused
+`InvitationId`. The second maps each mapped `ConnectionId` to either a
+bound entry (`PeerHandle`, epoch, acknowledged delivery watermark, frame
+ordinal, at most one held frame, stall start, transport-close state, and a
+`fence: ConnectionFence` — `FIRST` for a hello binding, the granted fence
+for a resume binding) or a retiring entry still being drained so the
+transport can forget it. A connection is mapped only after `accept` or
+`accept_resume` succeeds. One invitation has at most one bound connection,
+and a newer one supersedes it; a resumable adapter holds a `resumable`
+flag (`start_resumable` sets it) that turns on `poll_notice`, the ticket
+after a `/2` welcome, the fence tags and the grace. `ConnectionId`s never
+enter host state: the host sees only `PeerHandle`s minted in bind order, so
+the same calls replayed in memory give the same handles and epochs.
 
 ## Identity and delivery shape
 
@@ -589,8 +780,169 @@ a transfer frame cannot leak the transport record. A narrowing
 `set_invitation_grants` on a live `/2` binding stores the grants and
 returns `GrantChange::SnapshotStaged`; on `/1` it still fences
 (`Narrowed`). `QuicHost::start` takes a server from `QuicServer::bind` or
-`bind_dual`, never `bind_resumable` (T025b lifts this). `/1` connections
-carry only lane-0 frames and keep T023b's behaviour and trace.
+`bind_dual`, never `bind_resumable`; `QuicHost::start_resumable` accepts a
+server from any `bind*` (`bind_resumable` included), polls `poll_notice`,
+follows each `/2` welcome with a resume ticket, fence-tags every inbound
+frame, and starts a grace on a silent connection loss (see "Reconnect
+grace"). `/1` connections carry only lane-0 frames and keep T023b's
+behaviour and trace.
+
+## Reconnect grace (T025b)
+
+The host side of the 30-second reconnect grace: a disconnected snapshot
+session is held, without its binding, so the same session (same epoch) can
+resume on a new connection. Policy, never wire: `POLICY_RECONNECT_GRACE_MS`
+is 30_000 injected milliseconds. Exact contract:
+[T025b](../../tasks/T025b.md) (part i, the host side below; part q, the
+`quic.rs` adapter, follows).
+
+- **State.** Each `Session` carries a `fence: SessionFence` (from
+  `SessionFence::new(epoch)`) and a `proof: Option<ResumeProof>`; the host
+  carries `graces: BTreeMap<PeerHandle, Grace>` with
+  `Grace { session, deadline_ms }`. A grace holds at most `MAX_PEERS`
+  sessions counted together with live bindings, and injected-time expiry
+  in `sweep_graces` is its retirement path; proofs and fences never enter
+  a checkpoint.
+- **Ticket (`issue_resume_ticket`).** Stores the proof on a live resumable
+  session and returns its ticket bytes. Precedence: `Closed`, then
+  `UnknownPeer` for no live session (a graced handle included), then
+  `NotResumable` for a `bind_peer` session or a v4 session. Only
+  snapshot sessions (`bind_snapshot_peer`, `bind_v3_peer`) with no v4
+  state are ever resumable.
+- **Grace (`begin_grace`, `grace_deadline`).** Moves a live resumable
+  session with a stored proof into the grace map with
+  `deadline_ms = now_ms.saturating_add(POLICY_RECONNECT_GRACE_MS)` and
+  returns the deadline. Precedence: `Closed`, `TimeRegression`, then the
+  sweep, `UnknownPeer`, `NotResumable` (non-snapshot, v4, or no proof).
+  Commit purges the peer's staged commands, discards its delivery log as
+  `stage_snapshot`'s commit does, and moves nothing else.
+  `grace_deadline` is `Some(deadline)` while held, `None` otherwise
+  (`None` on a closed host).
+- **Resume (`resume_peer`).** Decides one `ResumeRequest` by epoch, live
+  or graced. `Closed` and `TimeRegression` are errors; every later
+  refusal is `Ok(Rejected(..))` with `request.epoch` and no state change
+  but the recorded time and the sweep. In order: unknown epoch is
+  `Denied`; missing proof or a constant-time proof mismatch is `Denied`;
+  a failing fence check is `Denied`; planning the resume snapshot
+  read-only is `Busy` on `QueueFull`, `Denied` on `CounterExhausted`,
+  `Err` on `Invariant`. Commit moves a graced session back to live,
+  stages the resume snapshot (`SnapshotCause::Resume`, cancel reason
+  `Superseded`) and returns `Accepted { peer, accepted }` with the epoch,
+  the granted fence and lane-0 progress (`finalized_through` is the last
+  new sequence). A refusal moves neither fence nor deadline.
+- **Fence (`check_frame`).** Confirms one frame's connection tag against
+  the session's current fence: `Closed`, then `UnknownPeer` for no live
+  session (a graced handle included), then `SessionFenced` on mismatch.
+- **A grace is not a binding.** A graced handle answers every per-peer
+  call as an unbound handle and gets no publication, receipt or capture
+  post-state; only `unbind_peer` (drops it), `grace_deadline` and
+  `resume_peer` see it. `unbind_peer` also drops a grace, every `bind_*`
+  counts both maps against `MAX_PEERS`, `pump` sweeps, `shutdown` clears
+  graces, and `session_count` counts both. A swept session is gone as by
+  `unbind_peer`: its handle and epoch retire for ever.
+
+The QUIC route (`start_resumable`) turns the host mechanism into the `0x91`
+wire, with `start` left byte-for-byte unchanged:
+
+- **Start.** `start_resumable(host, server, now)` has `start`'s precedence
+  (`HostClosed` → `HostInUse` → `TimeRegression`), `HostInUse` counting
+  graces; `is_resumable()` reports the flag. A resumable adapter polls
+  `poll_notice` and handles `ServerNotice::Resume` in phase 1.
+- **Ticket (N-3).** After a `/2` hello's `accept` succeeds and the binding
+  is recorded, the adapter calls `issue_resume_ticket(peer,
+  resume_proof(credential, epoch)?)` and sends the bytes on
+  `Channel::Resume`: the first frame after the welcome. A `/1` binding gets
+  no ticket, and a `start` adapter sends none.
+- **Fence tags (N-4).** A hello binding holds `ConnectionFence::FIRST`, a
+  resume binding its `granted`. In phase 2 each fresh frame (not a held
+  retry) is `check_frame`d before routing: `SessionFenced` retires the
+  connection with cause `Resumed`, `UnknownPeer` fences it `EpochClosed`,
+  and any other error poisons.
+- **Resume (N-5).** One `ServerNotice::Resume` is decoded, decided by
+  `resume_peer`, and answered: a `Rejected` closes at once with code 5
+  (`AuthRefused`, for `Denied`) or 7 (`ServerBusy`); an `Accepted` retires
+  a still-bound old connection with `retire_resumed` (no unbind), encodes
+  the answer, `accept_resume`s and binds the connection with `fence =
+  granted` and `Framing::V2`. The staged snapshot is delivered in phase 5,
+  after the answer.
+- **Grace on a silent loss (N-7).** Phase 6 starts a grace only for a
+  closed, drained, unheld `/2` binding whose reason is `IdleTimeout`,
+  `Transport` or `Reset`: `begin_grace` (traced `BeginGrace`), `Ok` →
+  `record.graced = Some(peer)`; `NotResumable` → unbind as today. Every
+  other binding unbinds exactly as today. Phase 4 also clears any
+  `record.graced` whose `grace_deadline` is `None` (the host swept it).
+- **Ending a grace (N-8).** A hello matching an invitation whose
+  `graced == Some(g)` unbinds `g` first (before supersession), and
+  `revoke_invitation`, `set_invitation_grants` and `set_invitation_control`
+  do the same, untraced.
+- **Proof (N-10).** `resume_proof(credential, epoch)` is the 32-byte
+  `blake3::keyed_hash(&credential, b"crpg-resume-proof/1" ++ epoch)` (the
+  credential must be exactly 32 bytes); the `blake3` edge is approved by
+  D68 Question 1 (b). No proof bytes reach a `HostCall`, report, `Debug` or
+  error.
+
+## The run loop (T154)
+
+T154a adds `run`, the module that actually runs the world. Nothing ran it
+before: `Host::advance` was called only by tests and the dedicated binary
+still refuses to start (T040). `HostLoop` owns the one cycle order and the
+20 Hz grid; `LocalHost` is the in-memory hosting that carries a local
+player's lane-0 and transfer frames to the one `Host`. The thread and clock
+that drive the loop are T154b's, lane 1 on the local link is T154c's, and
+the QUIC hosting (`QuicHosting`) is T154d's. Exact contract:
+[T154](../../tasks/T154.md).
+
+- **One order, one function.** `HostLoop::run_cycle` calls `intake`,
+  `drive_ai`, `advance`, `deliver` and `retire_captures`, once each, and
+  returns at the first error, so no later stage runs. `intake` is every
+  waiting frame and then one `Host::pump`; `drive_ai` is the hosting's
+  `AiHook`, if set; `advance` is the pause-aware driver; `deliver` hands each
+  peer its delivery and acknowledges what was accepted; `retire_captures` is
+  `acknowledge_captures(last_capture())`. The order is the spec's
+  submit/AI/advance/publish, with the AI driver after `pump` and before
+  `advance` (T153).
+- **The grid.** `TICK_PERIOD_MS` is 50 (20 Hz); `HostLoop::new(h, s)` puts
+  the first slot at `s` and `with_period` changes the period. `step(now)`
+  reads no clock and never blocks: a `now` below the last accepted one is
+  `LoopError::TimeRegression` and changes nothing; a `now` before the next
+  slot runs no cycle; otherwise it runs exactly one cycle, counts
+  `k = (now − next_due_ms) / period` skipped slots in `missed` and moves
+  `next_due_ms` to the first slot after `now`, so game time slows under
+  overload and never bursts. `cycles` counts the cycles attempted, a failed
+  one included; the schedule and counters have already moved when its error
+  returns.
+- **The hosting seam.** `Hosting` is the five stages with one error type.
+  `LocalHost` owns the `Host`, a `BTreeMap<PeerHandle, Link>` (ascending
+  handle order in every pass), the retired-link records and an optional
+  `AiHook`; the loop names no transport and no AI type. A later task adds
+  `QuicHosting` behind the same trait.
+- **Local links (B-6, B-7, B-9).** `attach` refuses an unbound handle
+  (`UnknownPeer`) before an existing link (`AlreadyAttached`) and makes two
+  bounded `sync_channel` queues of whole frames; `LocalClient` is the other
+  end (`Send`, not `Clone` or `Sync`). Intake retries a held frame first,
+  then takes at most `MAX_DRAIN_PER_CONNECTION` (128) fresh frames per link:
+  a `QueueFull` holds the frame and stops that link's drain, a transfer
+  frame (`0x81`/`0x82`) routes to `Host::ingest_transfer`, any other frame
+  to `Host::ingest`, `Unauthenticated`/`Unbound` retire the link, other
+  refusals are counted and dropped, and one `Host::pump` follows every link.
+  Deliver offers the host's entries in order until the down queue is full
+  and acknowledges the last accepted ordinal, so unaccepted entries stay
+  and are offered first next cycle. A link ends only by retirement — a
+  departed client, an unbound peer, or `UnknownPeer` at deliver — which
+  unbinds the peer, drops both server ends and records the link's final
+  counters in a bounded list (`MAX_RETIRED_RECORDS` 64, oldest dropped
+  first and counted in `retired_dropped`); `take_retired` drains it.
+  `LinkStats` is `#[non_exhaustive]` (`received`, `refused`, `held`, `sent`)
+  so T154c can add a lane-1 field without breaking a reader.
+- **Pause and state (Readings 4, 14).** Neither the loop nor `LocalHost`
+  reads `paused()`: a paused host still takes commands, runs the AI hook and
+  delivers; only `advance` declines to tick. The schedule, the links and the
+  hook are hosting state, not checkpoint state; `save_checkpoint` reads only
+  the host.
+- **Fences (Reading 9).** `run.rs` reads no clock, starts no thread, sleeps
+  nowhere and uses no blocking call: the client queues are tried with
+  `try_send`/`try_recv` and the loop is stepped by an injected `now_ms`.
+  T154b's `runner.rs` owns the one thread and the clock.
 
 ## Gate 10 (save/load equivalence)
 
@@ -658,3 +1010,10 @@ with T040/T041.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141d · Added the v3 publication section (intent pipeline and codes, the exact-status cache and its v1 projection, the page layout, candidates, room, overflow and per-session fencing) and replaced the T141c interim paragraph, so the doc matches the v3 intents and pages the host now has.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T141e · Added the v3 timing section (the running-host `Clock` heartbeat and the in-flight throttle with its frame and byte budget, receipts and notices dropped during a download), so the doc matches the throttle and heartbeat the host now has.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037a · Added the navigation and trusted movement section (binding steps, the one `plan_route`, `HOST_ROUTE_TAG`, the four trusted ops and their error order) and the `crpg-nav` edge to the diagram and edge paragraph, so the doc describes the mesh the host now keeps instead of a host with no navigation.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037b · Added the protocol v4 session section (v4 as a v3 session plus `V4State`, v4 lane-0 codec and receipts, `position_rows` and the withheld list, v4 pages and `Moved`, the anchoring staging page with its 94-entry/2,880,916-byte outbox bound, and the untouched v1–v3 wires), so the doc describes the v4 sessions the host now binds.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T037c · Added "The turn-based move and samples (T037c)" (the resolution and class order, the `commit_accepted` execution, the per-tick samples with their 20-tick refresh and replacement queue, `take_samples`, and lane-1 egress in `room_for`/pacing) and amended the T037b note that `DeclareMove` was a placeholder rejection, so the doc describes the move and the samples the host now produces.
+- 2026-11-16 (UTC) · opencode-go/deepseek-v4.1-flash + T037d · Added "Lane 1 (T037d)" (synchronous admission before HM-2, HM-2's checks and actor resolution, the `advance` decision window with supersede and HM-4's outcomes, release and the 256-entry cache, duplicates, receipts, lane-1 egress and samples' `processed_seq`) and amended the T037c sample and egress notes that named a placeholder `processed_seq` and the removed `V4State.egress` field, so the doc describes the lane the host now admits and decides.
+- 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T037b · Noted fix round 3b's six `host.rs` unit tests for the surviving mutants (s11, b07, w09, p12, p22, p24) and the b03/p06 equivalence reports, so the doc records how the suite pins the multi-frame staging count, the handle sentinel, per-session withheld publication, 256-op chunking, empty-page capture and the page `event_seq` sentinel.
+- 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the run-loop section (one cycle order, the 20 Hz grid and skip-not-burst, the `Hosting` seam, local intake/deliver and bounded retirement, pause and the no-clock/no-thread fence) and updated Scope, so the doc describes the loop the crate now has instead of a host nothing drives.
+- 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Added the reconnect-grace section (ticket, grace, resume, fence, expiry, and the grace-is-not-a-binding rule), so the doc describes the 30-second host-side grace the crate now holds.
+- 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Extended the reconnect-grace section with the resumable-adapter route (`start_resumable`, the ticket after the `/2` welcome, fence tags, the resume answer, grace on a silent loss, what ends a grace, and the keyed-BLAKE3 proof), and updated the connection-to-binding map and the `bind_resumable` sentence to the as-built `graced`/`fence` fields and `poll_notice` polling, so the doc describes the QUIC side the crate now has.

@@ -796,6 +796,12 @@ fn replay(
                         .extend(frames[..k].iter().cloned());
                     acked.insert(*peer, *through);
                 }
+                HostCall::IssueResumeTicket { .. }
+                | HostCall::CheckFrame { .. }
+                | HostCall::BeginGrace { .. }
+                | HostCall::ResumePeer { .. } => {
+                    return Err(format!("step {index}: resume call in a start trace"));
+                }
             }
         }
     }

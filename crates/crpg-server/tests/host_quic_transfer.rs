@@ -1597,6 +1597,12 @@ fn replay(
                         *entries = keep;
                     }
                 }
+                HostCall::IssueResumeTicket { .. }
+                | HostCall::CheckFrame { .. }
+                | HostCall::BeginGrace { .. }
+                | HostCall::ResumePeer { .. } => {
+                    return Err(format!("step {index}: resume call in a start trace"));
+                }
             }
         }
         for mirror in mirrors.iter().filter(|mirror| mirror.after == index + 1) {
