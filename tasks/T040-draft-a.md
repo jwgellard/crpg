@@ -462,6 +462,30 @@ review).
 
 ## Errors
 
+No new `HostError` or `QuicHostError` variant, no new `Display` text. The new
+error types are binary-only. Exit codes: `0` clean (`--help`, `--version`,
+shutdown); `2` any startup failure (parse, config, file, incarnation, bake);
+`1` a caught loop-thread error (`RunnerGone`/`RunnerPanicked`/`RunnerExit`).
+
+| Error | When |
+|---|---|
+| `CliError::UnknownFlag(flag)` | an argument starts `--`/`-` and is not a known flag |
+| `CliError::MissingValue(flag)` | a value flag is last, or followed by another flag |
+| `CliError::InvalidValue { flag, value }` | a value fails its parse (`--listen`, `--incarnation`, `--area-min`, `--area-max`) |
+| `CliError::UnexpectedPositional(arg)` | a non-flag argument is present |
+| `CliError::AreaBoundsIncomplete` | exactly one of `--area-min`/`--area-max` is given |
+| `ConfigError::Io { path, source }` | cert/key/log/invitation file missing or unreadable |
+| `ConfigError::Json { path, source }` | the `--config` file is not valid JSON, or a value has the wrong type |
+| `ConfigError::Missing(field)` | a required field is absent from CLI and file |
+| `ConfigError::InvalidUlid(text)` | `campaign_id` is not a 26-character ULID text |
+| `ConfigError::InvalidVersion(text)` | `campaign_version` is outside the save alphabet (`crates/crpg-server/src/save.rs:92`) |
+| `ConfigError::InvalidPoint(flag, text)` | an `--area-min`/`--area-max` value is not exactly three integers |
+| `ConfigError::IncarnationNotIncreasing { supplied, last }` | `supplied <= last` in `<save>.incarnation` |
+| `ConfigError::AreaBoundsIncomplete` | the CLI and file together give exactly one bound |
+
+Every startup error prints exactly one line to stderr —
+`crpg-server: <variant>[: <detail>]` — then the process exits 2.
+
 ## Tests
 
 ## What must not change
