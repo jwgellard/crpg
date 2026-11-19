@@ -478,6 +478,74 @@ section designs the flow the M6 `Assets` FFI object (import/scan/thumbnail,
 
 ## Usability acceptance criteria per M6 package
 
+"Every M6 contract carries the usability criteria T101 sets for it"
+(`docs/IMPLEMENTATION_PLAN.md:307`). Each criterion is measurable and names
+how to check it. The methods are R11's: tiny think-aloud rounds of ~5 testers
+(`docs/research/T099/R11-deep.md:5`), 3–5 evaluator heuristic passes
+(`docs/research/T099/R11-deep.md:7`), cognitive walkthroughs for first-run and
+novel flows (`docs/research/T099/R11-deep.md:9`), workflows over features
+(`docs/research/T099/R11-deep.md:19`), and a quantitative release gate
+(`docs/research/T099/R11-deep.md:17`). The user is the first human tester,
+then recruits module authors (spec risk 18, `docs/CRPG_ENGINE_SPEC.md:1785`);
+recruitment is opt-in with informed consent (`docs/research/T099/R11-deep.md:13`).
+
+- **T058 (`crpg-edit`).** *Criterion:* an agent, given only `crpgc` and the
+  schemas, assembles a §17.2-shaped campaign through `apply` with every error
+  actionable (pointer + code + suggested fix) and no unrecoverable refusal.
+  *Check:* the T100 benchmark baseline (`docs/IMPLEMENTATION_PLAN.md:300`),
+  scored on validity, playability, steps and errors.
+- **T059 (`crpgc apply`).** *Criterion:* a person can read an `apply` plan and
+  predict exactly which objects change, and an agent can write one from the
+  verb descriptions alone (no examples). *Check:* cognitive walkthrough of a
+  printed plan; T100 re-run against the JSON format.
+- **T060 (editor shell: explorer + problems).** *Criterion:* a new author
+  finds any campaign object in ≤ 3 clicks, and every Problems-panel entry is
+  click-to-jump to its source. *Check:* think-aloud; count clicks and jumps.
+- **T061 (schema-generated property forms).** *Criterion:* adding a field to a
+  schema shows in the form with zero UI work, and an author completes a
+  creature form without knowing the schema exists. *Check:* regenerate a field
+  and confirm the form renders it; think-aloud on the creature form.
+- **T062 (placement tools).** *Criterion:* select/move/rotate/snap/duplicate/
+  delete are all undoable and discoverable; an author places three props and
+  two creatures in ≤ 2 minutes without the docs. *Check:* think-aloud with a
+  timed placement brief.
+- **T063 (terrain).** *Criterion:* an author sculpts a simple heightfield in
+  ≤ 3 brush operations, undo restores it byte-identically, no crash. *Check:*
+  think-aloud plus a scripted undo probe.
+- **T064 (navmesh bake + overlay).** *Criterion:* an author bakes and sees the
+  walkable overlay in ≤ 2 actions, and a walled-off region is visibly
+  non-walkable. *Check:* cognitive walkthrough.
+- **T065 (creature editor).** *Criterion:* an author creates a creature, sets
+  `minimal-d6`, and sees the full stat block and modifier breakdown without
+  ever seeing JSON. *Check:* think-aloud (the same task the H-author gate
+  uses, `docs/IMPLEMENTATION_PLAN.md:310`).
+- **T066 (dialogue editor + text round trip).** *Criterion:* an author builds
+  the §17.2 three-node dialogue in graph view, toggles to text and back with
+  no change, and walks it in the simulator with all nodes reachable. *Check:*
+  think-aloud plus a byte-identical round-trip test (`docs/CRPG_ENGINE_SPEC.md:663`).
+- **T067 (quest editor).** *Criterion:* an author builds the two-state quest
+  and the reachability analysis confirms `completed` is reachable from the
+  start, flagged live. *Check:* cognitive walkthrough.
+- **T068 (Play).** *Criterion:* an author presses Play and reaches the combat
+  log with ≤ 1 request for help; save/quit/load reproduces identical state
+  (§17.2 item 11). *Check:* think-aloud across §17.2 items 6–11; the
+  save/load state-identity probe.
+- **T103 (intent layer, M6-R).** *Criterion:* the GUI's form edits and an
+  agent's `apply` verbs produce byte-identical receipts for the same edit.
+  *Check:* a scripted GUI edit replayed as `apply`, asserting equal
+  `CommandReceipt` (`crates/crpg-edit/src/document.rs:75`).
+- **T110 (ruleset from template, post-M6).** *Criterion:* an author clones
+  `srd-lite`, patches one ability and one outcome table, and the derived-stat
+  expressions validate headlessly, without writing a full ruleset by hand.
+  *Check:* think-aloud plus a ruleset dry-run (`docs/research/T099/R13-deep.md:17`).
+
+**Cross-cutting gate.** The M6 exit is the H-author: the §17.2 campaign
+"created entirely in the editor by someone who has never seen the JSON"
+(`docs/CRPG_ENGINE_SPEC.md:1606`). Every package's criterion is a slice of
+that one end-to-end proof, so no package is accepted on its own criterion
+alone; Greenhollow (`docs/CRPG_ENGINE_SPEC.md:1537`) is the first honest
+editor-usability test after it.
+
 ## Decisions
 
 ## Consequences
