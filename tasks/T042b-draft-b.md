@@ -593,7 +593,7 @@ test to fail; a surviving mutant is a finding):
 | MU3 | one framed decoder's version check removed | H6 |
 | MU4 | one framed decoder's lane check removed | H7 |
 | MU5 | `codec_transfer::decode_down` maps `0x20`/`0x21` to `UnknownMessage` | H8, H11 |
-| MU6 | `transfer_v3::decode_down` accepts `total_bytes` 0 | H9 (zero-transfer twin) |
+| MU6 | `take_transfer_id` accepts 0 | H9 |
 | MU7 | `codec_resume::take_proof` bound `>` → `>=` | H10 |
 | MU8 | `codec_resume::take_lanes` count bound removed | H10 |
 | MU9 | `movement_v4::take_seq` accepts 0 | H9 |
