@@ -15,17 +15,18 @@ use std::num::NonZeroUsize;
 
 use crpg_core::{EntityId, Fx16_16, Ulid};
 use crpg_nav::{bake_box, NavMesh, NavRect};
+use crpg_net::codec_v2;
 use crpg_net::codec_v4;
 use crpg_net::facts_v3::EncounterGrants;
 use crpg_net::movement_v4::{
-    decode_down, encode_intent, MoveBody, MoveDown, MoveIntent, MOVEMENT_VERSION,
+    decode_down, encode_intent, MoveBody, MoveDown, MoveIntent, MoveOutcome, MOVEMENT_VERSION,
 };
 use crpg_net::pool_v4::{
     GateMode, ReassemblyPoolV4, ReceiverIdV4, ReplicaUpdateV4, TransferLimitsV3,
 };
-use crpg_net::protocol::{NetId, LANE_COMBAT};
+use crpg_net::protocol::{IntentBody, IntentFrame, NetId, LANE_COMBAT};
 use crpg_net::protocol_transfer::{TransferId, TransferUp};
-use crpg_net::protocol_v3::PauseRights;
+use crpg_net::protocol_v3::{PauseRights, RejectionCode as CodeV3};
 use crpg_net::protocol_v4::SessionEpoch;
 use crpg_net::protocol_v4::{IntentBody as IntentBodyV4, IntentFrame as IntentFrameV4, Point};
 use crpg_net::replica_v4::ReplicaWorldV4;
@@ -33,7 +34,7 @@ use crpg_net::transfer_v3;
 use crpg_net::transport::Transport;
 use crpg_server::host::{
     ControlGrant, DeliveryKind, DisclosureGrants, EntityDisclosure, EntityFactGrant, FactGrants,
-    Host, HostConfig, MoveAdmission, PeerHandle, ProtocolSelection, TransferDisposition,
+    Host, HostConfig, HostError, MoveAdmission, PeerHandle, ProtocolSelection, TransferDisposition,
     DEFAULT_HOST_GRANTS,
 };
 use crpg_server::run::{HostLoop, LocalHost};
@@ -566,6 +567,324 @@ fn receipts_are_never_dropped() {
     }
     wide.step(0).expect("runs");
     assert_eq!(receipts_of(&drain(&mut roomy)), vec![1, 2, 3]);
+}
+
+/// `mv` with an explicit actor net id: naming B (`n(2)`) while the peer
+/// controls A is step 9's `Rejected(NotAuthorized)`.
+fn mv_actor(host: &Host, peer: PeerHandle, seq: u64, actor: u64) -> Vec<u8> {
+    let bytes = encode_intent(&MoveIntent {
+        epoch: host.epoch(peer).expect("bound"),
+        seq,
+        actor: n(actor),
+        body: MoveBody::MoveTo {
+            destination: pt(262144, 0, 65536),
+        },
+    })
+    .expect("encodes");
+    assert_eq!(bytes.first(), Some(&MOVEMENT_VERSION));
+    bytes
+}
+
+/// `mv` under a foreign epoch: step 2's `Refused(SessionExpired)`, which
+/// consumes nothing.
+fn wrong_epoch_mv(seq: u64) -> Vec<u8> {
+    encode_intent(&MoveIntent {
+        epoch: [9; 16],
+        seq,
+        actor: n(1),
+        body: MoveBody::MoveTo {
+            destination: pt(262144, 0, 65536),
+        },
+    })
+    .expect("encodes")
+}
+
+/// One lane-0 `EndTurn` for A on a v1/v2 session.
+fn end_frame(host: &Host, peer: PeerHandle, seq: u64) -> Vec<u8> {
+    codec_v2::encode_intent(&IntentFrame {
+        epoch: host.epoch(peer).expect("bound"),
+        lane: LANE_COMBAT,
+        seq,
+        observed_tick: host.server_tick(),
+        actor: n(1),
+        body: IntentBody::EndTurn,
+    })
+    .expect("encodes")
+}
+
+/// The `(seq, outcome)` of every receipt in `frames`, in order.
+fn receipt_outcomes(frames: &[Vec<u8>]) -> Vec<(u64, MoveOutcome)> {
+    frames
+        .iter()
+        .filter_map(|bytes| match decode_down(bytes) {
+            Ok(MoveDown::Receipt(receipt)) => Some((receipt.seq, receipt.outcome)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// r02 (B-11). A `Rejected` lane-1 frame continues the drain, never holds:
+/// the rejected seq 1 and the valid seq 2 behind it are both decided in the
+/// same cycle and receipted together, with nothing held.
+#[test]
+fn lane1_rejected_continues_not_hold() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    client
+        .send(&mv_actor(host_loop.hosting().host(), p, 1, 2))
+        .expect("sends");
+    client
+        .send(&mv(host_loop.hosting().host(), p, 2))
+        .expect("sends");
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 2);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 0);
+    let outcomes = receipt_outcomes(&drain(&mut client));
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes[0].0, 1);
+    assert!(matches!(
+        outcomes[0].1,
+        MoveOutcome::Rejected(CodeV3::NotAuthorized)
+    ));
+    assert_eq!(outcomes[1].0, 2);
+
+    // Control: the same two seqs, both for the controlled actor, receipt
+    // both as decided intents with nothing refused.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    idle.send(&mv(quiet.hosting().host(), p, 1)).expect("sends");
+    idle.send(&mv(quiet.hosting().host(), p, 2)).expect("sends");
+    quiet.step(0).expect("runs");
+    let stats = quiet.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 2);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 0);
+    assert_eq!(receipts_of(&drain(&mut idle)), vec![1, 2]);
+}
+
+/// r04 (B-11). `RateLimited` is held like `QueueFull`: thirty-two capped
+/// frames spend exactly the 128 KiB shared byte burst, so the valid frame
+/// behind them holds (`held_moves == 1`, `refused == 32`) and is admitted on
+/// a later cycle once the rate allows, receipted as seq 1.
+#[test]
+fn lane1_rate_limited_holds_like_queue_full() {
+    let (host, p) = setup_quiet();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    let valid = mv(host_loop.hosting().host(), p, 1);
+    let mut padded = valid.clone();
+    padded.resize(4096, 0);
+    assert_eq!(padded.first(), Some(&MOVEMENT_VERSION));
+    for _ in 0..32 {
+        client.send(&padded).expect("sends");
+    }
+    client.send(&valid).expect("sends");
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 33);
+    assert_eq!(stats.refused, 32);
+    assert_eq!(stats.held_moves, 1);
+    host_loop.step(50).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 33);
+    assert_eq!(stats.refused, 32);
+    assert_eq!(stats.held_moves, 0);
+    assert_eq!(receipts_of(&drain(&mut client)), vec![1]);
+
+    // Control: the valid frame alone is admitted at once.
+    let (host, p) = setup_quiet();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    idle.send(&mv(quiet.hosting().host(), p, 1)).expect("sends");
+    quiet.step(0).expect("runs");
+    let stats = quiet.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 0);
+    assert_eq!(receipts_of(&drain(&mut idle)), vec![1]);
+}
+
+/// r06, r07 (B-11, Errors). `Refused(Unauthenticated)` retires the link and
+/// counts: after the unbind the frame is received and refused, and the link
+/// is gone with one retired record.
+#[test]
+fn lane1_unauthenticated_retires_and_counts() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    host_loop.step(0).expect("runs");
+    assert!(host_loop.hosting_mut().take_retired().is_empty());
+    let frame = mv(host_loop.hosting().host(), p, 1);
+    host_loop.hosting_mut().host_mut().unbind_peer(p);
+    client.send(&frame).expect("sends");
+    host_loop.step(50).expect("runs");
+    assert_eq!(host_loop.hosting().link_stats(p), None);
+    assert_eq!(
+        host_loop.hosting().host().epoch(p),
+        Err(HostError::UnknownPeer)
+    );
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, p);
+    assert_eq!(retired[0].1.received, 1);
+    assert_eq!(retired[0].1.refused, 1);
+
+    // Control: the bound peer's frame is received, refused by none, and the
+    // link lives.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    idle.send(&mv(quiet.hosting().host(), p, 1)).expect("sends");
+    quiet.step(0).expect("runs");
+    let stats = quiet.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert!(quiet.hosting_mut().take_retired().is_empty());
+}
+
+/// r08, r09 (B-11). Any other `Refused` counts and continues: a
+/// `SessionExpired` frame is refused without consuming its seq, and the
+/// valid frame for that seq behind it is admitted in the same cycle.
+#[test]
+fn lane1_session_expired_counts_and_continues() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    client.send(&wrong_epoch_mv(1)).expect("sends");
+    client
+        .send(&mv(host_loop.hosting().host(), p, 1))
+        .expect("sends");
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 2);
+    assert_eq!(stats.refused, 1);
+    assert_eq!(stats.held_moves, 0);
+    assert_eq!(receipts_of(&drain(&mut client)), vec![1]);
+
+    // Control: the valid frame alone is refused by nothing.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    idle.send(&mv(quiet.hosting().host(), p, 1)).expect("sends");
+    quiet.step(0).expect("runs");
+    let stats = quiet.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 0);
+    assert_eq!(receipts_of(&drain(&mut idle)), vec![1]);
+}
+
+/// r10, r11 (B-11). A v1 peer's `0xA1` frame counts and continues: the cycle
+/// is `Ok`, `refused == 1`, the link is not retired, and a lane-0 frame from
+/// the same peer is still ingested in that cycle.
+#[test]
+fn lane1_v1_peer_a1_counts_and_continues() {
+    let mut host = Host::from_history(history_of(&mv3rt_value()), config(), 0).expect("wraps");
+    host.bind_nav_mesh(m10()).expect("binds");
+    let v = host
+        .bind_peer(control(&[a(), b(), c()]), full_grants(&[a(), b(), c()]), 0)
+        .expect("binds");
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(v, cap(64))
+        .expect("attaches");
+    let a1 = mv(host_loop.hosting().host(), v, 1);
+    assert_eq!(a1.first(), Some(&MOVEMENT_VERSION));
+    client.send(&a1).expect("sends");
+    client
+        .send(&end_frame(host_loop.hosting().host(), v, 1))
+        .expect("sends");
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(v).expect("link");
+    assert_eq!(stats.received, 2);
+    assert_eq!(stats.refused, 1);
+    assert_eq!(stats.held_moves, 0);
+
+    // Control: the lane-0 frame alone is refused by nothing.
+    let mut host = Host::from_history(history_of(&mv3rt_value()), config(), 0).expect("wraps");
+    host.bind_nav_mesh(m10()).expect("binds");
+    let v = host
+        .bind_peer(control(&[a(), b(), c()]), full_grants(&[a(), b(), c()]), 0)
+        .expect("binds");
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(v, cap(64)).expect("attaches");
+    idle.send(&end_frame(quiet.hosting().host(), v, 1))
+        .expect("sends");
+    quiet.step(0).expect("runs");
+    let stats = quiet.hosting().link_stats(v).expect("link");
+    assert_eq!(stats.received, 1);
+    assert_eq!(stats.refused, 0);
+}
+
+/// h06 (B-11). A retry that retires stops that link's intake for the cycle:
+/// after the unbind the held retry ends the link, and the frame queued
+/// behind it is never ingested (`received` stays 12, `refused` counts the
+/// retry alone).
+#[test]
+fn lane1_retry_retire_stops_intake() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    for seq in 1..=12 {
+        client
+            .send(&mv(host_loop.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    host_loop.step(0).expect("runs");
+    assert_eq!(
+        host_loop.hosting().link_stats(p).expect("link").held_moves,
+        4
+    );
+    let queued = mv(host_loop.hosting().host(), p, 13);
+    host_loop.hosting_mut().host_mut().unbind_peer(p);
+    client.send(&queued).expect("sends");
+    host_loop.step(50).expect("runs");
+    assert_eq!(host_loop.hosting().link_stats(p), None);
+    let retired = host_loop.hosting_mut().take_retired();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, p);
+    assert_eq!(retired[0].1.received, 12);
+    assert_eq!(retired[0].1.refused, 1);
+
+    // Control: while bound, the same retry is admitted and drains the hold
+    // with nothing refused.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    for seq in 1..=12 {
+        idle.send(&mv(quiet.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    quiet.step(0).expect("runs");
+    for now in (1..=10).map(|i| i * 50) {
+        quiet.step(now).expect("runs");
+        if quiet.hosting().link_stats(p).expect("link").held_moves == 0 {
+            break;
+        }
+    }
+    let stats = quiet.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.held_moves, 0);
+    assert_eq!(stats.refused, 0);
 }
 
 /// V4 (B-13). An unread capacity-1 link to a moving A keeps no error, keeps
