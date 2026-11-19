@@ -887,11 +887,13 @@ impl QuicHost {
             if event_seen {
                 self.conns.remove(&conn);
             } else {
-                self.conns
-                    .insert(conn, Conn::Retiring(Retiring {
+                self.conns.insert(
+                    conn,
+                    Conn::Retiring(Retiring {
                         event_seen: false,
                         lane1_gone: false,
-                    }));
+                    }),
+                );
             }
         }
         // 7. Report.
@@ -1185,13 +1187,16 @@ impl QuicHost {
             .get(&invitation)
             .ok_or(HostError::Invariant("matched invitation vanished"))?;
         let result = if movement {
-            let (facts, rights) = record
-                .v4
-                .clone()
-                .ok_or(HostError::Invariant("a movement hello matched a v3 invitation"))?;
-            let result =
-                self.host
-                    .bind_v4_peer(record.control.clone(), record.grants.clone(), facts, rights, now_ms);
+            let (facts, rights) = record.v4.clone().ok_or(HostError::Invariant(
+                "a movement hello matched a v3 invitation",
+            ))?;
+            let result = self.host.bind_v4_peer(
+                record.control.clone(),
+                record.grants.clone(),
+                facts,
+                rights,
+                now_ms,
+            );
             report.lane1.push(Lane1Trace {
                 at: report.calls.len(),
                 call: Lane1Call::BindV4Peer {
@@ -1203,10 +1208,11 @@ impl QuicHost {
             result
         } else {
             let result = match framing {
-                Framing::V2 => {
-                    self.host
-                        .bind_snapshot_peer(record.control.clone(), record.grants.clone(), now_ms)
-                }
+                Framing::V2 => self.host.bind_snapshot_peer(
+                    record.control.clone(),
+                    record.grants.clone(),
+                    now_ms,
+                ),
                 Framing::V1 => {
                     self.host
                         .bind_peer(record.control.clone(), record.grants.clone(), now_ms)
@@ -1548,7 +1554,9 @@ impl QuicHost {
         now_ms: u64,
         report: &mut QuicPumpReport,
     ) -> Result<Disposition, HostError> {
-        let Some((peer, ordinal)) = self.bound(conn).map(|bound| (bound.peer, bound.lane1_frames))
+        let Some((peer, ordinal)) = self
+            .bound(conn)
+            .map(|bound| (bound.peer, bound.lane1_frames))
         else {
             return Ok(Disposition::Stop);
         };
@@ -1560,7 +1568,7 @@ impl QuicHost {
                 peer,
                 frame: ordinal,
                 len: frame.len(),
-                result: result.clone(),
+                result,
             },
         });
         Ok(match result {
@@ -1700,7 +1708,10 @@ impl QuicHost {
         }
         let seen = matches!(
             self.conns.get(&conn),
-            Some(Conn::Retiring(Retiring { event_seen: true, .. }))
+            Some(Conn::Retiring(Retiring {
+                event_seen: true,
+                ..
+            }))
         );
         if lane0_gone && lane1_gone && seen {
             self.conns.remove(&conn);

@@ -44,8 +44,9 @@ use crpg_server::host::{
     MAX_CONTROLLED_PER_PEER,
 };
 use crpg_server::quic::{
-    Fence, FenceCause, GrantChange, HelloDecision, HelloOutcome, HostCall, Invitation, InvitationId, Lane1Call,
-    Lane1Trace, QuicHost, QuicHostError, QuicPumpReport, V4Invitation, MAX_INVITATIONS,
+    Fence, FenceCause, GrantChange, HelloDecision, HelloOutcome, HostCall, Invitation,
+    InvitationId, Lane1Call, Lane1Trace, QuicHost, QuicHostError, QuicPumpReport, V4Invitation,
+    MAX_INVITATIONS,
 };
 use crpg_sim::HistoryWorld;
 use serde_json::{json, Value};
@@ -93,7 +94,6 @@ fn rect(x0: i32, z0: i32, x1: i32, z1: i32) -> NavRect {
 fn m10() -> NavMesh {
     bake_box(Fx16_16::ZERO, rect(0, 0, 10, 10), &[]).expect("bakes")
 }
-
 
 fn tb3c_value() -> Value {
     let mut value: Value = serde_json::from_str(FIXTURE).expect("fixture parses");
@@ -251,9 +251,8 @@ fn v4_inv(
 
 /// A moved authority bound to `M10`.
 fn movement_host() -> Host {
-    let mut host =
-        Host::from_history(history_of(&mv3rt_value()), host_config(V2), CLOCK_START)
-            .expect("wraps an acknowledged authority");
+    let mut host = Host::from_history(history_of(&mv3rt_value()), host_config(V2), CLOCK_START)
+        .expect("wraps an acknowledged authority");
     host.bind_nav_mesh(m10()).expect("binds M10");
     host
 }
@@ -279,10 +278,7 @@ fn movement_adapter(register: bool) -> (QuicHost, TestClock, Option<InvitationId
     )
     .expect("starts over a fresh host");
     let mut qh = qh;
-    let id = register.then(|| {
-        qh.register_v4_invitation(inv())
-            .expect("registers INV")
-    });
+    let id = register.then(|| qh.register_v4_invitation(inv()).expect("registers INV"));
     (qh, clock, id)
 }
 
@@ -316,7 +312,9 @@ impl MvClient {
     }
 
     fn send_lane1(&mut self, bytes: Vec<u8>) {
-        self.quic.try_send_lane1(&bytes).expect("client lane-1 send");
+        self.quic
+            .try_send_lane1(&bytes)
+            .expect("client lane-1 send");
         self.lane1.push(bytes);
     }
 
@@ -386,7 +384,10 @@ fn connect_movement(
         QuicClient::connect_movement(client_config(ClientLimits::v1()), addr, &hello)
     });
     let (decision, steps) = decide_hello(qh, clock, 0);
-    let quic = pending.join().expect("client thread").expect("connect_movement");
+    let quic = pending
+        .join()
+        .expect("client thread")
+        .expect("connect_movement");
     let HelloOutcome::Accepted { invitation, peer } = decision.outcome else {
         panic!("expected Accepted, got {decision:?}");
     };
@@ -540,11 +541,9 @@ impl Twin {
             HostCall::BindPeer {
                 invitation, result, ..
             } => {
-                let got = self.host.bind_peer(
-                    self.control.clone(),
-                    self.grants.clone(),
-                    now,
-                );
+                let got = self
+                    .host
+                    .bind_peer(self.control.clone(), self.grants.clone(), now);
                 if got != *result {
                     let _ = invitation;
                     return Err(format!("bind {got:?} != {result:?}"));
@@ -553,11 +552,9 @@ impl Twin {
             HostCall::BindSnapshotPeer {
                 invitation, result, ..
             } => {
-                let got = self.host.bind_snapshot_peer(
-                    self.control.clone(),
-                    self.grants.clone(),
-                    now,
-                );
+                let got =
+                    self.host
+                        .bind_snapshot_peer(self.control.clone(), self.grants.clone(), now);
                 if got != *result {
                     let _ = invitation;
                     return Err(format!("snapshot bind {got:?} != {result:?}"));
@@ -827,13 +824,10 @@ fn q1_v4_binds_over_movement_endpoint() {
         HostCall::AcknowledgeDelivery { peer: p, .. } if *p == peer
     ));
     assert!(
-        !report
-            .calls
-            .iter()
-            .any(|call| matches!(
-                call,
-                HostCall::BindPeer { .. } | HostCall::BindSnapshotPeer { .. }
-            )),
+        !report.calls.iter().any(|call| matches!(
+            call,
+            HostCall::BindPeer { .. } | HostCall::BindSnapshotPeer { .. }
+        )),
         "a /3 hello binds nothing on lane 0: {:?}",
         report.calls
     );
@@ -872,7 +866,12 @@ fn q1_v4_binds_over_movement_endpoint() {
     client.read_until("initial delivery", |client| {
         client.entries.len() >= twin_entries.len()
     });
-    assert_eq!(client.entries.len(), twin_entries.len(), "{:?}", client.entries);
+    assert_eq!(
+        client.entries.len(),
+        twin_entries.len(),
+        "{:?}",
+        client.entries
+    );
     for (got, expected) in client.entries.iter().zip(&twin_entries) {
         let channel = match expected.kind {
             DeliveryKind::Delta => Channel::Lane0,
@@ -897,8 +896,7 @@ fn q2_hello_and_invitation_precedence() {
     {
         let (mut qh, mut clock, _) = movement_adapter(true);
         let unregistered = credential(&[0x99; 32]);
-        let (error, decision, steps) =
-            connect_movement_refused(&mut qh, &mut clock, &unregistered);
+        let (error, decision, steps) = connect_movement_refused(&mut qh, &mut clock, &unregistered);
         assert_eq!(error, ConnectError::Refused { code: 5 });
         assert_eq!(
             decision.outcome,
@@ -972,7 +970,11 @@ fn q2_hello_and_invitation_precedence() {
         assert_eq!(reason, CloseReason::Peer { code: 9 });
     }
     // (d) `register_v4_invitation`'s precedence pairs.
-    let too_many = control(&(0..=MAX_CONTROLLED_PER_PEER as u32).map(eid).collect::<Vec<_>>());
+    let too_many = control(
+        &(0..=MAX_CONTROLLED_PER_PEER as u32)
+            .map(eid)
+            .collect::<Vec<_>>(),
+    );
     let ok_control = control(&[a()]);
     let ok_grants = full_grants(&[a(), b(), c()]);
     let mut duplicate_grants = ok_grants.clone();
@@ -1129,16 +1131,14 @@ fn client_close_reason(client: &mut MvClient) -> CloseReason {
 /// Applies every report of a step list to the twin.
 fn replay_steps(twin: &mut Twin, steps: &[Step]) {
     for (now, report) in steps {
-        twin.apply(*now, report)
-            .expect("the twin replays the pump");
+        twin.apply(*now, report).expect("the twin replays the pump");
     }
 }
 
 /// Applies a pump batch at one `now` to the twin.
 fn replay_reports(twin: &mut Twin, now: u64, reports: &[QuicPumpReport]) {
     for report in reports {
-        twin.apply(now, report)
-            .expect("the twin replays the pump");
+        twin.apply(now, report).expect("the twin replays the pump");
     }
 }
 
@@ -1323,11 +1323,7 @@ fn q4_trace_replays() {
 
 /// Pump 1 of Q5: nine `Halt`s sent before any advance; frames 1--8 admitted,
 /// frame 9 `QueueFull` and held. Returns the nine frames' bytes.
-fn q5_held_state(
-    qh: &mut QuicHost,
-    clock: &mut TestClock,
-    client: &mut MvClient,
-) -> Vec<Vec<u8>> {
+fn q5_held_state(qh: &mut QuicHost, clock: &mut TestClock, client: &mut MvClient) -> Vec<Vec<u8>> {
     let expected: Vec<Vec<u8>> = (1..=9).map(|seq| halt_bytes(e(1), seq, 1)).collect();
     for bytes in &expected {
         client.send_lane1(bytes.clone());
@@ -1750,10 +1746,7 @@ fn q8_departed_peer_and_retirement() {
         );
         assert_eq!(report.lane1_sent, 0);
         assert!(report.lane1_discarded >= 1, "{report:?}");
-        assert!(report
-            .calls
-            .iter()
-            .any(|call| *call == HostCall::UnbindPeer { peer }));
+        assert!(report.calls.contains(&HostCall::UnbindPeer { peer }));
         assert_eq!(qh.binding(conn), None);
         assert_eq!(qh.host().session_wire(peer), Err(HostError::UnknownPeer));
     }
@@ -1783,7 +1776,10 @@ fn q9_shutdown_flushes_receipts() {
             Ok(None) => {}
             Err(reason) => break reason,
         }
-        assert!(start.elapsed() < DEADLINE, "deadline: the receipt and close");
+        assert!(
+            start.elapsed() < DEADLINE,
+            "deadline: the receipt and close"
+        );
         client.quic.wait(Duration::from_millis(5));
     };
     assert_eq!(frames.len(), 1, "one receipt");
@@ -1895,9 +1891,18 @@ fn q10_legacy_sessions_unchanged() {
         }
     }
     assert_eq!(next, expected.len(), "the call order: {calls:?}");
-    assert_eq!(calls.iter().filter(|name| **name == "BindSnapshotPeer").count(), 1);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|name| **name == "BindSnapshotPeer")
+            .count(),
+        1
+    );
     assert_eq!(calls.iter().filter(|name| **name == "Ingest").count(), 1);
-    assert_eq!(calls.iter().filter(|name| **name == "UnbindPeer").count(), 1);
+    assert_eq!(
+        calls.iter().filter(|name| **name == "UnbindPeer").count(),
+        1
+    );
 }
 
 /// A call's variant name, for sequence assertions.
