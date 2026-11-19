@@ -194,6 +194,151 @@ Design decisions this contract makes. Each needs approval with the contract.
 
 ## Interface
 
+Additions only; the library gains exactly one public item (Reading 8). Every
+new item has a doc comment. Binary-only items are `pub(crate)`. No
+`HashMap`/`HashSet`, no float, no `unsafe`, no new dependency; the binary's
+I/O is plain `std` (Reading 1). `Fx16_16`, `EntityId`, `Ulid` are
+`crpg_core`'s; `SocketAddr`, `PathBuf` are `std`'s; `ServerIdentity`,
+`CertificatePin`, `Credential` are `crpg_net_quic`'s
+(`crates/crpg-net-quic/src/identity.rs:76`, `:14`); `SaveIdentity`,
+`Invitation`, `ControlGrant`, `DisclosureGrants` are `crpg_server`'s
+(`crates/crpg-server/src/save.rs:89`, `crates/crpg-server/src/quic.rs:81`).
+
+### The command line (`crates/crpg-server/src/cli.rs`)
+
+| Flag | Value | Default | Notes |
+|---|---|---|---|
+| `--config <path>` | path | none | JSON file; every other flag overrides its key |
+| `--listen <addr>` | `IP:port` | none (required) | UDP bind address |
+| `--cert <path>` | path | none (required) | leaf certificate, DER |
+| `--key <path>` | path | none (required) | PKCS#8 private key, DER |
+| `--invitations <path>` | path | none (required) | invitation JSON file |
+| `--save <path>` | path | none (required) | host save file |
+| `--campaign-id <26 chars>` | ULID text | none (required) | `SaveIdentity.campaign_id` |
+| `--campaign-version <text>` | 1..=64 of `0-9 A-Z a-z . + -` | none (required) | `SaveIdentity.campaign_version` |
+| `--incarnation <u64>` | decimal | none (required) | new incarnation, guarded (Reading 7) |
+| `--area-min <x,y,z>` | 3 ints | none | both or neither (Reading 10) |
+| `--area-max <x,y,z>` | 3 ints | none | both or neither |
+| `--log-file <path>` | path | none | append logs here too |
+| `-h`, `--help` | — | — | print usage, exit 0 |
+| `-V`, `--version` | — | — | print version, exit 0 |
+
+```rust
+pub(crate) const PROGRAM: &str = "crpg-server";
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Where `Log` writes (Reading 4).
+pub(crate) enum LogTo { Stderr, File(std::path::PathBuf), Both(std::path::PathBuf) }
+
+pub(crate) struct Cli {
+    pub(crate) config: Option<std::path::PathBuf>,
+    pub(crate) listen: Option<std::net::SocketAddr>,
+    pub(crate) cert: Option<std::path::PathBuf>,
+    pub(crate) key: Option<std::path::PathBuf>,
+    pub(crate) invitations: Option<std::path::PathBuf>,
+    pub(crate) save: Option<std::path::PathBuf>,
+    pub(crate) campaign_id: Option<String>,
+    pub(crate) campaign_version: Option<String>,
+    pub(crate) incarnation: Option<u64>,
+    pub(crate) area_min: Option<[crpg_core::Fx16_16; 3]>,
+    pub(crate) area_max: Option<[crpg_core::Fx16_16; 3]>,
+    pub(crate) log_file: Option<std::path::PathBuf>,
+}
+
+/// What `parse` decided: run the server, or handle `--help`/`--version`.
+pub(crate) enum CliAction { Run(Cli), Help, Version }
+
+/// Parse an argument vector; `std::env::args().skip(1)` in production.
+pub(crate) fn parse<I: Iterator<Item = String>>(args: I) -> Result<CliAction, CliError>;
+
+pub(crate) enum CliError {
+    UnknownFlag(String),
+    MissingValue(&'static str),
+    InvalidValue { flag: &'static str, value: String },
+    UnexpectedPositional(String),
+    AreaBoundsIncomplete,
+}
+```
+
+### Resolved configuration (`crates/crpg-server/src/config.rs`)
+
+```rust
+pub(crate) struct Config {
+    pub(crate) listen: std::net::SocketAddr,
+    pub(crate) identity: crpg_net_quic::ServerIdentity,   // cert DER + key DER
+    pub(crate) invitations: Vec<crpg_server::quic::Invitation>,
+    pub(crate) save: std::path::PathBuf,
+    pub(crate) identity_facts: crpg_server::save::SaveIdentity,
+    pub(crate) incarnation: u64,
+    pub(crate) area_bounds: Option<([crpg_core::Fx16_16; 3], [crpg_core::Fx16_16; 3])>,
+    pub(crate) log_to: LogTo,
+}
+
+/// Merge the JSON file (when `--config`) under the CLI flags, load the
+/// cert/key/invitation files, and validate. First failure wins.
+pub(crate) fn resolve(cli: Cli) -> Result<Config, ConfigError>;
+
+pub(crate) enum ConfigError {
+    Io { path: std::path::PathBuf, source: std::io::Error },
+    Json { path: std::path::PathBuf, source: serde_json::Error },
+    Missing(&'static str),
+    InvalidUlid(String),
+    InvalidVersion(String),
+    InvalidPoint(&'static str, String),
+    IncarnationNotIncreasing { supplied: u64, last: u64 },
+    AreaBoundsIncomplete,
+}
+```
+
+The JSON file is the same keys as the flags, minus `--config`: `listen`,
+`cert`, `key`, `invitations`, `save`, `campaign_id`, `campaign_version`,
+`incarnation`, `area_min`, `area_max`, `log_file`. A CLI flag present on the
+command line wins over the file; a value may not be `null`.
+
+### The log writer (`crates/crpg-server/src/logline.rs`)
+
+```rust
+pub(crate) struct Log { sinks: Vec<Box<dyn std::io::Write + Send>> }
+impl Log {
+    pub(crate) fn new(dest: LogTo) -> std::io::Result<Log>;
+    /// A test sink (a `Vec<u8>`); production uses `new`.
+    pub(crate) fn from_writer(w: Box<dyn std::io::Write + Send>) -> Log;
+    pub(crate) fn start(&mut self, listen: std::net::SocketAddr, incarnation: u64,
+                        pin: &crpg_net_quic::CertificatePin) -> std::io::Result<()>;
+    pub(crate) fn reject(&mut self, now_ms: u64, lane: u8, code: Option<u32>,
+                         peer: Option<u64>, len: usize) -> std::io::Result<()>;
+    pub(crate) fn stop(&mut self) -> std::io::Result<()>;
+}
+```
+
+Each method writes exactly one newline-terminated UTF-8 line to every sink,
+in the fixed formats below (`{}` is the value's `Display`; `pin` is
+`CertificatePin::to_hex`, 64 lowercase hex):
+
+```
+crpg-server start listen={} incarnation={} pin={}
+crpg-server {} reject lane={} code={} peer={} len={}
+crpg-server stop
+```
+
+The `reject` line fields: `{}` (first) is `now_ms`; `lane` is `0` or `1`;
+`code` is the refusal's numeric code, or `-` when the refusal carries none;
+`peer` is the raw `PeerHandle` number, or `-` when unbound; `len` is the
+refused frame's byte length. A failed `reject` write is ignored (the sink is
+best-effort after startup); a failed `start` write fails startup.
+
+### The library addition (`crates/crpg-server/src/quic.rs`)
+
+```rust
+impl QuicHost {
+    /// The report of the most recent `pump` or `flush`, or `None` before any
+    /// (Reading 8). Set at the end of `pump` and `flush`, after the report is
+    /// built. The loop's `Hosting::intake` drops the returned report, so the
+    /// dedicated binary reads rejections from here.
+    pub fn last_report(&self) -> Option<&QuicPumpReport>;
+}
+```
+
 ## Behaviour
 
 ## Errors
