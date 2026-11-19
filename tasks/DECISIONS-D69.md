@@ -1,6 +1,6 @@
 # Decision D69 — the saved script, dialogue and quest state (T052) questions and approval
 
-Status: **open, 2026-11-19. Waiting for the user.**
+Status: **answered, 2026-11-19.** D69a (a), D69b (a), D69c approved.
 
 T052 lets the game remember three things across a save, a quit and a load:
 a scripted event that is waiting ("in 30 seconds, open the gate"), a
@@ -74,3 +74,4 @@ contract.
 
 ## Agent log
 - 2026-11-19 (UTC) · claude-code/opus-5.5 (architect) + T052 contract · Drafted the T052 decision batch: the save-version question, the quest-scope question and contract approval, each explained plainly with a recommendation.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + S79-d69-record · Recorded the user's answers in the status line, following the D67/D68 answered form: D69a (a) keep save version 1, D69b (a) quest progress in the area's world, D69c approved.
