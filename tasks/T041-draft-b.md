@@ -386,6 +386,17 @@ alternative is Reading 2's fallback: G1 deferred to T070's binary harness
 and the dedicated leg proved at the library level only.
 
 ## Out of scope
+- Spawning the T040 binary or writing log files/lines (T040b owns both,
+  `tasks/T040.md:423-426`, `:433-452`); the T040a intake observer itself.
+- Wire decoders, client receivers, `crpg-net-quic` framing — T042a owns the
+  first (`tasks/T042.md:61`), T042b the hostile-server receivers
+  (`tasks/BACKLOG.md:347`; `tasks/T042.md:680-687`).
+- AI-driven play (`Host::drive_ai`, `tasks/T153.md:60-66`); the run loop and
+  hooks (`Hosting::drive_ai`, `crates/crpg-server/src/run.rs:45`).
+- Benchmarks and thresholds (T044), campaign-wide breadth and full §17.2
+  acceptance (T070, `docs/IMPLEMENTATION_PLAN.md:335`), player-hosted games
+  (D65b), any new golden or fixture.
+- Any decoder, host or text fix: a failing case stops and reports (Errors).
 
 ## Open questions
 
