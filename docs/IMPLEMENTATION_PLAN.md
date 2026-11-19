@@ -242,7 +242,7 @@ Each I row needs its C row approved first unless it says **ready**.
 
 | Id | Kind | Crate | Prerequisites | Notes |
 |---|---|---|---|---|
-| T040 | C → I, S | crpg-server | T023b | Dedicated binary (Windows plus Godot-free Linux); CI artifact jobs for gate 12 |
+| T040 | C → I, S | crpg-server | T153, T150c, T154d | Dedicated binary (Windows plus Godot-free Linux); CI artifact jobs for gate 12; parts T040a–c (tasks/T040.md) |
 | T041 | C → I | crpg-testkit | T025b, T027c, T037, T039 | Scripted headless clients; 5,000-tick loss/jitter desync; two-client identical visible state; gate 13 dedicated smoke |
 | T042 | C → I | crpg-net | T024 | Wire-level malicious-client suite (spec §19.2 #21); host-level cases live in T041 |
 | T044 | C → I | per subsystem, then crpg-cli | — (parallel filler) | D06 workload APIs, then a thin `crpgc bench`. Thresholds only after baselines |
@@ -468,3 +468,4 @@ estimates slip.
 - 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Noted on the T037 row that D60 splits it into T037a–e and that T037e exists as the `crpg-testkit` part, so the plan matches the approved contract.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + S60-bookkeeping · Added T150 and T151 beside T037, recorded T037a done on the session 60 batch with T037b next and the T056 contract with its D62 answers and split, so the plan matches the session's filed work.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + S71-bookkeeping · Split T025b into T025b-i and T025b-q (quic side depends on the host side) with the D68a `blake3` edge, and added the T154a–d run-loop rows beside T150/T151, so the plan matches the approved contracts and the batch state.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S80-t040-edits · Changed the T040 row's prerequisites to T153, T150c and T154d and appended the T040a–c parts note, so the plan records the D70 approval.

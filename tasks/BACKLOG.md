@@ -133,7 +133,12 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T052 | contract approved D69 (user, 2026-11-19); next: T052 (S-set, Claude implementer) then T052b | — | T052 (crpg-sim) saved script, dialogue and quest state, with a test-only crpg-server restart part |
 | — | proposed | — | (crpg-sim / crpg-server) save schema version and downgrade refusal (spec docs/CRPG_ENGINE_SPEC.md:851; D69a): an older build refuses a newer save, covering creature, movement, continuation, dialogue and quest state together |
 | — | proposed | — | (crpg-sim) campaign-level quest store, moving quest progress out of the area's world before a second area is playable (D69b) |
-| T040 | fact sheet tasks/T040-facts.md (Muse Spark) and blind drafts tasks/T040-draft-a.md (DeepSeek V4 Pro) and tasks/T040-draft-b.md (Muse Spark); Opus architect contract in progress (session 79); D70 to follow | — | T040 (crpg-server) campaign-built host (see tasks/T040-facts.md) |
+| T040 | contract approved D70 (user, 2026-11-19; revision 665b0cd); parts T040a–c; S-set; blocked on T150c and T154d (T153 landed) | — | T040 (crpg-server) campaign-built host (see tasks/T040-facts.md) |
+| — | proposed | — | (crpg-net-quic / crpg-server) a dedicated movement (/3) endpoint for the dedicated server once resume on /3 exists (T040) |
+| — | proposed | — | (crpg-cli) generate the dedicated server's invitation, AI and area files from campaign data with crpgc (T040) |
+| — | proposed | — | (crpg-server) native Windows service control: an SCM stop saves without a Ctrl-C wrapper; before T089 (T040, D70a) |
+| — | proposed | — | (workspace) bump ctrlc and nix to their newer releases through review (T040, D70a) |
+| — | proposed | — | (repo settings) require both server-artifacts check contexts in the master ruleset once T040c has run green on master, as T047c's C7 did for client (T040) |
 | T041 | fact sheet tasks/T041-facts.md (Muse Spark, session 79); next: blind drafts | — | T041 (crpg-testkit) scripted headless clients, 5,000-tick loss/jitter desync, two-client identical visible state, gate 13 dedicated smoke |
 | T100 | fact sheet tasks/T100-facts.md (Beam) and blind drafts tasks/T100-draft-a.md (DeepSeek V4 Pro) and tasks/T100-draft-b.md (Muse Spark); next: manager or architect adjudication | — | T100 (see tasks/T100-facts.md) |
 | T101 | fact sheet tasks/T101-facts.md (DeepSeek V4.1 Flash) and blind draft tasks/T101-draft-b.md (DeepSeek V4 Pro); next: an Opus architect ADR | — | T101 (see tasks/T101-facts.md) |
@@ -348,10 +353,11 @@ Exploding dice and glitch rules are deferred until a ruleset asks for them (ADR-
 | — | proposed | — | (crpg-testkit) T037e follow-up: K2/K3 authored values that tell speed, step, step_cost and pool apart (contract revision: step 131072 or step_cost 2, a second pool template, a route longer than one step, a third K3 tick), and K4's vacuous "clears nothing" (mutant survivors; low) |
 | T042a | done, on the batch (67a1953; Go DeepSeek V4.1 Flash, attempt 2 after a free-tier quota refusal; Go first-pass review with no findings; mutant review 16 planted, 16 killed); PR pending | — | `crpg-net` hostile-client suite (`tests/malicious_client.rs`, cases X1–X14 over the eight decoders a client can reach; about 650 test lines), plus a `crpg-net` architecture-doc order correction; contract approved D67 (user, 2026-11-17) |
 | T042b | filed (D67b); before players host games for each other (D65b) | — | `crpg-net` hostile-server suite for the client's own decoders (same shape as T042a, about 500 test lines) |
-| — | proposed | — | (crpg-server) server log line for each rejected client message, with a small "where do server logs go" decision; belongs to T040 or T041 (D67a) |
+| — | closed by T040b (tasks/T040.md, approved D70) | — | (crpg-server) server log line for each rejected client message, with a small "where do server logs go" decision; belongs to T040 or T041 (D67a) |
 | T056 | contract approved D63; T056a and T056b done, on the batch mgr/session-74-batch, PR #98 (mutant-reviewed and fixed sessions 62–63) | — | MVP AI in `crpg-ai`: move to nearest hostile and attack, consuming `legal_actions` only. Main open question: sim, rules and core have no hostility notion at runtime (faction is authored data only) |
 | — | proposed | — | (crpg-net) announce the nav revision to clients (T037 Reading 4), before T026 |
-| — | proposed; T040 contract being written (session 79), which decides whether this is inside T040 | — | (crpg-server) T040: call `bind_area_bounds` at area load and `place` after transfers and spawns (T037 Reading 5) |
+| — | bind_area_bounds half closed by T040b (approved D70); the place half re-filed below | — | (crpg-server) T040: call `bind_area_bounds` at area load and `place` after transfers and spawns (T037 Reading 5) |
+| — | proposed | — | (crpg-server) call `place` after area transfers and spawns (T037 Reading 5), in the first task that adds a server-side spawn or area transfer; re-filed from the T040 row (D70) |
 
 ---
 
@@ -728,3 +734,4 @@ Record it here, one line per week.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S76-bookkeeping · Recorded the sessions 75–76 batch state from the supplied facts (T154c, T152, T056a/b and T150a/b done on PR #98; T154c follow-up; T153 row; throughput 75–76).
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + S78-bookkeeping · Recorded the sessions 77–78 batch state from the supplied facts (T151a–c rows, T151 contract approved D66d, T052/T040/T100/T101 rows, the T040 bind-area-bounds row status and the 77–78 throughput row).
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + S79-d69-record · Recorded the user's D69 answers (T052 approved, next T052 then T052b; save-schema-version and campaign-quest-store rows), the T151b attempt-1 stop and T151-E1 erratum, the T041 row, and dropped the T040 "no row" note.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S80-t040-edits · Recorded the D70 T040 approval (T040a–c, S-set, blocked on T150c/T154d), closed the two D67a/D70 sub-rows with the place half re-filed, and added the five T040 follow-up rows.
