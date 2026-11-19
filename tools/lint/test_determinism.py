@@ -533,6 +533,57 @@ class TestUnsupportedFloatLiterals(LintCase):
             "0..120 is a range, not a float",
         )
 
+    # A `.0` / `.1` after a closing `)` or `]` is tuple field access, as in
+    # `self.0`; it is not a leading-dot float literal.
+    def test_tuple_field_after_call_passes(self):
+        self.assert_clean(
+            "crpg-rules", "pub fn f() -> u8 { g().0 }\n",
+            "g().0 is a tuple field, not a float",
+        )
+
+    def test_tuple_field_after_index_passes(self):
+        self.assert_clean(
+            "crpg-rules", "pub fn f(a: [u8; 4]) -> u8 { a[0].0 }\n",
+            "a[0].0 is a tuple field, not a float",
+        )
+
+    def test_tuple_field_after_dynamic_index_passes(self):
+        self.assert_clean(
+            "crpg-rules",
+            "pub fn f(a: [(u8, u8); 4], i: usize) -> u8 { a[i].1 }\n",
+            "a[i].1 is a tuple field, not a float",
+        )
+
+    def test_tuple_field_after_call_in_comparison_passes(self):
+        self.assert_clean(
+            "crpg-rules", "pub fn f() -> bool { x.id().0 == y }\n",
+            "x.id().0 == y is a tuple field, not a float",
+        )
+
+    def test_parenthesised_literal_fails(self):
+        self.assert_flags(
+            "crpg-rules", "pub fn f() { let x = (0.5); let _ = x; }\n",
+            "no-float", "(0.5) is a float literal",
+        )
+
+    def test_bracketed_literal_fails(self):
+        self.assert_flags(
+            "crpg-rules", "pub fn f() { let a = [1.0]; let _ = a; }\n",
+            "no-float", "[1.0] is a float literal",
+        )
+
+    def test_call_with_leading_dot_literal_fails(self):
+        self.assert_flags(
+            "crpg-rules", "pub fn f() { g(.5); }\n",
+            "no-float", "f(.5) is a leading-dot float literal",
+        )
+
+    def test_assigned_literal_fails(self):
+        self.assert_flags(
+            "crpg-rules", "pub fn f() { let x = 2.0; let _ = x; }\n",
+            "no-float", "x = 2.0 assigns a float literal",
+        )
+
     def test_hex_int_pass(self):
         self.assert_clean(
             "crpg-rules", HEX_INT_SRC, "0x1F is an integer, not a float",
@@ -645,7 +696,15 @@ NAV_STUB_SRC = (
     "//! Detour-equivalent server-side path queries over the same baked navmesh.\n"
 )
 
-LINTED_CRATES = ("crpg-core", "crpg-rules", "crpg-sim", "crpg-nav")
+# The exact code lines of crates/crpg-ai/src/lib.rs (the stub).
+AI_STUB_SRC = (
+    "#![forbid(unsafe_code)]\n"
+    "#![warn(missing_docs)]\n"
+    "//! AI logic: utility-scoring combat decisions, behaviour-tree schedules\n"
+    "//! for non-combat, and (later) influence-map tactical positioning.\n"
+)
+
+LINTED_CRATES = ("crpg-core", "crpg-rules", "crpg-sim", "crpg-nav", "crpg-ai")
 
 
 def make_workspace(root, crates, sources=None):
@@ -687,6 +746,39 @@ class TestNavScope(LintCase):
 
     def test_nav_stub_passes(self):
         self.assert_clean("crpg-nav", NAV_STUB_SRC, "the crpg-nav stub should pass")
+
+
+class TestAiScope(LintCase):
+    """crpg-ai gets the full float ban and every `both` rule (ADR-0036 V1)."""
+
+    ROWS = [
+        (HASHMAP_SRC, ["no-hashmap"]),
+        (HASHSET_SRC, ["no-hashset"]),
+        (WALLCLOCK_SRC, ["no-wallclock"]),
+        (THREAD_SRC, ["no-thread"]),
+        (RNG_SRC, ["no-external-rng"]),
+        (FLOAT_SRC, ["no-float"]),
+        (FLOAT_SIM_F32_SRC, ["no-float"]),
+        (FLOAT_LITERAL_SRC, ["no-float"]),
+        (UNSUFFIXED_FLOAT_SRC, ["no-float"]),
+        (DOCTEST_SRC, ["no-hashmap", "no-float"]),
+    ]
+
+    def test_ai_bans(self):
+        for src, expected in self.ROWS:
+            with self.subTest(expected=expected, src=src.strip()[:40]):
+                code, rules = self.lint_one("crpg-ai", src)
+                self.assertEqual(code, 1)
+                for rule in expected:
+                    self.assertIn(rule, rules)
+
+    def test_ai_clean_passes(self):
+        for src in (CLEAN_SRC, COMMENT_SRC, DOC_PROSE_SRC, DOCTEST_TEXT_FENCE_SRC):
+            with self.subTest(src=src.strip()[:40]):
+                self.assert_clean("crpg-ai", src, "clean ai source should pass")
+
+    def test_ai_stub_passes(self):
+        self.assert_clean("crpg-ai", AI_STUB_SRC, "the crpg-ai stub should pass")
 
 
 class TestCrateCoverage(LintCase):
@@ -762,10 +854,12 @@ class TestScopeIsPinned(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertEqual(
-            module.CRATES, ["crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"],
+            module.CRATES,
+            ["crpg-core", "crpg-rules", "crpg-sim", "crpg-nav", "crpg-ai"],
         )
         self.assertEqual(
-            module.NO_FLOAT_CRATES, ("crpg-core", "crpg-rules", "crpg-nav"),
+            module.NO_FLOAT_CRATES,
+            ("crpg-core", "crpg-rules", "crpg-nav", "crpg-ai"),
         )
 
     def test_repository_passes(self):

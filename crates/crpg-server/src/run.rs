@@ -12,14 +12,16 @@ use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 
+use crpg_net::movement_v4::MOVEMENT_VERSION;
 use crpg_net::protocol::{ReceiptStatus, RejectionCode};
 use crpg_net::protocol_transfer::TRANSFER_VERSION;
+use crpg_net::protocol_v3::RejectionCode as CodeV3;
 use crpg_net::transfer_v3::TRANSFER_VERSION_V3;
 use crpg_net::transport::Transport;
 
 use crate::host::{
-    AdvanceReport, Host, HostError, IngestDisposition, PeerHandle, TransferDisposition,
-    TransferRefusal,
+    AdvanceReport, Host, HostError, IngestDisposition, MoveAdmission, PeerHandle,
+    TransferDisposition, TransferRefusal,
 };
 use crate::quic::MAX_DRAIN_PER_CONNECTION;
 
@@ -248,6 +250,8 @@ pub struct LinkStats {
     pub held: bool,
     /// Frames the down queue accepted.
     pub sent: u64,
+    /// Lane-1 frames held for retry (T154c, B-11).
+    pub held_moves: u32,
 }
 
 /// Why a link could not be attached.
@@ -314,6 +318,14 @@ struct Link {
     held: Option<Vec<u8>>,
     /// The client's own end is gone; the link retires at deliver.
     departed: bool,
+    /// The `attach` capacity: the lane-1 hold queue stops the drain here.
+    capacity: usize,
+    /// Lane-1 frames held for retry, oldest first (B-11).
+    moves_held: VecDeque<Vec<u8>>,
+    /// Lane-1 receipts taken from the host, never dropped while live (B-12).
+    receipts: VecDeque<Vec<u8>>,
+    /// `take_move_receipts` said `NotV4Peer`: a v1–v3 session skips lane 1.
+    no_lane1: bool,
 }
 
 /// The in-memory hosting: one `Host`, its local links and its AI hook.
@@ -367,6 +379,10 @@ impl LocalHost {
                 stats: LinkStats::default(),
                 held: None,
                 departed: false,
+                capacity: capacity.get(),
+                moves_held: VecDeque::new(),
+                receipts: VecDeque::new(),
+                no_lane1: false,
             },
         );
         Ok(LocalClient {
@@ -449,6 +465,36 @@ impl LocalHost {
                     }
                 }
             }
+            // B-11: a lane-1 `MoveTo` frame goes to `ingest_move`. A held
+            // frame is retried by the caller; `Hold` tells it where to wait.
+            Some(&MOVEMENT_VERSION) => match self.host.ingest_move(peer, frame, now_ms) {
+                Ok(
+                    MoveAdmission::Admitted { .. }
+                    | MoveAdmission::Rejected { .. }
+                    | MoveAdmission::Duplicate { .. },
+                ) => Ok(Disposition::Continue),
+                Ok(MoveAdmission::Refused {
+                    code: CodeV3::QueueFull | CodeV3::RateLimited,
+                    ..
+                }) => Ok(Disposition::Hold),
+                Ok(MoveAdmission::Refused {
+                    code: CodeV3::Unauthenticated,
+                    ..
+                }) => {
+                    self.count_refusal(peer);
+                    Ok(Disposition::Retire)
+                }
+                Ok(MoveAdmission::Refused { .. }) => {
+                    self.count_refusal(peer);
+                    Ok(Disposition::Continue)
+                }
+                // A v1–v3 session has no lane 1; count the frame and drop it.
+                Err(HostError::NotV4Peer) => {
+                    self.count_refusal(peer);
+                    Ok(Disposition::Continue)
+                }
+                Err(error) => Err(error),
+            },
             _ => match self.host.ingest(peer, frame, now_ms)? {
                 IngestDisposition::Staged => Ok(Disposition::Continue),
                 IngestDisposition::Refused {
@@ -472,6 +518,43 @@ impl LocalHost {
     fn count_refusal(&mut self, peer: PeerHandle) {
         if let Some(link) = self.links.get_mut(&peer) {
             link.stats.refused += 1;
+        }
+    }
+
+    /// Records the lane-1 hold-queue length in the link's stats, if live.
+    fn record_move_hold(&mut self, peer: PeerHandle) {
+        if let Some(link) = self.links.get_mut(&peer) {
+            link.stats.held_moves = link.moves_held.len() as u32;
+        }
+    }
+
+    /// Retries the held lane-1 frames front first until one holds (B-11).
+    /// Returns true when the link retired and the caller moves on.
+    fn retry_held_moves(&mut self, peer: PeerHandle, now_ms: u64) -> Result<bool, HostError> {
+        loop {
+            let Some(frame) = self
+                .links
+                .get_mut(&peer)
+                .and_then(|link| link.moves_held.pop_front())
+            else {
+                return Ok(false);
+            };
+            match self.route(peer, &frame, now_ms)? {
+                Disposition::Continue => {
+                    self.record_move_hold(peer);
+                }
+                Disposition::Hold => {
+                    if let Some(link) = self.links.get_mut(&peer) {
+                        link.moves_held.push_front(frame);
+                        link.stats.held_moves = link.moves_held.len() as u32;
+                    }
+                    return Ok(false);
+                }
+                Disposition::Retire => {
+                    self.retire(peer);
+                    return Ok(true);
+                }
+            }
         }
     }
 }
@@ -503,22 +586,53 @@ impl Hosting for LocalHost {
                     }
                 }
             }
+            // 1b. The held lane-1 frames, front first until one holds (B-11).
+            if self.retry_held_moves(peer, now_ms)? {
+                continue;
+            }
             // 2. Fresh frames, up to the per-peer drain cap.
             for _ in 0..MAX_DRAIN_PER_CONNECTION {
+                // B-11: a full lane-1 hold queue stops the drain before
+                // `try_recv`, so no frame behind it is taken.
+                let moves_full = self
+                    .links
+                    .get(&peer)
+                    .is_some_and(|link| link.moves_held.len() >= link.capacity);
+                if moves_full {
+                    break;
+                }
                 let Some(link) = self.links.get_mut(&peer) else {
                     break;
                 };
                 match link.up.try_recv() {
                     Ok(frame) => {
                         link.stats.received += 1;
+                        // B-11: behind held lane-1 frames a fresh `0xA1`
+                        // frame joins the back with no admission attempt.
+                        let behind_hold =
+                            !link.moves_held.is_empty() && frame.first() == Some(&MOVEMENT_VERSION);
+                        if behind_hold {
+                            link.moves_held.push_back(frame);
+                            link.stats.held_moves = link.moves_held.len() as u32;
+                            continue;
+                        }
                         match self.route(peer, &frame, now_ms)? {
                             Disposition::Continue => {}
                             Disposition::Hold => {
-                                if let Some(link) = self.links.get_mut(&peer) {
-                                    link.held = Some(frame);
-                                    link.stats.held = true;
+                                if frame.first() == Some(&MOVEMENT_VERSION) {
+                                    // B-11: lane-1 ingest stops for this
+                                    // cycle, but the drain goes on.
+                                    if let Some(link) = self.links.get_mut(&peer) {
+                                        link.moves_held.push_back(frame);
+                                        link.stats.held_moves = link.moves_held.len() as u32;
+                                    }
+                                } else {
+                                    if let Some(link) = self.links.get_mut(&peer) {
+                                        link.held = Some(frame);
+                                        link.stats.held = true;
+                                    }
+                                    break;
                                 }
-                                break;
                             }
                             Disposition::Retire => {
                                 self.retire(peer);
@@ -597,6 +711,99 @@ impl Hosting for LocalHost {
             // 5. A send that found the queue gone ends the link.
             if self.links.get(&peer).is_some_and(|link| link.departed) {
                 self.retire(peer);
+                continue;
+            }
+            // B-12. Receipts, after (3)–(4) for a live link. When the
+            // backlog is empty `take_move_receipts` fills it; then backlog
+            // frames go to the down queue in order until it is full. A
+            // receipt is never dropped while the link lives.
+            if !self.links.get(&peer).is_some_and(|link| link.no_lane1) {
+                let backlog_empty = self
+                    .links
+                    .get(&peer)
+                    .is_some_and(|link| link.receipts.is_empty());
+                if backlog_empty {
+                    match self.host.take_move_receipts(peer) {
+                        Ok(frames) => {
+                            if let Some(link) = self.links.get_mut(&peer) {
+                                link.receipts.extend(frames);
+                            }
+                        }
+                        // A v1–v3 session has no lane 1: B-12/B-13 never run
+                        // for it again.
+                        Err(HostError::NotV4Peer) => {
+                            if let Some(link) = self.links.get_mut(&peer) {
+                                link.no_lane1 = true;
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                loop {
+                    let frame = self
+                        .links
+                        .get_mut(&peer)
+                        .and_then(|link| link.receipts.pop_front());
+                    let Some(frame) = frame else { break };
+                    let send = self
+                        .links
+                        .get_mut(&peer)
+                        .map(|link| link.down.try_send(frame));
+                    match send {
+                        Some(Ok(())) => {
+                            if let Some(link) = self.links.get_mut(&peer) {
+                                link.stats.sent += 1;
+                            }
+                        }
+                        Some(Err(TrySendError::Full(frame))) => {
+                            if let Some(link) = self.links.get_mut(&peer) {
+                                link.receipts.push_front(frame);
+                            }
+                            break;
+                        }
+                        Some(Err(TrySendError::Disconnected(frame))) => {
+                            if let Some(link) = self.links.get_mut(&peer) {
+                                link.receipts.push_front(frame);
+                                link.departed = true;
+                            }
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+                if self.links.get(&peer).is_some_and(|link| link.departed) {
+                    self.retire(peer);
+                    continue;
+                }
+            }
+            // B-13. Samples, after receipts, every cycle. Each goes to the
+            // down queue; when the queue is full the rest are dropped, so a
+            // sample is never held. A v1–v3 link never reaches this stage.
+            if !self.links.get(&peer).is_some_and(|link| link.no_lane1) {
+                for frame in self.host.take_samples(peer)? {
+                    let send = self
+                        .links
+                        .get_mut(&peer)
+                        .map(|link| link.down.try_send(frame));
+                    match send {
+                        Some(Ok(())) => {
+                            if let Some(link) = self.links.get_mut(&peer) {
+                                link.stats.sent += 1;
+                            }
+                        }
+                        Some(Err(TrySendError::Full(_))) => break,
+                        Some(Err(TrySendError::Disconnected(_))) => {
+                            if let Some(link) = self.links.get_mut(&peer) {
+                                link.departed = true;
+                            }
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+                if self.links.get(&peer).is_some_and(|link| link.departed) {
+                    self.retire(peer);
+                }
             }
         }
         Ok(())
@@ -650,5 +857,274 @@ impl Transport for LocalClient {
                 None
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fix round part A (T154c-fix-a): the held lane-1 retry below the public
+// API's reach (h03, h04, h07).
+// ---------------------------------------------------------------------------
+
+/// Unit pins for the held lane-1 retry no integration case can isolate: a
+/// re-held frame returns to the front (h03), survives with its sibling
+/// (h04), and refreshes `held_moves` (h07). The tests drive
+/// `retry_held_moves` on a real host whose in-flight window is full, so each
+/// retry answers `QueueFull` again.
+#[cfg(test)]
+mod lane1_hold_unit_tests {
+    use super::*;
+    use crpg_core::{EntityId, Fx16_16, Ulid};
+    use crpg_nav::{bake_box, NavMesh, NavRect};
+    use crpg_net::facts_v3::EncounterGrants;
+    use crpg_net::movement_v4::{decode_down, encode_intent, MoveBody, MoveDown, MoveIntent};
+    use crpg_net::protocol::NetId;
+    use crpg_net::protocol_v3::PauseRights;
+    use crpg_sim::HistoryWorld;
+    use serde_json::{json, Value};
+
+    use crate::host::{
+        ControlGrant, DisclosureGrants, EntityDisclosure, EntityFactGrant, FactGrants, HostConfig,
+        ProtocolSelection, DEFAULT_HOST_GRANTS,
+    };
+
+    const FIXTURE: &str = include_str!("../tests/fixtures/three_combatants.json");
+
+    fn eid(index: u32) -> EntityId {
+        serde_json::from_value(json!({"index": index, "generation": 1})).expect("valid entity id")
+    }
+    fn a() -> EntityId {
+        eid(0)
+    }
+    fn b() -> EntityId {
+        eid(1)
+    }
+    fn c() -> EntityId {
+        eid(2)
+    }
+    fn n(raw: u64) -> NetId {
+        NetId::new(raw).expect("nonzero")
+    }
+
+    fn rect(x0: i32, z0: i32, x1: i32, z1: i32) -> NavRect {
+        NavRect {
+            min_x: Fx16_16::from_int(x0),
+            min_z: Fx16_16::from_int(z0),
+            max_x: Fx16_16::from_int(x1),
+            max_z: Fx16_16::from_int(z1),
+        }
+    }
+
+    fn m10() -> NavMesh {
+        bake_box(Fx16_16::ZERO, rect(0, 0, 10, 10), &[]).expect("bakes")
+    }
+
+    fn disclosure(entity: EntityId) -> EntityDisclosure {
+        EntityDisclosure {
+            entity,
+            present: true,
+            health: true,
+            spawn: true,
+            despawn: true,
+            died: true,
+            action_actor: true,
+            action_target: true,
+            action_outcome: true,
+            action_damage: true,
+            turn_start: true,
+        }
+    }
+
+    fn full_grants() -> DisclosureGrants {
+        DisclosureGrants {
+            entities: vec![disclosure(a()), disclosure(b()), disclosure(c())],
+            abilities: vec![Ulid::from_u128(603), Ulid::from_u128(604)],
+            encounters: vec![Ulid::from_u128(601)],
+            turn_round: true,
+            encounter_end: true,
+            turn_state: true,
+        }
+    }
+
+    fn facts() -> FactGrants {
+        FactGrants {
+            entities: vec![
+                EntityFactGrant {
+                    entity: a(),
+                    pools: true,
+                    effects: true,
+                    stats: true,
+                    tags: true,
+                },
+                EntityFactGrant {
+                    entity: b(),
+                    pools: true,
+                    effects: true,
+                    stats: true,
+                    tags: true,
+                },
+                EntityFactGrant {
+                    entity: c(),
+                    pools: true,
+                    effects: true,
+                    stats: true,
+                    tags: true,
+                },
+            ],
+            encounter: EncounterGrants {
+                mode: true,
+                pending_mode: true,
+                clock: true,
+                timeline: true,
+            },
+            host: DEFAULT_HOST_GRANTS,
+        }
+    }
+
+    fn halt_frame(epoch: [u8; 16], seq: u64) -> Vec<u8> {
+        encode_intent(&MoveIntent {
+            epoch,
+            seq,
+            actor: n(1),
+            body: MoveBody::Halt,
+        })
+        .expect("encodes")
+    }
+
+    fn receipt_seqs(host: &mut LocalHost, peer: PeerHandle) -> Vec<u64> {
+        host.host_mut()
+            .take_move_receipts(peer)
+            .expect("receipts")
+            .iter()
+            .map(|bytes| match decode_down(bytes) {
+                Ok(MoveDown::Receipt(receipt)) => receipt.seq,
+                _ => panic!("a receipt decodes"),
+            })
+            .collect()
+    }
+
+    struct HoldSetup {
+        host: LocalHost,
+        peer: PeerHandle,
+        first: Vec<u8>,
+        second: Vec<u8>,
+    }
+
+    /// A link whose in-flight window is full (eight admissions at one
+    /// `now_ms`) and whose held lane-1 queue is `[seq 9, seq 10]`, as intake
+    /// leaves it after a `QueueFull` hold with two frames behind it.
+    fn hold_setup() -> HoldSetup {
+        let value: Value = serde_json::from_str(FIXTURE).expect("fixture parses");
+        let mut history: HistoryWorld =
+            serde_json::from_value(value).expect("fixture loads through validated serde");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        let mut host = Host::from_history(
+            history,
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 1,
+            },
+            0,
+        )
+        .expect("wraps");
+        host.bind_nav_mesh(m10()).expect("binds");
+        let peer = host
+            .bind_v4_peer(
+                ControlGrant { actors: vec![a()] },
+                full_grants(),
+                facts(),
+                PauseRights {
+                    pause: true,
+                    unpause: true,
+                },
+                0,
+            )
+            .expect("binds");
+        let mut host = LocalHost::new(host);
+        let _client = host
+            .attach(peer, NonZeroUsize::new(64).expect("nonzero"))
+            .expect("attaches");
+        let epoch = host.host().epoch(peer).expect("bound");
+        for seq in 1..=8 {
+            assert!(matches!(
+                host.host_mut()
+                    .ingest_move(peer, &halt_frame(epoch, seq), 5),
+                Ok(MoveAdmission::Admitted { .. })
+            ));
+        }
+        let first = halt_frame(epoch, 9);
+        let second = halt_frame(epoch, 10);
+        let link = host.links.get_mut(&peer).expect("link");
+        link.moves_held.push_back(first.clone());
+        link.moves_held.push_back(second.clone());
+        link.stats.held_moves = 2;
+        HoldSetup {
+            host,
+            peer,
+            first,
+            second,
+        }
+    }
+
+    /// h03: a frame re-held on retry goes back to the front, so seq 9 — not
+    /// seq 10 — is the next one admitted once space frees.
+    #[test]
+    fn reheld_frame_returns_to_front() {
+        let mut setup = hold_setup();
+        setup.host.retry_held_moves(setup.peer, 5).expect("retries");
+        let link = setup.host.links.get(&setup.peer).expect("link");
+        assert_eq!(link.moves_held.len(), 2);
+        assert_eq!(link.moves_held[0], setup.first);
+        assert_eq!(link.moves_held[1], setup.second);
+        assert_eq!(link.stats.held_moves, 2);
+    }
+
+    /// h04: a re-held frame is not dropped — both frames survive the re-hold
+    /// and are admitted in order with exact receipts once the window frees.
+    #[test]
+    fn reheld_frames_are_not_dropped() {
+        let mut setup = hold_setup();
+        setup.host.retry_held_moves(setup.peer, 5).expect("retries");
+        let link = setup.host.links.get(&setup.peer).expect("link");
+        assert_eq!(link.moves_held.len(), 2);
+        assert_eq!(link.moves_held[0], setup.first);
+        assert_eq!(link.moves_held[1], setup.second);
+        setup.host.host_mut().advance(5).expect("advances");
+        assert_eq!(
+            receipt_seqs(&mut setup.host, setup.peer),
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        setup.host.retry_held_moves(setup.peer, 5).expect("retries");
+        let link = setup.host.links.get(&setup.peer).expect("link");
+        assert!(link.moves_held.is_empty());
+        assert_eq!(link.stats.held_moves, 0);
+        setup.host.host_mut().advance(10).expect("advances");
+        assert_eq!(receipt_seqs(&mut setup.host, setup.peer), vec![9, 10]);
+    }
+
+    /// h07: a re-hold updates `held_moves` to the exact queue length, not
+    /// the stale count from before the retry.
+    #[test]
+    fn rehold_updates_held_moves() {
+        let mut setup = hold_setup();
+        setup
+            .host
+            .links
+            .get_mut(&setup.peer)
+            .expect("link")
+            .stats
+            .held_moves = 5;
+        setup.host.retry_held_moves(setup.peer, 5).expect("retries");
+        assert_eq!(
+            setup
+                .host
+                .links
+                .get(&setup.peer)
+                .expect("link")
+                .stats
+                .held_moves,
+            2
+        );
     }
 }

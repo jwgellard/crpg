@@ -2,18 +2,19 @@
 """Determinism lint for the CRPG simulation crates.
 
 Scans every .rs file under crates/crpg-core/, crates/crpg-rules/,
-crates/crpg-sim/ and crates/crpg-nav/ and fails on patterns that would make the
-deterministic simulation non-deterministic:
+crates/crpg-sim/, crates/crpg-nav/ and crates/crpg-ai/ and fails on patterns
+that would make the deterministic simulation non-deterministic:
 
-All four crates:
+All five crates:
   - HashMap / HashSet iteration (use IndexMap or BTreeMap)
   - SystemTime / Instant / std::time:: (wall clock is not sim time)
   - std::thread
   - rand:: / thread_rng (use crpg_core's seeded RNG)
 
-crpg-core, crpg-rules and crpg-nav only:
+crpg-core, crpg-rules, crpg-nav and crpg-ai only:
   - f32 / f64 (rules maths uses integers or fixed-point; navigation uses
-    integers and Fx16_16 only, ADR-0036 V1)
+    integers and Fx16_16 only, ADR-0036 V1; AI decisions feed the
+    authoritative simulation, so AI gets the same ban)
 
 crpg-sim only:
   - f64 (E006-A: spatial positions are f32 per spec 2.4, outside the rules
@@ -63,9 +64,9 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-CRATES = ["crpg-core", "crpg-rules", "crpg-sim", "crpg-nav"]
+CRATES = ["crpg-core", "crpg-rules", "crpg-sim", "crpg-nav", "crpg-ai"]
 # Crates under the full float ban (no-float-crates scope).
-NO_FLOAT_CRATES = ("crpg-core", "crpg-rules", "crpg-nav")
+NO_FLOAT_CRATES = ("crpg-core", "crpg-rules", "crpg-nav", "crpg-ai")
 
 # (crate name, rule name, regex)
 RULES = [
@@ -89,12 +90,15 @@ RULES = [
     # leading-dot literal `.0` in a tuple field access like `self.0` is not
     # mistaken for a float. The leading-dot alternative also rejects a
     # preceding `.` so a range with a multi-digit bound (`0..120`) does not
-    # surface its tail (`.120`) as a float.
+    # surface its tail (`.120`) as a float, and a preceding `)` or `]` so a
+    # tuple field after a call or an index (`x.id().0`, `a[i].1`) is field
+    # access, as `self.0` already is.
     ("no-float-crates", "no-float", re.compile(
         r"(?:"
         r"(?<![A-Za-z0-9_])[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?"
         r"|(?<![A-Za-z0-9_])[0-9]+[eE][+-]?[0-9]+"
-        r"|(?<![A-Za-z0-9_])(?<!\.)\.[0-9]+(?:[eE][+-]?[0-9]+)?"
+        r"|(?<![A-Za-z0-9_])(?<!\.)(?<![)\]])"
+        r"\.[0-9]+(?:[eE][+-]?[0-9]+)?"
         r")\b"
     )),
 ]

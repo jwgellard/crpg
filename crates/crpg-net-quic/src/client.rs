@@ -20,17 +20,18 @@ use quinn::{
 };
 
 use crate::close::{
-    ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, SendError,
+    ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, Lane1Stats, SendError,
 };
 use crate::handshake::{
-    parse_channel_frame_header, Channel, Framing, Hello, Welcome, ALPN_LANE0_V2,
-    FRAME_HEADER_BYTES, MAX_HELLO_BYTES, TLS_SERVER_NAME, WELCOME_BYTES,
+    parse_channel_frame_header, Channel, Framing, Hello, Welcome, ALPN_LANE0_V2, ALPN_LANE0_V3,
+    FRAME_HEADER_BYTES, MAX_DATAGRAM_BYTES, MAX_HELLO_BYTES, TLS_SERVER_NAME, WELCOME_BYTES,
 };
 use crate::limits::{ClientConfig, ClientLimits, ConfigError};
 use crate::queue::{
-    close_quinn, framed, framed_channel, lane_control, lane_reader, lane_writer, race, reason_from,
-    wait_stop, Conn, ConnWake, Either, FailGuard, FlushClose, LaneDirection, Phase, ReadSpec,
-    Shared, State, Stop, SYNC_GRACE,
+    close_quinn, datagram_reader, framed, framed_channel, lane1_reader, lane1_writer, lane_control,
+    lane_reader, lane_writer, race, reason_from, wait_stop, Conn, ConnWake, Either, FailGuard,
+    FlushClose, LaneDirection, Phase, ReadSpec, Shared, State, Stop, LANE1_CLIENT_INBOUND,
+    LANE1_CLIENT_OUTBOUND, SYNC_GRACE,
 };
 use crate::teardown::finish_endpoint_close;
 use crate::tls;
@@ -108,6 +109,8 @@ pub struct QuicClient {
     limits: ClientLimits,
     /// The framing this client asked for and negotiated.
     framing: Framing,
+    /// The client negotiated `crpg-lane0/3` (lane 1 and datagrams exist).
+    movement: bool,
 }
 
 impl QuicClient {
@@ -168,6 +171,7 @@ impl QuicClient {
                 wire_version: hello.wire_version,
             },
             framing,
+            movement: false,
             mismatch,
             limits,
         };
@@ -185,8 +189,82 @@ impl QuicClient {
                     welcome,
                     limits,
                     framing,
+                    movement: false,
                 })
             }
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(ConnectError::Runtime)
+            }
+        }
+    }
+
+    /// Offers exactly `crpg-lane0/3`; the hello must name wire version 4.
+    /// Blocks as `connect`, bounded by `connect_timeout_ms`, which also
+    /// covers opening the lane-1 stream (T150 N-4). Before any I/O, limits
+    /// invalid → `Config`, and a hello that does not encode for `/3` (version
+    /// not 4) → `Handshake`, with no socket bound.
+    pub fn connect_movement(
+        config: ClientConfig,
+        server: SocketAddr,
+        hello: &Hello,
+    ) -> Result<QuicClient, ConnectError> {
+        let limits = config.limits;
+        limits.validate().map_err(ConnectError::Config)?;
+        let hello_frame = hello
+            .encode_for(true)
+            .ok()
+            .and_then(|payload| framed(&payload, MAX_HELLO_BYTES).ok())
+            .ok_or(ConnectError::Handshake)?;
+        let mismatch = Arc::new(AtomicBool::new(false));
+        let quinn_config = tls::client_movement_config(config.pin, mismatch.clone(), &limits)
+            .ok_or(ConnectError::Handshake)?;
+        let socket = UdpSocket::bind(config.bind).map_err(|e| ConnectError::Io(e.kind()))?;
+        let local_addr = socket
+            .local_addr()
+            .map_err(|e| ConnectError::Io(e.kind()))?;
+        let inbound = QueueCaps {
+            per_peer_frames: limits.inbound_frames,
+            per_peer_bytes: limits.inbound_bytes,
+            host_frames: limits.inbound_frames,
+            host_bytes: limits.inbound_bytes,
+        };
+        let outbound = QueueCaps {
+            per_peer_frames: limits.outbound_frames,
+            per_peer_bytes: limits.outbound_bytes,
+            host_frames: limits.outbound_frames,
+            host_bytes: limits.outbound_bytes,
+        };
+        let shared = Arc::new(Shared::new(State::new(inbound, outbound, false)));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let thread_shared = shared.clone();
+        let attempt = Attempt {
+            config: quinn_config,
+            server,
+            kind: Kind::Hello {
+                hello_frame,
+                wire_version: hello.wire_version,
+            },
+            framing: Framing::V2,
+            movement: true,
+            mismatch,
+            limits,
+        };
+        let thread = spawn_attempt(thread_shared, socket, attempt, ready_tx)?;
+        match ready_rx.recv() {
+            Ok(Ok(Connected { welcome, .. })) => Ok(QuicClient {
+                shared,
+                thread: Some(thread),
+                local_addr,
+                welcome,
+                limits,
+                framing: Framing::V2,
+                movement: true,
+            }),
             Ok(Err(error)) => {
                 let _ = thread.join();
                 Err(error)
@@ -254,6 +332,7 @@ impl QuicClient {
                 welcome: session,
             },
             framing: Framing::V2,
+            movement: false,
             mismatch,
             limits,
         };
@@ -271,6 +350,7 @@ impl QuicClient {
                         welcome,
                         limits,
                         framing: Framing::V2,
+                        movement: false,
                     },
                     answer,
                 )),
@@ -294,6 +374,11 @@ impl QuicClient {
     /// The framing this client asked for and negotiated.
     pub fn framing(&self) -> Framing {
         self.framing
+    }
+
+    /// Whether this client negotiated `crpg-lane0/3`.
+    pub fn movement(&self) -> bool {
+        self.movement
     }
 
     /// The welcome the server sent; on a resumed connection the session
@@ -395,8 +480,60 @@ impl QuicClient {
         Ok(None)
     }
 
-    /// Blocks up to `timeout` until an inbound frame is queued or the
-    /// connection has ended; `false` on timeout.
+    /// Queues one lane-1 frame (≤ 4,096 bytes). Precedence:
+    /// `Send(Closed(_))` → `ChannelUnavailable` (not `/3`) →
+    /// `Send(EmptyFrame)` → `Send(FrameTooLarge)` → `Send(QueueFull)`.
+    pub fn try_send_lane1(&mut self, frame: &[u8]) -> Result<(), ChannelSendError> {
+        let endpoint_failed =
+            ChannelSendError::Send(SendError::Closed(CloseReason::EndpointFailed));
+        let mut state = self.shared.lock().ok_or(endpoint_failed)?;
+        let record = state.conns.get(&LANE).ok_or(endpoint_failed)?;
+        if let Some(reason) = record.close_state() {
+            return Err(ChannelSendError::Send(SendError::Closed(reason)));
+        }
+        if !record.movement {
+            return Err(ChannelSendError::ChannelUnavailable);
+        }
+        if frame.is_empty() {
+            return Err(ChannelSendError::Send(SendError::EmptyFrame));
+        }
+        if frame.len() > MAX_INTENT_FRAME_BYTES {
+            return Err(ChannelSendError::Send(SendError::FrameTooLarge));
+        }
+        state
+            .queue_lane1_outbound(LANE, frame)
+            .map_err(ChannelSendError::Send)
+    }
+
+    /// `Ok(None)` when empty; `Err(reason)` once closed and lane 1 drained.
+    pub fn try_recv_lane1(&mut self) -> Result<Option<Vec<u8>>, CloseReason> {
+        let mut state = self.shared.lock().ok_or(CloseReason::EndpointFailed)?;
+        if let Some(frame) = state.pop_lane1_inbound(LANE) {
+            return Ok(Some(frame));
+        }
+        let record = state.conns.get(&LANE).ok_or(CloseReason::EndpointFailed)?;
+        if record.published {
+            return Err(record.reason.unwrap_or(CloseReason::EndpointFailed));
+        }
+        Ok(None)
+    }
+
+    /// The oldest queued datagram; `Err(reason)` once closed and no datagram
+    /// is queued.
+    pub fn try_recv_datagram(&mut self) -> Result<Option<Vec<u8>>, CloseReason> {
+        let mut state = self.shared.lock().ok_or(CloseReason::EndpointFailed)?;
+        if let Some(datagram) = state.pop_datagram(LANE) {
+            return Ok(Some(datagram));
+        }
+        let record = state.conns.get(&LANE).ok_or(CloseReason::EndpointFailed)?;
+        if record.published {
+            return Err(record.reason.unwrap_or(CloseReason::EndpointFailed));
+        }
+        Ok(None)
+    }
+
+    /// Blocks up to `timeout` until an inbound frame (either lane) or a
+    /// datagram is queued or the connection has ended; `false` on timeout.
     pub fn wait(&self, timeout: Duration) -> bool {
         let now = std::time::Instant::now();
         let deadline = now.checked_add(timeout).unwrap_or(now);
@@ -404,7 +541,10 @@ impl QuicClient {
             return false;
         };
         let ready = |state: &State| {
-            state.inbound_frames > 0 || state.conns.get(&LANE).is_none_or(|record| record.published)
+            state.inbound_frames > 0
+                || state.lane1_inbound_frames > 0
+                || state.conns.get(&LANE).is_none_or(|record| record.published)
+                || state.conns.get(&LANE).is_some_and(Conn::has_datagram)
         };
         match self.shared.wait_until(state, deadline, ready) {
             Some(state) => ready(&state),
@@ -432,6 +572,36 @@ impl QuicClient {
                 outbound_bytes: 0,
                 reader_parked: false,
                 keepalive_pings_sent: 0,
+            },
+        }
+    }
+
+    /// The connection's lane-1 and datagram accounting (all 0 / `None` once
+    /// the record is gone).
+    pub fn lane1_stats(&self) -> Lane1Stats {
+        let snapshot = self.shared.lock_any().and_then(|state| {
+            state.conns.get(&LANE).map(|record| {
+                (
+                    record.lane1_stats(),
+                    record.movement.then(|| record.connection.clone()),
+                )
+            })
+        });
+        match snapshot {
+            Some((stats, connection)) => Lane1Stats {
+                max_datagram_bytes: connection
+                    .and_then(|connection| connection.max_datagram_size()),
+                ..stats
+            },
+            None => Lane1Stats {
+                inbound_frames: 0,
+                inbound_bytes: 0,
+                outbound_frames: 0,
+                outbound_bytes: 0,
+                reader_parked: false,
+                datagrams_queued: 0,
+                datagrams_dropped: 0,
+                max_datagram_bytes: None,
             },
         }
     }
@@ -574,8 +744,23 @@ struct Attempt {
     server: SocketAddr,
     kind: Kind,
     framing: Framing,
+    /// The attempt offers `crpg-lane0/3` (T150): a second stream, datagrams.
+    movement: bool,
     mismatch: Arc<AtomicBool>,
     limits: ClientLimits,
+}
+
+/// A completed handshake: the connection, the lane stream, lane 1's streams
+/// on `/3`, and what the opening answered.
+struct Handshaken {
+    connection: Connection,
+    send: SendStream,
+    recv: RecvStream,
+    /// Stream 2 (opened, not yet visible to the server), on `/3` only.
+    lane1: Option<(SendStream, RecvStream)>,
+    welcome: Welcome,
+    resume_answer: Option<Vec<u8>>,
+    framing: Framing,
 }
 
 /// The thread skeleton shared by `connect_framed` and `connect_resume`.
@@ -628,7 +813,15 @@ async fn client_main(
     let limits = attempt.limits;
     let connect_timeout = Duration::from_millis(u64::from(limits.connect_timeout_ms));
     let outcome = tokio::time::timeout(connect_timeout, handshake(&endpoint, attempt)).await;
-    let (connection, send, recv, ready_outcome) = match outcome {
+    let Handshaken {
+        connection,
+        send,
+        recv,
+        lane1,
+        welcome,
+        resume_answer,
+        framing,
+    } = match outcome {
         Ok(Ok(parts)) => parts,
         Ok(Err(error)) => {
             finish_endpoint(&endpoint, CloseCode::Normal, limits).await;
@@ -641,12 +834,16 @@ async fn client_main(
             return;
         }
     };
-    let (welcome, resume_answer, framing) = ready_outcome;
     let wake = Arc::new(ConnWake::default());
     if let Some(mut state) = shared.lock_any() {
         let mut record = Conn::new(Phase::Accepted, connection.clone(), wake.clone());
         record.framing = framing;
         record.reader_active = true;
+        if lane1.is_some() {
+            record.enable_movement(LANE1_CLIENT_INBOUND, LANE1_CLIENT_OUTBOUND);
+            record.lane1_reader_active = true;
+            record.lane1_writer_finished = false;
+        }
         state.conns.insert(LANE, record);
     }
     tokio::spawn(lane_writer(
@@ -668,6 +865,25 @@ async fn client_main(
         },
         wake.clone(),
     ));
+    if let Some((lane1_send, lane1_recv)) = lane1 {
+        tokio::spawn(lane1_writer(
+            shared.clone(),
+            LANE,
+            connection.clone(),
+            lane1_send,
+            wake.clone(),
+        ));
+        tokio::spawn(lane1_reader(
+            shared.clone(),
+            LANE,
+            connection.clone(),
+            lane1_recv,
+            LaneDirection::Downstream,
+            MAX_DATAGRAM_BYTES,
+            wake.clone(),
+        ));
+        tokio::spawn(datagram_reader(shared.clone(), LANE, connection.clone()));
+    }
     let _ = ready.send(Ok(Connected {
         welcome,
         resume_answer,
@@ -702,20 +918,13 @@ async fn finish_endpoint(endpoint: &quinn::Endpoint, code: CloseCode, limits: Cl
 async fn handshake(
     endpoint: &quinn::Endpoint,
     attempt: Attempt,
-) -> Result<
-    (
-        Connection,
-        SendStream,
-        RecvStream,
-        (Welcome, Option<Vec<u8>>, Framing),
-    ),
-    ConnectError,
-> {
+) -> Result<Handshaken, ConnectError> {
     let Attempt {
         config,
         server,
         kind,
         framing,
+        movement,
         mismatch,
         ..
     } = attempt;
@@ -730,14 +939,19 @@ async fn handshake(
     let connection = connecting
         .await
         .map_err(|error| handshake_error(&error, &mismatch))?;
-    // S§4.3: under `/2`, a negotiated protocol other than `crpg-lane0/2` is
-    // a protocol violation (defence in depth; the pinned rustls client
-    // refuses it first).
-    if framing == Framing::V2 {
+    // S§4.3: under `/2` (and `/3`, T150 N-4 (4)), a negotiated protocol other
+    // than the one offered is a protocol violation (defence in depth; the
+    // pinned rustls client refuses it first).
+    if framing == Framing::V2 || movement {
+        let offered = if movement {
+            ALPN_LANE0_V3
+        } else {
+            ALPN_LANE0_V2
+        };
         let negotiated = connection
             .handshake_data()
             .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
-            .is_some_and(|data| data.protocol.as_deref() == Some(ALPN_LANE0_V2));
+            .is_some_and(|data| data.protocol.as_deref() == Some(offered));
         if !negotiated {
             close_quinn(&connection, CloseCode::ProtocolViolation);
             return Err(ConnectError::Handshake);
@@ -765,11 +979,32 @@ async fn handshake(
             }
             let mut body = [0u8; WELCOME_BYTES];
             read_welcome_part(&connection, &mut recv, &mut body).await?;
-            let welcome = Welcome::decode(&body).map_err(|_| invalid_welcome(&connection))?;
+            let welcome =
+                Welcome::decode_for(&body, movement).map_err(|_| invalid_welcome(&connection))?;
             if welcome.wire_version != wire_version {
                 return Err(invalid_welcome(&connection));
             }
-            Ok((connection, send, recv, (welcome, None, framing)))
+            // T150 N-4 (6): lane 1 is the client's second bidi stream; it
+            // becomes visible to the server at the first lane-1 frame.
+            let lane1 = if movement {
+                Some(
+                    connection
+                        .open_bi()
+                        .await
+                        .map_err(|error| lost_error(&error))?,
+                )
+            } else {
+                None
+            };
+            Ok(Handshaken {
+                connection,
+                send,
+                recv,
+                lane1,
+                welcome,
+                resume_answer: None,
+                framing,
+            })
         }
         Kind::Resume {
             request_frame,
@@ -792,7 +1027,15 @@ async fn handshake(
             let len = parse_answer_len(header).ok_or_else(|| invalid_welcome(&connection))?;
             let mut body = vec![0u8; len];
             read_welcome_part(&connection, &mut recv, &mut body).await?;
-            Ok((connection, send, recv, (welcome, Some(body), framing)))
+            Ok(Handshaken {
+                connection,
+                send,
+                recv,
+                lane1: None,
+                welcome,
+                resume_answer: Some(body),
+                framing,
+            })
         }
     }
 }

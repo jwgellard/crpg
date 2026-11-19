@@ -932,8 +932,22 @@ the QUIC hosting (`QuicHosting`) is T154d's. Exact contract:
   unbinds the peer, drops both server ends and records the link's final
   counters in a bounded list (`MAX_RETIRED_RECORDS` 64, oldest dropped
   first and counted in `retired_dropped`); `take_retired` drains it.
-  `LinkStats` is `#[non_exhaustive]` (`received`, `refused`, `held`, `sent`)
-  so T154c can add a lane-1 field without breaking a reader.
+  `LinkStats` is `#[non_exhaustive]` (`received`, `refused`, `held`, `sent`;
+  T154c adds `held_moves`, the lane-1 hold count) so readers keep compiling
+  across the addition.
+- **Lane 1 on the local link (T154c, B-11–B-13).** Intake routes a first
+  byte of `0xA1` to `Host::ingest_move`: `Admitted`/`Rejected`/`Duplicate`
+  continue, `NotV4Peer` is counted and dropped, `QueueFull`/`RateLimited`
+  wait at the back of the per-link hold queue, `Unauthenticated` retires the
+  link, and any other refusal is counted and dropped. Held lane-1 frames
+  retry front first each cycle; a fresh `0xA1` frame behind a hold joins the
+  back with no admission attempt, lane-0 frames still route, and the drain
+  stops only when the hold reaches the link's capacity. Deliver takes
+  receipts into a per-link backlog that is filled when empty and never
+  dropped while the link lives, then takes samples that are dropped when the
+  down queue is full; the first `NotV4Peer` marks a v1–v3 link as lane-0
+  only, so B-12/B-13 never run for it again. `LinkStats::held_moves` is the
+  hold queue's length.
 - **Pause and state (Readings 4, 14).** Neither the loop nor `LocalHost`
   reads `paused()`: a paused host still takes commands, runs the AI hook and
   delivers; only `advance` declines to tick. The schedule, the links and the
@@ -943,6 +957,20 @@ the QUIC hosting (`QuicHosting`) is T154d's. Exact contract:
   nowhere and uses no blocking call: the client queues are tried with
   `try_send`/`try_recv` and the loop is stepped by an injected `now_ms`.
   T154b's `runner.rs` owns the one thread and the clock.
+- **The background runner (T154b).** `runner.rs` is the one module that reads
+  a clock, owns a thread or blocks. `Clock` is the injected millisecond
+  source (never decreases); `SystemClock` is the wall-clock one,
+  `starting_at(origin_ms)` so the clock starts at the loop's `start_ms`
+  (Reading 13). `spawn` runs the loop on the `crpg-server-loop` thread —
+  step, run the pending closure, wait for the next slot — and `RunnerHandle`
+  is the rendezvous: `submit`/`call` run a closure after the next step at
+  `now >= t`, `stop` ends the runner with no further step, `is_finished`
+  reports the thread, and `join` returns the loop with its links and schedule
+  (so the later switch respawns it, Reading 10) while dropping an unjoined
+  handle stops and joins the same way. A step error ends the runner and drops
+  the pending closure (`RunnerGone`); a thread panic reports
+  `RunnerPanicked`. Exact contract:
+  [T154](../../tasks/T154.md).
 
 ## Gate 10 (save/load equivalence)
 
@@ -1017,3 +1045,5 @@ with T040/T041.
 - 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the run-loop section (one cycle order, the 20 Hz grid and skip-not-burst, the `Hosting` seam, local intake/deliver and bounded retirement, pause and the no-clock/no-thread fence) and updated Scope, so the doc describes the loop the crate now has instead of a host nothing drives.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Added the reconnect-grace section (ticket, grace, resume, fence, expiry, and the grace-is-not-a-binding rule), so the doc describes the 30-second host-side grace the crate now holds.
 - 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Extended the reconnect-grace section with the resumable-adapter route (`start_resumable`, the ticket after the `/2` welcome, fence tags, the resume answer, grace on a silent loss, what ends a grace, and the keyed-BLAKE3 proof), and updated the connection-to-binding map and the `bind_resumable` sentence to the as-built `graced`/`fence` fields and `poll_notice` polling, so the doc describes the QUIC side the crate now has.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Extended the run-loop section with the background runner (the injected `Clock`, `SystemClock::starting_at`, the `crpg-server-loop` step/closure/wait thread, the `RunnerHandle` rendezvous and stop, the step-error and panic exits, and the join-and-respawn), so the doc describes the thread and clock the crate now owns.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Extended the run-loop section with lane 1 on the local link (the `0xA1` intake arms and the hold queue, the receipt backlog that never drops, the samples that do, and the v1–v3 no-lane-1 mark), so the doc describes the receipts and samples the loop now delivers.

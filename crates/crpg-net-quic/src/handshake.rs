@@ -6,7 +6,9 @@
 
 use std::fmt;
 
-use crpg_net::{protocol, protocol_resume, protocol_transfer, protocol_v2};
+use crpg_net::{
+    movement_v4, protocol, protocol_resume, protocol_transfer, protocol_v2, protocol_v4,
+};
 
 /// ALPN identifier: lane-0 framing + hello/welcome layout version 1.
 pub const ALPN_LANE0_V1: &[u8] = b"crpg-lane0/1";
@@ -14,6 +16,27 @@ pub const ALPN_LANE0_V1: &[u8] = b"crpg-lane0/1";
 /// header is a channel selector). Hello/welcome layout as version 1; a
 /// `bind_resumable` server also accepts a resume opening.
 pub const ALPN_LANE0_V2: &[u8] = b"crpg-lane0/2";
+/// ALPN identifier: connection mapping version 3 — the `crpg-lane0/2` lane
+/// stream, a second client-initiated bidi stream for lane 1, and DATAGRAM
+/// samples downstream (T150). Served only by `QuicServer::bind_movement`.
+pub const ALPN_LANE0_V3: &[u8] = b"crpg-lane0/3";
+/// The lane-0 wire version every `crpg-lane0/3` hello and welcome carries
+/// (protocol v4).
+pub const MOVEMENT_WIRE_VERSION: u8 = 4;
+/// Largest datagram, and largest downstream lane-1 stream frame, in bytes.
+pub const MAX_DATAGRAM_BYTES: usize = 1_024;
+/// Frames a server may queue on one connection's lane-1 outbound queue.
+pub const LANE1_OUTBOUND_FRAMES: usize = 128;
+
+const _: () = assert!(MOVEMENT_WIRE_VERSION == protocol_v4::PROTOCOL_VERSION);
+const _: () = assert!(MAX_DATAGRAM_BYTES == movement_v4::MAX_MOVE_DOWN_BYTES);
+const _: () = assert!(
+    movement_v4::MAX_SAMPLE_HEADER_BYTES
+        + movement_v4::MAX_SAMPLE_ENTRIES * movement_v4::MAX_SAMPLE_ENTRY_BYTES
+        <= MAX_DATAGRAM_BYTES
+);
+const _: () = assert!(LANE1_OUTBOUND_FRAMES == protocol::POLICY_EGRESS_FRAMES_PER_PEER);
+
 /// SNI sent by clients. Ignored by verification (the pin is the trust root).
 pub const TLS_SERVER_NAME: &str = "crpg.invalid";
 /// Length-prefix size: one big-endian u32.
@@ -72,7 +95,8 @@ pub enum Framing {
     /// `crpg-lane0/1`: 4-byte length header, lane 0 only.
     V1,
     /// `crpg-lane0/2`: `[channel][24-bit length]` header; lane 0,
-    /// transfer and resume channels.
+    /// transfer and resume channels. A `crpg-lane0/3` connection also
+    /// reports `V2`: its lane stream is framed exactly as `/2`.
     V2,
 }
 
@@ -244,7 +268,13 @@ pub struct Hello {
 impl Hello {
     /// `[wire_version][cred_len][credential]`.
     pub fn encode(&self) -> Result<Vec<u8>, HandshakeError> {
-        check_wire_version(self.wire_version)?;
+        self.encode_for(false)
+    }
+
+    /// `encode`, with the version rule of the connection's ALPN: `movement`
+    /// (`crpg-lane0/3`) accepts only wire version 4.
+    pub(crate) fn encode_for(&self, movement: bool) -> Result<Vec<u8>, HandshakeError> {
+        check_wire_version(movement, self.wire_version)?;
         let cred = self.credential.as_bytes();
         let cred_len = u8::try_from(cred.len()).map_err(|_| HandshakeError::CredentialLength)?;
         let mut out = Vec::with_capacity(2 + cred.len());
@@ -259,11 +289,16 @@ impl Hello {
     /// length out of bounds → `CredentialLength`; total ≠ `2 + cred_len` →
     /// `Malformed`.
     pub fn decode(bytes: &[u8]) -> Result<Hello, HandshakeError> {
+        Hello::decode_for(bytes, false)
+    }
+
+    /// `decode`, with the version rule of the connection's ALPN.
+    pub(crate) fn decode_for(bytes: &[u8], movement: bool) -> Result<Hello, HandshakeError> {
         if bytes.len() < 2 {
             return Err(HandshakeError::Malformed);
         }
         let wire_version = bytes[0];
-        check_wire_version(wire_version)?;
+        check_wire_version(movement, wire_version)?;
         let cred_len = usize::from(bytes[1]);
         if !(MIN_CREDENTIAL_BYTES..=MAX_CREDENTIAL_BYTES).contains(&cred_len) {
             return Err(HandshakeError::CredentialLength);
@@ -292,7 +327,12 @@ pub struct Welcome {
 impl Welcome {
     /// `[wire_version][epoch: 16]`.
     pub fn encode(&self) -> Result<[u8; WELCOME_BYTES], HandshakeError> {
-        check_wire_version(self.wire_version)?;
+        self.encode_for(false)
+    }
+
+    /// `encode`, with the version rule of the connection's ALPN.
+    pub(crate) fn encode_for(&self, movement: bool) -> Result<[u8; WELCOME_BYTES], HandshakeError> {
+        check_wire_version(movement, self.wire_version)?;
         let mut out = [0u8; WELCOME_BYTES];
         out[0] = self.wire_version;
         out[1..].copy_from_slice(&self.epoch);
@@ -301,10 +341,15 @@ impl Welcome {
 
     /// Length ≠ 17 → `Malformed`; then unknown version → `UnsupportedWireVersion`.
     pub fn decode(bytes: &[u8]) -> Result<Welcome, HandshakeError> {
+        Welcome::decode_for(bytes, false)
+    }
+
+    /// `decode`, with the version rule of the connection's ALPN.
+    pub(crate) fn decode_for(bytes: &[u8], movement: bool) -> Result<Welcome, HandshakeError> {
         if bytes.len() != WELCOME_BYTES {
             return Err(HandshakeError::Malformed);
         }
-        check_wire_version(bytes[0])?;
+        check_wire_version(movement, bytes[0])?;
         let mut epoch = [0u8; 16];
         epoch.copy_from_slice(&bytes[1..]);
         Ok(Welcome {
@@ -325,8 +370,18 @@ pub enum HandshakeError {
     CredentialLength,
 }
 
-fn check_wire_version(version: u8) -> Result<(), HandshakeError> {
-    if version == protocol::PROTOCOL_VERSION || version == protocol_v2::PROTOCOL_VERSION {
+/// `crpg-lane0/3` hellos and welcomes carry exactly version 4; `/1` and `/2`
+/// carry 1 or 2.
+pub(crate) fn wire_version_ok(movement: bool, version: u8) -> bool {
+    if movement {
+        version == MOVEMENT_WIRE_VERSION
+    } else {
+        version == protocol::PROTOCOL_VERSION || version == protocol_v2::PROTOCOL_VERSION
+    }
+}
+
+fn check_wire_version(movement: bool, version: u8) -> Result<(), HandshakeError> {
+    if wire_version_ok(movement, version) {
         Ok(())
     } else {
         Err(HandshakeError::UnsupportedWireVersion)

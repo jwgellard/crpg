@@ -40,7 +40,7 @@ wire task where needed:
 | T023b (`crpg-server`) | The host adapter: credential policy, binding, pump, the T022 mapping (E§7), and the five driver-based QUIC conformance cases |
 | T024 | A snapshot stream under a new ALPN or version |
 | T025a | Resume/reconnect hello; seamless narrowing instead of a `SessionFenced` close |
-| T026p | The movement DATAGRAM lane, and with it D23's vendored dedup patch and the native impairment probe |
+| T026p | Built as the movement endpoint, T150b — see "The movement endpoint (T150b)" below (the vendored D23 dedup patch and its native Windows probe are T150a's) |
 
 ## Module flow
 
@@ -139,8 +139,9 @@ order.
   host that stops draining a closed connection therefore holds back that
   connection's `Closed` event.
 - The transport parameters other than the windows are fixed (E§8.3):
-  server 1 bidi / 0 uni streams, client 0 / 0, no DATAGRAM extension, no
-  migration. The windows are limits (T023c, ADR-0025 addendum): each
+  server 1 bidi / 0 uni streams, client 0 / 0, no DATAGRAM extension on
+  `/1` and `/2` (downstream-only on `/3`, T150b), no migration. The windows
+  are limits (T023c, ADR-0025 addendum): each
   endpoint advertises its own receive windows to the peer and enforces its
   own send window locally, and `v1()` reproduces T023's fixed values
   exactly. A window floor is one maximal frame of its direction plus the
@@ -161,6 +162,80 @@ order.
 [^flush]: A `Flush` close stops its flush at `B − R` and keeps the last
     `R = min(200 ms, B / 4)` for the CONNECTION_CLOSE, so the goodbye still
     goes out inside `B`.
+
+## The movement endpoint (T150b)
+
+`QuicServer::bind_movement` serves exactly `crpg-lane0/3` (`/3`) with the
+movement transport parameters; `bind`, `bind_dual` and `bind_resumable` keep
+their ALPN lists and parameters byte for byte, and `/1`/`/2` connections
+never see a second stream or a datagram (Reading 1). A `/3` connection maps
+as follows (Readings 2–4):
+
+| Stream / frame | Direction | Contents | Cap |
+|---|---|---|---|
+| Stream 1 (bidi) | both | the `/2` lane stream — hello, welcome, lane-0, `0x81` and `0x91` frames — framed exactly as `/2`, so `framing() == V2` | as `/2` |
+| Stream 2 (bidi) | up / down | lane 1: intents up, receipts down, 4-byte length header | 4,096 up / 1,024 down |
+| DATAGRAM | down only | position samples | ≤ 1,024 bytes |
+
+Lane 1 is the client's second `open_bi`, visible to the server only once the
+client writes its first lane-1 frame; the server's lane-1 writer exists from
+then on, frames queued before that wait for it, and a `Flush` close in that
+window discards them (Reading 3). Lane 1 has its own queues, its own parked
+slot and its own sequence domain, with no order relation to lane 0. Its
+queues are per-connection constants, not limits, and are host-wide only
+through `max_connections` (Reading 8):
+
+| Bound | Server | Client |
+|---|---|---|
+| Lane-1 frame cap | 4,096 up / 1,024 down | 4,096 up / 1,024 down |
+| Lane-1 inbound queue | 64 frames / 65,536 bytes | 128 frames / 131,072 bytes |
+| Lane-1 outbound queue | 128 frames / 131,072 bytes | 64 frames / 65,536 bytes |
+| Datagram direction | send only | receive only |
+| Datagram size | ≤ 1,024 | ≤ 1,024 |
+| Datagram send buffer | 65,536 bytes | 0 (none) |
+| Datagram receive buffer | `Some(0)` | `Some(65_536)` (advertised 65,535) |
+| Client datagram queue | — | newest 64 |
+
+Datagrams go downstream only (Reading 4): the server's quinn
+`datagram_receive_buffer_size` is `Some(0)`, so it advertises
+`max_datagram_frame_size = 0`; a peer's non-empty `send_datagram` then fails
+with `TooLarge` before anything is sent, and an empty one makes the server's
+quinn close with a transport `PROTOCOL_VIOLATION` (`CloseReason::Transport`).
+The client's receive buffer is `Some(65_536)` and its send buffer 0.
+
+The connect-time floor is the server's sendable size (Reading 5): right after
+TLS on a `/3` connection, `max_datagram_size()` of `None` or below 1,024
+closes with `ProtocolViolation` (2) before the hello, with no event and
+`refused_handshakes` + 1. quinn computes it as `min(advertised − 9, MTU −
+(1 + CID + 4 + 16) − 9)` with 8-byte CIDs and an MTU floor of 1,200, so only
+the client's advertisement can fail it. **Recorded quinn property, not
+changed here:** a quinn receiver closes the connection on a datagram whose
+length plus 32 exceeds its own receive buffer, while its advertisement lets a
+sender use the buffer less 9 — so a third-party client with a receive buffer
+of 1,033..=1,055 passes the floor but cannot receive a 1,024-byte datagram.
+This crate's client uses 65,536; a third-party client must use at least
+1,056.
+
+`try_send_datagram` is a direct, synchronous, non-blocking hand-off to
+quinn's `send_datagram`, outside the state lock (Reading 6): there is no
+crate datagram queue on the server, `Ok` means only "handed to QUIC" (which
+may still drop it), and it never returns `QueueFull`. The client keeps the
+newest 64 datagrams, dropping and counting the oldest when the queue is full
+(Reading 7); a 0-byte datagram closes with `ProtocolViolation`, one above
+1,024 with `FrameTooLarge`.
+
+Closes are per connection, not per lane (Reading 9): a `Flush` close drains
+and FINs both writers and waits for both acknowledgements inside the one
+budget; a close is published only after both readers stop, frames either
+reader received stay drainable, and the record-lifetime rule applies per
+lane — the record is forgotten once its `Closed` is polled and each lane that
+held frames at publication has reported `Closed` through its own call
+(`try_recv`/`try_recv_channel` for lane 0, `try_recv_lane1` for lane 1).
+Datagrams have no flush: unsent ones die with `CONNECTION_CLOSE`. A server
+`Flush` while the lane-1 accept is still pending waits for lane 0 alone and
+discards the queued lane-1 frames. `/3` hellos and welcomes carry wire
+version 4 only (Reading 10); the public `Hello`/`Welcome` `encode`/`decode`
+keep the `/1`/`/2` rule.
 
 ## Handshake
 
@@ -215,3 +290,4 @@ stop draining).
 - 2026-10-06 (UTC) · claude-code + T023d · Told T023b that a refused or `Discard`-closed connection delivers its code even when `Closed` is polled in the same pump, with the API's record-lifetime rule unchanged, and raised the suite count to 30, so T023b's adapter can poll `Closed` at once without a workaround.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added `teardown.rs` to the module flow, footnoted the Close flush row and added the close-budget bound (flush at `B − R`, endpoint at `B`, one exit yield), so the doc states the reserve every `Flush` close now keeps for CONNECTION_CLOSE.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T098h · Named `FlushClose::flush_close` as the single constructor of a `Flush` close's reserve'd request and its `overall` deadline, so the doc records that no call site builds its own request (D44c (a)).
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4-pro + T150b · Added the movement endpoint: the `/3` stream/datagram mapping, the lane-1 queue and datagram bounds, the connect-time datagram floor with quinn's recorded receive-buffer property, the per-lane close and record-lifetime rules, replaced the T026p planned row with a pointer to it, and amended the fixed-parameters line's "no DATAGRAM extension" to "none on `/1`/`/2`, downstream-only on `/3`", so the doc states what `bind_movement`/`connect_movement` build and keep separate from `/1`/`/2`.

@@ -16,18 +16,19 @@ use quinn::{Connection, EndpointConfig, Incoming, RecvStream, SendStream, TokioR
 
 use crate::client::CloseReport;
 use crate::close::{
-    ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, SendError,
+    ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionStats, Lane1Stats, SendError,
 };
 use crate::handshake::{
     parse_channel_frame_header, parse_frame_header, Channel, Framing, HandshakeError, Hello,
-    Welcome, ALPN_LANE0_V1, ALPN_LANE0_V2, FRAME_HEADER_BYTES, MAX_HELLO_BYTES, WELCOME_BYTES,
+    Welcome, ALPN_LANE0_V1, ALPN_LANE0_V2, ALPN_LANE0_V3, FRAME_HEADER_BYTES, MAX_DATAGRAM_BYTES,
+    MAX_HELLO_BYTES, WELCOME_BYTES,
 };
 use crate::limits::{ConfigError, ServerConfig, ServerLimits};
 use crate::queue::{
-    close_quinn, deadline_after, frame_error_code, framed, framed_channel, lane_control,
-    lane_reader, lane_writer, race, read_fail, reason_from, wait_stop, Answer, Conn, ConnWake,
-    Either, FailGuard, FlushClose, LaneDirection, Opening, Phase, ReadFail, ReadSpec, Shared,
-    State, Stop, SYNC_GRACE,
+    close_quinn, deadline_after, frame_error_code, framed, framed_channel, lane1_reader,
+    lane1_writer, lane_control, lane_reader, lane_writer, race, read_fail, reason_from, wait_stop,
+    Answer, Conn, ConnWake, Either, FailGuard, FlushClose, LaneDirection, Opening, Phase, ReadFail,
+    ReadSpec, Shared, State, Stop, LANE1_SERVER_INBOUND, LANE1_SERVER_OUTBOUND, SYNC_GRACE,
 };
 use crate::teardown::finish_endpoint_close;
 use crate::tls;
@@ -204,13 +205,16 @@ pub struct QuicServer {
     limits: ServerLimits,
 }
 
-/// The endpoint options `bind`/`bind_dual`/`bind_resumable` select.
+/// The endpoint options `bind`/`bind_dual`/`bind_resumable`/`bind_movement`
+/// select.
 #[derive(Clone, Copy)]
 struct Setup {
     /// The framings the negotiated ALPN may name.
     framings: &'static [Framing],
     /// A `/2` connection may open with a resume request (`bind_resumable`).
     resumable: bool,
+    /// The endpoint serves `crpg-lane0/3` alone (`bind_movement`).
+    movement: bool,
 }
 
 fn failed() -> ServerError {
@@ -222,28 +226,36 @@ impl QuicServer {
     /// and starts the `crpg-quic-server` I/O thread. Returns once the
     /// endpoint is listening.
     pub fn bind(config: ServerConfig) -> Result<QuicServer, BindError> {
-        Self::bind_setup(config, &[Framing::V1], false)
+        Self::bind_setup(config, &[Framing::V1], false, false)
     }
 
     /// As `bind`, but advertising `[crpg-lane0/2, crpg-lane0/1]`. Every
     /// opening is a hello.
     pub fn bind_dual(config: ServerConfig) -> Result<QuicServer, BindError> {
-        Self::bind_setup(config, &[Framing::V2, Framing::V1], false)
+        Self::bind_setup(config, &[Framing::V2, Framing::V1], false, false)
     }
 
     /// As `bind_dual`, and a `crpg-lane0/2` connection may open with a
     /// resume request (S§4.4 of `tasks/T024q.md`). Drive it with
     /// `poll_notice`.
     pub fn bind_resumable(config: ServerConfig) -> Result<QuicServer, BindError> {
-        Self::bind_setup(config, &[Framing::V2, Framing::V1], true)
+        Self::bind_setup(config, &[Framing::V2, Framing::V1], true, false)
     }
 
-    /// The shared constructor: the framings to offer in order and the
-    /// `resumable` flag.
+    /// As `bind`, but advertising exactly `[crpg-lane0/3]` with the movement
+    /// transport parameters (T150 Reading 1). Every opening is a hello naming
+    /// wire version 4; no resume opening.
+    pub fn bind_movement(config: ServerConfig) -> Result<QuicServer, BindError> {
+        Self::bind_setup(config, &[Framing::V2], false, true)
+    }
+
+    /// The shared constructor: the framings to offer in order, the
+    /// `resumable` flag and the `movement` flag.
     fn bind_setup(
         config: ServerConfig,
         framings: &'static [Framing],
         resumable: bool,
+        movement: bool,
     ) -> Result<QuicServer, BindError> {
         let alpns: &'static [&'static [u8]] = if framings.len() == 1 {
             &[ALPN_LANE0_V1]
@@ -252,8 +264,12 @@ impl QuicServer {
         };
         let limits = config.limits;
         limits.validate().map_err(BindError::Config)?;
-        let quinn_config =
-            tls::server_config(&config.identity, alpns, &limits).ok_or(BindError::Identity)?;
+        let quinn_config = if movement {
+            tls::server_movement_config(&config.identity, &limits)
+        } else {
+            tls::server_config(&config.identity, alpns, &limits)
+        }
+        .ok_or(BindError::Identity)?;
         let socket = UdpSocket::bind(config.bind).map_err(|e| BindError::Io(e.kind()))?;
         let local_addr = socket.local_addr().map_err(|e| BindError::Io(e.kind()))?;
         let shared = Arc::new(Shared::new(State::new(
@@ -266,6 +282,7 @@ impl QuicServer {
         let setup = Setup {
             framings,
             resumable,
+            movement,
         };
         let thread = std::thread::Builder::new()
             .name("crpg-quic-server".into())
@@ -335,11 +352,7 @@ impl QuicServer {
             let id = conn.get();
             let forget = state.conns.get_mut(&id).is_some_and(|record| {
                 record.event_polled = true;
-                if record.held_frames {
-                    record.closed_reported
-                } else {
-                    true
-                }
+                record.forgettable()
             });
             if forget {
                 state.release(id);
@@ -359,11 +372,7 @@ impl QuicServer {
             let id = conn.get();
             let forget = state.conns.get_mut(&id).is_some_and(|record| {
                 record.event_polled = true;
-                if record.held_frames {
-                    record.closed_reported
-                } else {
-                    true
-                }
+                record.forgettable()
             });
             if forget {
                 state.release(id);
@@ -373,7 +382,7 @@ impl QuicServer {
     }
 
     /// Blocks up to `timeout` until an event, a notice or any inbound frame
-    /// is queued; `false` on timeout. Never needed by a pump that polls on
+    /// (either lane) is queued; `false` on timeout. Never needed by a pump that polls on
     /// its own tick.
     pub fn wait(&self, timeout: Duration) -> bool {
         let now = std::time::Instant::now();
@@ -381,7 +390,9 @@ impl QuicServer {
         let Some(state) = self.shared.lock_any() else {
             return false;
         };
-        let ready = |state: &State| !state.events.is_empty() || state.inbound_frames > 0;
+        let ready = |state: &State| {
+            !state.events.is_empty() || state.inbound_frames > 0 || state.lane1_inbound_frames > 0
+        };
         match self.shared.wait_until(state, deadline, ready) {
             Some(state) => ready(&state),
             None => false,
@@ -405,12 +416,15 @@ impl QuicServer {
         if record.opening != Opening::Hello {
             return Err(ServerError::InvalidWelcome);
         }
-        if welcome.wire_version != record.hello_version || welcome.encode().is_err() {
+        if welcome.wire_version != record.hello_version
+            || welcome.encode_for(record.movement).is_err()
+        {
             return Err(ServerError::InvalidWelcome);
         }
         record.phase = Phase::Accepted;
         record.answer = Some(Answer::Welcome(welcome));
         record.reader_active = true;
+        record.lane1_reader_active = record.movement;
         record.wake.control.notify_one();
         Ok(())
     }
@@ -519,7 +533,34 @@ impl QuicServer {
         if record.published {
             let reason = record.reason.unwrap_or(CloseReason::EndpointFailed);
             record.closed_reported = true;
-            if record.event_polled {
+            if record.forgettable() {
+                state.release(id);
+            }
+            return Err(ServerError::Closed(reason));
+        }
+        Ok(None)
+    }
+
+    /// The next inbound lane-1 frame. Precedence: `UnknownConnection` →
+    /// `NotAccepted` → a queued frame → `Closed` once closed and lane 1 is
+    /// drained → `Ok(None)`. Off `/3` the lane-1 queue is always empty.
+    pub fn try_recv_lane1(&mut self, conn: ConnectionId) -> Result<Option<Vec<u8>>, ServerError> {
+        let mut state = self.shared.lock().ok_or_else(failed)?;
+        let record = visible(&mut state, conn)?;
+        if record.phase != Phase::Accepted {
+            return Err(ServerError::NotAccepted);
+        }
+        let id = conn.get();
+        if let Some(frame) = state.pop_lane1_inbound(id) {
+            return Ok(Some(frame));
+        }
+        let Some(record) = state.conns.get_mut(&id) else {
+            return Err(ServerError::UnknownConnection);
+        };
+        if record.published {
+            let reason = record.reason.unwrap_or(CloseReason::EndpointFailed);
+            record.lane1_closed_reported = true;
+            if record.forgettable() {
                 state.release(id);
             }
             return Err(ServerError::Closed(reason));
@@ -578,6 +619,99 @@ impl QuicServer {
         state
             .queue_outbound(conn.get(), channel, frame)
             .map_err(ChannelSendError::Send)
+    }
+
+    /// Queues one lane-1 frame (≤ `MAX_DATAGRAM_BYTES`). Precedence:
+    /// `Send(UnknownConnection)` → `Send(NotAccepted)` → `Send(Closed(_))` →
+    /// `ChannelUnavailable` (not `/3`) → `Send(EmptyFrame)` →
+    /// `Send(FrameTooLarge)` → `Send(QueueFull)` (retryable; nothing queued).
+    /// Frames queued before the client's first lane-1 frame arrives wait for
+    /// the stream (T150 Reading 3); a `Flush` close in that window discards
+    /// them.
+    pub fn try_send_lane1(
+        &mut self,
+        conn: ConnectionId,
+        frame: &[u8],
+    ) -> Result<(), ChannelSendError> {
+        let mut state = self
+            .shared
+            .lock()
+            .ok_or(ChannelSendError::Send(SendError::Closed(
+                CloseReason::EndpointFailed,
+            )))?;
+        movement_send_gate(&mut state, conn, frame.len())?;
+        state
+            .queue_lane1_outbound(conn.get(), frame)
+            .map_err(ChannelSendError::Send)
+    }
+
+    /// Hands one datagram (≤ `MAX_DATAGRAM_BYTES`) to QUIC. Same precedence
+    /// as `try_send_lane1` up to `Send(FrameTooLarge)`; never `QueueFull`
+    /// (QUIC drops its oldest unsent datagram instead, T150 Reading 6). `Ok`
+    /// is no delivery promise.
+    pub fn try_send_datagram(
+        &mut self,
+        conn: ConnectionId,
+        datagram: &[u8],
+    ) -> Result<(), ChannelSendError> {
+        // quinn's send is synchronous: it runs outside the state lock, as
+        // `stats` reads quinn's stats.
+        let connection = {
+            let mut state = self
+                .shared
+                .lock()
+                .ok_or(ChannelSendError::Send(SendError::Closed(
+                    CloseReason::EndpointFailed,
+                )))?;
+            movement_send_gate(&mut state, conn, datagram.len())?
+                .connection
+                .clone()
+        };
+        match connection.send_datagram(datagram.to_vec().into()) {
+            Ok(()) => Ok(()),
+            Err(quinn::SendDatagramError::ConnectionLost(lost)) => {
+                let recorded = self.shared.lock_any().and_then(|state| {
+                    state
+                        .conns
+                        .get(&conn.get())
+                        .and_then(|record| record.reason)
+                });
+                Err(ChannelSendError::Send(SendError::Closed(
+                    recorded.unwrap_or_else(|| reason_from(&lost)),
+                )))
+            }
+            Err(quinn::SendDatagramError::TooLarge) => {
+                Err(ChannelSendError::Send(SendError::FrameTooLarge))
+            }
+            Err(
+                quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled,
+            ) => Err(ChannelSendError::ChannelUnavailable),
+        }
+    }
+
+    /// Whether the connection negotiated `crpg-lane0/3`. Error:
+    /// `UnknownConnection` (the visibility rule of `framing`).
+    pub fn movement(&self, conn: ConnectionId) -> Result<bool, ServerError> {
+        let mut state = self.shared.lock().ok_or_else(failed)?;
+        let record = visible(&mut state, conn)?;
+        Ok(record.movement)
+    }
+
+    /// One connection's lane-1 and datagram accounting. Error:
+    /// `UnknownConnection` (the visibility rule of `stats`).
+    pub fn lane1_stats(&self, conn: ConnectionId) -> Result<Lane1Stats, ServerError> {
+        let (stats, connection) = {
+            let mut state = self.shared.lock().ok_or_else(failed)?;
+            let record = visible(&mut state, conn)?;
+            (
+                record.lane1_stats(),
+                record.movement.then(|| record.connection.clone()),
+            )
+        };
+        Ok(Lane1Stats {
+            max_datagram_bytes: connection.and_then(|connection| connection.max_datagram_size()),
+            ..stats
+        })
     }
 
     /// The connection's negotiated framing. Error: `UnknownConnection` (the
@@ -815,6 +949,34 @@ impl Transport for ServerLane<'_> {
     }
 }
 
+/// The checks `try_send_lane1` and `try_send_datagram` share, in precedence
+/// order: `Send(UnknownConnection)`, `Send(NotAccepted)`, `Send(Closed(_))`,
+/// `ChannelUnavailable` (not `/3`), `Send(EmptyFrame)`, `Send(FrameTooLarge)`.
+fn movement_send_gate(
+    state: &mut State,
+    conn: ConnectionId,
+    len: usize,
+) -> Result<&mut Conn, ChannelSendError> {
+    let record =
+        visible(state, conn).map_err(|_| ChannelSendError::Send(SendError::UnknownConnection))?;
+    if record.phase != Phase::Accepted {
+        return Err(ChannelSendError::Send(SendError::NotAccepted));
+    }
+    if let Some(reason) = record.close_state() {
+        return Err(ChannelSendError::Send(SendError::Closed(reason)));
+    }
+    if !record.movement {
+        return Err(ChannelSendError::ChannelUnavailable);
+    }
+    if len == 0 {
+        return Err(ChannelSendError::Send(SendError::EmptyFrame));
+    }
+    if len > MAX_DATAGRAM_BYTES {
+        return Err(ChannelSendError::Send(SendError::FrameTooLarge));
+    }
+    Ok(record)
+}
+
 /// The record of a connection the API may name (hello stage excluded).
 fn visible(state: &mut State, conn: ConnectionId) -> Result<&mut Conn, ServerError> {
     match state.conns.get_mut(&conn.get()) {
@@ -901,13 +1063,30 @@ fn end_handshake(shared: &Shared, id: Option<u64>) {
     shared.notify_sync();
 }
 
-/// The framing the client offered; `None` for any other or no ALPN.
-fn negotiated_framing(connection: &Connection) -> Option<Framing> {
-    let protocol = connection
+/// The ALPN the handshake negotiated, if any.
+fn negotiated_alpn(connection: &Connection) -> Option<Vec<u8>> {
+    connection
         .handshake_data()
         .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
-        .and_then(|data| data.protocol.clone())?;
-    Framing::from_alpn(&protocol)
+        .and_then(|data| data.protocol.clone())
+}
+
+/// The framing the client offered; `None` for any other or no ALPN.
+fn negotiated_framing(connection: &Connection) -> Option<Framing> {
+    Framing::from_alpn(&negotiated_alpn(connection)?)
+}
+
+/// N-3 steps 2 and 3 of a movement endpoint: the negotiated ALPN is `/3` and
+/// the peer's datagram size admits a `MAX_DATAGRAM_BYTES` datagram. `V2` is the
+/// framing of the lane stream.
+fn movement_framing(connection: &Connection) -> Option<Framing> {
+    if negotiated_alpn(connection).as_deref() != Some(ALPN_LANE0_V3) {
+        return None;
+    }
+    match connection.max_datagram_size() {
+        Some(size) if size >= MAX_DATAGRAM_BYTES => Some(Framing::V2),
+        _ => None,
+    }
 }
 
 enum OpeningFail {
@@ -931,6 +1110,7 @@ async fn read_opening(
     connection: &Connection,
     framing: Framing,
     resumable: bool,
+    movement: bool,
 ) -> Result<(SendStream, RecvStream, OpeningPart), OpeningFail> {
     let (send, mut recv) = connection
         .accept_bi()
@@ -965,7 +1145,7 @@ async fn read_opening(
         Ok(()) => {}
         Err(error) => return Err(status_err(read_fail(error))),
     }
-    let hello = match Hello::decode(&body) {
+    let hello = match Hello::decode_for(&body, movement) {
         Ok(hello) => hello,
         Err(HandshakeError::UnsupportedWireVersion) => {
             return Err(OpeningFail::Code(CloseCode::VersionRefused))
@@ -999,13 +1179,15 @@ async fn serve_connection(
         end_handshake(&shared, None);
         return;
     };
-    let framing = match negotiated_framing(&connection) {
-        Some(framing) if setup.framings.contains(&framing) => framing,
-        _ => {
-            close_quinn(&connection, CloseCode::ProtocolViolation);
-            end_handshake(&shared, None);
-            return;
-        }
+    let negotiated = if setup.movement {
+        movement_framing(&connection)
+    } else {
+        negotiated_framing(&connection).filter(|framing| setup.framings.contains(framing))
+    };
+    let Some(framing) = negotiated else {
+        close_quinn(&connection, CloseCode::ProtocolViolation);
+        end_handshake(&shared, None);
+        return;
     };
     // E§5 step 3: assign the id, read the opening frame under its timer.
     let wake = Arc::new(ConnWake::default());
@@ -1016,6 +1198,9 @@ async fn serve_connection(
             let mut record = Conn::new(Phase::Hello, connection.clone(), wake.clone());
             // The negotiated framing is known here and never changes.
             record.framing = framing;
+            if setup.movement {
+                record.enable_movement(LANE1_SERVER_INBOUND, LANE1_SERVER_OUTBOUND);
+            }
             state.conns.insert(id, record);
             id
         }
@@ -1024,7 +1209,7 @@ async fn serve_connection(
     let hello_timeout = Duration::from_millis(u64::from(limits.hello_timeout_ms));
     let (send, recv, part) = match tokio::time::timeout(
         hello_timeout,
-        read_opening(&connection, framing, setup.resumable),
+        read_opening(&connection, framing, setup.resumable, setup.movement),
     )
     .await
     {
@@ -1088,17 +1273,22 @@ async fn serve_connection(
                 id,
                 &connection,
                 &wake,
-                LaneStreams { send, recv },
-                framing,
+                LaneStreams {
+                    send,
+                    recv,
+                    framing,
+                    movement: setup.movement,
+                },
                 answer,
             )
             .await
         }
         None => {
             // Closed while pending (or between the accept and the answer):
-            // no reader will run, so release its claim and publish the close.
+            // no reader will run, so release its claims and publish the close.
             if let Some(mut state) = shared.lock_any() {
                 state.reader_finished(id);
+                state.lane1_reader_finished(id);
             }
             shared.notify_sync();
         }
@@ -1163,6 +1353,10 @@ async fn await_decision(
 struct LaneStreams {
     send: SendStream,
     recv: RecvStream,
+    /// The connection's framing.
+    framing: Framing,
+    /// The connection is `crpg-lane0/3`: version-4 welcome, lane-1 accept.
+    movement: bool,
 }
 
 /// Writes the welcome or the resume answer as the first downstream frame,
@@ -1174,12 +1368,16 @@ async fn start_lane(
     connection: &Connection,
     wake: &Arc<ConnWake>,
     streams: LaneStreams,
-    framing: Framing,
     answer: Answer,
 ) {
-    let LaneStreams { mut send, recv } = streams;
+    let LaneStreams {
+        mut send,
+        recv,
+        framing,
+        movement,
+    } = streams;
     let written = match &answer {
-        Answer::Welcome(welcome) => match welcome.encode() {
+        Answer::Welcome(welcome) => match welcome.encode_for(movement) {
             Ok(bytes) => match framed(&bytes, WELCOME_BYTES) {
                 Ok(frame) => send.write_all(&frame).await,
                 Err(_) => Err(quinn::WriteError::ClosedStream),
@@ -1214,6 +1412,14 @@ async fn start_lane(
                 },
                 wake.clone(),
             ));
+            if movement {
+                tokio::spawn(lane1_accept(
+                    shared.clone(),
+                    id,
+                    connection.clone(),
+                    wake.clone(),
+                ));
+            }
         }
         Err(error) => {
             match error {
@@ -1228,6 +1434,52 @@ async fn start_lane(
             }
             if let Some(mut state) = shared.lock_any() {
                 state.reader_finished(id);
+                state.lane1_reader_finished(id);
+            }
+            shared.notify_sync();
+        }
+    }
+}
+
+/// Waits for the client's lane-1 stream (the second `accept_bi`, complete at
+/// the client's first lane-1 frame, T150 Reading 3). On success it clears
+/// `lane1_writer_finished` and then starts the lane-1 writer and the reader,
+/// in that order, so a lane-1 frame the server has received proves the writer
+/// exists. Once a close is recorded, or when the accept fails, it starts
+/// nothing and ends the lane-1 reader's claim.
+async fn lane1_accept(shared: Arc<Shared>, id: u64, connection: Connection, wake: Arc<ConnWake>) {
+    let accepted = connection.accept_bi().await.ok();
+    let streams = accepted.and_then(|streams| {
+        let mut state = shared.lock_any()?;
+        let record = state.conns.get_mut(&id)?;
+        if record.reason.is_some() {
+            return None;
+        }
+        record.lane1_writer_finished = false;
+        Some(streams)
+    });
+    match streams {
+        Some((send, recv)) => {
+            tokio::spawn(lane1_writer(
+                shared.clone(),
+                id,
+                connection.clone(),
+                send,
+                wake.clone(),
+            ));
+            tokio::spawn(lane1_reader(
+                shared,
+                id,
+                connection,
+                recv,
+                LaneDirection::Upstream,
+                MAX_INTENT_FRAME_BYTES,
+                wake,
+            ));
+        }
+        None => {
+            if let Some(mut state) = shared.lock_any() {
+                state.lane1_reader_finished(id);
             }
             shared.notify_sync();
         }

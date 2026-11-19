@@ -40,12 +40,12 @@ Rust workspace. Simulation core has NO game-engine dependency.
   may dev-depend on testkit only when every normal dependency testkit brings is
   already a legal dependency of that crate and testkit does not depend back on
   it. `tools/lint/deps.py`'s explicit `ALLOWED` table remains authoritative.
-- No `HashMap`/`HashSet` in `crpg-core`, `crpg-rules` or `crpg-sim` — use
-  `IndexMap`/`BTreeMap`.
-- No `f32`/`f64` in `crpg-core` or `crpg-rules` — use integers or `Fx16_16`.
-  `crpg-sim` may use `f32` for spatial positions only (spec §2.4), never in a
-  rules path. `f64` is banned in `crpg-sim` as well (E006-A); the determinism
-  lint enforces it as `no-f64`.
+- No `HashMap`/`HashSet` in `crpg-core`, `crpg-rules`, `crpg-sim` or `crpg-ai`
+  — use `IndexMap`/`BTreeMap`.
+- No `f32`/`f64` in `crpg-core`, `crpg-rules` or `crpg-ai` — use integers or
+  `Fx16_16`. `crpg-sim` may use `f32` for spatial positions only (spec §2.4),
+  never in a rules path. `f64` is banned in `crpg-sim` as well (E006-A); the
+  determinism lint enforces it as `no-f64`.
 - The two bans above apply to doctests as well as to `tests/` and `#[cfg(test)]`
   modules. A doctest is compiled and run; `determinism.py` scans inside doc
   fences for exactly that reason.
@@ -113,3 +113,4 @@ python -m unittest discover -s tools/lint -p "test_*.py"
 - 2026-09-30 (UTC) · claude-code + PR #20 landed · Updated the note to the PR #20 merge of the six post-T018 tasks, deferring open items to the backlog.
 - 2026-10-01 (UTC) · claude-code + PR #21 landed · Updated the note to the PR #21 merge and linked the implementation plan, deferring task status to the backlog.
 - 2026-10-16 (UTC) · claude-code + D28f · Moved the merged-task status log from the Note to `docs/PROJECT_STATE.md`, leaving a pointer that also names the adopted delegation plan, because this file loads into every agent session and rewriting it at each merge restarted every agent's prompt cache.
+- 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T152 · Put `crpg-ai` under the determinism lint's full float ban and every `both` rule, and named it in both root bans, because AI decisions feed the authoritative simulation and need exactly the rules `crpg-nav` has (ADR-0036 V1).

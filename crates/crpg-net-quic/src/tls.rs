@@ -12,6 +12,7 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{CertificateError, DigitallySignedStruct, PeerIncompatible, SignatureScheme};
 
+use crate::handshake::ALPN_LANE0_V3;
 use crate::identity::{CertificatePin, ServerIdentity};
 use crate::limits::{ClientLimits, ServerLimits};
 
@@ -32,10 +33,27 @@ pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     digest
 }
 
+/// The datagram send buffer of a movement server: two worst-case ticks of
+/// samples (27 x (1,024 + 32) = 28,512, rounded up; T150 Reading 4).
+pub(crate) const SERVER_DATAGRAM_SEND_BUFFER: usize = 65_536;
+/// The datagram receive buffer of a movement client (advertised as 65,535,
+/// the `u16` clamp; T150 Reading 4).
+pub(crate) const CLIENT_DATAGRAM_RECEIVE_BUFFER: usize = 65_536;
+
+/// How an endpoint's datagram buffers are set (T150 Reading 4).
+#[derive(Clone, Copy)]
+struct Datagrams {
+    /// `datagram_receive_buffer_size`: `None` disables DATAGRAM frames.
+    receive: Option<usize>,
+    /// `datagram_send_buffer_size`.
+    send: usize,
+}
+
 /// One endpoint's stream count (fixed by E§8.3) and flow-control windows
 /// (its limits, T023c).
 struct Windows {
     bidi_streams: u32,
+    datagrams: Datagrams,
     stream_receive_window: u32,
     receive_window: u32,
     send_window: u32,
@@ -46,8 +64,8 @@ fn transport(windows: &Windows, idle_timeout_ms: u32, keep_alive_ms: u32) -> Tra
     config
         .max_concurrent_bidi_streams(VarInt::from_u32(windows.bidi_streams))
         .max_concurrent_uni_streams(VarInt::from_u32(0))
-        .datagram_receive_buffer_size(None)
-        .datagram_send_buffer_size(0)
+        .datagram_receive_buffer_size(windows.datagrams.receive)
+        .datagram_send_buffer_size(windows.datagrams.send)
         .stream_receive_window(VarInt::from_u32(windows.stream_receive_window))
         .receive_window(VarInt::from_u32(windows.receive_window))
         .send_window(u64::from(windows.send_window))
@@ -63,13 +81,34 @@ fn transport(windows: &Windows, idle_timeout_ms: u32, keep_alive_ms: u32) -> Tra
 /// The server's quinn config: TLS 1.3 only, ring, no client auth, the
 /// single identity certificate, the ALPN list in order (`/1` alone for
 /// `bind`; `[crpg-lane0/2, crpg-lane0/1]` for `bind_dual` and
-/// `bind_resumable`), no 0-RTT, no migration, `max_incoming =
-/// max_connections`, and the windows from `limits`. `None` when the
-/// identity does not load (bad DER, key not matching the certificate).
+/// `bind_resumable`; `[crpg-lane0/3]` for `bind_movement`), no 0-RTT, no
+/// migration, `max_incoming = max_connections`, and the windows from
+/// `limits`. `None` when the identity does not load (bad DER, key not
+/// matching the certificate).
 pub(crate) fn server_config(
     identity: &ServerIdentity,
     alpns: &'static [&'static [u8]],
     limits: &ServerLimits,
+) -> Option<quinn::ServerConfig> {
+    build_server(identity, alpns, limits, false)
+}
+
+/// The server's quinn config for `bind_movement`: `[crpg-lane0/3]` alone and
+/// the movement transport parameters (two bidi streams, a datagram send
+/// buffer, a zero datagram receive buffer). Everything else is
+/// [`server_config`]'s.
+pub(crate) fn server_movement_config(
+    identity: &ServerIdentity,
+    limits: &ServerLimits,
+) -> Option<quinn::ServerConfig> {
+    build_server(identity, &[ALPN_LANE0_V3], limits, true)
+}
+
+fn build_server(
+    identity: &ServerIdentity,
+    alpns: &'static [&'static [u8]],
+    limits: &ServerLimits,
+    movement: bool,
 ) -> Option<quinn::ServerConfig> {
     let cert = CertificateDer::from(identity.cert_der().to_vec());
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key_pkcs8_der().to_vec()));
@@ -84,7 +123,18 @@ pub(crate) fn server_config(
     let crypto = QuicServerConfig::try_from(tls).ok()?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
     let windows = Windows {
-        bidi_streams: 1,
+        bidi_streams: if movement { 2 } else { 1 },
+        datagrams: if movement {
+            Datagrams {
+                receive: Some(0),
+                send: SERVER_DATAGRAM_SEND_BUFFER,
+            }
+        } else {
+            Datagrams {
+                receive: None,
+                send: 0,
+            }
+        },
         stream_receive_window: limits.stream_window_bytes,
         receive_window: limits.connection_window_bytes,
         send_window: limits.send_window_bytes,
@@ -109,6 +159,27 @@ pub(crate) fn client_config(
     alpn: &'static [u8],
     limits: &ClientLimits,
 ) -> Option<quinn::ClientConfig> {
+    build_client(pin, mismatch, alpn, limits, false)
+}
+
+/// The client's quinn config for `connect_movement`: `[crpg-lane0/3]` alone,
+/// a datagram receive buffer and no datagram send buffer. Everything else is
+/// [`client_config`]'s.
+pub(crate) fn client_movement_config(
+    pin: CertificatePin,
+    mismatch: Arc<AtomicBool>,
+    limits: &ClientLimits,
+) -> Option<quinn::ClientConfig> {
+    build_client(pin, mismatch, ALPN_LANE0_V3, limits, true)
+}
+
+fn build_client(
+    pin: CertificatePin,
+    mismatch: Arc<AtomicBool>,
+    alpn: &'static [u8],
+    limits: &ClientLimits,
+    movement: bool,
+) -> Option<quinn::ClientConfig> {
     let provider = provider();
     let verifier = PinnedServerVerifier {
         pin,
@@ -128,6 +199,17 @@ pub(crate) fn client_config(
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     let windows = Windows {
         bidi_streams: 0,
+        datagrams: if movement {
+            Datagrams {
+                receive: Some(CLIENT_DATAGRAM_RECEIVE_BUFFER),
+                send: 0,
+            }
+        } else {
+            Datagrams {
+                receive: None,
+                send: 0,
+            }
+        },
         stream_receive_window: limits.stream_window_bytes,
         receive_window: limits.connection_window_bytes,
         send_window: limits.send_window_bytes,

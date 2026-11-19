@@ -15,6 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use crpg_net::protocol::MAX_INTENT_FRAME_BYTES;
 use crpg_net::sim::QueueCaps;
 use quinn::{
     Connection, ConnectionError, ReadError, ReadExactError, RecvStream, SendStream, VarInt,
@@ -22,13 +23,32 @@ use quinn::{
 };
 use tokio::sync::Notify;
 
-use crate::close::{CloseCode, CloseReason, ConnectionStats, SendError};
+use crate::close::{CloseCode, CloseReason, ConnectionStats, Lane1Stats, SendError};
 use crate::handshake::{
     channel_frame_header, frame_header, parse_channel_frame_header, parse_frame_header, Channel,
-    FrameError, Framing, Welcome, FRAME_HEADER_BYTES,
+    FrameError, Framing, Welcome, FRAME_HEADER_BYTES, LANE1_OUTBOUND_FRAMES, MAX_DATAGRAM_BYTES,
 };
 use crate::server::{ConnectionId, ServerEvent, ServerNotice};
 use crate::teardown::close_deadlines;
+
+/// A server's lane-1 inbound queue per connection: frames, payload bytes
+/// (T150 Reading 8). Not a limit: no operator tunes it.
+pub(crate) const LANE1_SERVER_INBOUND: (usize, usize) = (64, 65_536);
+/// A server's lane-1 outbound queue per connection: frames, payload bytes.
+pub(crate) const LANE1_SERVER_OUTBOUND: (usize, usize) = (LANE1_OUTBOUND_FRAMES, 131_072);
+/// A client's lane-1 outbound queue: frames, payload bytes.
+pub(crate) const LANE1_CLIENT_OUTBOUND: (usize, usize) = (64, 65_536);
+/// A client's lane-1 inbound queue: frames, payload bytes.
+pub(crate) const LANE1_CLIENT_INBOUND: (usize, usize) = (128, 131_072);
+/// The newest datagrams a client keeps (T150 Reading 7).
+pub(crate) const CLIENT_DATAGRAM_QUEUE: usize = 64;
+
+// One full take of receipts fits an empty server outbound queue, and a
+// maximal intent fits both upstream byte caps (T150 Reading 8).
+const _: () = assert!(LANE1_SERVER_OUTBOUND.1 == LANE1_SERVER_OUTBOUND.0 * MAX_DATAGRAM_BYTES);
+const _: () = assert!(LANE1_CLIENT_INBOUND.1 == LANE1_CLIENT_INBOUND.0 * MAX_DATAGRAM_BYTES);
+const _: () = assert!(LANE1_SERVER_INBOUND.1 >= MAX_INTENT_FRAME_BYTES);
+const _: () = assert!(LANE1_CLIENT_OUTBOUND.1 >= MAX_INTENT_FRAME_BYTES);
 
 /// Extra time a sync waiter allows beyond a close deadline before it stops
 /// waiting for the I/O thread (a liveness guard, not a protocol timer).
@@ -144,6 +164,8 @@ pub(crate) struct ConnWake {
     pub(crate) control: Notify,
     pub(crate) reader: Notify,
     pub(crate) writer: Notify,
+    pub(crate) lane1_reader: Notify,
+    pub(crate) lane1_writer: Notify,
 }
 
 /// A `Flush` close in progress.
@@ -228,6 +250,29 @@ pub(crate) struct Conn {
     pub(crate) control_done: bool,
     pub(crate) connection: Connection,
     pub(crate) wake: Arc<ConnWake>,
+    /// The connection negotiated `crpg-lane0/3` (T150).
+    pub(crate) movement: bool,
+    /// Lane-1 queue caps `(frames, bytes)`; `(0, 0)` off `/3`.
+    lane1_inbound_cap: (usize, usize),
+    lane1_outbound_cap: (usize, usize),
+    lane1_inbound: VecDeque<Vec<u8>>,
+    lane1_inbound_bytes: usize,
+    lane1_parked: Option<Vec<u8>>,
+    /// Header-prefixed lane-1 frames; accounting uses payload bytes.
+    lane1_outbound: VecDeque<Vec<u8>>,
+    lane1_outbound_bytes: usize,
+    /// The lane-1 reader may still add frames (or the lane-1 accept may still
+    /// start it); publication waits for it.
+    pub(crate) lane1_reader_active: bool,
+    /// True while no lane-1 writer runs.
+    pub(crate) lane1_writer_finished: bool,
+    /// Whether lane 1 held inbound frames at the time `Closed` was published.
+    pub(crate) held_lane1_frames: bool,
+    /// Lane 1 reported `Closed` through `try_recv_lane1`.
+    pub(crate) lane1_closed_reported: bool,
+    /// Datagrams queued for the client (never used on a server).
+    datagrams: VecDeque<Vec<u8>>,
+    pub(crate) datagrams_dropped: u64,
 }
 
 impl Conn {
@@ -259,7 +304,29 @@ impl Conn {
             control_done: false,
             connection,
             wake,
+            movement: false,
+            lane1_inbound_cap: (0, 0),
+            lane1_outbound_cap: (0, 0),
+            lane1_inbound: VecDeque::new(),
+            lane1_inbound_bytes: 0,
+            lane1_parked: None,
+            lane1_outbound: VecDeque::new(),
+            lane1_outbound_bytes: 0,
+            lane1_reader_active: false,
+            lane1_writer_finished: true,
+            held_lane1_frames: false,
+            lane1_closed_reported: false,
+            datagrams: VecDeque::new(),
+            datagrams_dropped: 0,
         }
+    }
+
+    /// Makes this a `crpg-lane0/3` record with the lane-1 queue caps of its
+    /// side.
+    pub(crate) fn enable_movement(&mut self, inbound: (usize, usize), outbound: (usize, usize)) {
+        self.movement = true;
+        self.lane1_inbound_cap = inbound;
+        self.lane1_outbound_cap = outbound;
     }
 
     /// Closing or closed, as `try_send`/`accept`/`refuse`/`close` report it.
@@ -277,9 +344,46 @@ impl Conn {
         self.inbound.front().map(|(channel, _)| *channel)
     }
 
-    /// Frames queued plus the parked one.
+    /// No lane-1 inbound frame queued or parked.
+    pub(crate) fn lane1_drained(&self) -> bool {
+        self.lane1_inbound.is_empty() && self.lane1_parked.is_none()
+    }
+
+    /// Frames queued plus the parked one, on both lanes.
     pub(crate) fn held_inbound_frames(&self) -> usize {
-        self.inbound.len() + usize::from(self.parked.is_some())
+        self.inbound.len()
+            + usize::from(self.parked.is_some())
+            + self.lane1_inbound.len()
+            + usize::from(self.lane1_parked.is_some())
+    }
+
+    /// The API may forget this record: its `Closed` event was polled and
+    /// each lane that held frames at publication has reported `Closed`
+    /// through its own call (record-lifetime rule, per lane).
+    pub(crate) fn forgettable(&self) -> bool {
+        self.event_polled
+            && (!self.held_frames || self.closed_reported)
+            && (!self.held_lane1_frames || self.lane1_closed_reported)
+    }
+
+    /// The lane-1 and datagram counts; `max_datagram_bytes` is filled by the
+    /// caller, outside the lock.
+    pub(crate) fn lane1_stats(&self) -> Lane1Stats {
+        Lane1Stats {
+            inbound_frames: self.lane1_inbound.len(),
+            inbound_bytes: self.lane1_inbound_bytes,
+            outbound_frames: self.lane1_outbound.len(),
+            outbound_bytes: self.lane1_outbound_bytes,
+            reader_parked: self.lane1_parked.is_some(),
+            datagrams_queued: self.datagrams.len(),
+            datagrams_dropped: self.datagrams_dropped,
+            max_datagram_bytes: None,
+        }
+    }
+
+    /// Whether any datagram is queued.
+    pub(crate) fn has_datagram(&self) -> bool {
+        !self.datagrams.is_empty()
     }
 
     pub(crate) fn stats(&self, keepalive_pings_sent: u64) -> ConnectionStats {
@@ -317,6 +421,8 @@ pub(crate) struct State {
     pub(crate) inbound_bytes: usize,
     pub(crate) outbound_frames: usize,
     pub(crate) outbound_bytes: usize,
+    /// Lane-1 frames queued inbound on every connection (read by `wait`).
+    pub(crate) lane1_inbound_frames: usize,
     emit_events: bool,
     pub(crate) events: VecDeque<ServerNotice>,
     /// Connection slots held (`max_connections` accounting).
@@ -343,6 +449,7 @@ impl State {
             inbound_bytes: 0,
             outbound_frames: 0,
             outbound_bytes: 0,
+            lane1_inbound_frames: 0,
             emit_events,
             events: VecDeque::new(),
             live: 0,
@@ -486,9 +593,104 @@ impl State {
         let bytes = conn.outbound_bytes;
         conn.outbound.clear();
         conn.outbound_bytes = 0;
-        conn.discarded += frames;
+        // Lane 1 is counted in the same report, and in no host-wide total.
+        conn.discarded += frames + conn.lane1_outbound.len();
+        conn.lane1_outbound.clear();
+        conn.lane1_outbound_bytes = 0;
         self.outbound_frames -= frames;
         self.outbound_bytes -= bytes;
+    }
+
+    /// Queues one lane-1 payload (`QueueFull` with nothing changed). The
+    /// caller checked the send cap; the header is the `/1` one.
+    pub(crate) fn queue_lane1_outbound(
+        &mut self,
+        id: u64,
+        payload: &[u8],
+    ) -> Result<(), SendError> {
+        let conn = self
+            .conns
+            .get_mut(&id)
+            .ok_or(SendError::UnknownConnection)?;
+        let len = payload.len();
+        let room = conn.lane1_outbound.len() < conn.lane1_outbound_cap.0
+            && conn
+                .lane1_outbound_bytes
+                .checked_add(len)
+                .is_some_and(|total| total <= conn.lane1_outbound_cap.1);
+        if !room {
+            return Err(SendError::QueueFull);
+        }
+        let frame = framed(payload, usize::MAX).map_err(|_| SendError::FrameTooLarge)?;
+        conn.lane1_outbound.push_back(frame);
+        conn.lane1_outbound_bytes += len;
+        conn.wake.lane1_writer.notify_one();
+        Ok(())
+    }
+
+    /// The lane-1 writer takes the next framed frame; it leaves the
+    /// accounting here, when it is handed to QUIC.
+    fn pop_lane1_outbound(&mut self, id: u64) -> Option<Vec<u8>> {
+        let conn = self.conns.get_mut(&id)?;
+        let frame = conn.lane1_outbound.pop_front()?;
+        conn.lane1_outbound_bytes -= frame.len() - FRAME_HEADER_BYTES;
+        Some(frame)
+    }
+
+    /// Queues or parks one complete inbound lane-1 frame.
+    fn offer_lane1_inbound(&mut self, id: u64, frame: Vec<u8>) -> Offer {
+        let Some(conn) = self.conns.get_mut(&id) else {
+            return Offer::Gone;
+        };
+        let len = frame.len();
+        if lane1_inbound_room(conn, len) {
+            conn.lane1_inbound.push_back(frame);
+            conn.lane1_inbound_bytes += len;
+            self.lane1_inbound_frames += 1;
+            Offer::Queued
+        } else {
+            conn.lane1_parked = Some(frame);
+            Offer::Parked
+        }
+    }
+
+    /// Takes the next inbound lane-1 frame, then lets the connection's parked
+    /// frame in at once if room allows.
+    pub(crate) fn pop_lane1_inbound(&mut self, id: u64) -> Option<Vec<u8>> {
+        let conn = self.conns.get_mut(&id)?;
+        let frame = conn.lane1_inbound.pop_front()?;
+        conn.lane1_inbound_bytes -= frame.len();
+        self.lane1_inbound_frames -= 1;
+        if let Some(len) = conn.lane1_parked.as_ref().map(Vec::len) {
+            if lane1_inbound_room(conn, len) {
+                if let Some(parked) = conn.lane1_parked.take() {
+                    conn.lane1_inbound.push_back(parked);
+                    conn.lane1_inbound_bytes += len;
+                    self.lane1_inbound_frames += 1;
+                    conn.wake.lane1_reader.notify_one();
+                }
+            }
+        }
+        Some(frame)
+    }
+
+    /// Queues one client datagram, dropping the oldest (and counting it)
+    /// when the queue is full. `false` when the record is gone.
+    pub(crate) fn push_datagram(&mut self, id: u64, datagram: Vec<u8>) -> bool {
+        let Some(conn) = self.conns.get_mut(&id) else {
+            return false;
+        };
+        if conn.datagrams.len() >= CLIENT_DATAGRAM_QUEUE {
+            conn.datagrams.pop_front();
+            conn.datagrams_dropped += 1;
+        }
+        conn.datagrams.push_back(datagram);
+        true
+    }
+
+    /// The oldest queued client datagram.
+    pub(crate) fn pop_datagram(&mut self, id: u64) -> Option<Vec<u8>> {
+        self.conns.get_mut(&id)?.datagrams.pop_front()
     }
 
     /// Records why the connection ended (first wins), discards outbound
@@ -504,6 +706,8 @@ impl State {
         conn.reason = Some(reason);
         conn.wake.reader.notify_one();
         conn.wake.writer.notify_one();
+        conn.wake.lane1_reader.notify_one();
+        conn.wake.lane1_writer.notify_one();
         conn.wake.control.notify_one();
         self.discard_outbound(id);
         self.try_publish(id);
@@ -519,10 +723,11 @@ impl State {
         let Some(reason) = conn.reason else {
             return;
         };
-        if conn.reader_active || conn.published {
+        if conn.reader_active || conn.lane1_reader_active || conn.published {
             return;
         }
         conn.held_frames = !conn.drained();
+        conn.held_lane1_frames = !conn.lane1_drained();
         conn.published = true;
         if self.emit_events && conn.phase != Phase::Hello {
             self.events
@@ -553,6 +758,22 @@ impl State {
         }
         self.try_publish(id);
     }
+
+    /// Ends the lane-1 reader's claim and publishes if closed.
+    pub(crate) fn lane1_reader_finished(&mut self, id: u64) {
+        if let Some(conn) = self.conns.get_mut(&id) {
+            conn.lane1_reader_active = false;
+        }
+        self.try_publish(id);
+    }
+}
+
+fn lane1_inbound_room(conn: &Conn, len: usize) -> bool {
+    conn.lane1_inbound.len() < conn.lane1_inbound_cap.0
+        && conn
+            .lane1_inbound_bytes
+            .checked_add(len)
+            .is_some_and(|total| total <= conn.lane1_inbound_cap.1)
 }
 
 fn inbound_room(
@@ -668,6 +889,7 @@ impl Drop for FailGuard {
             for id in ids {
                 state.record_close(id, CloseReason::EndpointFailed);
                 state.reader_finished(id);
+                state.lane1_reader_finished(id);
             }
             // No task is left to send a close, so no record waits for one.
             for conn in state.conns.values_mut() {
@@ -864,6 +1086,91 @@ async fn deliver(
     }
 }
 
+/// Reads lane-1 frames (`/1` headers) into the lane-1 inbound queue until
+/// FIN, close or violation. `direction` and `cap` are the side's: 4,096 on a
+/// server, 1,024 on a client.
+pub(crate) async fn lane1_reader(
+    shared: Arc<Shared>,
+    id: u64,
+    connection: Connection,
+    mut recv: RecvStream,
+    direction: LaneDirection,
+    cap: usize,
+    wake: Arc<ConnWake>,
+) {
+    loop {
+        match read_lane_frame(&mut recv, Framing::V1, direction, cap).await {
+            Ok(Some((_, frame))) => {
+                if !deliver_lane1(&shared, id, frame, &wake).await {
+                    break;
+                }
+            }
+            Ok(None) | Err(ReadFail::Lost) => break,
+            Err(ReadFail::Code(code)) => {
+                local_close(&shared, id, &connection, code);
+                break;
+            }
+        }
+    }
+    if let Some(mut state) = shared.lock_any() {
+        state.lane1_reader_finished(id);
+    }
+    shared.notify_sync();
+}
+
+/// As `deliver`, on the lane-1 queue and its parked slot.
+async fn deliver_lane1(shared: &Shared, id: u64, frame: Vec<u8>, wake: &ConnWake) -> bool {
+    let offer = match shared.lock_any() {
+        Some(mut state) => state.offer_lane1_inbound(id, frame),
+        None => return false,
+    };
+    shared.notify_sync();
+    match offer {
+        Offer::Queued => return true,
+        Offer::Gone => return false,
+        Offer::Parked => {}
+    }
+    loop {
+        wake.lane1_reader.notified().await;
+        let Some(state) = shared.lock_any() else {
+            return false;
+        };
+        let Some(conn) = state.conns.get(&id) else {
+            return false;
+        };
+        if conn.lane1_parked.is_none() {
+            return true;
+        }
+    }
+}
+
+/// Reads the client's datagrams into its bounded queue (T150 Reading 7): an
+/// empty one closes with `ProtocolViolation`, one above `MAX_DATAGRAM_BYTES`
+/// with `FrameTooLarge`. It holds no claim, so it never delays a close's
+/// publication.
+pub(crate) async fn datagram_reader(shared: Arc<Shared>, id: u64, connection: Connection) {
+    loop {
+        let Ok(datagram) = connection.read_datagram().await else {
+            break;
+        };
+        if datagram.is_empty() {
+            local_close(&shared, id, &connection, CloseCode::ProtocolViolation);
+            break;
+        }
+        if datagram.len() > MAX_DATAGRAM_BYTES {
+            local_close(&shared, id, &connection, CloseCode::FrameTooLarge);
+            break;
+        }
+        let queued = shared
+            .lock_any()
+            .is_some_and(|mut state| state.push_datagram(id, datagram.to_vec()));
+        shared.notify_sync();
+        if !queued {
+            break;
+        }
+    }
+}
+
 enum Next {
     Frame(Vec<u8>),
     Finish,
@@ -923,6 +1230,58 @@ pub(crate) async fn lane_writer(
     wake.control.notify_one();
 }
 
+/// The lane-1 writer: `lane_writer` on the lane-1 outbound queue. It sets
+/// `lane1_writer_finished` when it ends.
+pub(crate) async fn lane1_writer(
+    shared: Arc<Shared>,
+    id: u64,
+    connection: Connection,
+    mut send: SendStream,
+    wake: Arc<ConnWake>,
+) {
+    loop {
+        let next = match shared.lock_any() {
+            Some(mut state) => match state.conns.get(&id) {
+                None => Next::Exit,
+                Some(conn) if conn.reason.is_some() => Next::Exit,
+                Some(conn) => {
+                    let flushing = conn.flush.is_some();
+                    match state.pop_lane1_outbound(id) {
+                        Some(frame) => Next::Frame(frame),
+                        None if flushing => Next::Finish,
+                        None => Next::Wait,
+                    }
+                }
+            },
+            None => Next::Exit,
+        };
+        match next {
+            Next::Frame(frame) => match send.write_all(&frame).await {
+                Ok(()) => {}
+                Err(WriteError::Stopped(_)) => {
+                    // STOP_SENDING on lane 1, seen at this write.
+                    local_close(&shared, id, &connection, CloseCode::ProtocolViolation);
+                    break;
+                }
+                Err(_) => break,
+            },
+            Next::Finish => {
+                let _ = send.finish();
+                let _ = send.stopped().await;
+                break;
+            }
+            Next::Wait => wake.lane1_writer.notified().await,
+            Next::Exit => break,
+        }
+    }
+    if let Some(mut state) = shared.lock_any() {
+        if let Some(conn) = state.conns.get_mut(&id) {
+            conn.lane1_writer_finished = true;
+        }
+    }
+    wake.control.notify_one();
+}
+
 /// Runs one accepted connection's control loop: sends requested closes,
 /// runs `Flush` closes, and records the reason when the connection ends.
 pub(crate) async fn lane_control(
@@ -934,7 +1293,8 @@ pub(crate) async fn lane_control(
     loop {
         enum Act {
             Close(CloseCode),
-            Flush(FlushRequest),
+            /// The flush, and whether a lane-1 writer runs (read once, here).
+            Flush(FlushRequest, bool),
             Nothing,
         }
         let act = match shared.lock_any() {
@@ -947,10 +1307,11 @@ pub(crate) async fn lane_control(
                         }
                         Act::Close(code)
                     } else {
+                        let lane1_writer_runs = !conn.lane1_writer_finished;
                         match conn.flush.as_mut() {
                             Some(flush) if !flush.started => {
                                 flush.started = true;
-                                Act::Flush(*flush)
+                                Act::Flush(*flush, lane1_writer_runs)
                             }
                             _ => Act::Nothing,
                         }
@@ -962,7 +1323,9 @@ pub(crate) async fn lane_control(
         };
         match act {
             Act::Close(code) => close_quinn(&connection, code),
-            Act::Flush(flush) => run_flush(&shared, id, &connection, &wake, flush).await,
+            Act::Flush(flush, lane1) => {
+                run_flush(&shared, id, &connection, &wake, flush, lane1).await
+            }
             Act::Nothing => {}
         }
         match race(wake.control.notified(), connection.closed()).await {
@@ -988,23 +1351,26 @@ pub(crate) async fn lane_control(
     shared.notify_sync();
 }
 
-/// E§3 `CloseMode::Flush`: let the writer drain and FIN, wait for the ack
-/// up to the flush cutoff, discard what is left, then CONNECTION_CLOSE.
+/// E§3 `CloseMode::Flush`: let the writers drain and FIN, wait for the acks
+/// up to the flush cutoff, discard what is left, then CONNECTION_CLOSE. The
+/// lane-1 writer is waited for only when `wait_lane1` (one runs).
 async fn run_flush(
     shared: &Shared,
     id: u64,
     connection: &Connection,
     wake: &ConnWake,
     flush: FlushRequest,
+    wait_lane1: bool,
 ) {
     wake.writer.notify_one();
+    wake.lane1_writer.notify_one();
     let flush_end = tokio::time::Instant::from_std(flush.flush_end);
     loop {
         let finished = match shared.lock_any() {
-            Some(state) => state
-                .conns
-                .get(&id)
-                .is_none_or(|conn| conn.writer_finished || conn.reason.is_some()),
+            Some(state) => state.conns.get(&id).is_none_or(|conn| {
+                conn.reason.is_some()
+                    || (conn.writer_finished && (!wait_lane1 || conn.lane1_writer_finished))
+            }),
             None => true,
         };
         if finished {

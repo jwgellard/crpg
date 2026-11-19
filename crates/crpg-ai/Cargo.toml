@@ -4,4 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+# T056a (tasks/T056.md "Dependency edges"): the MVP decision reads sim's
+# legality and movement functions and asks nav for the host's own route.
+# Internal path crates only, default features, no external crate.
 [dependencies]
+crpg-core = { path = "../crpg-core" }
+crpg-sim = { path = "../crpg-sim" }
+crpg-nav = { path = "../crpg-nav" }
