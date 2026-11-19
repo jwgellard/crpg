@@ -493,9 +493,8 @@ recommendation. `deps.py` is not edited.
    shutdown latency on large authorities.
 7. **Deterministic-mode scope.** Spec names replay inputs, fixed seed and
    a hash per N ticks (`docs/CRPG_ENGINE_SPEC.md:958`). Recommend T040a
-   ships exactly that (B-9) and leaves scripted-client completion of the
-   fixture campaign to T041's gate-13 smokes
-   (`docs/CRPG_ENGINE_SPEC.md:1334-1335`).
+   ships exactly that; fixture-campaign completion stays T041's gate-13
+   smokes (`docs/CRPG_ENGINE_SPEC.md:1334-1335`).
 
 ## Agent log
 
