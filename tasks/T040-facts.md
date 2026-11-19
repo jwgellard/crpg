@@ -145,6 +145,22 @@ Every `[[bin]]`, every `src/bin/*.rs`, the `crpgc` structure, E012, and binary t
 
 ## CI today
 
+Jobs in `.github/workflows/ci.yml`, runners, what each runs, artifact steps, and the S001 runner rule:
+
+- One workflow file (`.github/workflows` holds only `ci.yml`) — five lint/gate jobs plus guard, secrets, check, client, deny.
+- `guard` (`.github/workflows/ci.yml:43-86`) — runs on `ubuntu-latest` for pull requests only; fork-PR tripwire over protected paths plus the trusted-lint gate.
+- `secrets` (`.github/workflows/ci.yml:88-100`) — runs on `ubuntu-latest`; gitleaks with default rules and no allowlist.
+- `check` (`.github/workflows/ci.yml:102-185`) — matrix `ubuntu-latest` plus `windows-latest`; BR-21 godot-graph query, `cargo fmt --check`, workspace clippy, workspace tests, all `--locked`.
+- `client` (`.github/workflows/ci.yml:192-357`) — runs on `windows-latest` only; builds `crpg-godot` with the engine feature, fetches pinned Godot, imports the client project, runs load/smoke proofs.
+- `deny` (`.github/workflows/ci.yml:359-376`) — runs on `ubuntu-latest`; pinned `cargo-deny-action` plus an advisories re-check without `[patch.crates-io]`.
+- `lint-architecture` (`.github/workflows/ci.yml:379-389`) — runs on `ubuntu-latest`; `python tools/lint/deps.py` on 3.11.
+- `lint-determinism` (`.github/workflows/ci.yml:391-399`) — runs on `ubuntu-latest`; `python tools/lint/determinism.py`.
+- `lint-selftest` (`.github/workflows/ci.yml:403-418`) — matrix `ubuntu-latest` plus `windows-latest`; lint unit tests and preflight runner tests.
+- The only artifact upload is the Windows client slice (`.github/workflows/ci.yml:351-357`) — staged `_slice/` uploaded as `crpg-client-slice-windows-x86_64` for 14 days.
+- No dedicated-server artifact job exists today — gate 12 builds are T040's work, not a current job.
+- Documentation-only pull requests skip the Rust gates (`.github/workflows/ci.yml:112-147`) — the `check` and `client` jobs still run and report.
+- S001 self-hosted-runner rule (`.github/workflows/ci.yml:24-30`) — self-hosted runners never take `pull_request`-triggered jobs; every job here runs on GitHub-hosted runners.
+
 ## Rules that bind it
 
 ## Agent log
