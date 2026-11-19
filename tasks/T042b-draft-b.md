@@ -565,8 +565,39 @@ user's approval, which is why this contract does not create one
   (ADR-0012); the suite has no platform branch.
 
 ## Definition of done
+On the part's branch, all green:
+```
+cargo fmt --all
+cargo clippy -p crpg-net --all-targets --locked -- -D warnings
+cargo test -p crpg-net --locked
+python tools/lint/deps.py
+python tools/lint/determinism.py
+python -m unittest discover -s tools/lint -p "test_*.py"
+git diff --check
+git diff --exit-code <base> -- Cargo.toml Cargo.lock crates/crpg-net/Cargo.toml
+git diff -U0 <base> -- crates/crpg-net/src | grep -E '^[+-][^+-]' | grep -vE '^[+-][[:space:]]*//'
+```
+The last command prints nothing (no `src/` change at all in T042b).
+`git diff --name-only <base>` lists only the owned files; every W item has
+its named test; docs carry a signed agent-log entry; the DoD count in the
+trap is the new `cargo test -p crpg-net` pass count.
 
-TODO (draft B).
+**Mutant table** (the reviewer plants each in a scratch copy, runs
+`cargo test -p crpg-net --test hostile_server`, and expects the named
+test to fail; a surviving mutant is a finding):
+
+| # | Mutant | Killed by |
+|---|---|---|
+| MU1 | one framed decoder's cap `>` → `>=` | H3 |
+| MU2 | one decoder's trailing-byte check removed | H5 |
+| MU3 | one framed decoder's version check removed | H6 |
+| MU4 | one framed decoder's lane check removed | H7 |
+| MU5 | `codec_transfer::decode_down` maps `0x20`/`0x21` to `UnknownMessage` | H8, H11 |
+| MU6 | `transfer_v3::decode_down` accepts `total_bytes` 0 | H9 (zero-transfer twin) |
+| MU7 | `codec_resume::take_proof` bound `>` → `>=` | H10 |
+| MU8 | `codec_resume::take_lanes` count bound removed | H10 |
+| MU9 | `movement_v4::take_seq` accepts 0 | H9 |
+| MU10 | `ResumeRejection::from_u8` maps 3 to `Busy` | H8 |
 
 ## Out of scope
 
