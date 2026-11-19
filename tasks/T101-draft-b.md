@@ -85,7 +85,51 @@ findings that shape everything else are R8 "Scaffold, never blank"
 
 ## Personas
 
-## Task flows
+D28l fixes the ordering: module authors first, agents equal, then the studio's
+own game (`tasks/DECISIONS-2026-10-16.md:135`). Each persona below gets a
+name, a goal, what they author with, and what this ADR owes them.
+
+1. **The module author** (primary). A person with RPG-modding skill but no
+   engine or JSON knowledge: an NWN, Solasta or Foundry module author (spec
+   risk 18, `docs/CRPG_ENGINE_SPEC.md:1785`). They define a ruleset, build an
+   area, place creatures, write dialogue and a quest, and package it. They
+   work through the GUI and through the same commands an agent uses, but they
+   never see JSON or an `EditCommand`. They need: scaffolds, not blanks
+   (R8 `docs/research/T099/R8-deep.md:9`); generated forms, not hand-written
+   ones (`docs/CRPG_ENGINE_SPEC.md:1059`); a Problems panel that is the first
+   thing polished (R8 `docs/research/T099/R8-deep.md:7`); and one prompted
+   help facility (R8 `docs/research/T099/R8-deep.md:12`).
+2. **The agent** (equal, not subordinate). An LLM driving the same authoring
+   surface headlessly, per spec §11.2 "Agent-generated content cannot bypass
+   invariants the GUI enforces" (`docs/CRPG_ENGINE_SPEC.md:1013`). It needs a
+   small verb set with 3–4 sentence descriptions and eval-gated examples
+   (R7, `docs/research/T099/R10-deep.md:42`), stable identity as its address
+   rather than raw JSON pointers (R4, `docs/research/T099/R10-deep.md:27`),
+   machine-readable errors with a pointer, code and suggested fix (R2,
+   `docs/research/T099/R10-deep.md:17`), a reviewable plan step (R3,
+   `docs/research/T099/R10-deep.md:22`), and receipts that carry changed paths
+   and diagnostics only (R6, `docs/research/T099/R10-deep.md:37`). It is a
+   first-class author, but R11 is explicit that LLM "users" are biased proxies
+   and never proof of human usability (`docs/research/T099/R11-deep.md:15`).
+3. **The studio (own game)** (later). The team building the product the engine
+   exists to make. D28l says their game "comes after them"
+   (`tasks/DECISIONS-2026-10-16.md:135`), so nothing in this ADR optimises for
+   the studio's internal workflow at the authors' expense. They are served by
+   the same headless-first order (D18) that keeps every GUI feature available
+   to a script.
+4. **The player** (downstream, not an author). They consume a packaged module
+   and a ruleset-provided UI (`docs/architecture/crpg-data.md:364`). This ADR
+   touches them only through its consequences: custom content must pass
+   conformance so a player's client can load it (`docs/research/T099/R15-deep.md:5`),
+   and authored modules must be safe to share (`docs/research/T099/R13-deep.md:19`).
+
+The equal-status rule has a concrete shape: every authoring feature ships as a
+headless command first, and the GUI is a caller of that same command surface —
+not a second implementation. Spec §11.2 already says undo/redo "is one
+implementation" and every mutation goes through `apply`
+(`docs/CRPG_ENGINE_SPEC.md:1012`). This ADR extends that from `apply` up one
+level: the intent layer (§ Intent command layer) is the one surface both
+personas drive.
 
 ## Information architecture
 
