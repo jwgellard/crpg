@@ -616,7 +616,24 @@ through `client.link.send` + `drive_tick` and reads the receipt.
 
 ## What must not change
 
-_(filled next edit)_
+- Goldens, byte for byte (none added): every
+  `crates/crpg-testkit/goldens/*` and `crates/crpg-sim/tests/goldens/*` file.
+- Every existing test file, byte for byte and passing, in `crpg-testkit`
+  (`tests/support/mod.rs` and `tests/support/combat.rs` included),
+  `crpg-server`, `crpg-net`, `crpg-net-quic`, `crpg-sim` and `crpg-ai` —
+  notably `crates/crpg-testkit/tests/host_movement.rs` and
+  `tests/ai_mvp.rs`, and `crates/crpg-server/tests/run.rs`'s loop suite.
+- `crates/crpg-testkit/src/` and `crates/crpg-testkit/Cargo.toml` (T041a–c);
+  the public surface list in `crates/crpg-testkit/AGENTS.md:31–36` is
+  unchanged — the harness is tests-only and adds no export.
+- The wire, codecs, `Host` admission precedence, `RejectionCode` values,
+  `LocalHost`/`LocalClient`/`HostLoop` surface, and every `HostError`/`Display`
+  text; no crate's `src/` changes at all.
+- `Cargo.toml` (workspace), `Cargo.lock` (T041a–c), `deny.toml`,
+  `rust-toolchain.toml`, `crpg-contracts`, `tools/`, `.github/workflows/`.
+- The T098c and QUIC case 13 suites (`tasks/BACKLOG.md:169`,
+  `tasks/T098.md:312`): T041 runs no concurrent network test and no wall-time
+  sleep, so it cannot make either flake worse.
 
 ## Dependency edges
 
