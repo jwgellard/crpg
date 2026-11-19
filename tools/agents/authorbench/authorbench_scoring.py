@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from fractions import Fraction
@@ -47,6 +48,22 @@ def _is_number(value):
 
 def _decode(bts):
     return bts.decode("utf-8", errors="replace").replace("\r\n", "\n")
+
+
+def _lines(text: str) -> list[str]:
+    """Split text into ``\\n``-terminated lines only.
+
+    A line is one ``\\n``-terminated line: unlike ``str.splitlines()`` this
+    does not split on U+2028, U+2029, U+0085 or the U+001C..U+001E range, so a
+    JSON event carrying a raw separator is not silently broken into fragments.
+    ``\\r\\n`` is read as ``\\n`` first, and one trailing empty piece (from a
+    final newline) is dropped.
+    """
+    text = text.replace("\r\n", "\n")
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return parts
 
 
 def load_brief(brief_dir: Path) -> dict:
@@ -139,11 +156,11 @@ def read_log(path: Path) -> dict:
     err = ""
 
     try:
-        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        lines = []
+        text = ""
 
-    for line in lines:
+    for line in _lines(text):
         try:
             event = json.loads(line)
         except ValueError:
@@ -246,7 +263,11 @@ def scan_campaign(campaign_dir: Path) -> dict:
         dirs.sort()
         for filename in sorted(filenames):
             file_path = Path(root) / filename
-            if not file_path.is_file():
+            try:
+                st = os.lstat(file_path)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
                 continue
             files += 1
             if filename.endswith(".json"):
@@ -287,7 +308,7 @@ def parse_diagnostics(text: str) -> list | None:
 
 
 def parse_play(stdout: str, rc: int | None) -> dict:
-    lines = stdout.splitlines()
+    lines = _lines(stdout)
     started = rc == 0 and bool(lines) and lines[0].startswith("== Combat demo: ")
     finished = False
     combatants = 0
@@ -313,7 +334,7 @@ def parse_play(stdout: str, rc: int | None) -> dict:
 
 
 def count_samples(stdout: str) -> int:
-    return sum(1 for line in stdout.splitlines() if _SAMPLE_RE.match(line))
+    return sum(1 for line in _lines(stdout) if _SAMPLE_RE.match(line))
 
 
 def smoke_check(prefix: list[str]) -> dict:

@@ -162,6 +162,16 @@ class AuthorbenchScoreCase(unittest.TestCase):
         self.assertAlmostEqual(result["cost"], 0.035, delta=1e-9)
         self.assertEqual(result["err"], "")
 
+        # control: a non-bash tool whose input holds a crpgc-shaped command is
+        # still a tool, but is never a crpgc call
+        write(base_text + json.dumps(
+            {"type": "tool_use", "part": {"tool": "read",
+             "state": {"status": "completed", "input": {"command": "crpgc validate x"}}}}) + "\n")
+        result = scoring.read_log(log)
+        self.assertEqual(result["crpgc_calls"], 4)
+        self.assertEqual(result["tools"], 7)
+        self.assertEqual(result["commands"], {"fmt": 1, "play": 1, "schema": 1, "validate": 2})
+
         # control: append a JSON error event
         write(base_text + json.dumps({"type": "error", "error": {"message": "boom"}}) + "\n")
         result = scoring.read_log(log)
@@ -193,6 +203,25 @@ class AuthorbenchScoreCase(unittest.TestCase):
             "commands": {}, "tok": {"input": 0, "output": 0, "reasoning": 0, "cache_read": 0},
             "cost": 0.0, "err": "",
         })
+
+    # SC2 control: a line is one \n-terminated line; a raw U+2028 inside a JSON
+    # string must not split one event into two non-JSON fragments.
+    def test_sc2_line_splitting(self):
+        log = self.tmp / "u2028.jsonl"
+        line = json.dumps({
+            "type": "tool_use",
+            "part": {"tool": "bash",
+                     "state": {"status": "completed",
+                               "input": {"command": "crpgc validate \u2028x"},
+                               "metadata": {"exit": 0}}},
+        }, ensure_ascii=False)
+        log.write_text(line + "\n", encoding="utf-8")
+        self.assertIn("\u2028", log.read_text(encoding="utf-8"))
+        result = scoring.read_log(log)
+        self.assertEqual(result["tools"], 1)
+        self.assertEqual(result["crpgc_calls"], 1)
+        self.assertEqual(result["commands"], {"validate": 1})
+        self.assertEqual(result["crpgc_failures"], 0)
 
     # SC3
     def test_sc3_call_crpgc_and_prefix(self):
@@ -244,6 +273,23 @@ class AuthorbenchScoreCase(unittest.TestCase):
         (d / "rulesets" / "z.json").unlink()
         result2 = scoring.scan_campaign(d)
         self.assertEqual(result2["ruleset_slugs"], ["r"])
+
+    # SC4 control: a symlink inside campaign/ to an outside JSON file is not
+    # counted and contributes no kind or slug.
+    def test_sc4_scan_campaign_symlink(self):
+        d = make_campaign(self.tmp / "c", docs=SMALL_DOCS)
+        outside = self.tmp / "outside.json"
+        outside.write_text(json.dumps({"schema": "crpg.ruleset/9", "slug": "ghost"}), encoding="utf-8")
+        link = d / "creatures" / "link.json"
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            self.skipTest("cannot create symlinks on this platform")
+        result = scoring.scan_campaign(d)
+        self.assertEqual(result["files"], 7)
+        self.assertEqual(result["json"], 7)
+        self.assertEqual(result["kinds"]["ruleset"], 1)
+        self.assertEqual(result["ruleset_slugs"], ["r"])
 
     # SC5
     def test_sc5_output_readers(self):
@@ -451,15 +497,15 @@ class AuthorbenchScoreCase(unittest.TestCase):
         self.assertEqual(cells2[0]["n"], 0)
         self.assertIsNone(cells2[0]["steps_mean"])
 
-        # ordering by brief_order then model
+        # ordering by brief_order then model: feed m2 first, m1 still sorts first
         rows3 = [
-            {"brief": "campaign-small", "model": "m1", "rc": 0, "steps": 1, "errors": 0,
+            {"brief": "campaign-large", "model": "m1", "rc": 0, "steps": 1, "errors": 0,
              "secs": 1.0, "cost": 0, "valid": True, "complete": True, "playable": True,
              "play": {"finished": True}},
             {"brief": "campaign-small", "model": "m2", "rc": 0, "steps": 1, "errors": 0,
              "secs": 1.0, "cost": 0, "valid": True, "complete": True, "playable": True,
              "play": {"finished": True}},
-            {"brief": "campaign-large", "model": "m1", "rc": 0, "steps": 1, "errors": 0,
+            {"brief": "campaign-small", "model": "m1", "rc": 0, "steps": 1, "errors": 0,
              "secs": 1.0, "cost": 0, "valid": True, "complete": True, "playable": True,
              "play": {"finished": True}},
         ]
@@ -483,6 +529,14 @@ class AuthorbenchScoreCase(unittest.TestCase):
         cand_worse = [{"brief": "campaign-small", "model": "m1", "n": 2, "valid": 2, "complete": 1,
                        "playable": 1, "steps_mean": 10.0, "errors_mean": 1.0}]
         self.assertEqual(scoring.compare_cells(base, cand_worse)[0]["verdict"], "worse")
+
+        # control: rates are compared as fractions, not raw counts — cand has the
+        # same playable count (1) but over n 4, so its 1/4 is below base's 1/2.
+        base_den = [{"brief": "campaign-small", "model": "m1", "n": 2, "valid": 2, "complete": 2,
+                     "playable": 1, "steps_mean": 10.0, "errors_mean": 1.0}]
+        cand_den = [{"brief": "campaign-small", "model": "m1", "n": 4, "valid": 4, "complete": 4,
+                     "playable": 1, "steps_mean": 10.0, "errors_mean": 1.0}]
+        self.assertEqual(scoring.compare_cells(base_den, cand_den)[0]["verdict"], "worse")
 
         cand_same = [{"brief": "campaign-small", "model": "m1", "n": 2, "valid": 2, "complete": 2,
                       "playable": 1, "steps_mean": 99.0, "errors_mean": 1.0}]
