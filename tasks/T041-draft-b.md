@@ -189,6 +189,66 @@ implementation (`#![warn(missing_docs)]` covers tests through clippy's
 `--all-targets`, `crates/crpg-testkit/AGENTS.md:230-239`).
 
 ## Behaviour
+Normative. Each item names the tests that prove it. "Unchanged" means
+`authority_hash`, captures, executions and every delivery entry as before the
+probe. **First failure wins** in every ordered list.
+
+B-1. **A scripted pair connects, moves, fights and ends identical.**
+`two_client`: two clients attach (ascending `PeerHandle`), run one scripted
+fight to its terminal tick on `combat_basic` (Reading 7), and after every
+tick `assert_view_matches` holds for both. *Tests:* D1.
+B-2. **5,000-tick loss/jitter desync.** `headless_desync`: 5,000 driven ticks
+at 20 Hz injected time (`now_ms = 50 * t`, the `HostLoop` grid,
+`crates/crpg-server/src/run.rs:4`) through `FaultSchedule { loss_every: 7,
+dup_every: 11, reorder_depth: 2 }` (Reading 3); sparse valid inputs (one
+scripted `Act` every 50 ticks) plus one rejected input every 200 ticks; after
+every tick both clients' views match the host projection, and the authority
+hash is recorded every 1,000 ticks. *Tests:* D2.
+B-3. **Reconnect within grace rejoins identical.** A client whose link drops
+mid-fight and resumes with a live `SessionFence`
+(`crates/crpg-net/src/resume.rs:74-84`) rejoins, replays its missed deltas,
+and its view matches the other client's op-for-op at the next tick. A resume
+past the fence is refused. *Tests:* D3.
+B-4. **Gate-13 dedicated smoke.** `dedicated_smoke`: `QuicHost` started with
+`start_resumable` on loopback, two scripted real-QUIC clients (Q1) connect,
+move, fight and end with identical views; the suite passes at 1x contention
+on Windows/MSVC and Linux/GNU with no wall-clock pacing — only the rig's own
+deadline guards. `two_client` (B-1) is the embedded leg. *Tests:* G1, G2.
+B-5. **Unowned intents are rejected, never applied.** An intent naming an
+entity outside the sender's control grant is refused (`NotAuthorized`), the
+host reports its `Rejection` with the fixed `Display`, and the authority is
+unchanged. *Tests:* H1.
+B-6. **Illegal-time intents are rejected.** An intent with a stale or future
+`observed_tick` outside the admission window is refused; the same intent at
+the current tick is admitted. *Tests:* H2.
+B-7. **Floods are held, never silently lost.** An over-rate burst is held
+with `QueueFull` and retried, never dropped without a receipt — the
+`host_quic.rs` stall semantics (`crates/crpg-server/tests/host_quic.rs:1921-1940`).
+Sustained refusal beyond the queue is a clean rejection, never a panic.
+*Tests:* H3.
+B-8. **Replays are cached, including non-canonical aliases.** A same-`seq`
+retry with identical bytes is a cached retry; the same intent re-encoded
+non-canonically (non-minimal varint or ULID alias, the T042 handover,
+`tasks/T042.md:694-696`) is also a cached retry through `Host::canonical`,
+never `SeqConflict`. *Tests:* H4.
+B-9. **Out-of-interest requests are rejected.** A request for an entity
+outside the peer's interest set is refused; a granted entity resolves
+(`crates/crpg-net/src/interest.rs:215` is the wire-level rule T042 indexes,
+`tasks/T042.md:443`). *Tests:* H5.
+B-10. **Oversized and malformed frames fail clean at the host.** A frame over
+the 4,096 cap or failing decode is refused with its `Rejection` and fixed
+text (T042's six texts, `tasks/T042.md:507-514`); nothing panics, nothing is
+half-applied. *Tests:* H6.
+B-11. **Seeded reruns are identical.** The same seed twice gives identical
+views and identical authority hashes; and the first three
+`XorShift64(SCRIPT_SEED).next()` values are T042's pinned triple
+(`0x4B10DA10A18C50C2`, `0x8788B83B180538E3`, `0x18B554431CC36A52`,
+`tasks/T042.md:397-399`), proving the same generator. *Tests:* D4.
+B-12. **Every rejection carries its log-line material.** Each B-5–B-10
+rejection yields a `Rejection` whose `Display` is one of the six fixed texts,
+and — where T040a's observer has landed — the intake observer fires once per
+intake with that report (`tasks/T040.md:369-373`); otherwise the suite
+asserts on the pump report directly. *Tests:* H1–H6.
 
 ## Errors
 
