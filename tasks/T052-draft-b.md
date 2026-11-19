@@ -463,6 +463,36 @@ that can never be live in a loaded world (rejected at load, B-8); the
 saturating decrement at `remaining: 0` (no-op by construction).
 
 ## What must not change
+- Goldens, byte for byte: every file in `crates/crpg-sim/tests/goldens/`
+  (`history_v1`, `history_v2`, `history_v3`, `movement_v1`, `surface_v1`,
+  each `.x86_64-pc-windows-msvc.txt` and `.x86_64-unknown-linux-gnu.txt`;
+  `tasks/T052-facts.md:182` lists them) and every
+  `crates/crpg-testkit/goldens/` baseline (`:186`–`:187`). The G1 control
+  (continuation-free run reproduces movement's hashes) is the proof.
+- Every existing `crpg-sim` test file and `#[cfg(test)]` case, byte for byte
+  and passing; tick order before stage 5 (`encounter_clock_system`,
+  `timeline_system`, then `movement_system`,
+  `crates/crpg-sim/AGENTS.md:609`); `end_turn` stays pop-only
+  (`crates/crpg-sim/src/tick.rs:55`); `state_hash` keeps no exclusions
+  (`crates/crpg-sim/src/hash.rs:10`) and still panics on non-finite floats
+  (`:40`).
+- Frozen shapes: `SimEvent` gains no variant (Reading 4);
+  `HistoryEvent` gains no variant and `HISTORY_VERSION` stays 1/2/3 with the
+  same upgrade rule (`crates/crpg-sim/src/history.rs:70`–`84`);
+  `CombatState`, `Combatant`, `Mover`, `NavRevision`, `CreatureState` and
+  their load checks are untouched; no existing `World` field changes its
+  serde attributes (`crates/crpg-sim/src/world.rs:83`–`113`).
+- The `crpg-data` authored types (`Dialogue`, `Quest`, `EventGraph`,
+  `NodeBody::Wait`, `crates/crpg-data/src/ir.rs:117`) are read, never
+  extended; `crpg-script`'s surface (`ActionBindings`, dispatch,
+  `crates/crpg-script/src/lib.rs:15`) is untouched — the
+  `UnsupportedWait` refusal stays until T053
+  (`crates/crpg-script/src/bindings.rs:181`).
+- `HOST_SAVE_VERSION: 1` files still load (Reading 5); envelope v1, the
+  checkpoint pair and Gate 10's existing cases are unchanged
+  (`crates/crpg-persist/src/envelope.rs:17`,
+  `crates/crpg-server/src/checkpoint.rs:54`,
+  `crates/crpg-server/tests/host_save.rs:706`–`709`).
 
 ## Dependency edges
 
