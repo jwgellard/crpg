@@ -265,7 +265,68 @@ T059/T103 form and are quoted here as the target surface.
 
 ## Information architecture
 
-## Intent command layer
+The main window is the spec's three IDE-like regions, with none of Godot's
+vocabulary (`docs/CRPG_ENGINE_SPEC.md:1031`). The exact region layout is the
+spec's diagram (`docs/CRPG_ENGINE_SPEC.md:1034-1052`); this section fixes the
+names, the contents and the rules each region obeys.
+
+**Top bar.** `Campaign ▾ Edit ▾ World ▾ Rules ▾ Test ▾ Package ▾` menu strip
+plus the `▶ Play` / `⏹ Stop` transport. `Play` maps to T068's in-process
+server-and-client; `Package` maps to the one packaging dialog
+(`docs/CRPG_ENGINE_SPEC.md:1075`). The strip's vocabulary is fixed: no Godot
+terms (`docs/CRPG_ENGINE_SPEC.md:1031`).
+
+**Left — CAMPAIGN explorer.** A read-only tree (`docs/CRPG_ENGINE_SPEC.md:1676`)
+over the campaign's directory layout: `worlds/`, `creatures/`, `items/`,
+`dialogue/`, `quests/`, `factions/`, `scripts/`, plus `areas/<area>/` and the
+`variables/`, `assets/`, `locale/`, `tests/` folders (`docs/CRPG_ENGINE_SPEC.md:480`).
+The tree is derived from the document index, so every node is an object with a
+stable id, not a file path the author sees. "New …" actions live here as
+context-menu entries, each of which is a `create` intent. The tree is
+read-only in the sense that dragging does not move documents (renames are
+explicit), but selecting a node opens its editor.
+
+**Centre — DOCUMENT AREA.** Tabs, one per open document; each tab is a typed
+editor. The per-editor notes (`docs/CRPG_ENGINE_SPEC.md:1061-1074`) are the
+source of truth for what each tab is; the MVP tabs are Area, Creature, Item,
+Dialogue, Quest, and (post-M6) Rules. A tab is always a view of one document
+or one aggregate (an area tab spans `area.json` plus its `placements.json`,
+keeping the churny placements file separate, `docs/CRPG_ENGINE_SPEC.md:496`).
+Play swaps the tab region into the connected client viewport.
+
+**Right — PROPERTIES + REFERENCES.** PROPERTIES is generated from the document
+schema, never hand-written (`docs/CRPG_ENGINE_SPEC.md:1059`); the generator is
+the schema the data crate already emits (`docs/architecture/crpg-data.md:19`).
+REFERENCES is the "what uses this / what does this use" panel on the selected
+object, so deletion is safe because the blast radius is visible
+(`docs/CRPG_ENGINE_SPEC.md:1058`).
+
+**Bottom — PROBLEMS | CONSOLE | PLAYTEST LOG | SEARCH.** PROBLEMS is the
+continuous validation panel, validated on every change like a compiler
+(`docs/CRPG_ENGINE_SPEC.md:1057`); it renders `Vec<Diagnostic>`
+(`docs/CRPG_ENGINE_SPEC.md:1678`), the same list `validate()` returns
+(`crates/crpg-edit/src/document.rs:345`) and `crpgc validate` prints. A
+diagnostic's pointer is a JSON pointer the author can click to jump.
+
+**Two rules that make the regions coherent.**
+
+1. **Every mutation is an intent, and every intent is undoable.** The GUI's
+   widgets issue the intent verbs (§ Intent command layer); the document is
+   never edited out-of-band. Undo/redo is one implementation through
+   `apply`/`undo`/`redo` (`docs/CRPG_ENGINE_SPEC.md:1012`).
+2. **The agent sees the same information the author sees, headlessly.** The
+   explorer tree, the property schema, the references and the diagnostics all
+   have `crpgc` forms (`schema`, `explain`, `validate`, `apply`), so an agent
+   can navigate the identical structure without the GUI.
+
+The on-disk layout is the editor's data model, not an implementation detail:
+`campaign.json` is the manifest, `campaign.lock` is resolved
+versions/checksums plus the `assets.lock` digest, `placements.json` stays
+separate from `area.json`, `assets.lock` is path→BLAKE3→import-settings, and
+every display text is a `locale/en.json` key
+(`docs/CRPG_ENGINE_SPEC.md:482,485,496,506,508`). The editor writes through
+the canonical writer and `crpgc fmt` enforces it
+(`docs/CRPG_ENGINE_SPEC.md:450`).
 
 ## Asset import
 
