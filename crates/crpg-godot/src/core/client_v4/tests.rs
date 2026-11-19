@@ -981,3 +981,443 @@ fn declare_move_uses_the_first_option_actor() {
     let frame = decode_intent(&bytes).expect("intent decodes");
     assert_eq!(frame.actor, id(1));
 }
+
+/// M32 (line 389): a receipt clears `pending` only when its seq equals the
+/// pending seq (B-A4). A receipt for n+1 (then n-1) leaves it; the receipt
+/// for n clears it.
+#[test]
+fn receipt_clears_pending_only_on_matching_seq() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    client.submit(1, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(1));
+
+    // A receipt for seq 2 (n+1) is applied but leaves seq 1 pending.
+    push(&link, v4(2, 9, vec![receipt(2, ReceiptStatus::Applied)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.pending, Some(1));
+
+    // Control: the receipt for seq 1 clears it.
+    push(&link, v4(3, 9, vec![receipt(1, ReceiptStatus::Applied)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.pending, None);
+
+    // The next submit takes seq 2; a receipt for seq 1 (n-1) leaves it.
+    client.submit(3, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(2));
+    push(&link, v4(4, 9, vec![receipt(1, ReceiptStatus::Applied)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.pending, Some(2));
+
+    // Control: the receipt for seq 2 clears it.
+    push(&link, v4(5, 9, vec![receipt(2, ReceiptStatus::Applied)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.pending, None);
+}
+
+/// M36 (line 398): `Moved` points are each point's raw x, y, z in order
+/// (B-A4). Three distinct components per point catch a swap or reversal.
+#[test]
+fn moved_points_are_each_raw_xyz_in_order() {
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(
+        &link,
+        v4(
+            1,
+            0,
+            vec![
+                enter(1),
+                DeltaOp::Moved {
+                    entity: id(1),
+                    points: vec![p(1, 2, 3), p(4, 5, 6)],
+                },
+            ],
+        ),
+    );
+    client.step(&mut end, &[], false, 0).unwrap();
+    let view = client.view();
+    assert_eq!(
+        view.events(),
+        &[ViewEvent::Moved {
+            entity: 1,
+            points: vec![1, 2, 3, 4, 5, 6],
+        }]
+    );
+    assert_eq!(
+        view.events()[0].entries(),
+        vec![
+            ("kind", ViewValue::Text("moved")),
+            ("entity", ViewValue::Int(1)),
+            ("points", ViewValue::Ints(&[1, 2, 3, 4, 5, 6])),
+        ]
+    );
+    drop(view);
+
+    // Control: different components give the different flat list, same order.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut control = live();
+    push(
+        &link,
+        v4(
+            1,
+            0,
+            vec![
+                enter(1),
+                DeltaOp::Moved {
+                    entity: id(1),
+                    points: vec![p(9, 8, 7), p(6, 5, 4)],
+                },
+            ],
+        ),
+    );
+    control.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(
+        control.view().events(),
+        &[ViewEvent::Moved {
+            entity: 1,
+            points: vec![9, 8, 7, 6, 5, 4],
+        }]
+    );
+}
+
+/// M49, M50, M51, M52, M47, M48 (lines 430-486): the v2-built columns in the
+/// v4 view (B-A6). Two creatures on different sides, one dead: every column
+/// reads exactly as v2's view gives it for the same state.
+#[test]
+fn v4_view_v2_columns_match_v2_exactly() {
+    use crpg_net::codec_v2::encode_delta as encode_v2;
+    use crpg_net::protocol_v2::DeltaFrame as DeltaFrameV2;
+    use crpg_net::protocol_v2::DeltaOp as DeltaOpV2;
+
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(
+            1,
+            IntentBody::DeclareAction {
+                ability: strike(),
+                target: id(2),
+            },
+        ),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(
+        &link,
+        v4(
+            1,
+            0,
+            vec![
+                enter(1),
+                enter(2),
+                DeltaOp::V3(DeltaOpV3::Health {
+                    entity: id(1),
+                    health: 7,
+                    max_health: 9,
+                    dead: false,
+                }),
+                DeltaOp::V3(DeltaOpV3::Health {
+                    entity: id(2),
+                    health: 0,
+                    max_health: 7,
+                    dead: true,
+                }),
+                DeltaOp::V3(DeltaOpV3::Turn {
+                    active: Some(id(2)),
+                    round: 5,
+                }),
+            ],
+        ),
+    );
+    client.step(&mut end, &options, false, 0).unwrap();
+    let view = client.view();
+    assert_eq!(view.net_ids(), &[1, 2]);
+    assert_eq!(view.names(), &["Hero".to_string(), "Goblin".to_string()]);
+    assert_eq!(view.sides(), &["Player".to_string(), "Monster".to_string()]);
+    assert_eq!(
+        view.placements(),
+        &[
+            Ulid::from_u128(14).to_string(),
+            Ulid::from_u128(15).to_string(),
+        ]
+    );
+    assert_eq!(view.health(), &[7, 0]);
+    assert_eq!(view.max_health(), &[9, 7]);
+    assert_eq!(view.health_known(), &[1, 1]);
+    assert_eq!(view.dead(), &[0, 1]);
+    assert_eq!(view.active(), 2);
+    assert_eq!(view.round(), 5);
+    assert_eq!(
+        view.option_labels(),
+        &["End turn".to_string(), "Strike -> Goblin".to_string()]
+    );
+    assert_eq!(view.option_targets(), &[0, 2]);
+    drop(view);
+
+    // The v2 twin of the same state reads every column the same way.
+    let v2link = LocalLink::new(128);
+    let mut v2end = v2link.client_end();
+    let mut v2 = Client::new(epoch(), table());
+    push(
+        &v2link,
+        encode_v2(&DeltaFrameV2 {
+            lane: 0,
+            server_tick: 0,
+            event_seq: 1,
+            ops: vec![
+                DeltaOpV2::Legacy(LegacyOp::EntityEnter { entity: id(1) }),
+                DeltaOpV2::Legacy(LegacyOp::EntityEnter { entity: id(2) }),
+                DeltaOpV2::Legacy(LegacyOp::Health {
+                    entity: id(1),
+                    health: 7,
+                    max_health: 9,
+                    dead: false,
+                }),
+                DeltaOpV2::Legacy(LegacyOp::Health {
+                    entity: id(2),
+                    health: 0,
+                    max_health: 7,
+                    dead: true,
+                }),
+                DeltaOpV2::Legacy(LegacyOp::Turn {
+                    active: Some(id(2)),
+                    round: 5,
+                }),
+            ],
+        })
+        .expect("v2 frame encodes"),
+    );
+    v2.step(&mut v2end, &options, false).unwrap();
+    let v2view = v2.view();
+    let view = client.view();
+    assert_eq!(view.net_ids(), v2view.net_ids());
+    assert_eq!(view.names(), v2view.names());
+    assert_eq!(view.sides(), v2view.sides());
+    assert_eq!(view.placements(), v2view.placements());
+    assert_eq!(view.health(), v2view.health());
+    assert_eq!(view.max_health(), v2view.max_health());
+    assert_eq!(view.health_known(), v2view.health_known());
+    assert_eq!(view.dead(), v2view.dead());
+    assert_eq!(view.active(), v2view.active());
+    assert_eq!(view.round(), v2view.round());
+    assert_eq!(view.option_labels(), v2view.option_labels());
+    assert_eq!(view.option_targets(), v2view.option_targets());
+}
+
+/// M40, M41, M42 (lines 488-490): the revision rises when exactly one of
+/// positions, position_known, moving differs (B-A6). Each case changes only
+/// that one column; the control changes none and keeps the `Rc`.
+#[test]
+fn revision_bumps_when_exactly_one_position_column_differs() {
+    // Only positions differs: same known and moving, new point.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(
+        &link,
+        v4(1, 5, vec![enter(1), pos(1, p(65536, 0, 0), false)]),
+    );
+    client.step(&mut end, &[], false, 0).unwrap();
+    let revision = client.view().revision();
+    assert_eq!(client.view().positions(), &[65536, 0, 0]);
+    push(
+        &link,
+        v4(
+            2,
+            6,
+            vec![DeltaOp::Position {
+                entity: id(1),
+                position: Some(PositionFact {
+                    point: p(131072, 0, 0),
+                    moving: false,
+                }),
+            }],
+        ),
+    );
+    client.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(client.view().revision(), revision + 1);
+    assert_eq!(client.view().positions(), &[131072, 0, 0]);
+    assert_eq!(client.view().position_known(), &[1]);
+    assert_eq!(client.view().moving(), &[0]);
+
+    // Only position_known differs: the point is already all zeros, so the
+    // withdrawal keeps positions and moving.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 5, vec![enter(1), pos(1, p(0, 0, 0), false)]));
+    client.step(&mut end, &[], false, 0).unwrap();
+    let revision = client.view().revision();
+    assert_eq!(client.view().positions(), &[0, 0, 0]);
+    assert_eq!(client.view().position_known(), &[1]);
+    push(
+        &link,
+        v4(
+            2,
+            6,
+            vec![DeltaOp::Position {
+                entity: id(1),
+                position: None,
+            }],
+        ),
+    );
+    client.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(client.view().revision(), revision + 1);
+    assert_eq!(client.view().positions(), &[0, 0, 0]);
+    assert_eq!(client.view().position_known(), &[0]);
+    assert_eq!(client.view().moving(), &[0]);
+
+    // Only moving differs: the same point, newly with a route.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(
+        &link,
+        v4(1, 5, vec![enter(1), pos(1, p(65536, 0, 0), false)]),
+    );
+    client.step(&mut end, &[], false, 0).unwrap();
+    let revision = client.view().revision();
+    push(&link, v4(2, 6, vec![pos(1, p(65536, 0, 0), true)]));
+    client.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(client.view().revision(), revision + 1);
+    assert_eq!(client.view().positions(), &[65536, 0, 0]);
+    assert_eq!(client.view().position_known(), &[1]);
+    assert_eq!(client.view().moving(), &[1]);
+
+    // Control: the same anchor again changes no column, so no bump and the
+    // `Rc` is kept even at a newer tick.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(
+        &link,
+        v4(1, 5, vec![enter(1), pos(1, p(65536, 0, 0), false)]),
+    );
+    client.step(&mut end, &[], false, 0).unwrap();
+    let held = client.view();
+    let revision = held.revision();
+    push(&link, v4(2, 6, vec![pos(1, p(65536, 0, 0), false)]));
+    client.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(client.view().revision(), revision);
+    assert!(Rc::ptr_eq(&held, &client.view()));
+}
+
+/// M43 (line 491): an event alone bumps the revision (B-A6). `Died` is a
+/// notice, so it changes no column; the control with no event keeps the `Rc`.
+#[test]
+fn event_alone_bumps_revision() {
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 0, vec![enter(1), enter(2)]));
+    client.step(&mut end, &[], false, 0).unwrap();
+    let revision = client.view().revision();
+    assert!(client.view().events().is_empty());
+
+    push(
+        &link,
+        v4(2, 0, vec![DeltaOp::V3(DeltaOpV3::Died { entity: id(1) })]),
+    );
+    client.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(client.view().revision(), revision + 1);
+    assert_eq!(client.view().events(), &[ViewEvent::Died { entity: 1 }]);
+    assert_eq!(client.view().net_ids(), &[1, 2]);
+    assert_eq!(client.view().dead(), &[0, 0]);
+
+    // Control: no event and no column change keeps the `Rc`.
+    let held = client.view();
+    let revision = held.revision();
+    client.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(client.view().revision(), revision);
+    assert!(Rc::ptr_eq(&held, &client.view()));
+}
+
+/// M10 (line 559): any non-codec `TransferError` is `ReplicaRejected` (53)
+/// (B-A3). Two buffered deltas with the same seq but different bytes
+/// conflict in the pool; the same bytes twice are a harmless duplicate.
+#[test]
+fn non_codec_transfer_error_is_replica_rejected() {
+    let first = v4(1, 5, vec![enter(1)]);
+    let second = v4(1, 6, vec![enter(1)]);
+    assert_ne!(first, second, "same seq with different bytes must differ");
+
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = ClientV4::new(epoch(), table()).expect("fresh pool admits");
+    push(&link, first.clone());
+    push(&link, second.clone());
+    let before = client.view();
+    let error = client.step(&mut end, &[], false, 0).unwrap_err();
+    assert_eq!(error.code, BridgeCode::ReplicaRejected);
+    assert_eq!(error.code.as_i64(), 53);
+    assert_eq!(client.view().revision(), 0);
+    assert!(Rc::ptr_eq(&before, &client.view()));
+    drop(before);
+
+    // Control: the same bytes twice duplicate without fault and stay at 0.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut control = ClientV4::new(epoch(), table()).expect("fresh pool admits");
+    push(&link, first.clone());
+    push(&link, first.clone());
+    control.step(&mut end, &[], false, 0).unwrap();
+    assert_eq!(control.view().revision(), 0);
+}
+
+/// M63b, M64 (`client.rs` lines 337-341): `ViewMoveReceipt::entries()` gives
+/// seq, actor, outcome, code, processed_tick, start_tick in that order
+/// (Interface). Six distinct values catch any swap; the control differs in
+/// every value with the same key order.
+#[test]
+fn move_receipt_entries_are_in_order() {
+    let receipt = ViewMoveReceipt {
+        seq: 11,
+        actor: 2,
+        outcome: "rejected",
+        code: 22,
+        processed_tick: 7,
+        start_tick: 0,
+    };
+    assert_eq!(
+        receipt.entries(),
+        vec![
+            ("seq", ViewValue::Int(11)),
+            ("actor", ViewValue::Int(2)),
+            ("outcome", ViewValue::Text("rejected")),
+            ("code", ViewValue::Int(22)),
+            ("processed_tick", ViewValue::Int(7)),
+            ("start_tick", ViewValue::Int(0)),
+        ]
+    );
+
+    // Control: every value differs, the keys and their order do not.
+    let control = ViewMoveReceipt {
+        seq: 3,
+        actor: 1,
+        outcome: "accepted",
+        code: 0,
+        processed_tick: 9,
+        start_tick: 8,
+    };
+    assert_eq!(
+        control.entries(),
+        vec![
+            ("seq", ViewValue::Int(3)),
+            ("actor", ViewValue::Int(1)),
+            ("outcome", ViewValue::Text("accepted")),
+            ("code", ViewValue::Int(0)),
+            ("processed_tick", ViewValue::Int(9)),
+            ("start_tick", ViewValue::Int(8)),
+        ]
+    );
+}
