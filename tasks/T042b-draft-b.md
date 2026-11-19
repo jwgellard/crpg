@@ -597,3 +597,4 @@ test to fail; a surviving mutant is a finding):
 ## Agent log
 
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T042b draft b · Opened the blind-draft skeleton; no behaviour decided yet.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T042b draft b · Filled every section: 10-decoder surface, 12 fixtures with computed literals, W-1–W-14/S-1/D-1–D-3, H1–H14, mutant table; all 34 citations verified, both lints and 102 lint self-tests pass.
