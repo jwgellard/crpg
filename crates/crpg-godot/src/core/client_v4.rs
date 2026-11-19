@@ -7,10 +7,7 @@
 //! Positions, `Moved` events and move receipts extend the v2 view columns;
 //! every other column is built exactly as the v2 client builds it.
 //!
-//! T151b wires this half into `BridgeCore` and removes the allowance below.
-//! Until then nothing calls it outside tests.
-#![allow(dead_code)]
-
+//! T151b wires this half into `BridgeCore`.
 use std::rc::Rc;
 
 use crpg_net::codec_v4::encode_intent as encode_lane0;

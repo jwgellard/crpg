@@ -847,5 +847,7 @@ impl<'a> SpecParts<'a> {
     }
 }
 
+pub(crate) mod v4;
+
 #[cfg(test)]
 mod tests;
