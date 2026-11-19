@@ -178,10 +178,11 @@ Design decisions this contract makes. Each needs approval with the contract.
    decoders (`tasks/T042.md:42–53`); the "Host level" column of its D-1 table
    is T041's case list (`tasks/T042.md:436–445`). Each case is a well-formed
    frame the host's admission path rejects cleanly with a pinned
-   `RejectionCode`, never a panic: ownership (`NotAuthorized`, `:17`), timing
-   (`StaleTick`/`FutureTick`/`IllegalAction`, `:15`/`:16`/`:18`), interest
-   (`NotAuthorized` for an out-of-grant id), flooding (`RateLimited`, `:8`),
-   replay (`StaleSeq`/`SeqConflict`/`SeqGap`, `:13`/`:11`/`:12`). The
+   `RejectionCode` (`crates/crpg-net/src/protocol.rs:393`), never a panic:
+   ownership (`NotAuthorized`, value 17), timing
+   (`StaleTick`/`FutureTick`/`IllegalAction`, 15/16/18), interest
+   (`NotAuthorized` for an out-of-grant id), flooding (`RateLimited`, 8),
+   replay (`StaleSeq`/`SeqConflict`/`SeqGap`, 13/11/12). The
    "clean rejection and a log line" cell is D67a's open item (Open question
    3), not a host check in this part. *Rejected:* re-testing the decoders
    (T042's, and `crates/crpg-server/tests/host_quic.rs`
@@ -190,8 +191,11 @@ Design decisions this contract makes. Each needs approval with the contract.
    `crpg-server`'s; testkit reaches the in-memory `Host`/`LocalHost` only).
 
 7. **A same-`seq` retry with a non-canonical encoding is a cached retry, never
-   a `SeqConflict`.** `Host::canonical` compares re-encoded bytes
-   (`crates/crpg-server/src/host.rs:1588–1590`, `:1666–1668`), so a retry
+   a `SeqConflict`.** `Host::canonical` re-encodes the frame
+   (`crates/crpg-server/src/host.rs:1841`) and the cache-first admission
+   compares that re-encoding against the retained canonical bytes — equal →
+   cache hit, different → fence + `SeqConflict` (`crates/crpg-server/src/host.rs:1933–1943`),
+   so a retry
    whose bytes re-encode to the retained canonical form (a non-minimal
    varint, or a ULID case/`I`/`L`/`O` alias, `crates/crpg-core/src/ulid.rs:111–122`)
    must hit the retry cache and return the retained outcome, while different
@@ -479,8 +483,9 @@ does not advance the next-expected sequence. *Tests:* M5.
 B-15. **Canonical retry.** The same intent re-encoded with a non-minimal
 varint (a length or `seq` byte re-encoded longer than minimal) or a ULID
 case/`I`/`L`/`O` alias (`crates/crpg-core/src/ulid.rs:111–122`) that
-`Host::canonical` re-encodes to the retained bytes is a cached retry, never a
-`SeqConflict` (`crates/crpg-server/src/host.rs:1588–1590`, `:1666–1668`).
+`Host::canonical` (`crates/crpg-server/src/host.rs:1841`) re-encodes to the
+retained bytes is a cached retry, never a `SeqConflict`
+(`crates/crpg-server/src/host.rs:1933–1943`).
 *Tests:* M6.
 
 B-16. **Clean, never a panic.** Every case above is a `ReceiptStatus` with
