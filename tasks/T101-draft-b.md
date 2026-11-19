@@ -548,6 +548,65 @@ editor-usability test after it.
 
 ## Decisions
 
+Each decision is numbered and states the alternative it rejects.
+
+1. **Personas: module authors first, agents equal, own game last.** Fixed by
+   D28l (`tasks/DECISIONS-2026-10-16.md:135`) and adopted unchanged. *Rejected:*
+   optimising first for the studio's own game, or demoting agents to a
+   second-class, best-effort surface. Both would have made the headless-first
+   order (D18) a bolt-on instead of the spine.
+2. **An intent layer above `EditCommand`, not instead of it.** D28j fixes the
+   position (`tasks/DECISIONS-2026-10-16.md:105`). *Rejected:* (a) exposing raw
+   `EditCommand` + JSON pointers to agents — R4 shows identity must be the
+   address and raw pointers are too low-level to be the author's model; (b)
+   replacing `EditCommand` with the verbs — that discards the closed-set,
+   atomic, property-tested core that T058 just built.
+3. **Scaffold, never blank.** Every `create` yields a structurally valid
+   document of the current schema tag (R8, `docs/research/T099/R8-deep.md:9`).
+   *Rejected:* a blank template the author fills, which leaves the campaign
+   invalid between keystrokes and teaches bad states.
+4. **Identity is the address; JSON Pointers only for leaves.** Objects are
+   named by `Ulid`, fields by schema name (R4,
+   `docs/research/T099/R10-deep.md:27`). *Rejected:* raw JSON Pointers as the
+   author-facing address, which break on every reordering and expose the
+   serialization instead of the model.
+5. **Property forms generated from schemas.** The schema the data crate
+   already emits is the form generator (`docs/architecture/crpg-data.md:19`).
+   *Rejected:* hand-written forms, which "are how editors rot"
+   (`docs/CRPG_ENGINE_SPEC.md:1059`).
+6. **Problems panel first.** Continuous validation on every change is the
+   first thing polished, ahead of visual polish (R8,
+   `docs/research/T099/R8-deep.md:7`). *Rejected:* shipping the 3D viewport
+   first and validating later, which is the Aurora-Toolset trap the spec names
+   (`docs/CRPG_ENGINE_SPEC.md:1057`).
+7. **Dialogue: graph primary, text a lossless round trip.** Node graph is the
+   primary view; indented text round-trips losslessly with JSON as the source
+   of truth (`docs/CRPG_ENGINE_SPEC.md:663`; R9,
+   `docs/research/T099/R9-deep.md:5`). *Rejected:* graph-only (agents and
+   writers want text) and text-only (authors want to see the graph).
+8. **References panel on every object.** "What uses this / what does this use"
+   makes deletion safe (`docs/CRPG_ENGINE_SPEC.md:1058`). *Rejected:* silent
+   deletion with a later dangling-reference surprise.
+9. **Ruleset from template with patch overrides, not copy-only.** The rules
+   editor clones a starter and stores overrides as a diff against the base
+   (R13, `docs/research/T099/R13-deep.md:9`; `rules/overrides.json`,
+   `docs/CRPG_ENGINE_SPEC.md:1070`). *Rejected:* copy-only creation, which
+   forks every ruleset and breaks the base's fixes; and blank rulesets, which
+   violate "scaffold, never blank".
+10. **Asset import gates on conformance.** Rig standard, no transformed
+    skeletons, 16-char ids, conflict check, and validation gates packaging
+    (R15, `docs/research/T099/R15-deep.md:5-9,13`). *Rejected:* accept-anything
+    with warnings, which moves failure to the player's client and breaks
+    shared modules.
+11. **Headless command API first, GUI second.** D18 and spec Phase 6 risk
+    ("no editor ships without a corresponding headless command API",
+    `docs/CRPG_ENGINE_SPEC.md:1607`). *Rejected:* GUI-first, which strands
+    agents and the T100 benchmark.
+12. **One editor in `crpg-godot`, with none of Godot's vocabulary.** The
+    `editor/` shell is a `crpg-godot` surface (T060), but the UI names are the
+    spec's (`docs/CRPG_ENGINE_SPEC.md:1031`). *Rejected:* a separate
+    non-Godot editor stack, which would fork the bridge and the asset pipeline.
+
 ## Consequences
 
 ## Open questions (each with a recommendation)
