@@ -154,6 +154,122 @@ Design decisions this contract makes. Each needs approval with the contract.
    death, whose despawn is unrelated).
 
 ## Interface
+Additions only, in `crates/crpg-sim`. Every public item has a doc comment
+(`crates/crpg-sim/AGENTS.md:218`). `Ulid` is `crpg_core`'s
+(`crates/crpg-sim/src/creature.rs:12`); `EntityId` likewise. No `HashMap`,
+`HashSet`, clock, thread, I/O, float or `std::time` (invariants 5 and 8,
+`crates/crpg-sim/AGENTS.md:205–227`); `remaining` counts simulation ticks,
+never seconds/rounds/turns (`docs/CRPG_ENGINE_SPEC.md:625`).
+
+### `crates/crpg-sim/src/continuation.rs` (new, re-exported at the crate root)
+```rust
+/// A script graph paused in `Wait`: which graph, which node, how many ticks
+/// are left. Data only; resumption is T053's (Reading 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptContinuation {
+    /// The authored `EventGraph.id` (`crates/crpg-data/src/ir.rs:13`).
+    pub graph: Ulid,
+    /// The authored `Wait` node id (`crates/crpg-data/src/ir.rs:117`).
+    pub node: Ulid,
+    /// Ticks left before the continuation is due; decremented by stage 5.
+    pub remaining: u64,
+}
+
+/// An open dialogue: which authored dialogue, which node, who is talking.
+/// Node kinds are `crates/crpg-data/src/document.rs:191`'s; checks resolve
+/// through `ResolutionRequest` (`docs/CRPG_ENGINE_SPEC.md:647`) in T054.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenDialogue {
+    /// The authored `Dialogue.id` (`crates/crpg-data/src/document.rs:155`).
+    pub dialogue: Ulid,
+    /// The current `DialogueNode.id` (`:176`).
+    pub node: Ulid,
+    /// The live interlocutor entity (load-checked like any store key).
+    pub speaker: EntityId,
+}
+
+/// A quest's persisted stage: which authored quest, which state. The state
+/// machine itself is T054's (`docs/IMPLEMENTATION_PLAN.md:284`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestProgress {
+    /// The authored `Quest.id` (`crates/crpg-data/src/document.rs:239`).
+    pub quest: Ulid,
+    /// The current `QuestState.id` (`:260`).
+    pub state: Ulid,
+}
+```
+`Ulid` serializes symbolically (strings, never interned handles:
+`docs/adr/0006-crpg-core-primitives.md:160`,
+`docs/adr/0013-combat-simulation-state.md:39`); `EntityId` pair-lists match
+the store idiom (`crates/crpg-sim/AGENTS.md:205–213`).
+
+```rust
+/// Stage 5: decrement every positive `remaining` saturating. Crate-private;
+/// called from `run_systems` after `movement_system`. Never removes, never
+/// emits, never interprets (Readings 3–4).
+pub(crate) fn continuation_system(world: &mut World);
+
+/// Entities whose continuation is due (`remaining == 0`), ascending
+/// `EntityId`. Read-only; conferring nothing (Reading 4).
+pub fn continuations_due(world: &World) -> Vec<EntityId>;
+```
+
+### `crates/crpg-sim/src/world.rs` — three last fields after `nav`
+(`crates/crpg-sim/src/world.rs:110`–`114`; the last-field rule,
+`tasks/T139.md:295`):
+```rust
+// in `pub struct World` (`crates/crpg-sim/src/world.rs:70`), after `nav`:
+    #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
+    continuations: ComponentStore<ScriptContinuation>,
+    #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
+    dialogues: ComponentStore<OpenDialogue>,
+    #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
+    quests: ComponentStore<QuestProgress>,
+```
+`WorldRepr` (`:126`) gains the three matching entries in the same field
+order with `#[serde(default = "ComponentStore::new")]` (`:134` pattern).
+Public getters `continuations()`, `dialogues()`, `quests()` beside
+`creatures()`/`movers()` (`:1207`, `:1217`); crate-private mutable
+accessors beside `:1202`, `:1212`, `:1223`. Public writers for the crates
+above sim (T053/T054 call these; no `&mut` store escapes):
+```rust
+impl World {
+    /// Spawn a continuation/dialogue/quest-stage entity; one `Spawned`.
+    pub fn spawn_continuation(&mut self, c: ScriptContinuation) -> EntityId;
+    pub fn spawn_dialogue(&mut self, d: OpenDialogue) -> EntityId;
+    /// Fails when a live `QuestProgress` already names `q.quest` (Reading 7).
+    pub fn spawn_quest(&mut self, q: QuestProgress) -> Result<EntityId, ContinuationError>;
+    /// Rewriters for T053/T054; change nothing else, enqueue nothing.
+    pub fn set_remaining(&mut self, e: EntityId, remaining: u64) -> Result<(), ContinuationError>;
+    pub fn set_dialogue_node(&mut self, e: EntityId, node: Ulid) -> Result<(), ContinuationError>;
+    pub fn set_quest_state(&mut self, e: EntityId, state: Ulid) -> Result<(), ContinuationError>;
+}
+```
+`despawn_tracked` strips all three stores with the entity
+(`tasks/T139.md:584` is the `creatures` precedent); `transfer_entity`
+refuses a holder with the new final preflight error (Reading 1; the T139
+trap, `crates/crpg-sim/AGENTS.md:594`). Load validation
+(`crates/crpg-sim/src/world.rs:150`): every record on a live entity; no
+two live `QuestProgress` share a `quest`; every `speaker` is live.
+
+### `crates/crpg-sim/src/history.rs` — thin wrappers, no new variant
+```rust
+impl HistoryWorld {
+    /// Stage a clone, spawn, drain the one legacy `Spawned`, commit one
+    /// `Spawned`; version untouched (Reading 6;
+    /// `crates/crpg-sim/src/history.rs:623`–`644` is the shape).
+    pub fn spawn_continuation(&mut self, c: ScriptContinuation) -> Result<EntityId, HistoryError>;
+    pub fn spawn_dialogue(&mut self, d: OpenDialogue) -> Result<EntityId, HistoryError>;
+    pub fn spawn_quest(&mut self, q: QuestProgress) -> Result<EntityId, HistoryError>;
+    /// Zero-event commits: world bytes change, journal does not (Reading 6).
+    pub fn set_remaining(&mut self, e: EntityId, remaining: u64) -> Result<(), HistoryError>;
+    pub fn set_dialogue_node(&mut self, e: EntityId, node: Ulid) -> Result<(), HistoryError>;
+    pub fn set_quest_state(&mut self, e: EntityId, state: Ulid) -> Result<(), HistoryError>;
+}
+```
+`HistoryWorld::tick` picks up the stage-5 countdown inside the staged
+world and commits it with whatever else the tick journals; a tick whose
+only change is countdown commits zero new envelopes.
 
 ## Behaviour
 
