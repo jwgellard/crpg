@@ -137,6 +137,30 @@ contract from.
 
 ## Scripting today
 
+- `Crate scope` (`crates/crpg-script/src/lib.rs:3`) — "trusted action bindings today; the Lua 5.4 sandbox, event IR interpreter and serializable continuations are later tasks."
+- `Not implemented` (`crates/crpg-script/src/lib.rs:10`) — "No Lua runtime, graph interpreter, wait/yield, continuation, native loading or host integration is implemented here."
+- `Public surface` (`crates/crpg-script/src/lib.rs:15`) — `ActionBinding`, `ActionBindings`, `ActionHandler`, `BindingError`, `HandlerError`, `InvocationContext`, `MAX_BINDING_PROPOSALS`.
+- `Binding table` (`crates/crpg-script/src/bindings.rs:4`) — `ActionBindings` pairs every T029a declaration with exactly one trusted Rust handler, assembled once at startup by `ActionBindings::new` (`crates/crpg-script/src/bindings.rs:6`); authored input can only select a bound handler, never install code (`crates/crpg-script/src/bindings.rs:10`).
+- `Dispatch` (`crates/crpg-script/src/bindings.rs:13`) — one invocation runs synchronously: T029a call validation, T028 actor validation, one handler call with a read-only context, the `MAX_BINDING_PROPOSALS` and actor-substitution checks, then every returned `CombatAction` proposal applied in order through `perform_action` on a staged `World` clone.
+- `Transactional publish` (`crates/crpg-script/src/bindings.rs:18`) — the staged world is published only when every proposal succeeds; any rejection leaves entities, resources, RNG, events and turn state unchanged.
+- `Handler signature` (`crates/crpg-script/src/bindings.rs:48`) — `ActionHandler` is a function pointer `fn(&InvocationContext, &ActionCall) -> Result<Vec<CombatAction>, HandlerError>`.
+- `Read-only context` (`crates/crpg-script/src/bindings.rs:53`) — `InvocationContext` exposes a shared `&World` and the validated actor; `world()` is at `crates/crpg-script/src/bindings.rs:123` and `actor()` at `:128`. It offers no world mutator, RNG access or host capability (`crates/crpg-script/AGENTS.md:31`).
+- `No wait` (`crates/crpg-script/src/bindings.rs:25`) — "There is no wait, yield or continuation in this slice"; a handler that would wait returns `HandlerError::UnsupportedWait` (`crates/crpg-script/src/bindings.rs:181`), "a real error, never a saved continuation."
+- `Immutable table` (`crates/crpg-script/src/bindings.rs:155`) — no mutator, late registration, hot replacement or deserialization; `ActionBindings::new` is at `:323`, `dispatch` at `:409`, the staged clone at `:441` and the single publish at `:448`.
+- `Proposal bound` (`crates/crpg-script/src/bindings.rs:40`) — `MAX_BINDING_PROPOSALS = 32` limits applied simulation operations, not handler work.
+- `D17` (`tasks/POST-T018-DECISIONS.md:371`) — T029b is an immutable trusted binding store and synchronous dispatch slice with "No Lua, Wait, native loading or resumed coroutine in this task" (`tasks/POST-T018-DECISIONS.md:373`).
+- `D17 continuations` (`tasks/POST-T018-DECISIONS.md:381`) — "Later graph/interpreter tasks use world-owned serializable IR continuations in a separate earlier sim task. Never store live Lua stack/coroutine in a save."
+- `D17 budgets` (`tasks/POST-T018-DECISIONS.md:383`) — 1024 node dispatches and 100,000 execution units per resumed trigger slice, nested depth 32; a `Wait` "commits a valid slice and serializes continuation; resume receives a new slice budget" (`tasks/POST-T018-DECISIONS.md:389`).
+- `D21` (`tasks/DECISIONS-2026-09-30.md:51`) — `crpg-script` may take `crpg-core`, `crpg-data` and `crpg-sim` plus dev-only `serde_json`; no third-party runtime, no Lua.
+- `ADR-0005 decision` (`docs/adr/0005-lua-sandbox-spike.md:96`) — "Go": the sandbox construction held against ten escape attempts, the instruction budget bounded an infinite loop, and the memory ceiling held.
+- `ADR-0005 carry-forward` (`docs/adr/0005-lua-sandbox-spike.md:104`) — when `crpg-script` is built, carry forward `sandbox.rs`'s structure, including the explicit stripping of `load`/`loadfile`/`dofile` (`docs/adr/0005-lua-sandbox-spike.md:108`).
+- `ADR-0005 coroutines` (`docs/adr/0005-lua-sandbox-spike.md:89`) — the coroutine library is never loaded, "so there is nothing to suspend a `Wait` with in the first place".
+- `ADR-0005 gap` (`docs/adr/0005-lua-sandbox-spike.md:118`) — "Not exercised here: the async/`Wait`-node interaction"; re-verify once `crpg-script`/the event IR exist (`docs/adr/0005-lua-sandbox-spike.md:123`).
+- `Script architecture` (`docs/architecture/crpg-script.md:43`) — `dispatch(world, actor, identity, call)` is the fixed pipeline; the context carries `&World` and the actor and "cannot reach `&mut World`, RNG, stores or host capability" (`docs/architecture/crpg-script.md:51`).
+- `Legacy World only` (`docs/architecture/crpg-script.md:55`) — dispatch targets the legacy `World`, not `HistoryWorld`; a history-aware consumer needs its own sim batch boundary.
+- `Saving semantics` (`docs/architecture/crpg-script.md:75`) — "Saving means saving the `World` between completed invocations and rebuilding identical bindings at startup; no table or partial call is persisted."
+- `Execution needs a turn` (`crates/crpg-script/AGENTS.md:33`) — dispatch validates `validate_action(EndTurn { actor })`; a handler cannot run outside an active turn.
+
 ## Determinism rules that bind it
 
 ## Agent log
