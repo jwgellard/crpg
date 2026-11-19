@@ -600,8 +600,13 @@ test to fail; a surviving mutant is a finding):
 | MU10 | `ResumeRejection::from_u8` maps 3 to `Busy` | H8 |
 
 ## Out of scope
-
-TODO (draft B).
+- The server's decoders (intents, `0x81`/`0x82` up, `0x91` requests,
+  lane-1 intents): T042a's.
+- The welcome decode, the QUIC close and the bridge/session mapping:
+  indexed in D-1, owned by their crates' suites (Reading 3).
+- `crpg-net-quic` framing (length prefixes, close codes, ALPNs).
+- Any decoder fix (S-1), any wire, cap, tag or code change, any new
+  dependency.
 
 ## Routing and size
 
