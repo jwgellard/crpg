@@ -330,7 +330,7 @@ query (`.github/workflows/ci.yml:150-174`) still passes. *Tests:* C1.
 |---|---|
 | CLI usage failure (unknown flag, missing/unparsable value, `--hash-every 0`) | `UsageError(text)`; exactly one stderr line `crpg-server: {text}\n`; exit `EXIT_USAGE` |
 | `load_host_file` refusal (`InvalidIdentity`, `CampaignMismatch`, `Persist`, `Checkpoint`, `tasks/T039.md:225-251`) | stderr line; exit `EXIT_RUNTIME`; nothing serves |
-| `bind_area_bounds` refusal (`NavBake`, `tasks/T037.md:459-465` in the arch doc) | stderr line; exit `EXIT_RUNTIME`; nothing serves |
+| `bind_area_bounds` refusal (`NavBake`, `docs/architecture/crpg-server.md:459-465`) | stderr line; exit `EXIT_RUNTIME`; nothing serves |
 | `start_resumable` refusal (`HostClosed`, `HostInUse`, `TimeRegression`, `crates/crpg-server/src/quic.rs:591-608`) | both returned unchanged; stderr line; exit `EXIT_RUNTIME` |
 | `spawn` I/O failure (`std::io::Error`) | stderr line; exit `EXIT_RUNTIME` |
 | runner ends with `LoopError::TimeRegression` (clock origin before loop start, `tasks/T154.md:532-539`) | startup bug: exit `EXIT_RUNTIME` with the `TimeRegression at run/step` text (`crates/crpg-server/src/run.rs:90-96`) |
