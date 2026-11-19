@@ -637,7 +637,26 @@ through `client.link.send` + `drive_tick` and reads the receipt.
 
 ## Dependency edges
 
-_(filled next edit)_
+| Edge | Section | `ALLOWED` |
+|---|---|---|
+| `crpg-testkit` → `crpg-net` | `[dev-dependencies]` (path) | already present (T037e, `crates/crpg-testkit/AGENTS.md:137`); `crpg-testkit: (None, {"crpg-godot"})` permits it (`tools/lint/deps.py:68`) |
+| `crpg-testkit` → `crpg-server` | `[dev-dependencies]` (path) | already present (T037e, `:137`); permitted |
+| `crpg-testkit` → `crpg-core` | `[dev-dependencies]` (path) | already present (T016c, `:133`); permitted |
+| `crpg-testkit` → `crpg-net-quic` | `[dev-dependencies]` (path), **T041d only** | permitted by `tools/lint/deps.py:68` (`None`, not `crpg-godot`), but a **new edge** needing the user's approval (root `AGENTS.md:52`; Open question 2) |
+
+No external crate and no new lockfile package. T041a–c add nothing to
+`Cargo.toml`: the harness names `crpg-net` and `crpg-server` types through
+edges that already exist, and `crpg-core` for `EntityId`. `deps.py` and
+`deny.toml` are not edited.
+
+T041d's `crpg-net-quic` edge is the one new candidate. **No-new-dependency
+alternative** (if the user declines the edge): fold the dedicated smoke into
+T070 (whose row is already `crpg-testkit (+ CI)` and lists T041 as a
+prerequisite, `docs/IMPLEMENTATION_PLAN.md:335`), and keep T041d to the
+in-process embedded leg (B-8), which needs no new edge — the real-QUIC
+dedicated smoke then lands with T070, where the `crpg-net-quic` edge is
+justified once. Either way `deps.py` already permits the edge; the question
+is only whether it lands in T041 or T070.
 
 ## Out of scope
 
