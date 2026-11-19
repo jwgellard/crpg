@@ -37,10 +37,14 @@ pub(crate) fn encounter_bounds(
     let Some(placement) = parts.placements.get(first) else {
         return Err(missing());
     };
-    let Some(area) = loaded.documents.values().find_map(|document| match document {
-        Document::Area(area) if area.id == placement.area => Some(area),
-        _ => None,
-    }) else {
+    let Some(area) = loaded
+        .documents
+        .values()
+        .find_map(|document| match document {
+            Document::Area(area) if area.id == placement.area => Some(area),
+            _ => None,
+        })
+    else {
         return Err(missing());
     };
     Ok((area.bounds.min, area.bounds.max))
@@ -140,3 +144,6 @@ pub(crate) fn read_options(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -292,11 +292,21 @@ GDExtension surface. v2 keeps every byte and behaviour.
   by a `None` position, replaced only by a strictly newer sample) and
   `move_receipts()` (one row per admitted lane-1 receipt, oldest
   first). `Moved` is an event of kind `moved`, only for a live row.
-- **Later parts.** A v4 session's server runs on T154's run loop
-  (T151b: the bridge never ticks, pumps or drives lane 1); the NPC
-  driver becomes the loop's AI hook and legal options are read between
-  cycles without blocking the frame. The shell gains `open_v4`,
-  `declare_move`, `move_to`, `halt` and four view getters (T151c).
+- **The v4 session on the run loop (`core/authority/v4.rs`,
+  `core/mod.rs`).** T151b wires the client half onto T154's loop: a v4
+  session's server runs on `crpg_server::run` over `LocalHost`, driven
+  by `crpg_server::runner` on its own thread; the bridge never ticks,
+  pumps or drives lane 1. `open_v4` binds the mesh from the encounter's
+  area (`encounter_bounds`), binds the player with `bind_v4_peer` (the
+  NPC stays a v2 `bind_peer`), wraps the host in `LocalHost`, installs
+  today's NPC driver as the loop's AI hook (`NpcHook`, Reading 20), and
+  spawns the runner. `poll` steps `ClientV4` over the `LocalClient` and
+  reads the player's legal options between cycles (`read_options`
+  through `RunnerHandle::submit`) without ever blocking the frame; the
+  bridge holds the client half, the runner owns the host. `declare_move`,
+  `move_to` and `halt` are the move entry points.
+- **Later parts.** The shell gains `open_v4`, `declare_move`, `move_to`,
+  `halt` and four view getters (T151c).
 
 ## Decisions and traps
 
@@ -357,3 +367,4 @@ Agent log:
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Replaced the CombatHud bullet with the `_init`-built named tree, the HUD texts, the 200-line log buffer and gate and the end block, and added `hud_cases.gd`, `hud.gd` and smoke's exit 7 and H20.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Amended the SceneSync bullet for the mesh-only lift (D44b) and per-side surface palette, and extended the scene-sync cases bullet to S15–S18, so the client-side layout matches the approved T048b contract.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Added the Protocol v4 sessions section for the v4 client half: the frozen v2, first-byte routing, `ClientV4`'s pool/replica/outbox shape, the position columns and their later parts, so T151b wires a documented baseline rather than re-deriving it.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Replaced the "Later parts" bullet with the v4-session-on-the-run-loop description: `encounter_bounds`, the NPC driver as `NpcHook` on the loop's AI stage, legal options read between cycles through `RunnerHandle::submit`, and the three move entry points, leaving only the shell (T151c) as later.

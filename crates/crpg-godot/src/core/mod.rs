@@ -172,7 +172,13 @@ impl BridgeCore {
         player_side: &str,
         seed: i64,
     ) -> BridgeCode {
-        self.open_v4_with(campaign_dir, encounter_id, player_side, seed, SystemClock::new())
+        self.open_v4_with(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            SystemClock::new(),
+        )
     }
 
     /// `open_v4` with the runner's clock injected (tests pass a manual clock).
@@ -204,9 +210,7 @@ impl BridgeCore {
         let Some(destination) = point_from(x, y, z) else {
             return self.fail(BridgeCode::BadArgument, Some("coordinate out of range"));
         };
-        self.move_guarded(move |client, link| {
-            client.declare_move(revision, destination, link)
-        })
+        self.move_guarded(move |client, link| client.declare_move(revision, destination, link))
     }
 
     /// A lane-1 `MoveTo` for `actor` (a `net_ids()` value) (B-B8).
@@ -367,16 +371,11 @@ impl BridgeCore {
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),
         };
 
-        let (table, npc_sides) = match presentation_tables(
-            &host,
-            player,
-            npc,
-            &prefix.bound,
-            &prefix.presentation,
-        ) {
-            Ok(tables) => tables,
-            Err(fault) => return self.fail_fault(fault),
-        };
+        let (table, npc_sides) =
+            match presentation_tables(&host, player, npc, &prefix.bound, &prefix.presentation) {
+                Ok(tables) => tables,
+                Err(fault) => return self.fail_fault(fault),
+            };
         let epoch = match host.epoch(player) {
             Ok(epoch) => SessionEpoch(epoch),
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),
@@ -475,16 +474,11 @@ impl BridgeCore {
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),
         };
 
-        let (table, npc_sides) = match presentation_tables(
-            &host,
-            player,
-            npc,
-            &prefix.bound,
-            &prefix.presentation,
-        ) {
-            Ok(tables) => tables,
-            Err(fault) => return self.fail_fault(fault),
-        };
+        let (table, npc_sides) =
+            match presentation_tables(&host, player, npc, &prefix.bound, &prefix.presentation) {
+                Ok(tables) => tables,
+                Err(fault) => return self.fail_fault(fault),
+            };
         let epoch = match host.epoch(player) {
             Ok(epoch) => SessionEpoch(epoch),
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),
@@ -557,23 +551,20 @@ impl BridgeCore {
             match first_encounter(&loaded) {
                 Some(id) => id,
                 None => {
-                    return Err(self.fail(BridgeCode::NoEncounter, Some("campaign has no encounter")))
+                    return Err(
+                        self.fail(BridgeCode::NoEncounter, Some("campaign has no encounter"))
+                    )
                 }
             }
         } else {
             let id = match Ulid::from_str(encounter_id) {
                 Ok(id) => id,
-                Err(_) => {
-                    return Err(self.fail(BridgeCode::BadArgument, Some("bad encounter id")))
-                }
+                Err(_) => return Err(self.fail(BridgeCode::BadArgument, Some("bad encounter id"))),
             };
             match encounter_document(&loaded, id) {
                 Some(_) => id,
                 None => {
-                    return Err(self.fail(
-                        BridgeCode::UnknownEncounter,
-                        Some("unknown encounter"),
-                    ))
+                    return Err(self.fail(BridgeCode::UnknownEncounter, Some("unknown encounter")))
                 }
             }
         };
@@ -613,10 +604,9 @@ impl BridgeCore {
             match bound.first() {
                 Some((_, placement)) => presentation.combatant(*placement).1,
                 None => {
-                    return Err(self.fail(
-                        BridgeCode::UnknownSide,
-                        Some("encounter has no combatant"),
-                    ))
+                    return Err(
+                        self.fail(BridgeCode::UnknownSide, Some("encounter has no combatant"))
+                    )
                 }
             }
         } else {
@@ -781,9 +771,9 @@ impl BridgeCore {
             let State::OpenV4(live) = &mut self.state else {
                 unreachable!("poll_v4_guarded runs only on a live v4 session");
             };
-            if let Err(fault) =
-                live.client
-                    .step(&mut live.link, &live.options, refused_now, now_ms)
+            if let Err(fault) = live
+                .client
+                .step(&mut live.link, &live.options, refused_now, now_ms)
             {
                 return self.fail_fault(fault);
             }
