@@ -56,64 +56,51 @@ Design decisions this contract makes. Each needs approval with the contract.
    `decode_down` (`crates/crpg-net/src/transfer_v3.rs:426`),
    `codec_resume::decode_down` (`crates/crpg-net/src/codec_resume.rs:205`)
    and `movement_v4::decode_down` (`crates/crpg-net/src/movement_v4.rs:318`).
-   The upstream decoders (`decode_intent`, `decode_up`, `decode_request`)
-   take a client's bytes, not a server's. *Rejected:* folding the QUIC
-   welcome, the QUIC client close and the Godot bridge step into this suite
-   (Reading 3).
+   The upstream decoders take a client's bytes, not a server's.
+   *Rejected:* folding the QUIC welcome, the QUIC client close and the
+   Godot bridge step into this suite (Reading 3).
 2. **Snapshot bodies are in scope though they have no version or lane.**
    `decode_body` (both versions) reads exactly what a hostile server puts
-   in a snapshot: entity lists, health facts, turn, encounter and timeline.
-   A body has no first byte, so the first-byte and lane matrices do not
-   apply to it; the short-input, truncation, bound and corruption passes do.
-   *Rejected:* a frame-only scope (it would leave the largest hostile
-   surface — a 1 MiB / 4 MiB reassembled body — to the per-codec suites,
-   which never corrupt it byte by byte).
+   in a snapshot. A body has no first byte, so the first-byte and lane
+   matrices do not apply; the short-input, truncation, bound and
+   corruption passes do. *Rejected:* a frame-only scope (it would leave
+   the largest hostile surface — a 1 MiB / 4 MiB body — uncorrupted
+   byte by byte).
 3. **The welcome, the close and the bridge step are indexed, not re-tested.**
    One crate per task (`AGENTS.md`): `Welcome::decode`
    (`crates/crpg-net-quic/src/handshake.rs:343`), the welcome-mismatch
-   close (`crates/crpg-net-quic/src/client.rs:1064-1065`) with
-   `CloseCode::ProtocolViolation`, `try_recv`/`close_reason`
+   close (`crates/crpg-net-quic/src/client.rs:1064-1065`),
+   `try_recv`/`close_reason`
    (`crates/crpg-net-quic/src/client.rs:450`, `:610`) and the Godot
-   `Client::step` decode/replica mapping to 52/53
+   `Client::step` 52/53 mapping
    (`crates/crpg-godot/src/core/client.rs:442-448`,
-   `crates/crpg-godot/src/core/errors.rs:46-48`) live in other crates with
-   their own suites; D-1 names the exact lines that pin them. *Rejected:* a
-   three-crate part now (it breaks the one-crate rule and needs a
-   `deps.py` review for every new test edge; filed as Open question 1).
+   `crates/crpg-godot/src/core/errors.rs:46-48`) live in other crates;
+   D-1 names the lines that pin them. *Rejected:* a three-crate part now
+   (breaks the one-crate rule; filed as Open question 1).
 4. **Stateless decoders have no replay, timing or ownership case.**
-   A decoder is a function of one byte slice, so a replayed delta, a stale
-   tick or a foreign entity has no byte-level form beyond a bad scalar.
-   What exists at this level is indexed, not re-tested (D-1): the epoch is
-   opaque to every decoder (W-13 proves it), receipt lanes are checked
-   (`crates/crpg-net/src/codec.rs:319-321`), zero ids are `Malformed`
-   (W-9). *Rejected:* per-decoder replay tests (pass by construction) and
-   re-tests of the bridge fence.
-5. **Corruption is exhaustive, and acceptance must be stable.** For each
-   pinned frame, every byte is replaced by every other value; the result
-   must be a refusal, or a frame whose canonical re-encoding is the
-   corrupted bytes themselves. `postcard` accepts non-minimal varints
-   (the T042a leniency, `tasks/T042.md:131-139`), and no pinned frame has
-   a varint byte followed by `0x00` except a zero count, where the shifted
-   value is refused — so no single-byte corruption reaches that leniency
-   except through `stable`'s re-encode branch, which the seeded pass
-   exercises. A seeded corpus adds multi-byte noise under the weaker rule
-   the client needs: a decoded value re-encodes, and the re-encoding
-   decodes back to itself. *Rejected:* `proptest` (a new `crpg-net`
-   dev-dependency, needs asking, `AGENTS.md` "Do not add dependencies").
+   A decoder is a function of one byte slice. What exists at this level
+   is indexed (D-1): the epoch is opaque (W-13 proves it), receipt lanes
+   are checked (`crates/crpg-net/src/codec.rs:319-321`), zero ids are
+   `Malformed` (W-9). *Rejected:* per-decoder replay tests (pass by
+   construction).
+5. **Corruption is exhaustive, and acceptance must be stable.** Every byte
+   of each pinned frame, replaced by every other value, must be a refusal
+   or re-encode to the corrupted bytes themselves. `postcard` accepts
+   non-minimal varints (the T042a leniency, `tasks/T042.md:131-139`); no
+   pinned frame reaches that leniency by single-byte corruption except
+   through `stable`'s re-encode branch, which the seeded pass exercises.
+   *Rejected:* `proptest` (a new `crpg-net` dev-dependency,
+   `AGENTS.md` "Do not add dependencies").
 6. **The v3 body literal is encoder-derived, not hand-written.** The empty
-   v3 body's encounter/timeline tail encoding was not hand-verified at
-   draft time, so H1 pins `B82` byte-for-byte against `encode_body` on
-   every run instead of against a hand-written literal: any encoder change
-   fails H1 loudly, and the verdict properties (W-1–W-5, W-10) do not
-   depend on the tail. *Rejected:* hand-writing the tail (risks pinning a
-   wrong literal that a later task must "fix" by weakening the test).
+   v3 body's encounter/timeline tail was not hand-verified at draft time,
+   so H1 pins `B82` against `encode_body` on every run: any encoder change
+   fails H1 loudly. *Rejected:* hand-writing the tail (risks pinning a
+   wrong literal).
 7. **The "log line" at this level is the refusal and its fixed text.**
-   `crpg-net` does no I/O; every refusal here is a `CodecError` whose
-   `Display` is one of six fixed texts
-   (`crates/crpg-net/src/codec.rs:72-83`), and the client layers map it to
-   a fenced fault (52/53) or a close (D-1). Writing a log line is D67a
-   (a): pinned here, owned by the program. *Rejected:* a logging library
-   (a new dependency across client crates, D67a (b)).
+   `crpg-net` does no I/O; every refusal is a `CodecError` with one of six
+   fixed texts (`crates/crpg-net/src/codec.rs:72-83`), mapped by the client
+   layers to a fenced fault or a close (D-1). Writing a log line is D67a
+   (a). *Rejected:* a logging library (D67a (b)).
 
 ## Interface
 **Production code: none.** No public item, signature, variant, constant or
