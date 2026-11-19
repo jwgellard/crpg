@@ -69,9 +69,14 @@ impl NpcHook {
         }
     }
 
-    /// One AI stage (B-B2): drain the NPC's delivery unread, then fire at most
-    /// one staged intent through the unchanged `choose_npc` + pacer.
+    /// One AI stage (B-B2): a closed host is reported `Closed` before any
+    /// other call (a deliberate shutdown is 50, not 51); otherwise drain the
+    /// NPC's delivery unread, then fire at most one staged intent through the
+    /// unchanged `choose_npc` + pacer.
     pub(crate) fn run(&mut self, host: &mut Host, now_ms: u64) -> Result<(), HostError> {
+        if host.is_closed() {
+            return Err(HostError::Closed);
+        }
         let entries = host.take_delivery_entries(self.npc)?;
         if let Some(last) = entries.last() {
             host.acknowledge_delivery(self.npc, last.ordinal)?;

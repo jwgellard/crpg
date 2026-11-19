@@ -504,18 +504,8 @@ fn lane1_receipts_come_back() {
 // ---------------------------------------------------------------------------
 // B6 a refused player frame is INTENT_REFUSED (B-B3, B-B4, B-B6).
 // ---------------------------------------------------------------------------
-//
-// CONTRACT CONTRADICTION (reported, not worked around): the contract's B6
-// sends `[0x04]` and asserts `LinkStats.refused == Some(1)`, with its own
-// note "if the host does not count `[0x04]` as a dropped refusal, the part
-// stops and reports". The host does not: `ingest` stages the truncated frame
-// (it is within the size and rate limits and is never decoded there), so it
-// is decode-refused in `pump` (a receipt, not a `LinkStats.refused` bump),
-// and `LinkStats.refused` stays 0. The test below is `#[ignore]`d and pinned
-// to the contract's exact values so the discrepancy stays visible.
 
 #[test]
-#[ignore = "contract contradiction: the host stages [0x04] rather than refusing it, so LinkStats.refused stays 0 (see the comment above)"]
 fn refused_player_frame_is_intent_refused() {
     let mut core = BridgeCore::new();
     let clock = ManualClock::new();
@@ -523,25 +513,36 @@ fn refused_player_frame_is_intent_refused() {
     let (code, _views) = settle(&mut core, &clock, 0);
     assert_eq!(code, BridgeCode::Ok);
 
-    {
-        core.v4_link()
-            .expect("live v4")
-            .send(&[0x04])
-            .expect("queues a truncated lane-0 frame");
-    }
+    assert_eq!(
+        core.v4_link().expect("live v4").send(&vec![
+            0x04u8;
+            crpg_net::protocol::MAX_INTENT_FRAME_BYTES + 1
+        ]),
+        Ok(())
+    );
     let (p, _q) = core.v4_peers().expect("live v4");
     let (code, _views) = settle(&mut core, &clock, 50);
     assert_eq!(code, BridgeCode::IntentRefused);
     assert_eq!(core.last_error(), "INTENT_REFUSED: player intent refused");
 
     assert_eq!(
-        call(&core, move |l| l.hosting().link_stats(p).map(|s| s.refused)),
-        Some(1)
+        call(&core, move |l| l
+            .hosting()
+            .link_stats(p)
+            .map(|s| (s.refused, s.held))),
+        Some((1, false))
     );
 
     let (code, _views) = settle(&mut core, &clock, 100);
     assert_eq!(code, BridgeCode::Ok, "the session stays open");
     assert!(core.runner().is_some());
+    assert_eq!(
+        call(&core, move |l| l
+            .hosting()
+            .link_stats(p)
+            .map(|s| (s.refused, s.held))),
+        Some((1, false))
+    );
 
     // Control: no frame -> the next settle is clean.
     let mut clean = BridgeCore::new();
@@ -722,11 +723,27 @@ fn server_side_endings_fence() {
         assert_eq!(core.poll(100), BridgeCode::HostFailed);
     }
 
-    // (b) the host shuts down: see the separate `#[ignore]` test below.
-    // CONTRACT CONTRADICTION: the contract's B10(b) expects `poll(100)` to be
-    // `HOST_CLOSED` (50), but `shutdown()` clears the session table, so the
-    // hook's `take_delivery_entries(npc)` returns `UnknownPeer` and the loop
-    // ends with `HOST_FAILED: UnknownPeer at host/admission` (51).
+    // (b) the host shuts down -> the loop ends and the bridge fences
+    // `HOST_CLOSED` (50), not a host failure.
+    {
+        let mut core = BridgeCore::new();
+        let clock = ManualClock::new();
+        assert_eq!(open_v4(&mut core, &clock, "Goblin"), BridgeCode::Ok);
+        assert_eq!(settle(&mut core, &clock, 0).0, BridgeCode::Ok);
+        assert_eq!(settle(&mut core, &clock, 50).0, BridgeCode::Ok);
+        call(&core, |l| l.hosting_mut().host_mut().shutdown());
+        clock.set(100);
+        assert!(call_result(&core, |_| ()).is_err());
+        let first = core.poll(100);
+        assert!(
+            matches!(first, BridgeCode::Ok | BridgeCode::HostClosed),
+            "the first poll sees the end asynchronously"
+        );
+        assert_eq!(core.poll(100), BridgeCode::HostClosed);
+        assert_eq!(core.last_error(), "HOST_CLOSED: Closed at host/admission");
+        assert!(core.runner().is_none());
+        assert_eq!(core.poll(100), BridgeCode::HostClosed);
+    }
 
     // (c) a panicking closure on the loop thread fences as 55.
     {
@@ -755,28 +772,6 @@ fn server_side_endings_fence() {
         assert_eq!(settle(&mut core, &clock, 100).0, BridgeCode::Ok);
         assert!(core.runner().is_some());
     }
-}
-
-/// B10(b): the host shuts down -> the loop ends and the bridge fences
-/// `HOST_CLOSED` (the contract's exact expectation, `#[ignore]`d).
-#[test]
-#[ignore = "contract contradiction: shutdown clears sessions, so the hook returns UnknownPeer and the fence is HOST_FAILED (51), not HOST_CLOSED (50)"]
-fn server_side_shutdown_fences_host_closed() {
-    let mut core = BridgeCore::new();
-    let clock = ManualClock::new();
-    assert_eq!(open_v4(&mut core, &clock, "Goblin"), BridgeCode::Ok);
-    assert_eq!(settle(&mut core, &clock, 0).0, BridgeCode::Ok);
-    assert_eq!(settle(&mut core, &clock, 50).0, BridgeCode::Ok);
-    call(&core, |l| l.hosting_mut().host_mut().shutdown());
-    clock.set(100);
-    assert!(call_result(&core, |_| ()).is_err());
-    let first = core.poll(100);
-    assert!(
-        matches!(first, BridgeCode::Ok | BridgeCode::HostClosed),
-        "the first poll sees the end asynchronously"
-    );
-    assert_eq!(core.poll(100), BridgeCode::HostClosed);
-    assert!(core.last_error().starts_with("HOST_CLOSED"));
 }
 
 // ---------------------------------------------------------------------------
