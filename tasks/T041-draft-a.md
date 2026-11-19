@@ -99,7 +99,142 @@ then it is specified but not buildable.
 
 ## Readings
 
-_(filled next edit)_
+Design decisions this contract makes. Each needs approval with the contract.
+
+1. **A headless client is an in-memory link plus the net-local modules, not a
+   `QuicClient`.** `LocalClient` is the peer end of a local link and
+   implements net's `Transport` (`crates/crpg-server/src/run.rs:818`,
+   `:834`); `replica`, `replica_v4`, `outbox_v4`, `movement_v4`, `interest`,
+   `sim` and `transport` are net-local modules a headless client assembles
+   without Godot (`crates/crpg-net/src/lib.rs:66`). So T041a builds a
+   `HeadlessClient` that owns a `LocalClient` link, a `ReplicaWorldV4` and a
+   `MoveOutbox`, and drives it over `LocalHost` with injected `now_ms`. The
+   authority boundary holds: the client mutates nothing directly, only through
+   `send` intents (`crates/crpg-server/AGENTS.md` invariant 1).
+   *Rejected:* a `QuicClient`-based harness for the in-process tests (needs
+   sockets/threads, which `tests/` harnesses must not own, testkit AGENTS
+   invariant 7; and a two-crate part); a second `ClientSession` type in
+   `crpg-net` (none exists, `tasks/T041-facts.md:34`, and T041 must not grow a
+   production type — tests-only).
+
+2. **The desync oracle is an independent projection, never a second pass over
+   the delivery bytes.** ADR-0009 defines the cross-machine check as a
+   *semantic* comparison: replica visible state versus the server's filtered
+   projection (`docs/adr/0009-determinism-scope.md:46`). Applying the host's
+   own delivery frames twice cannot catch a projection bug, so the oracle
+   builds the expected view from the host's `World` through
+   `crpg-net`'s `interest` module (`crates/crpg-net/src/interest.rs:1`,
+   `project_snapshot` `:334`, `project_delta` `:225`) with the client's
+   grants, and reduces the `ReplicaWorldV4` to the same canonical image
+   (D-4). *Rejected:* re-applying `take_delivery_entries` output as the
+   oracle (circular — the host's filter is the thing under test); a
+   hash-equality check over the replica (ADR-0009 forbids hash equality as
+   the desync check, and the replica holds no `state_hash`).
+
+3. **Timing-sensitive cases stay deterministic: seeded `FaultSchedule` and
+   injected `now_ms`, never wall time or `thread::sleep`.** The T098c and
+   QUIC case 13 flakes must not be made worse (`tasks/BACKLOG.md:169`,
+   `tasks/T098.md:312`). Every run steps `HostLoop::step(now_ms)` on a fixed
+   50 ms grid (`crates/crpg-server/src/run.rs:154`) and pumps the fabric with
+   `FaultSchedule { seed, loss_every, dup_every, reorder_depth }`, whose doc
+   promises "same seed plus same send/tick sequence delivers the same byte
+   sequence on the same build" (`crates/crpg-net/src/sim.rs:308–319`). The
+   5,000-tick run uses `loss_every: Some(7), dup_every: Some(11),
+   reorder_depth: 2` (T018c's values, `crates/crpg-net/tests/conformance.rs:1294–1299`);
+   loss is the spec's `3%` floor's deterministic stand-in — periodic
+   loss-every-7 drops ~14%, which is stricter than 3% and pinned, not random.
+   *Rejected:* a PRNG loss ratio (`crpg-net`'s fabric has no ratio knob, only
+   `loss_every`; adding one is a `crpg-net` change T041 may not make); wall
+   time (nondeterministic, the flakes above).
+
+4. **Two clients see identical state because they hold equal grants, and the
+   check is semantic equality of the two replicas and of each against the
+   projection.** "Both see the same world" (`docs/CRPG_ENGINE_SPEC.md:1527`)
+   is proved three ways at the last checkpoint: `client_a.replica ==
+   client_b.replica` (both reduced to the canonical image), and each equals
+   the projected expected view (D-4). The two clients still differ in
+   *control* (each acts only for its own actor, D-8) but share disclosure, so
+   their visible rows coincide. *Rejected:* identical control sets (two
+   clients acting for the same actors would fight over turn order and the
+   run would not exercise the two-principal boundary); comparing only
+   `authority_hash` (that is the host's own hash, `host_movement.rs:375`, not
+   a client view — the fact sheet found no existing client-view equality,
+   `tasks/T041-facts.md:67`).
+
+5. **The 5,000-tick run reuses T018c's exercise shape but over the real host
+   and real replicas.** T018c's `exercise_run` is a driver-double proof
+   (`crates/crpg-net/tests/conformance.rs:1290`); T041b is the same shape —
+   5,000 ticks, sparse valid and rejected inputs through loss/dup/reorder,
+   hashes every 1,000 ticks — but the authority is `LocalHost` over a
+   `Host` built from a fixture, and the receivers are `ReplicaWorldV4`s, so a
+   divergence proves the host's projection, not the double's. *Rejected:* a
+   fresh 5,000-tick loop design (the conformance exercise already pins the
+   faults, the sparse-input cadence and the checkpoint cadence that make the
+   run tractable and deterministic); moving the exercise into `crpg-net`
+   (that crate owns the double; the host-level proof belongs here by E005).
+
+6. **The malicious-client cases T041 covers are admission-level, not
+   wire-level.** T042 already enumerates every byte-level refusal at the eight
+   decoders (`tasks/T042.md:42–53`); the "Host level" column of its D-1 table
+   is T041's case list (`tasks/T042.md:436–445`). Each case is a well-formed
+   frame the host's admission path rejects cleanly with a pinned
+   `RejectionCode`, never a panic: ownership (`NotAuthorized`, `:17`), timing
+   (`StaleTick`/`FutureTick`/`IllegalAction`, `:15`/`:16`/`:18`), interest
+   (`NotAuthorized` for an out-of-grant id), flooding (`RateLimited`, `:8`),
+   replay (`StaleSeq`/`SeqConflict`/`SeqGap`, `:13`/`:11`/`:12`). The
+   "clean rejection and a log line" cell is D67a's open item (Open question
+   3), not a host check in this part. *Rejected:* re-testing the decoders
+   (T042's, and `crates/crpg-server/tests/host_quic.rs`
+   `quic_malicious_frames_rejected_without_mutation` already covers oversized
+   and malformed at the adapter); a QUIC-adapter suite here (the adapter is
+   `crpg-server`'s; testkit reaches the in-memory `Host`/`LocalHost` only).
+
+7. **A same-`seq` retry with a non-canonical encoding is a cached retry, never
+   a `SeqConflict`.** `Host::canonical` compares re-encoded bytes
+   (`crates/crpg-server/src/host.rs:1588–1590`, `:1666–1668`), so a retry
+   whose bytes re-encode to the retained canonical form (a non-minimal
+   varint, or a ULID case/`I`/`L`/`O` alias, `crates/crpg-core/src/ulid.rs:111–122`)
+   must hit the retry cache and return the retained outcome, while different
+   canonical bytes at the same `seq` still `SeqConflict`
+   (`tasks/T042.md:693–696`). T041c pins both. *Rejected:* treating
+   byte-inequality as `SeqConflict` (breaks retry recovery for alias-encoding
+   clients, the exact defect T042 flagged); teaching the decoders to
+   canonicalize (the host owns `canonical`; decoders are stateless).
+
+8. **The gate 13 smoke is the real binary with two `QuicClient`s; the embedded
+   smoke is T041b's two-client test itself.** Gate 13 smokes "Windows
+   embedded, Windows dedicated and Linux dedicated" (`docs/IMPLEMENTATION_PLAN.md:180–181`).
+   The embedded leg is the in-process two-client run (T041b). The dedicated
+   leg (T041d) spawns `crates/crpg-server` (T040's binary, D70) and connects
+   two `QuicClient`s (`crates/crpg-net-quic/src/client.rs:104`, `:118`) over
+   the loopback, scripting move/fight, and asserts identical visible state
+   through the same harness's reduce. *Rejected:* a `QuicHost`-only smoke
+   without the binary (does not smoke the program T040 builds, which is what
+   gate 13 is for); folding the dedicated smoke into T070 (T070 is the full
+   §17.2 acceptance and lists T041 as its prerequisite,
+   `docs/IMPLEMENTATION_PLAN.md:335`; T041d is the earlier, smaller proof).
+
+9. **No new dependency in T041a–c.** The harness uses `crpg-net` (already a
+   dev-dependency, `crates/crpg-testkit/AGENTS.md:137`) and `crpg-server`
+   (already a dev-dependency, `:137`), plus `crpg-core` for `EntityId`/`Ulid`
+   (already dev-only, `:133`). T041d's `crpg-net-quic` edge is the one new
+   candidate (Dependency edges, Open question 2); it is a workspace member,
+   already reachable transitively through `crpg-server`'s test build. Give a
+   std-only alternative there. *Rejected:* a `proptest`/fuzz dependency for
+   the malicious suite (the admission cases are enumerable by hand, as T042's
+   Reading 5 argued for the wire level); a logging crate for D67a's line
+   (T042 Question 1 already chose to pin the text and defer the writer).
+
+10. **The harness never ships.** Per testkit invariant 5
+    (`crates/crpg-testkit/AGENTS.md:106–111`), nothing in `tests/` may grow a
+    runtime caller; the `HeadlessClient` lives in `tests/support/` and is
+    included by the suites via `#[path = "support/headless_client.rs"] mod
+    headless_client;` (the T016c/T017e/T037e include shape,
+    `crates/crpg-testkit/AGENTS.md:155`, `:183`, `:210`). No `src/` file
+    changes, no public export. *Rejected:* a `src/` helper (would need an ADR
+    for the public surface, and no binary needs a headless client today); a
+    `tests/support/mod.rs` edit (the reserved shared support module stays
+    byte-identical).
 
 ## Interface
 
