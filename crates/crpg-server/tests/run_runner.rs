@@ -730,6 +730,8 @@ fn stop_runs_no_further_step() {
         clock.clone(),
     )
     .expect("spawns");
+    // Pin the first cycle at clock 0, so a step at the period is a second cycle.
+    assert_eq!(handle.call(|host_loop| host_loop.cycles()), Ok(1));
     clock.set(3_600_000);
     handle.stop();
     let exit = handle.join().expect("joins");
