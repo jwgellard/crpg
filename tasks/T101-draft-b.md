@@ -45,8 +45,8 @@ What exists today, and what this ADR must build on without contradicting:
   returns a `CommandReceipt { revision, changes, diagnostics }`
   (`crates/crpg-edit/src/document.rs:75`). `EditError` is 16 pinned variants
   (`crates/crpg-edit/src/error.rs:28`). IDs are caller-supplied
-  (`crates/crpg-edit/AGENTS.md`, invariant 8), so no editor command can mint
-  an id silently.
+  (`crates/crpg-edit/AGENTS.md:60`, invariant 8), so no editor command can
+  mint an id silently.
 - **The CLI.** `crpgc` has eleven subcommands (`crates/crpg-cli/src/main.rs:110`)
   with the 0/1/2 exit-code contract (`docs/architecture/crpg-cli.md:72`).
   `crpgc apply` does not exist; T059 owns it and "its JSON format follows the
@@ -344,7 +344,7 @@ by `Ulid`, and a field is a schema field name, not a raw JSON pointer. JSON
 Pointers exist only for leaves a schema field cannot reach (R4,
 `docs/research/T099/R10-deep.md:27`). The layer resolves an `(id, field)`
 pair to `EditTarget::Object(id)` plus a relative pointer, using the same
-index `crpg-edit` derives (`crates/crpg-edit/AGENTS.md`, "never trust the
+index `crpg-edit` derives (`crates/crpg-edit/AGENTS.md:81`, "never trust the
 opened index"). Edits are anchored (R5): a `set` names one uniquely-anchored
 object; an ambiguous anchor fails, never guesses
 (`docs/research/T099/R10-deep.md:32`).
@@ -356,13 +356,13 @@ triples (R2, `docs/research/T099/R10-deep.md:17`) for things `EditError`
 cannot say: an unknown field name (with a "did you mean" against the schema),
 a missing reference target, or an id that is not in the index. A structural
 refusal stays an `EditError`; a semantic finding stays a diagnostic on the
-receipt (`crates/crpg-edit/AGENTS.md`, invariant 7).
+receipt (`crates/crpg-edit/AGENTS.md:56`, invariant 7).
 
 **Plan step (R3).** `plan` is a reviewable, saveable list of verbs that
 `apply_plan` runs as one `apply_batch`. A plan never implies rollback: if it
 fails it fails atomically and nothing is half-applied (R3,
 `docs/research/T099/R10-deep.md:22`; T058 atomicity,
-`crates/crpg-edit/AGENTS.md`, invariant 1).
+`crates/crpg-edit/AGENTS.md:32`, invariant 1).
 
 **Receipts (R6).** Every verb returns the same `CommandReceipt` shape the GUI
 uses — `revision`, changed paths, diagnostics
