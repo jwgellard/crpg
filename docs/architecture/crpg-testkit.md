@@ -225,6 +225,37 @@ test) and `crpg-nav` (the mesh the host routes on), approved in D62;
 `ALLOWED` already permits testkit -> anything but `crpg-godot`. No `src/`
 change, no public export, and no golden.
 
+## Headless clients and the desync suite (T041, tests-only)
+
+The M4 exit-criteria proofs (scripted headless clients, the 5,000-tick
+loss/jitter desync, two clients with identical visible state, the
+host-level malicious table, and the gate-13 embedded smoke) live entirely
+in `tests/`, included per suite with
+`#[path = "support/headless.rs"] mod headless;`. `tests/support/headless.rs`
+is the shared rig (T041a): the `combat_basic` `Content` loader and
+`moved_ruleset` copied from `host_movement.rs`, a `start` that wraps a
+`HistoryWorld` in `Host::from_history` and binds the area bounds, the two
+`Grants` profiles, and a QUIC-shaped simulated network — `Channel`s whose
+`Faults::SPEC` (3 % loss, 2-cycle latency, 0–4 jitter, 4-cycle rto, 1 %
+duplication) delay reliable frames and drop/duplicate/reorder datagrams,
+with every draw from `DeterministicRng` so a run is a pure function of
+`(seed, name, calls)`. A `HeadlessClient` speaks protocol v4 exactly as the
+Godot bridge will (`0x82` snapshots through `ReassemblyPoolV4`, a
+`ReplicaWorldV4`, lane-0 intents, a lane-1 `MoveOutbox`, samples) and runs a
+`Script` that reads only its own replica. The `Arena` drives the real
+`HostLoop<LocalHost>`; the simulated network sits on the client side of the
+link, so the client never acknowledges on the host's behalf. The desync
+oracle is a twin session bound right after each faulted client with
+identical grants, plus an independent `Mirror` — a clone of the started
+`HistoryWorld` driven with the same sim calls — so `authority_hash` must
+equal the mirror's `history_hash` and `canon` must agree across twins.
+`canon`/`world_view` leave out the ticks and event sequences that
+legitimately differ per session. `tests/headless_harness.rs` is the H1–H8
+suite proving the network, the arena, the scripts, the settle/resume cycle
+and the comparison. T041b adds `tests/desync.rs` D1–D5 (and the D1 counts);
+T041c adds `tests/host_malicious.rs` M1–M10 and the `crpg-net.md` index
+cells. No source, fixture, manifest or golden changes.
+
 ## What consumers inherit
 
 - **Comparable sequences.** Same interleaving everywhere means a hash at
@@ -258,3 +289,4 @@ change, no public export, and no golden.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite and its three tests-only host edges (`crpg-server`, `crpg-net`, `crpg-nav`), so the crate doc names what `host_movement.rs` proves and why no normal edge moved. No source, fixture, or golden changed.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the tests-only MVP AI decision suite: the private fixture's provenance and typed edits, the G1-G22 shape with its controls, and the two dev-only edges, so the crate doc names the suite's owner and its boundary.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Added G23-G34 and the fixture edits they need (`reversed_abilities`, `step_cost`, `extra_cost`, `place_c`, a member registered without movement) to pin the mutant review's ordered rules exactly, so the suite fails on each named bug rather than passing by coincidence.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041a · Recorded the tests-only headless-client rig (`tests/support/headless.rs`): the `combat_basic` start, the QUIC-shaped simulated network, the v4 `HeadlessClient`, the `Arena` over `HostLoop<LocalHost>`, the twin-session and independent-mirror oracles, and the H1–H8 harness suite; no source, fixture, manifest or golden changed.

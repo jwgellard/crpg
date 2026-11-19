@@ -227,6 +227,40 @@ nothing. The oracle is a clone of the started `HistoryWorld` driven by the
 same sim calls, with routes from `crpg_nav` directly, and every hash is
 checked after each mutation.
 
+## Headless clients and the desync suite (T041, tests-only)
+
+`tests/headless_harness.rs` (T041a), and the later `tests/desync.rs`
+(T041b) and `tests/host_malicious.rs` (T041c), each include the shared rig
+with `#[path = "support/headless.rs"] mod headless;` and `use headless::*;`
+(the T016c loader shape, `crates/crpg-testkit/AGENTS.md`). `headless.rs`
+holds the `combat_basic` start and `moved_ruleset` (copied from
+`host_movement.rs`), the two `Grants` profiles, the QUIC-shaped simulated
+`Channel`s, the v4 `HeadlessClient`, the `Script`s, the `Arena` over
+`HostLoop<LocalHost>`, the independent `Mirror`, and `canon`/`world_view`.
+It lives entirely in `tests/`, so no production client type ships from here:
+a real client belongs to the Godot bridge (T046/T047). No manifest, source,
+fixture or golden changes.
+
+Two traps (contract T041 §"Definition of done"):
+- **The network sits on the client side of the link: never ack on behalf of
+  the client.** `LocalHost` acknowledges a delivery when its link queue
+  accepts it (`crpg-server/src/run.rs`), so the simulated network plays the
+  transport on the client side only. Never call the host's acknowledgement
+  from a client, or the loss/jitter proof quietly stops measuring the link.
+- **Compare `canon` only after `settle()`; ticks and event seqs differ per
+  session by design.** Positions change only through anchors and samples,
+  the host refreshes them every 20 ticks, and `canon` already leaves out
+  `server_tick`, `next_event_seq` and each position's `tick`. Comparing two
+  replicas mid-run, or comparing those fields, is the desync test failing to
+  converge — not a defect it should report.
+
+Definition of done (each part on its branch, all green, on Windows/MSVC and
+Linux/GNU): the crate's usual gates, plus
+`cargo check --workspace --all-targets --locked` and `git diff --check`;
+T041a also runs `cargo test -p crpg-testkit --locked --test headless_harness`
+and reports its time (T041b runs `--test desync` with D1's time; T041c runs
+`--test host_malicious`).
+
 ## Definition of done for any change
 
 ```
@@ -315,3 +349,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite (`K1`–`K4` over `combat_basic`), its in-memory ruleset edit and the three tests-only host edges, so later suites extend the real-data host proof instead of re-inventing it; no source, fixture or golden changed.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the two approved dev-only edges (`crpg-ai`, `crpg-nav`) for the MVP AI behaviour suite, so a later suite can reuse the fixture without re-justifying the dependency direction.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Extended the MVP AI suite contract with G23-G34: control-paired cases for the approach-target ordering, real-time precedence, standoff/step arithmetic, off-mesh goal, summed reserve, moverless distance and one-raw walk, and the fixture helpers they add; no dependency, source or golden change.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041a · Added the tests-only headless-client contract section: the shared `tests/support/headless.rs` rig (simulated network, v4 client, scripts, arena, twin-session and mirror oracles, `canon`/`world_view`) and the H1–H8 suite, with the two traps (never ack on the client's behalf; compare `canon` only after `settle()`) and the T041 definition of done; no dependency, source or golden change.
