@@ -42,8 +42,78 @@ wire byte, no public item, no `World`, no tick order, no workspace file.
 - goldens: none new, none moved.
 
 ## Readings
+Design decisions this contract makes. Each needs approval with the contract.
 
-TODO (draft B): numbered readings, each with the alternative rejected and why.
+1. **The surface is the ten client-side decoders in `crpg-net`.** A hostile
+   server controls only the bytes the client's decoders read:
+   `codec::decode_delta` (`crates/crpg-net/src/codec.rs:421`),
+   `codec_v2::decode_delta` (`crates/crpg-net/src/codec_v2.rs:595`),
+   `codec_v3::decode_delta` (`crates/crpg-net/src/codec_v3.rs:1103`),
+   `codec_v4::decode_delta` (`crates/crpg-net/src/codec_v4.rs:428`),
+   `codec_transfer::decode_body` (`crates/crpg-net/src/codec_transfer.rs:97`)
+   and `decode_down` (`crates/crpg-net/src/codec_transfer.rs:246`),
+   `transfer_v3::decode_body` (`crates/crpg-net/src/transfer_v3.rs:258`) and
+   `decode_down` (`crates/crpg-net/src/transfer_v3.rs:426`),
+   `codec_resume::decode_down` (`crates/crpg-net/src/codec_resume.rs:205`)
+   and `movement_v4::decode_down` (`crates/crpg-net/src/movement_v4.rs:318`).
+   The upstream decoders (`decode_intent`, `decode_up`, `decode_request`)
+   take a client's bytes, not a server's. *Rejected:* folding the QUIC
+   welcome, the QUIC client close and the Godot bridge step into this suite
+   (Reading 3).
+2. **Snapshot bodies are in scope though they have no version or lane.**
+   `decode_body` (both versions) reads exactly what a hostile server puts
+   in a snapshot: entity lists, health facts, turn, encounter and timeline.
+   A body has no first byte, so the first-byte and lane matrices do not
+   apply to it; the short-input, truncation, bound and corruption passes do.
+   *Rejected:* a frame-only scope (it would leave the largest hostile
+   surface — a 1 MiB / 4 MiB reassembled body — to the per-codec suites,
+   which never corrupt it byte by byte).
+3. **The welcome, the close and the bridge step are indexed, not re-tested.**
+   One crate per task (`AGENTS.md`): `Welcome::decode`
+   (`crates/crpg-net-quic/src/handshake.rs:343`), the welcome-mismatch
+   close (`crates/crpg-net-quic/src/client.rs:1064-1065`) with
+   `CloseCode::ProtocolViolation`, `try_recv`/`close_reason`
+   (`crates/crpg-net-quic/src/client.rs:450`, `:610`) and the Godot
+   `Client::step` decode/replica mapping to 52/53
+   (`crates/crpg-godot/src/core/client.rs:442-448`,
+   `crates/crpg-godot/src/core/errors.rs:46-48`) live in other crates with
+   their own suites; D-1 names the exact lines that pin them. *Rejected:* a
+   three-crate part now (it breaks the one-crate rule and needs a
+   `deps.py` review for every new test edge; filed as Open question 1).
+4. **Stateless decoders have no replay, timing or ownership case.**
+   A decoder is a function of one byte slice, so a replayed delta, a stale
+   tick or a foreign entity has no byte-level form beyond a bad scalar.
+   What exists at this level is indexed, not re-tested (D-1): the epoch is
+   opaque to every decoder (W-13 proves it), receipt lanes are checked
+   (`crates/crpg-net/src/codec.rs:319-321`), zero ids are `Malformed`
+   (W-9). *Rejected:* per-decoder replay tests (pass by construction) and
+   re-tests of the bridge fence.
+5. **Corruption is exhaustive, and acceptance must be stable.** For each
+   pinned frame, every byte is replaced by every other value; the result
+   must be a refusal, or a frame whose canonical re-encoding is the
+   corrupted bytes themselves. `postcard` accepts non-minimal varints
+   (the T042a leniency, `tasks/T042.md:131-139`), and no pinned frame has
+   a varint byte followed by `0x00` except a zero count, where the shifted
+   value is refused — so no single-byte corruption reaches that leniency
+   except through `stable`'s re-encode branch, which the seeded pass
+   exercises. A seeded corpus adds multi-byte noise under the weaker rule
+   the client needs: a decoded value re-encodes, and the re-encoding
+   decodes back to itself. *Rejected:* `proptest` (a new `crpg-net`
+   dev-dependency, needs asking, `AGENTS.md` "Do not add dependencies").
+6. **The v3 body literal is encoder-derived, not hand-written.** The empty
+   v3 body's encounter/timeline tail encoding was not hand-verified at
+   draft time, so H1 pins `B82` byte-for-byte against `encode_body` on
+   every run instead of against a hand-written literal: any encoder change
+   fails H1 loudly, and the verdict properties (W-1–W-5, W-10) do not
+   depend on the tail. *Rejected:* hand-writing the tail (risks pinning a
+   wrong literal that a later task must "fix" by weakening the test).
+7. **The "log line" at this level is the refusal and its fixed text.**
+   `crpg-net` does no I/O; every refusal here is a `CodecError` whose
+   `Display` is one of six fixed texts
+   (`crates/crpg-net/src/codec.rs:72-83`), and the client layers map it to
+   a fenced fault (52/53) or a close (D-1). Writing a log line is D67a
+   (a): pinned here, owned by the program. *Rejected:* a logging library
+   (a new dependency across client crates, D67a (b)).
 
 ## Interface
 
