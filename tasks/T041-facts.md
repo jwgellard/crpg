@@ -46,7 +46,14 @@
 
 ## Hosts and run loops today
 
-TODO
+- `Host` (`crates/crpg-server/src/host.rs:935`) — the in-memory authoritative host; `Host::new(seed, config, now_ms)` builds a fresh authority (`crates/crpg-server/src/host.rs:973`), `Host::from_history` wraps an embedding-choreographed one with an empty journal (`crates/crpg-server/src/host.rs:980`).
+- `HostLoop` (`crates/crpg-server/src/run.rs:110`) — one cycle order (intake, AI stage, advance, deliver, retire captures) on a 20 Hz grid driven by injected `now_ms` (`crates/crpg-server/src/run.rs:4`); `Hosting` supplies the five stages (`crates/crpg-server/src/run.rs:36`), `drive_ai` runs the AI hook if any (`crates/crpg-server/src/run.rs:45`).
+- `LocalHost` (`crates/crpg-server/src/run.rs:332`) — one `Host` plus in-memory local links; the AI stage's hook is the embedding's `AiHook` (`crates/crpg-server/src/run.rs:237`), settable via `set_ai` (`crates/crpg-server/src/run.rs:396`).
+- `LocalClient` (`crates/crpg-server/src/run.rs:818`) — the peer end of a local link, implementing net's `Transport` (`crates/crpg-server/src/run.rs:834`); today the closest thing to a headless client harness.
+- `RunnerHandle` (`crates/crpg-server/src/runner.rs:4`) — `spawn` drives a `HostLoop` on a background thread at its cadence; tests use an injected, manually stepped clock, never wall time.
+- `QuicHost` (`crates/crpg-server/src/quic.rs:528`) — the QUIC adapter over `crpg-net-quic`; `pump(now_ms)` drives handshakes, intake, and delivery (`crates/crpg-server/src/quic.rs:631`).
+- `Host::drive_ai` (`tasks/T153.md:60`) — one trusted host operation the embedding calls between ticks, picking AI-controlled combatants and applying each `Decision` through existing host operations.
+- `save_host_file` (`crates/crpg-server/src/save.rs:272`) — the T039 checkpoint/save adapter: saves a quiescent host through `crpg-persist::save_file`; `load_checkpoint` restores one (`crates/crpg-server/src/checkpoint.rs:176`).
 
 ## Filtering and visible state
 
