@@ -675,7 +675,47 @@ is only whether it lands in T041 or T070.
 
 ## Open questions
 
-_(filled next edit)_
+Each with a recommendation for the user.
+
+1. **Does T041d wait for T040/T150c/T154d?** The dedicated smoke needs the
+   `crpg-server` binary (T040, D70, not built), the v4 QUIC route (`bind_movement`,
+   T150c) and the run loop (`QuicHosting`, T154d) — none merged, and the plan
+   row lists only T025b/T027c/T037/T039 as prerequisites
+   (`docs/IMPLEMENTATION_PLAN.md:246`). *Recommend:* cut T041a–c now (buildable
+   today over `LocalHost`), and cut T041d as a follow-on after T040/T150c/T154d
+   merge; T041a–c alone satisfy the desync and two-client exit criteria, and the
+   gate-13 leg is a smoke that is meaningless before the binary exists.
+
+2. **May `crpg-testkit` take the `crpg-net-quic` dev-edge for T041d?**
+   `tools/lint/deps.py:68` already permits it (testkit reaches any crate but
+   `crpg-godot`), but it is a new edge needing approval (root `AGENTS.md:52`).
+   *Recommend:* decline for T041 and let T070 own the real-QUIC smoke, where the
+   edge is justified with the full three-host matrix; T041d then keeps only the
+   embedded leg (B-8). *Alternative:* approve the edge now and keep T041d as
+   specified.
+
+3. **Where does the D67a rejection log line go, and does the in-process host
+   write one?** D67a assigned writing the line to the server program (T040 or
+   T041) with a log-destination decision (`tasks/BACKLOG.md:341`,
+   `tasks/DECISIONS-D67.md:9`). The in-memory `LocalHost` has no logging, so
+   T041c asserts the receipt code only. *Recommend:* T041c stays receipt-only;
+   T040b's binary writes the line (already in T040's contract, B-13), and
+   T041d's smoke reads the binary's stderr to observe it — so the "log line"
+   is proven once, at the only place that has a destination.
+
+4. **Is re-deriving disclosure in the oracle a duplication risk?** The oracle
+   builds its `ViewerContext.facts` from the world plus the client's grants,
+   mirroring the host's `normalize_grants`/`bind_v3_peer` disclosure. For the
+   pinned two-combatant fixture the table is two hand-written rows, so there is
+   no duplication; a larger fixture would need a shared helper. *Recommend:*
+   keep the two-row hand-written table now; note the helper as a T070 follow-on
+   if the matrix needs it.
+
+5. **How much movement belongs in the 5,000-tick desync run?** Spec §16.2's
+   5,000-tick check is the two-`World` lane-0 desync (`docs/CRPG_ENGINE_SPEC.md:2082`);
+   movement desync is T037e's K3 and T070's matrix. I include one `MoveTo`/`Halt`
+   pair at fixed ticks to exercise lane-1 loss/dup recovery, not full movement.
+   *Recommend:* keep the single pair; full movement desync waits for T070.
 
 ## Agent log
 
