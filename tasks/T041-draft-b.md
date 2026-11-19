@@ -122,6 +122,71 @@ Design decisions this contract makes. Each needs approval with the contract.
    reproduce bit-for-bit across bleeding paths).
 
 ## Interface
+No production item changes. Everything below is test-local in
+`crates/crpg-testkit/tests/support/headless.rs` (included via
+`#[path = "support/headless.rs"]`), with these exact shapes — helper names
+may not change, so the review and later tasks cite them. Existing APIs are
+used as documented: `LocalHost::new(host)` (`crates/crpg-server/src/run.rs:347`),
+`attach(peer, capacity)` (`:361-365`), `HostLoop::new(hosting, start_ms)`
+(`:127`), `Host::new(seed, config, now_ms)`
+(`crates/crpg-server/src/host.rs:973`), `ReplicaWorld::apply_delta`
+(`crates/crpg-net/src/replica.rs:188`), `MoveOutbox::send`
+(`crates/crpg-net/src/outbox_v4.rs:93`).
+
+```rust
+//! T041: scripted headless clients over the host (Reading 1). Tests-only:
+//! nothing here ships. No clock, no thread, no I/O, no unseeded RNG,
+//! no `HashMap`/`HashSet`, no float.
+
+// Marsaglia xorshift64 (T042 precedent, tasks/T042.md:220-224).
+struct XorShift64(u64);
+impl XorShift64 { fn next(&mut self) -> u64; }  // shifts 13, 7, 17
+const SCRIPT_SEED: u64 = 0x5EED_0000_0000_0042;
+
+/// One scripted headless client: a local link plus its replica view.
+pub struct ScriptedClient {
+    pub peer: PeerHandle,          // crpg_net::protocol's handle
+    pub link: LocalClient,         // crates/crpg-server/src/run.rs:818
+    pub view: ReplicaWorld,        // crates/crpg-net/src/replica.rs:121
+    pub script: Vec<ScriptOp>,     // one entry per tick, in tick order
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptOp {
+    Idle,                          // send nothing this tick
+    Act { ability: u64, target: u64 },  // lane-0 intent by index into the fixture grants
+    EndTurn,                       // lane-0 end-turn for the client's actor
+}
+
+/// Builds `n` clients on one host: `LocalHost::new`, one `attach` per peer,
+/// each with a fresh `ReplicaWorld` and its script. Panics on `LocalError`.
+pub fn attach_clients(host: Host, scripts: Vec<(PeerHandle, Vec<ScriptOp>)>) -> (LocalHost, Vec<ScriptedClient>);
+
+/// One driven tick for every client, in ascending `PeerHandle` order
+/// (InMemoryTransport's own order, crates/crpg-net/src/sim.rs:572):
+/// send this tick's `ScriptOp` bytes, `HostLoop` one step at `now_ms`,
+/// pump the sim fabric once, feed every due delta into each `view`.
+/// Returns the host's `authority_hash` after the tick.
+pub fn drive_tick(host: &mut HostLoop<LocalHost>, clients: &mut [ScriptedClient], fabric: &mut InMemoryTransport, faults: &FaultSchedule, now_ms: u64) -> [u8; 32];
+
+/// The semantic comparison (Reading 4): the replica's visible state equals
+/// the host's filtered projection for that peer — `project_snapshot` for
+/// the join tick, `project_delta` after — compared op-for-op, never hashed.
+pub fn assert_view_matches(host: &Host, client: &ScriptedClient);
+
+/// Host-level probe: one raw client message against the host, returning the
+/// host's verdict without panicking.
+pub struct ProbeReport {
+    pub rejections: Vec<Rejection>,  // T040a's type, tasks/T040.md:227-244
+    pub authority_before: [u8; 32],
+    pub authority_after: [u8; 32],
+}
+pub fn probe(host: &mut Host, bytes: &[u8], peer: PeerHandle) -> ProbeReport;
+```
+`PeerHandle`, `Rejection`, `FaultSchedule`, `InMemoryTransport` are used by
+path, never re-exported or wrapped. Field docs are one line each in the
+implementation (`#![warn(missing_docs)]` covers tests through clippy's
+`--all-targets`, `crates/crpg-testkit/AGENTS.md:230-239`).
 
 ## Behaviour
 
