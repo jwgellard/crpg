@@ -68,7 +68,16 @@
 
 ## Existing testkit and test patterns
 
-TODO
+- `Crate layout` (`crates/crpg-testkit/src/lib.rs:8`) — two modules, `harness` and `replay`, re-exported at the root (`crates/crpg-testkit/src/lib.rs:11`); tests-only adapters live in `tests/` and never ship.
+- `Fixtures` (`crates/crpg-testkit/fixtures/`) — three portable `.replay` inputs: `replay_basic`, `combat_basic`, `combat_srd`; per-target goldens beside them (`replay_basic`, `combat_basic`, `srd_lite` × Windows/MSVC + Linux/GNU).
+- `T018c conformance` (`crates/crpg-net/tests/conformance.rs:1`) — net-local T018 exit gate: malicious clients, filtered desync oracle, 5,000-tick exercise, receipt liveness; sim-backed driver double plus `InMemoryTransport`, replicas compared against independent `ExpectedView`s.
+- `Malicious-client matrix` (`crates/crpg-net/tests/conformance.rs:391`) — Suite 1: forged and cross-client ids rejected and kindred hostile cases over the driver double.
+- `Filtered desync oracle` (`crates/crpg-net/tests/conformance.rs:1022`) — Suite 2: per-peer replicas pumped from due deltas and compared against expected views (`filtered_replica_converges_per_peer`, `crates/crpg-net/tests/conformance.rs:1039`).
+- `5,000-tick exercise` (`crates/crpg-net/tests/conformance.rs:1290`) — one scripted run of 5,000 host ticks with sparse valid/rejected inputs through loss/dup/reorder (loss_every 7, dup 11, depth 2), hashing every 1,000 ticks.
+- `T042 wire suite` (`crates/crpg-net/tests/malicious_client.rs:1`) — the wire-level hostile suite over every server-facing decoder, one table (X1–X14).
+- `two_client` / `soak`: none found — no test by those names exists anywhere in the workspace.
+- `T098c flake record` (`tasks/BACKLOG.md:169`) — `lane0_codec_frames_decode_after_impaired_delivery` fails only at 8× contention; verdict test-side, fix D30a.
+- `QUIC case 13` (`tasks/T098.md:312`) — `ordering_preserved_under_concurrent_traffic` failed on Windows `check` (master run 41544530333) at the `server_recv` 30 s guard after a 40 s run; T098f verdict product-side (`tasks/BACKLOG.md:253`), fixed via T098g/T098h close-budget work.
 
 ## Dedicated server today
 
