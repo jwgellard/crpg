@@ -14,8 +14,8 @@ as amended by A§0–A§7, with the reasoning in
 
 ## Public surface
 
-The library exposes six modules, `host`, `capture`, `checkpoint`, `save`,
-`quic`, `run`, with no glob re-export; changing any public type, field,
+The library exposes seven modules, `host`, `capture`, `checkpoint`, `save`,
+`quic`, `run`, `runner`, with no glob re-export; changing any public type, field,
 variant, signature, cap or `Display` text needs an ADR. Inventory: T022 §1,
 T039 §2, T023b B§3, T024h S§5 and T154a's `run.rs` block. `quic` re-exports
 nothing from `crpg_net_quic` or `crpg_net`; callers name
@@ -75,6 +75,12 @@ private, and `run.rs` names no `crpg_ai` type. T154c adds one `LinkStats`
 field; T154d adds `QuicHosting` and `QuicAiHook`; neither changes a signature
 here.
 
+T154b's `runner` items: `Clock`, `SystemClock` (`new`, `starting_at`,
+`default`), `spawn`, `RunnerHandle` (`submit`, `call`, `stop`,
+`is_finished`, `join`), `RunnerExit`, `RunnerGone` and `RunnerPanicked`.
+`runner.rs` alone reads `Instant` (through `SystemClock`), spawns the one
+loop thread and waits on its control channel; `run.rs` never blocks.
+
 T025b's additive `host` items (reconnect grace, host side only):
 `POLICY_RECONNECT_GRACE_MS`, `ResumeAnswer` (with `result`),
 `HostError::{NotResumable, SessionFenced}` and
@@ -126,7 +132,9 @@ or 7 (Question 2 (b)).
    live bindings) with injected-time expiry as its retirement path; proofs
    and fences never enter a checkpoint.
 7. **Time is injected; I/O is fenced.** `now_ms` only; no clock, thread,
-   sleep or socket in `crpg-server` source. Filesystem I/O exists **only**
+   sleep or socket in `crpg-server` source, except `runner.rs`, which alone
+   reads `Instant` (through `SystemClock`), spawns the one loop thread and
+   waits on its control channel. Filesystem I/O exists **only**
    in `save.rs`, only through `crpg_persist::save_file`/`load_file`; network
    I/O exists **only** in `quic.rs`, only through `crpg-net-quic`'s API,
    which owns the socket, runtime and thread. `host`, `capture` and
@@ -483,3 +491,4 @@ git diff --check
 - 2026-11-17 (UTC) · opencode/deepseek-v4.1-flash-free + T154a · Added the sixth module `run` to the surface (the loop, `Hosting`, the local link types and the errors) and the pause and no-blocking traps, so later parts extend an accurate contract instead of rediscovering that the loop never reads pause and must never block.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Recorded the host-side reconnect grace surface (ticket, grace, resume, fence), the grace-map bound in invariant 6 and the two T025b traps (a grace is not a binding; never build Accept without the proof), so the crate contract matches the reconnect code.
 - 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Recorded the resumable-adapter surface (`start_resumable`, `is_resumable`, `ResumeReport`/`ResumeOutcome`, `resumes`, the four `HostCall` variants, `FenceCause::Resumed`) and rewrote the `start`-precondition trap into the `start`/`start_resumable` split, so the crate contract matches the QUIC resume route the crate now speaks.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Added the seventh module `runner` to the surface (the `Clock`, `SystemClock`, `spawn` and `RunnerHandle` items) and amended invariant 7 with R-6's fenced exception, so the contract names the one thread and clock the crate now owns.
