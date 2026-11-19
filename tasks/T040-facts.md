@@ -163,4 +163,18 @@ Jobs in `.github/workflows/ci.yml`, runners, what each runs, artifact steps, and
 
 ## Rules that bind it
 
+The lint row, the crate invariants, and the root bans constraining the T040 binary:
+
+- `crpg-server` ALLOWED row (`tools/lint/deps.py:69`) — `None` allowed (any workspace crate) except `crpg-godot` and `crpg-edit`.
+- ALLOWED-table meaning (`tools/lint/deps.py:43-46`) — `None` means every workspace crate is allowed; the set beside it lists exclusions.
+- `GODOT_CRATE = "crpg-godot"` (`tools/lint/deps.py:75`) — the one crate allowed `unsafe` and the godot dependency.
+- `FORBID_UNSAFE` (`tools/lint/deps.py:88`) — the lint fails a crate root without `#![forbid(unsafe_code)]`.
+- `#![forbid(unsafe_code)]` on the library root (`crates/crpg-server/src/lib.rs:1`) — unsafe ban, lib side.
+- `#![forbid(unsafe_code)]` on the binary root (`crates/crpg-server/src/main.rs:1`) — unsafe ban, binary side.
+- `no clock, thread, sleep or socket in crpg-server source, except runner.rs` (`crates/crpg-server/AGENTS.md:135-145`) — invariant 7 with the T154b fenced exception.
+- Filesystem I/O only in `save.rs` through `crpg_persist`; network I/O only in `quic.rs` through `crpg-net-quic` (`crates/crpg-server/AGENTS.md:138-142`) — I/O fencing the binary inherits.
+- OS-specific logic stays above the sim crates (`AGENTS.md:17-19`) — no OS-specific branches enter core, rules, or sim.
+
 ## Agent log
+
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T040 facts · Wrote the six-section fact sheet with path:line citations for the T040 dedicated-server binary contract, so the architect has the requirements, run loop, start-up, binaries, CI, and binding rules in one place.
