@@ -706,4 +706,18 @@ binding inputs; each carries a recommendation.
 
 ## Manager edits
 
+- `docs/IMPLEMENTATION_PLAN.md:245`: the T040 row's prerequisite is stale
+  (`T023b`); it is T154a–d plus T039/T023b/T153/T150c. Add the T040a/T040b
+  split and the two S-set parts.
+- `task/T154-c1:tasks/T154.md` and `crates/crpg-server/AGENTS.md` public
+  surface: a dated note that T040 adds the one additive `QuicHost::last_report`
+  item (Reading 8); no signature change.
+- `tasks/BACKLOG.md:341` (server log line) and `:344`
+  (`bind_area_bounds`/`place`) are closed by T040a; mark them so.
+- `docs/architecture/crpg-server.md:26–33`: the "planned and **not** here"
+  list drops the dedicated-binary wiring, certificate/key loading, invitation
+  format and operator configuration once T040 lands.
+
 ## Agent log
+
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T040 draft a · Drafted the blind contract for the dedicated `crpg-server` binary as two S-set parts: the std-only CLI/config/log/shutdown wiring over the T154 loop (with the D67a reject line and the `bind_area_bounds`/`place` follow-ups) and the gate-12 server artifact jobs, so the Claude architect has one exact, re-checked starting point to adjudicate.
