@@ -14,9 +14,8 @@ serializable IR state, and a live Lua stack/coroutine is never saved
 (`docs/CRPG_ENGINE_SPEC.md:624`; `crates/crpg-script/src/lib.rs:10`;
 `tasks/POST-T018-DECISIONS.md:381`). One part, in `crpg-sim` only.
 
-Citation convention (T153's): a bare `:N` or `:N–M` is a line of the file
-cited earlier in the same item or sentence. Every citation was checked on
-this branch.
+Citation convention (T153's): a bare `:N` is a line of the file cited
+earlier in the same item. Every citation was checked on this branch.
 
 ## Parts
 | Part | Crate | Scope | Size (source + tests) | S-set | Review |
@@ -465,9 +464,9 @@ saturating decrement at `remaining: 0` (no-op by construction).
 | `crpg-sim` → `crpg-script` | none — forbidden | would point upward (root `AGENTS.md:28–35`); `tools/lint/deps.py`'s `ALLOWED` table does not permit it and this contract needs no new edge |
 
 No new external crate and no new lockfile package: the three new types use
-`Ulid`/`EntityId` (already in scope), `serde`/`serde_json`/`blake3` as today
+`Ulid`/`EntityId`, `serde`/`serde_json`/`blake3` as today
 (`crates/crpg-sim/AGENTS.md:307–312`). `deps.py` is not edited. One task =
-one crate (`crpg-sim`), per the working rules (root `AGENTS.md:57–58`).
+one crate (root `AGENTS.md:57–58`).
 
 ## Out of scope
 - The T053 interpreter (resuming due continuations, node execution, edge
@@ -494,12 +493,9 @@ one crate (`crpg-sim`), per the working rules (root `AGENTS.md:57–58`).
 2. **Does G2 belong to T052's suite or to Gate 10's server suite?**
    *Recommend:* keep it in T052's suite using the existing host helpers —
    the behaviour (B-10) is T052's, and no server file is touched.
-3. **One preflight error for all three stores, or one per store?** Transfer
-   refusal and load rejection could name the offending store
-   (`HasContinuation` vs `HasDialogue` vs `HasQuest`).
+3. **One preflight error for all three stores, or one per store?**
    *Recommend:* one error — the publisher cares that the entity cannot move,
-   not which script state holds it, and one variant keeps the `AreaError`
-   surface minimal.
+   not which script state holds it, and one variant keeps the surface small.
 4. **Should `continuations_due` return ascending `EntityId` or store order?**
    Store iteration is insertion order while timeline iteration is ascending
    (`crates/crpg-sim/AGENTS.md:198–202`). *Recommend:* ascending — the
