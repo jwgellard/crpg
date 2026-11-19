@@ -377,11 +377,10 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
   side publishes. *Control:* the same move after `despawn` succeeds.
   *Fails if:* the record is silently dropped or an earlier error is
   replaced.
-- **C5 `stage_five_counts_down`.** `W(2)` with `remaining: 3` (entity 0)
-  and `remaining: 0` (entity 1): three `tick`s → `[0, 0]`;
-  `continuations_due` is `[1]` before tick 1, `[0, 1]` after tick 3.
-  *Control:* `remaining: u64::MAX` ticks once → `u64::MAX - 1`, never wraps;
-  `end_turn` between ticks changes nothing.
+- **C5 `stage_five_counts_down`.** `W(2)` with `remaining: 3` and
+  `remaining: 0`: three `tick`s → `[0, 0]`; `continuations_due` is `[1]`
+  before tick 1, `[0, 1]` after tick 3. *Control:* `remaining: u64::MAX`
+  ticks once → `u64::MAX - 1`; `end_turn` between ticks changes nothing.
   *Fails if:* a tick moves by anything but one, a zero goes nonzero, an
   event is enqueued, or the order is not ascending.
 - **C6 `round_trip_and_load_rejection`.** C1's world → JSON → load: equal
@@ -499,8 +498,7 @@ one crate (root `AGENTS.md:57–58`).
 4. **Should `continuations_due` return ascending `EntityId` or store order?**
    Store iteration is insertion order while timeline iteration is ascending
    (`crates/crpg-sim/AGENTS.md:198–202`). *Recommend:* ascending — the
-   interpreter resumes in a deterministic order independent of spawn
-   history, and the sort is over the due set only.
+   interpreter resumes in spawn-independent deterministic order.
 
 ## Agent log
 
