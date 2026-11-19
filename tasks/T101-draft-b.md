@@ -131,6 +131,138 @@ implementation" and every mutation goes through `apply`
 level: the intent layer (§ Intent command layer) is the one surface both
 personas drive.
 
+## Task flows
+
+One flow per spec §17.2 item (`docs/CRPG_ENGINE_SPEC.md:1516-1527`) plus one
+for creating a ruleset from a template. Steps name screens and `crpgc`
+commands. Screen names are fixed in § Information architecture. Flows 6–12 are
+runtime items; their flow is "author the prerequisite, then press Play and
+observe", because the author's job for those items is to set up the content
+the runtime consumes. `crpgc apply` and the intent verbs it carries are the
+T059/T103 form and are quoted here as the target surface.
+
+1. **Area with terrain and props (§17.2 item 1).**
+   1. Explorer → right-click `Worlds` → "New area" (issues `create(area, …)`;
+      the intent layer expands it to `CreateDocument`).
+   2. The Area editor opens in the document area; the Properties panel shows
+      the generated `area` form.
+   3. Choose the Terrain tool; pick a flat base (default) or a heightfield;
+      sculpt/paint a simple surface (T063; each brush stroke is a `set`
+      command, not a new kind of mutation).
+   4. Choose the Place tool; drop 2–3 props from the asset browser (each drop
+      is a `place` command).
+   5. Problems panel stays empty; if a prop id dangles it shows a diagnostic
+      with a pointer into `placements.json`.
+   6. `crpgc validate --json` reports `[]\n` (the clean canonical array,
+      `docs/architecture/crpg-cli.md:444`).
+
+2. **Player start, one NPC, one hostile creature (§17.2 item 2).**
+   1. Area editor → Place tool → choose "Player start" from the spawn
+      palette; drop it (a `place` of the entry-spawn placement).
+   2. Explorer → `Creatures` → "New creature" (`create(creature, …)`); the
+      Creature editor opens with a structurally valid scaffold.
+   3. Repeat for the NPC and the hostile creature; set each one's appearance,
+      faction and AI profile via generated form fields (`set` commands).
+   4. Place both creatures in the area (a `place` each); the walkable overlay
+      shows where they may stand.
+   5. References panel on the area now lists both creatures as "placed in".
+   6. Save (the editor calls `save_plan` then `mark_saved`,
+      `crates/crpg-edit/src/document.rs:350,371`).
+
+3. **Creatures use `minimal-d6` (§17.2 item 3).**
+   1. Open a creature; its ruleset field defaults to the campaign's ruleset.
+   2. Set it to `minimal-d6` (a `set` on the ruleset reference).
+   3. The creature's stat block repopulates from the ruleset's stat
+      declarations (`docs/architecture/crpg-data.md:146`): three attributes,
+      HP, one attack, 2d6 resolution.
+   4. The modifier breakdown for HP and the attack appears in the live rules
+      panel (`docs/CRPG_ENGINE_SPEC.md:1065`).
+   5. `crpgc explain <creature-id>` prints the same block headlessly, so the
+      agent can verify what the author sees.
+
+4. **Dialogue with three nodes and a quest-starting choice (§17.2 item 4).**
+   1. Explorer → `Dialogue` → "New dialogue" (`create(dialogue, …)`); the
+      Dialogue editor opens with a start node scaffold.
+   2. Add two more nodes in the node graph (each is an `insert` on the nodes
+      array); one is a `choice` with one option.
+   3. Toggle the text view; the round trip shows the same three nodes as
+      indented text and back, losslessly (`docs/CRPG_ENGINE_SPEC.md:663`).
+   4. On the choice node, set the action to "start quest Q" (a `set` on the
+      node's action; unresolved quest names flag in the Problems panel).
+   5. Run the "walk this conversation" simulator against a test character;
+      all three nodes reachable, none greyed (`docs/CRPG_ENGINE_SPEC.md:1067`).
+
+5. **Quest with two states, completion on enemy death (§17.2 item 5).**
+   1. Explorer → `Quests` → "New quest" (`create(quest, …)`); the Quest editor
+      opens with `started` and `completed` states scaffolded.
+   2. Set journal text per state (each a `set`).
+   3. Add the transition `started → completed` and set its trigger to
+      "enemy dies" — in the MVP this is the one hardcoded quest hook, per
+      `docs/CRPG_ENGINE_SPEC.md:1531`.
+   4. The reachability analysis shows `completed` reachable from the start
+      (`docs/CRPG_ENGINE_SPEC.md:1068`).
+
+6. **Press Play: in-process server plus client (§17.2 item 6).**
+   1. Save (see flow 2 step 6).
+   2. Press ▶ Play. The editor spawns an in-process server (`Session`) and
+      connects a client viewport in the document area (T068).
+   3. The console/playtest log shows the server and client handshake; the
+      entity inspector attaches to the running session
+      (`docs/CRPG_ENGINE_SPEC.md:1073`).
+
+7. **Click-to-move over a baked navmesh (§17.2 item 7).**
+   1. In the Area editor, bake the navmesh (T064); the walkable overlay
+      renders it one key away (`docs/CRPG_ENGINE_SPEC.md:1064`).
+   2. Press Play; click a ground point; the character pathfinds there with
+      server authority and client prediction.
+   3. The playtest log shows the server's acceptance of the move intent and
+      the client's predicted path converging.
+
+8. **Talk to the NPC, quest starts and journals (§17.2 item 8).**
+   1. Press Play; click the NPC; the dialogue's first node plays.
+   2. Choose the option; the quest moves to `started` and appears in the
+      journal UI.
+   3. The campaign debugger's quest-state watch confirms the transition.
+
+9. **Attack, turn-based, real dice, combat log, enemy dies (§17.2 item 9).**
+   1. Press Play; the hostile creature's encounter region is entered.
+   2. Attack; the rules trace shows each roll and its inputs; the combat log
+      prints the roll; the enemy's HP falls and it dies (the sim combat path,
+      not an editor path).
+
+10. **Quest completes, journal updates (§17.2 item 10).**
+    1. After the enemy dies, the quest transition fires; the journal shows
+       `completed`.
+
+11. **Save, quit, load — state identical (§17.2 item 11).**
+    1. Quit the editor; it saves (`save_plan`/`mark_saved`).
+    2. Reopen; reload; the campaign bytes are canonical-identical (the editor
+       writes through the canonical writer, `docs/CRPG_ENGINE_SPEC.md:450`),
+       and Play reproduces the same world state.
+
+12. **Separate `crpg-server`, two clients (§17.2 item 12).**
+    1. From the editor, "Launch dedicated" exports the campaign and runs it
+       against a separate `crpg-server` (T068's external path), with two
+       clients tiled (multiplayer testing, `docs/CRPG_ENGINE_SPEC.md:1074`).
+    2. Both clients see the same world; the author also verifies item 12
+       headlessly via `crpgc run` and the M7 acceptance
+       (`docs/IMPLEMENTATION_PLAN.md:336`).
+
+13. **Create a ruleset from a template (D28l; T110, after M6).**
+    1. Rules menu → "New ruleset from template" → choose `minimal-d6` or
+       `srd-lite` as the base (R13 "clone-and-modify starters",
+       `docs/research/T099/R13-deep.md:7`).
+    2. The Rules editor opens with the template's stat declarations as a
+       scaffold, not a blank.
+    3. Add a stat, change an outcome table, patch one ability by identity
+       (R13 layering and patch overrides, `docs/research/T099/R13-deep.md:9`).
+    4. The overrides are stored as a diff against the base ruleset
+       (`rules/overrides.json`, `docs/CRPG_ENGINE_SPEC.md:1070`), not a full
+       copy.
+    5. A headless dry-run checks the derived-stat expressions and migration
+       idempotence before it is usable in a campaign (R13,
+       `docs/research/T099/R13-deep.md:15`).
+
 ## Information architecture
 
 ## Intent command layer
