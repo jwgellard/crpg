@@ -623,7 +623,44 @@ asked"); this draft does not add one.
 
 ## Definition of done
 
+On the T040 branch (cut after T154d merges), all green:
+
+```text
+cargo fmt --all
+cargo clippy -p crpg-server --all-targets --locked -- -D warnings
+cargo test -p crpg-server --locked
+cargo build --release --locked -p crpg-server --bin crpg-server
+python tools/lint/deps.py
+python tools/lint/determinism.py
+python -m unittest discover -s tools/lint -p "test_*.py"
+cargo deny check
+git diff --check
+```
+
+`git diff --name-only <base>` lists only the owned files (Parts). Docs, with
+a signed agent-log entry in each: `docs/architecture/crpg-server.md` (the
+"planned and **not** here" list shrinks; a new "Dedicated binary (T040)"
+paragraph), `crates/crpg-server/AGENTS.md` (invariant 7 amended for the
+binary, the new surface and traps). T040b is proven by workflow review (C1–C3)
+and by the gate-12 server build actually producing both artifacts.
+
 ## Out of scope
+
+- Any code change in this draft slot: the file is a contract, not an
+  implementation.
+- The `--headless-deterministic` mode (`docs/CRPG_ENGINE_SPEC.md:958`):
+  replay-file inputs, fixed seed, state hash per N ticks. Not wired here.
+- OS service integration (systemd/Windows Service), listen-server mixed mode,
+  and the GM/admin endpoint (`docs/architecture/crpg-server.md:30–34`).
+- Campaign/area data loading: with no `crpg-data` edge the server serves a
+  saved world and operator-supplied identity and bounds; authoring the
+  campaign from data is the campaign-load task (T089/T041), not T040.
+- The AI hook's `drive_ai` wiring (needs `Sides` from authored data, Reading 9).
+- T041's scripted headless clients and the gate-13 smokes; T042's
+  malicious-client suite; T089's public dedicated-server release builds.
+- Log rotation, log levels, and any log/metrics crate.
+- The client and editor artifact jobs (T047c) and any product build beyond
+  the dedicated server.
 
 ## Open questions
 
