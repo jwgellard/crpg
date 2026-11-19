@@ -523,7 +523,96 @@ credential byte appears in any assertion message or error.
 
 ## Tests
 
-_(filled next edit)_
+Suites: `tests/desync.rs` (H1–H3, D1–D3), `tests/malicious_host.rs` (M1–M6),
+`tests/dedicated_smoke.rs` (S1). Public API only; no `#[should_panic]` (a
+panic anywhere fails); no clock/sleep/RNG. Every case names a control that
+changes one input and a "fails if". Codes are the frozen `RejectionCode`
+values (`crates/crpg-net/src/protocol.rs:393–435`), computed here and never
+adjusted to make a test pass.
+
+### `tests/desync.rs`
+
+- **H1 `attach_sorts_control_and_errors`.** `attach(local, peer, epoch,
+  [B, A], cap)` → `control == [A, B]`; replica `is_empty`, outbox `next_seq()
+  == 1`. *Control:* `attach` the same peer again → `AlreadyAttached`; an
+  unbound handle → `UnknownPeer`. *Fails if:* control order is not ascending,
+  or a failed attach leaves a link.
+- **H2 `drain_classifies_and_never_panics`.** With a link whose down queue
+  holds, in order, one lane-0 v4 delta (`b[0] == 4`), one lane-1 receipt
+  (`b[0] == 0xA1`), one sample datagram, and one `[0xFF]`: `drain()` returns
+  `Drain { deltas: 1, receipts: 1, samples: 1, skipped: 1 }` and the replica,
+  outbox and positions reflect the three applied frames. *Control:* the same
+  queue minus the receipt → `receipts: 0`. *Fails if:* a foreign frame panics,
+  or a receipt is retried instead of skipped.
+- **H3 `own_net_resolves_from_replica`.** After `drain` of the client's first
+  delta (which discloses its actor), `own_net() == Some(actor_net)`; before
+  any drain it is `None`. *Control:* an empty `control` → `None` always.
+  *Fails if:* resolution picks a row by insertion rather than by disclosed
+  entity.
+- **D1 `desync_checkpoints_match_the_projection`.** The B-6 run; at each
+  1,000th tick, for each client, `replica_view(&client.replica) ==
+  expected_view(&view, ctx)`. *Control:* a second client bound
+  presence-only (health withheld) → its `expected_view` rows have `None`
+  health, and a projection that leaked health would make the two disagree.
+  *Fails if:* any checkpoint's canonical views differ, naming the `NetId`
+  and tick.
+- **D2 `two_clients_see_identical_state`.** The B-6 run; at tick 5,000,
+  `replica_view(&a.replica) == replica_view(&b.replica)` and each equals the
+  projection. *Control:* bind client B presence-only → its view differs from
+  A's (health `Some` vs `None`), so the equality is not vacuous. *Fails if:*
+  two equally-granted clients end with differing rows or turn facts.
+- **D3 `run_is_deterministic`.** Two fresh rigs, same script and faults,
+  produce byte-equal recorded `authority_hash()` sequences. *Control:* a
+  different `FaultSchedule.seed` → a differing hash sequence (proves the
+  comparison reads the recorded bytes). *Fails if:* any nondeterminism
+  (clock, thread, unseeded RNG) leaks in.
+
+### `tests/malicious_host.rs`
+
+One `LocalHost` over the B-5 fixture with client A bound (control A, full
+disclosure of A, presence-only of B). Each case sends one well-formed intent
+through `client.link.send` + `drive_tick` and reads the receipt.
+
+- **M1 `unowned_actor_is_not_authorized`.** An attack whose `actor` is B's
+  `NetId` (not in A's control) → `ReceiptStatus::Rejected(NotAuthorized)`
+  (`as_u8` 17). *Control:* the same intent for A → `Applied` or a gameplay
+  refusal, never `NotAuthorized`. *Fails if:* a foreign actor is admitted or
+  resolves.
+- **M2 `illegal_times_are_rejected_exactly`.** `observed_tick` before the
+  freshness window → `StaleTick` (15); ahead of `server_tick` → `FutureTick`
+  (16); an out-of-turn attack (B's turn) → `IllegalAction` (18). *Control:*
+  the on-turn attack is admitted. *Fails if:* any of the three returns a
+  different code or mutates state.
+- **M3 `out_of_interest_entity_is_not_authorized`.** An intent whose target
+  is an entity outside A's disclosure → `NotAuthorized` (17). *Control:* the
+  granted target B → admitted (presence-only still targets). *Fails if:* a
+  hidden id resolves or is treated as a legal target.
+- **M4 `over_rate_burst_is_rate_limited`.** A burst above the peer's rate
+  bucket → `RateLimited` (8) for the over-budget intents, then, after
+  `drive_tick` advances `now_ms` enough to replenish, the retained head is
+  re-admitted. *Control:* the same intents spaced one per tick → never
+  `RateLimited`. *Fails if:* the bucket counts lost-fault retries twice, or
+  replenishment is not stepwise.
+- **M5 `replay_codes_are_frozen`.** Retry the accepted intent at the same
+  `seq` with identical bytes → the cached retained outcome (not re-executed;
+  `executions()` unchanged); same `seq`, different bytes → `SeqConflict` (11);
+  a `seq` older than the cache → `StaleSeq` (13); a `seq` skipping ahead →
+  `SeqGap` (12) with `next_seq` unchanged. *Control:* a fresh `seq` → applied.
+  *Fails if:* a cached retry re-executes, or a gap advances the sequence.
+- **M6 `non_canonical_retry_is_a_cache_hit`.** Re-encode the accepted intent
+  with a non-minimal varint (and separately a ULID `I`/`L`/`O` alias) and
+  retry at the same `seq` → the cached retained outcome, never `SeqConflict`.
+  *Control:* bytes whose canonical form genuinely differs → `SeqConflict`.
+  *Fails if:* `Host::canonical` compares raw bytes instead of re-encodings.
+
+### `tests/dedicated_smoke.rs`
+
+- **S1 `dedicated_two_client_smoke`.** Spawn the `crpg-server` binary, connect
+  two `QuicClient`s, script move/fight, assert identical canonical views,
+  `quit` → exit 0 and the save reloads. *Control:* a client with a wrong pin
+  → refused hello (a real failure the smoke must be able to observe, asserted
+  in a sibling case or the control arm). *Fails if:* the smoke is skipped, a
+  `todo!()`, or the clients do not reach identical visible state.
 
 ## What must not change
 
