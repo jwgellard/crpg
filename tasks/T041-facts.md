@@ -57,7 +57,14 @@
 
 ## Filtering and visible state
 
-TODO
+- `Tier-1 interest projection` (`crates/crpg-net/src/interest.rs:1`) — one viewer, one area, host-supplied facts; `InterestView` turns host-authorized rows into v1 `DeltaOp` values or one T024 `SnapshotBody`, adding no wire form.
+- `ViewerContext` (`crates/crpg-net/src/interest.rs:74`) — one coherent per-call context: session epoch, authoritative tick, one-area interest set, entity facts, despawned keys, turn state plus grants.
+- `project_delta` (`crates/crpg-net/src/interest.rs:225`) — projects one delta page for the viewer's context: visible rows, entering keys minted, differences only.
+- `project_snapshot` (`crates/crpg-net/src/interest.rs:334`) — snapshot variant: keeps live visible ids, retires removed keys with no op, records the body so the next delta emits differences; always advances the cursor.
+- `Snapshot transfer promotion` (`tasks/T024.md:8`) — T018b's provisional test-local snapshot tracker promoted into a production transfer wire and bounded reassembler.
+- `Position grant` (`tasks/T037.md:51`) — position anchors and samples sent under the per-viewer position grant; `HistoryEvent::Moved` published alongside.
+- `Authority-hash oracle` (`crates/crpg-testkit/tests/host_movement.rs:375`) — the host suite pins `host.authority_hash() == history_hash(oracle)`; equality is over the authority, not over a client view.
+- `Hash sequences over World` (`crates/crpg-testkit/src/harness.rs:186`) — `run_hash_sequence` records `state_hash(&world)` per tick; no existing equality or hash check over a client's replica view was found.
 
 ## Existing testkit and test patterns
 
