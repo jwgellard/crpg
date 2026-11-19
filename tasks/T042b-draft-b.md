@@ -116,8 +116,100 @@ Design decisions this contract makes. Each needs approval with the contract.
    (a new dependency across client crates, D67a (b)).
 
 ## Interface
+**Production code: none.** No public item, signature, variant, constant or
+`Display` text of `crpg-net` changes; `src/` is untouched. Everything below
+is test-local, in `crates/crpg-net/tests/hostile_server.rs`, with these
+exact shapes (names of private helpers may not change: the review and later
+tasks cite them).
 
-TODO (draft B): exact Rust types and signatures.
+```rust
+//! T042b: the hostile-server suite (D67b/D65b).
+//! Every client-side decoder, every hostile class, one table. No clock,
+//! no thread, no I/O, no unseeded RNG, no `HashMap`/`HashSet`, no float.
+
+/// One client-side decoder with its own encoder (Reading 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wire { V1, V2, V3, V4, C81, C82, J91, M1 }
+
+/// Table order; every "for each wire" loop uses it.
+const WIRES: [Wire; 8] = [Wire::V1, Wire::V2, Wire::V3, Wire::V4,
+                          Wire::C81, Wire::C82, Wire::J91, Wire::M1];
+
+impl Wire {
+    /// 1, 2, 3, 4, 0x81, 0x82, 0x91, 0xA1.
+    fn first_byte(self) -> u8;
+    /// 1 for every wire (deltas: `[version, lane, ...]`; framed down wires:
+    /// `[version, lane, tag/kind, ...]`).
+    fn lane_at(self) -> usize;
+    /// The lane byte: 0, 0, 0, 0, 2, 2, 3, 1.
+    fn lane(self) -> u8;
+    /// Decode with this wire's decoder; on `Ok(v)`, re-encode `v` with this
+    /// wire's encoder. An encoder error on a decoded value panics with the
+    /// wire, the input bytes and the error (the test fails: W-12, W-13).
+    fn verdict(self, bytes: &[u8]) -> Verdict;
+}
+
+/// Bodies have no wire bytes: they are decoded bare.
+enum Body { B81, B82 }
+
+impl Body {
+    /// Decode with this body's decoder; re-encode on `Ok` (same rule).
+    fn verdict(self, bytes: &[u8]) -> Verdict;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    /// The decoder refused the bytes with this error.
+    Refused(CodecError),
+    /// The decoder accepted them; the canonical re-encoding of the value.
+    Accepted(Vec<u8>),
+}
+
+/// One pinned valid frame (the table in W-1).
+struct Fixture { name: &'static str, wire: Wire, bytes: Vec<u8>, tag_at: usize }
+
+/// The 10 framed fixtures of W-1, in table order, each built by its wire's
+/// encoder from the value in that table (never from hand-written bytes).
+fn fixtures() -> Vec<Fixture>;
+
+/// The 2 body fixtures of W-1 (`B81` literal, `B82` encoder-derived).
+fn bodies() -> Vec<(Body, Vec<u8>)>;
+
+/// `bytes` with `bytes[at]` replaced by `value`; every other byte, the valid
+/// remainder after `at` included, unchanged.
+fn with_byte(bytes: &[u8], at: usize, value: u8) -> Vec<u8>;
+
+/// `bytes` followed by `0x00` up to `len` bytes (`len >= bytes.len()`).
+fn padded(bytes: &[u8], len: usize) -> Vec<u8>;
+
+/// W-13's rule: `Refused(_)`, or `Accepted(c)` with `verdict(&c) == Accepted(c)`.
+fn stable(wire: Wire, bytes: &[u8]) -> bool;
+
+/// Same rule for bodies.
+fn stable_body(body: Body, bytes: &[u8]) -> bool;
+
+/// Marsaglia xorshift64 (shifts 13, 7, 17), wrapping `u64` arithmetic,
+/// identical to T042a's (`tasks/T042.md:222-224`).
+struct XorShift64(u64);
+impl XorShift64 { fn next(&mut self) -> u64; }   // state ^= state << 13; state ^= state >> 7; state ^= state << 17; returns state
+const SEED: u64 = 0x5EED_0000_0000_0042;
+```
+
+`Wire::verdict` calls exactly:
+
+| Wire | Decoder | Encoder |
+|---|---|---|
+| `V1` | `codec::decode_delta` | `codec::encode_delta` |
+| `V2` | `codec_v2::decode_delta` | `codec_v2::encode_delta` |
+| `V3` | `codec_v3::decode_delta` | `codec_v3::encode_delta` |
+| `V4` | `codec_v4::decode_delta` | `codec_v4::encode_delta` |
+| `C81` | `codec_transfer::decode_down` | `codec_transfer::encode_down` |
+| `C82` | `transfer_v3::decode_down` | `transfer_v3::encode_down` |
+| `J91` | `codec_resume::decode_down` | `codec_resume::encode_down` |
+| `M1` | `movement_v4::decode_down` | `movement_v4::encode_down` |
+
+`Body::verdict` calls `codec_transfer::decode_body` / `encode_body`
+(`B81`) and `transfer_v3::decode_body` / `encode_body` (`B82`).
 
 ## Behaviour
 
