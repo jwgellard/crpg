@@ -54,6 +54,30 @@ contract from.
 
 ## World today
 
+- `World struct` (`crates/crpg-sim/src/world.rs:70`) — one loaded area's state: `entities: GenerationalArena<EntityMeta>`, `transforms`, `timeline`, `events: EventQueue<SimEvent>`, `rng`, `tick` (`crates/crpg-sim/src/world.rs:71`–`76`).
+- `Combat fields` (`crates/crpg-sim/src/world.rs:84`) — `combatants: ComponentStore<Combatant>`, `combat: Option<CombatState>` (`:87`), `interners: Interners` (`:93`), all skipped at their absence value.
+- `Area field` (`crates/crpg-sim/src/world.rs:100`) — `area: Option<Ulid>`, immutable, omitted when `None`.
+- `Creature field` (`crates/crpg-sim/src/world.rs:105`) — `creatures: ComponentStore<CreatureState>` (T139), skipped when empty.
+- `Movement fields` (`crates/crpg-sim/src/world.rs:110`) — `movers: ComponentStore<Mover>` (`:110`) and `nav: Option<NavRevision>` (`:114`), both skipped at their absence value.
+- `Field order` (`crates/crpg-sim/src/world.rs:114`) — `creatures`, then `movers`, then `nav` are the last three fields; every optional/empty state is an absence compatibility shape, "not a hash exclusion" (`crates/crpg-sim/src/world.rs:102`–`108`).
+- `Serde shape` (`crates/crpg-sim/src/world.rs:69`) — `World` derives `Serialize`; deserialization goes through `WorldRepr` in the same field order (`crates/crpg-sim/src/world.rs:126`) with `#[serde(default = "ComponentStore::new")]` on each store (`crates/crpg-sim/src/world.rs:134`).
+- `Load validation` (`crates/crpg-sim/src/world.rs:150`) — `impl Deserialize for World` deserializes `WorldRepr`, then checks live ids and cross-field invariants before constructing a `World`.
+- `World::new` (`crates/crpg-sim/src/world.rs:940`) — constructs the empty stores; `spawn` is at `:1001`, `despawn` at `:1021`, the `tick` getter at `:1136`.
+- `Store getters` (`crates/crpg-sim/src/world.rs:1207`) — `creatures()`, `movers()` (`:1217`), plus crate-private mutable accessors (`world.rs:1202`, `:1212`, `:1223`).
+- `Last field rule` (`tasks/T139.md:295`) — "Each new field is the **last** field of its struct, and each new variant comes after the existing ones"; the T139 package touched "the `World` struct, serde shapes and the meaning of a release" (`tasks/T139.md:59`).
+- `T139 field mechanics` (`tasks/T139.md:568`) — `World` gains `creatures` as the last field after `area`, `WorldRepr` gains the matching defaulted entry, `despawn_tracked` gains `self.creatures.remove(id)` (`tasks/T139.md:584`), and `transfer_entity` copies the record (`tasks/T139.md:589`).
+- `Architecture, creature store` (`docs/architecture/crpg-sim.md:387`) — `World.creatures` is a `ComponentStore<CreatureState>`, the last field after `area`, skipped when empty.
+- `Architecture, movement fields` (`docs/architecture/crpg-sim.md:407`) — `World.movers` and `World.nav` are the last two fields after `creatures`, each skipped when empty.
+- `Tick counter first` (`crates/crpg-sim/src/tick.rs:23`) — `tick` calls `tick_with_movement`, which calls `tick_tracked`; `world.advance_tick()` runs before the systems (`crates/crpg-sim/src/tick.rs:42`).
+- `Advance tick` (`crates/crpg-sim/src/world.rs:1148`) — `advance_tick` advances the counter (saturating) before systems observe it.
+- `System list` (`crates/crpg-sim/src/tick.rs:64`) — `run_systems` is hand-written: `encounter_clock_system` (stage 2), `timeline_system` (stage 3), `movement_system` (stage 4).
+- `end_turn` (`crates/crpg-sim/src/tick.rs:55`) — pops the ascending `(key, id)` timeline head; no re-queue, no counter advance, no systems.
+- `state_hash` (`crates/crpg-sim/src/hash.rs:37`) — BLAKE3 over canonical JSON produced by the serde impls; non-finite floats panic before serialization (`crates/crpg-sim/src/hash.rs:40`), and there are no hash exclusions (`crates/crpg-sim/src/hash.rs:10`).
+- `S-set` (`docs/IMPLEMENTATION_PLAN.md:93`) — the serialized set is `crpg-contracts`, "the `World` struct or tick order in `crpg-sim`", schema versions/migrations, the GDExtension boundary and workspace CI files; packages marked **S** in §3 are in it (`docs/IMPLEMENTATION_PLAN.md:98`).
+- `Tick order is serial` (`crates/crpg-sim/AGENTS.md:355`) — `run_systems` is a hand-written spec §10 stage list; appending is routine, reordering is a reviewed behaviour change, no scheduler or parallelism.
+- `Stage order as built` (`crates/crpg-sim/AGENTS.md:609`) — `run_systems` is `encounter_clock_system`, `timeline_system`, then `movement_system` (stage 4); reordering or adding a stage is reviewed.
+- `T052 S row` (`docs/IMPLEMENTATION_PLAN.md:282`) — T052 is marked `C → I, S` and its note is "`World` touch".
+
 ## Saving World today
 
 ## Authored dialogue, quest and event data today
