@@ -1,6 +1,6 @@
 # Decision D72 — the agent authoring benchmark (T100) questions
 
-Status: **open, 2026-11-19. Waiting for the user.**
+Status: **answered, 2026-11-19.** D72a (b), D72b (a).
 
 T100 builds the test bench for your "agents and humans must find campaign
 authoring easy" concern (D28j). It gives several AI models a plain task such
@@ -42,6 +42,8 @@ the number "1" up to 400 times, so no person is needed.
 weaker definition (one function in the scorer and its tests), and the benchmark
 loses its only measure of whether the agent's campaign starts.
 
+**Answer (user, 2026-11-19): (b).**
+
 ## D72b — what does the agent get to start with? (T100 Readings 3 and 5)
 
 The baseline measures "today's tools", so what the agent is handed decides
@@ -72,5 +74,8 @@ campaign needs four of them.
 **Recommend (a).** If the baseline comes out near zero everywhere, (b) is one
 more benchmark run with another list file and costs no code.
 
+**Answer (user, 2026-11-19): (a).**
+
 ## Agent log
 - 2026-11-19 (UTC) · claude-code/sonnet-5.5 (architect) + T100 contract · Drafted the T100 decision batch: what "playable" means when `crpgc run` never opens a campaign, and what the benchmarked agent is handed, each explained plainly with a recommendation.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S81-d71-d72-record · Recorded the user's answers (D72a (b) scripted `crpgc play`; D72b (a) crpgc, the 23 schemas and the command list) in the status line and after each Recommend line; the file asks no third question, so no D72c line was added.

@@ -1,6 +1,6 @@
 # Decision D71 — the headless-client and desync suite (T041) questions and approval
 
-Status: **open, 2026-11-19. Waiting for the user.**
+Status: **answered, 2026-11-19.** D71a (a), D71b approved.
 
 T041 builds test clients that play the game without Godot, the way the real
 client will, and uses them to prove four things the M4 milestone asks for:
@@ -41,6 +41,8 @@ server code (the desync run, the real-time walk and the embedded fight).
 test shape out; the only thing it defers is the one step that cannot be
 built yet.
 
+**Answer (user, 2026-11-19): (a).**
+
 ## D71b — approve the T041 contract
 
 Four parts, each one crate and one worker run, with a Claude reviewer
@@ -73,5 +75,8 @@ both systems.
 
 **Recommend approve**, with D71a's answer written into the contract.
 
+**Answer (user, 2026-11-19): approved.**
+
 ## Agent log
 - 2026-11-19 (UTC) · claude-code/opus-5.5 (architect) + T041 contract · Drafted the T041 decision batch: whether the dedicated-server smoke must also move characters before the server can serve movement, and contract approval, each explained plainly with a recommendation.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S81-d71-d72-record · Recorded the user's answers (D71a (a) fights only, T041e follows the /3 endpoint; D71b approved) in the status line and after each Recommend line.

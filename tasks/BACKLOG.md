@@ -139,8 +139,10 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | — | proposed | — | (crpg-server) native Windows service control: an SCM stop saves without a Ctrl-C wrapper; before T089 (T040, D70a) |
 | — | proposed | — | (workspace) bump ctrlc and nix to their newer releases through review (T040, D70a) |
 | — | proposed | — | (repo settings) require both server-artifacts check contexts in the master ruleset once T040c has run green on master, as T047c's C7 did for client (T040) |
-| T041 | fact sheet tasks/T041-facts.md (Muse Spark, session 79); next: blind drafts | — | T041 (crpg-testkit) scripted headless clients, 5,000-tick loss/jitter desync, two-client identical visible state, gate 13 dedicated smoke |
-| T100 | fact sheet tasks/T100-facts.md (Beam) and blind drafts tasks/T100-draft-a.md (DeepSeek V4 Pro) and tasks/T100-draft-b.md (Muse Spark); next: manager or architect adjudication | — | T100 (see tasks/T100-facts.md) |
+| T041 | contract approved D71 (user, 2026-11-19); parts T041a → T041b → T041c (crpg-testkit), T041d (crpg-server, after T040b); next: T041a | — | T041 (crpg-testkit) scripted headless clients, 5,000-tick loss/jitter desync, two-client identical visible state, gate 13 dedicated smoke |
+| T041e | proposed | — | (crpg-server tests) movement over the dedicated server: one more test in tests/dedicated_smoke.rs once the /3 movement endpoint row is done (D71a) |
+| — | proposed | — | (crpg-testkit) lane-1 mirror for T041 D4: exactly-once moves against an independent authority in real time (low) |
+| T100 | contract approved D72 (user, 2026-11-19); parts T100a then T100b (doc-only slots); then the manager's baseline run; next: T100a | — | T100 (see tasks/T100-facts.md) |
 | T101 | fact sheet tasks/T101-facts.md (DeepSeek V4.1 Flash) and blind draft tasks/T101-draft-b.md (DeepSeek V4 Pro); next: an Opus architect ADR | — | T101 (see tasks/T101-facts.md) |
 
 ## Phase 6 — Editor
@@ -352,8 +354,12 @@ Exploding dice and glitch rules are deferred until a ruleset asks for them (ADR-
 | T037e | done, on the batch mgr/session-74-batch, PR #98 (809c19a, Go DeepSeek V4.1 Flash after a free-tier quota refusal; contract erratum: K2 moves the goblin, which acts first in first-blood; mutant review 29 planted, 20 killed, 8 equivalent by data, survivors not killable with the contract's literals: follow-up below) | — | `crpg-testkit` authored data through host and v4 client (tests only) |
 | — | proposed | — | (crpg-testkit) T037e follow-up: K2/K3 authored values that tell speed, step, step_cost and pool apart (contract revision: step 131072 or step_cost 2, a second pool template, a route longer than one step, a third K3 tick), and K4's vacuous "clears nothing" (mutant survivors; low) |
 | T042a | done, on the batch (67a1953; Go DeepSeek V4.1 Flash, attempt 2 after a free-tier quota refusal; Go first-pass review with no findings; mutant review 16 planted, 16 killed); PR pending | — | `crpg-net` hostile-client suite (`tests/malicious_client.rs`, cases X1–X14 over the eight decoders a client can reach; about 650 test lines), plus a `crpg-net` architecture-doc order correction; contract approved D67 (user, 2026-11-17) |
-| T042b | filed (D67b); before players host games for each other (D65b) | — | `crpg-net` hostile-server suite for the client's own decoders (same shape as T042a, about 500 test lines) |
-| — | closed by T040b (tasks/T040.md, approved D70) | — | (crpg-server) server log line for each rejected client message, with a small "where do server logs go" decision; belongs to T040 or T041 (D67a) |
+| T042b1 | contract tasks/T042b.md (no user questions); T042b1 first, then b2–b4 in parallel | — | T042b1 (crpg-net tests) hostile-server support module and the four lane-0 delta decoders on the common ops (HA1–HA13) |
+| T042b2 | contract tasks/T042b.md (no user questions); T042b1 first, then b2–b4 in parallel | — | T042b2 (crpg-net tests) the delta decoders on the v2 event, v3 fact and v4 movement ops (HB1–HB11) |
+| T042b3 | contract tasks/T042b.md (no user questions); T042b1 first, then b2–b4 in parallel | — | T042b3 (crpg-net tests) 0x81/0x82 downstream frames and the two snapshot bodies (HC1–HC13) |
+| T042b4 | contract tasks/T042b.md (no user questions); T042b1 first, then b2–b4 in parallel | — | T042b4 (crpg-net tests) 0x91 resume and 0xA1 movement downstream (HD1–HD13) |
+| T042c | proposed | — | The hostile-server cases T042b leaves out (tasks/T042b.md §Out of scope, first bullet): the QUIC `Welcome` decode and the client's close (`crates/crpg-net-quic`), the Godot bridge's fault mapping and replica refusals (`crates/crpg-godot`); a follow-up hostile-server suite for `crpg-net-quic` and the bridge, for the manager to schedule with D65b |
+| — | closed by T040b (tasks/T040.md, approved D70); closed by T040b, proved end to end by T041d G1 | — | (crpg-server) server log line for each rejected client message, with a small "where do server logs go" decision; belongs to T040 or T041 (D67a) |
 | T056 | contract approved D63; T056a and T056b done, on the batch mgr/session-74-batch, PR #98 (mutant-reviewed and fixed sessions 62–63) | — | MVP AI in `crpg-ai`: move to nearest hostile and attack, consuming `legal_actions` only. Main open question: sim, rules and core have no hostility notion at runtime (faction is authored data only) |
 | — | proposed | — | (crpg-net) announce the nav revision to clients (T037 Reading 4), before T026 |
 | — | bind_area_bounds half closed by T040b (approved D70); the place half re-filed below | — | (crpg-server) T040: call `bind_area_bounds` at area load and `place` after transfers and spawns (T037 Reading 5) |
@@ -519,7 +525,7 @@ remain backlog obligations and become mandatory with these capabilities:
 | 10 save/load equivalence | T039 (on branch): `crates/crpg-server/tests/host_save.rs` file-backed host save/load continuation cases (`file_save_load_equivalence`, `repeated_restarts_match_uninterrupted_run`, `older_save_resumes_from_its_own_point`, each V1 and V2) in the existing `cargo test --workspace --locked` job on Windows/MSVC and Linux/GNU; per-target, in-process equivalence on the T022 fixture authority, no golden. Campaign-wide breadth (spec §8 "every fixture campaign") comes with T040/T041, the first tasks that build a host from campaign data |
 | 11 performance | E019 benchmark task |
 | 12 product builds | Each real binary task: Windows client/editor/server and Linux headless server artifacts; no placeholder jobs |
-| 13 integrated smoke | Post-T018 real capabilities: Windows embedded-server and dedicated-server smoke tests plus Linux dedicated-server smoke test; no placeholder jobs |
+| 13 integrated smoke | embedded: crpg-testkit desync D5; dedicated (Windows and Linux): crpg-server dedicated_smoke G1; in the existing workspace test job |
 
 ---
 
@@ -735,3 +741,4 @@ Record it here, one line per week.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + S78-bookkeeping · Recorded the sessions 77–78 batch state from the supplied facts (T151a–c rows, T151 contract approved D66d, T052/T040/T100/T101 rows, the T040 bind-area-bounds row status and the 77–78 throughput row).
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + S79-d69-record · Recorded the user's D69 answers (T052 approved, next T052 then T052b; save-schema-version and campaign-quest-store rows), the T151b attempt-1 stop and T151-E1 erratum, the T041 row, and dropped the T040 "no row" note.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S80-t040-edits · Recorded the D70 T040 approval (T040a–c, S-set, blocked on T150c/T154d), closed the two D67a/D70 sub-rows with the place half re-filed, and added the five T040 follow-up rows.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S81-d71-d72-record · Recorded the D71/D72 approvals (T041 approved with T041a–e parts and the T041d G1 log-line proof; T100 approved with T100a/b parts), split T042b into T042b1–b4 with the T042c follow-up, and set the gate-13 proof text.
