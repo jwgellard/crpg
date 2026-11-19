@@ -719,4 +719,4 @@ Each with a recommendation for the user.
 
 ## Agent log
 
-_(filled next edit)_
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041 draft a · Wrote the blind T041 contract draft: a tests-only headless-client harness over `LocalHost`/`LocalClient` plus `ReplicaWorldV4`/`MoveOutbox`, a deterministic 5,000-tick loss/jitter desync with an independent `interest`-projection oracle and a two-client identical-visible-state check, the T042 hand-off host-level malicious suite (ownership/timing/interest/flood/replay incl. the non-canonical-retry case) and a gate-13 dedicated smoke deferred to T040/T150c/T154d, with the `crpg-net-quic` edge and the D67a log-line as open questions.
