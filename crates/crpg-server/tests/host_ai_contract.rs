@@ -19,7 +19,7 @@ use crpg_server::host::{
 };
 use crpg_sim::{
     history_hash, legal_actions, CombatAction, CombatError, HistoryWorld, LegalActionsError,
-    MoveRoute, NavRevision, RouteTag,
+    MoveRoute, NavRevision, RouteTag, RT_CLOCK_MAX,
 };
 use serde_json::{json, Value};
 
@@ -174,6 +174,44 @@ fn ai3rt_dagger_value() -> Value {
     value["world"]["combatants"][2][1]["dead"] = json!(true);
     let timeline = value["world"]["timeline"].as_array_mut().expect("timeline");
     timeline.retain(|entry| entry[1]["index"].as_u64() != Some(2));
+    value
+}
+
+/// `AI3rt` at a chosen clock value (the save's `clock.elapsed`).
+fn ai3rt_elapsed_value(elapsed: u64) -> Value {
+    let mut value = ai3rt_value();
+    value["world"]["combat"]["clock"]["elapsed"] = json!(elapsed);
+    value
+}
+
+/// `AI3rt-solo`: B and C dead and off the timeline, so exactly one combatant
+/// is alive (the real-time timeline lists exactly the live combatants).
+fn ai3rt_solo_value() -> Value {
+    let mut value = ai3rt_value();
+    for slot in [1_usize, 2] {
+        value["world"]["combatants"][slot][1]["health"] = json!(0);
+        value["world"]["combatants"][slot][1]["dead"] = json!(true);
+    }
+    let timeline = value["world"]["timeline"]
+        .as_array()
+        .expect("timeline")
+        .iter()
+        .filter(|entry| entry[1]["index"].as_u64() == Some(0))
+        .cloned()
+        .collect::<Vec<Value>>();
+    value["world"]["timeline"] = json!(timeline);
+    value
+}
+
+/// `AI3rt-swing`: a real-time world whose swings land on every tick
+/// (`round_ticks` 1) and in which B survives the 4096 swings that fill the
+/// capture journal (10 → 20000 health, pool JY large enough for every order).
+fn ai3rt_swing_value() -> Value {
+    let mut value = ai3rt_value();
+    value["world"]["combat"]["clock"] = json!({"round_ticks": 1, "elapsed": 0});
+    value["world"]["combatants"][1][1]["health"] = json!(20_000);
+    value["world"]["combatants"][1][1]["max_health"] = json!(20_000);
+    set_pool(&mut value, 5000, 5000);
     value
 }
 
@@ -1223,4 +1261,341 @@ fn undecided_is_the_decide_error_shape() {
     };
     assert_eq!(step, AiStep::Undecided { actor: a(), error });
     let _ = CombatError::NoEncounter;
+}
+
+// ---------------------------------------------------------------------------
+// D-3: a duplicated controlled actor is decided once (a02).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn d3_duplicate_actors_decide_once() {
+    let sides = sides_abc();
+    let plain = [a(), b()];
+    let with_duplicates = [b(), a(), b(), a(), b()];
+
+    // `ctl` is sorted with duplicates removed: each actor appears once, in
+    // ascending order, even though the input repeats B and A.
+    let mut dup = Rig::new(&ai3rt_value());
+    assert_eq!(
+        drive(&mut dup, &sides, &with_duplicates, MVP_AI_BUDGET),
+        report(
+            vec![ap(a(), Decision::Hold), ap(b(), Decision::Hold)],
+            false
+        )
+    );
+    dup.assert_authority();
+
+    // Control: each actor listed once gives the same report and the same
+    // authority.
+    let mut once = Rig::new(&ai3rt_value());
+    assert_eq!(
+        drive(&mut once, &sides, &plain, MVP_AI_BUDGET),
+        report(
+            vec![ap(a(), Decision::Hold), ap(b(), Decision::Hold)],
+            false
+        )
+    );
+    once.assert_authority();
+    assert_eq!(dup.host.authority_hash(), once.host.authority_hash());
+}
+
+// ---------------------------------------------------------------------------
+// D-6: exactly `actors_per_drive` candidates is not capped (a19).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn d6_exact_cap_is_not_capped() {
+    let sides = sides_abc();
+    let actors = [c(), e7(), a(), b()];
+    let at_tick_one = |rig: &mut Rig| {
+        assert_eq!(rig.host.tick(), Ok(()));
+        rig.mirror_tick();
+        assert_eq!(rig.host.server_tick(), 1);
+    };
+
+    // n == k == 3 at tick 1: every candidate is decided, ascending. A rotated
+    // order would start at `cand[1]` (B), so ascending proves no rotation.
+    let mut exact = Rig::new(&ai3rt_value());
+    at_tick_one(&mut exact);
+    assert_eq!(
+        drive(
+            &mut exact,
+            &sides,
+            &actors,
+            AiBudget {
+                decisions_per_turn: 16,
+                actors_per_drive: 3
+            }
+        ),
+        report(
+            vec![
+                ap(a(), Decision::Hold),
+                ap(b(), Decision::Hold),
+                ap(c(), Decision::Hold)
+            ],
+            false
+        )
+    );
+    exact.assert_authority();
+
+    // Control: n == k + 1 is capped and rotated at the same tick.
+    let mut over = Rig::new(&ai3rt_value());
+    at_tick_one(&mut over);
+    assert_eq!(
+        drive(
+            &mut over,
+            &sides,
+            &actors,
+            AiBudget {
+                decisions_per_turn: 16,
+                actors_per_drive: 2
+            }
+        ),
+        report(vec![ap(b(), Decision::Hold), ap(c(), Decision::Hold)], true)
+    );
+    over.assert_authority();
+
+    // A cap above n never caps and never rotates either.
+    let mut under = Rig::new(&ai3rt_value());
+    at_tick_one(&mut under);
+    assert_eq!(
+        drive(
+            &mut under,
+            &sides,
+            &actors,
+            AiBudget {
+                decisions_per_turn: 16,
+                actors_per_drive: 4
+            }
+        ),
+        report(
+            vec![
+                ap(a(), Decision::Hold),
+                ap(b(), Decision::Hold),
+                ap(c(), Decision::Hold)
+            ],
+            false
+        )
+    );
+    under.assert_authority();
+}
+
+// ---------------------------------------------------------------------------
+// D-5: a new round restarts the count for the same head (a10).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn d5_new_round_restarts_the_count() {
+    let sides = sides_abc();
+    let one = AiBudget {
+        decisions_per_turn: 1,
+        actors_per_drive: 8,
+    };
+    // `FS3`: the strike keeps the turn, so A's head survives its decision.
+    let mut rig = Rig::new(&fs3_value());
+
+    // Round r: A's one decision is the strike, which keeps its turn.
+    let hit = use_ability(a(), strike(), b());
+    assert_eq!(
+        drive(&mut rig, &sides, &[a()], one),
+        report(vec![ap(a(), Decision::Act(hit))], false)
+    );
+    rig.mirror_checked_act(a(), &hit);
+    rig.assert_authority();
+    assert_eq!(rig.host.awaiting_orders(), vec![a()]);
+    let round = rig.oracle.world().combat().expect("an encounter").round;
+
+    // Control: the same head in the same round is capped, so the count is not
+    // per call.
+    let end_a = end_turn(a());
+    assert_eq!(
+        drive(&mut rig, &sides, &[a()], one),
+        report(vec![ap(a(), Decision::Act(end_a))], true)
+    );
+    rig.mirror_checked_act(a(), &end_a);
+    rig.assert_authority();
+    assert_eq!(rig.host.awaiting_orders(), vec![b()]);
+
+    // B and C end their turns without the driver, so the stored counter still
+    // names A and the round rolls over under it.
+    let end_b = end_turn(b());
+    assert_eq!(rig.host.host_action(&end_b), Ok(None));
+    rig.mirror_checked_act(b(), &end_b);
+    let end_c = end_turn(c());
+    assert_eq!(rig.host.host_action(&end_c), Ok(None));
+    rig.mirror_checked_act(c(), &end_c);
+    rig.assert_authority();
+    assert_eq!(
+        rig.oracle.world().combat().expect("an encounter").round,
+        round + 1
+    );
+    // The same head holds the new round, and the stored counter named it at
+    // the cap.
+    assert_eq!(rig.host.awaiting_orders(), vec![a()]);
+
+    // The new round restarts the count: this call decides, it is not the
+    // capped `EndTurn`.
+    let hit2 = use_ability(a(), strike(), b());
+    assert_eq!(
+        drive(&mut rig, &sides, &[a()], one),
+        report(vec![ap(a(), Decision::Act(hit2))], false)
+    );
+    rig.mirror_checked_act(a(), &hit2);
+    rig.assert_authority();
+}
+
+// ---------------------------------------------------------------------------
+// D-6: the real-time fight gate needs two live combatants (a05, a09).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn d6_two_live_combatants_gate() {
+    let sides = sides_abc();
+
+    // One live combatant (A), the encounter still present: the gate holds the
+    // call back, and nothing changes.
+    let mut solo = Rig::new(&ai3rt_solo_value());
+    {
+        let world = solo.oracle.world();
+        assert!(world.combat().is_some(), "the encounter is still on");
+        let alive = [a(), b(), c()]
+            .iter()
+            .filter(|entity| !world.combatants().get(**entity).expect("present").dead())
+            .count();
+        assert_eq!(alive, 1, "exactly one live combatant");
+    }
+    let before = state_of(&mut solo.host);
+    assert_eq!(
+        drive(&mut solo, &sides, &[a(), b(), c()], MVP_AI_BUDGET),
+        report(vec![], false)
+    );
+    solo.assert_state(&before);
+    solo.assert_authority();
+
+    // Control: with two live combatants the same actors decide (B is alive,
+    // C is dead and skipped).
+    let mut pair = Rig::new(&ai3rt_dagger_value());
+    assert_eq!(
+        drive(&mut pair, &sides, &[a(), b(), c()], MVP_AI_BUDGET),
+        report(
+            vec![ap(a(), Decision::Hold), ap(b(), Decision::Hold)],
+            false
+        )
+    );
+    pair.assert_authority();
+}
+
+// ---------------------------------------------------------------------------
+// D-6: the fight gate at `RT_CLOCK_MAX` (a06, a07).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn d6_rt_clock_bound() {
+    let sides = sides_abc();
+    let actors = [a(), b(), c()];
+    assert_eq!(RT_CLOCK_MAX, 2_147_483_647);
+
+    // At the bound the fight is over for the driver: empty and uncapped.
+    let mut at = Rig::new(&ai3rt_elapsed_value(RT_CLOCK_MAX));
+    {
+        let combat = at.oracle.world().combat().expect("an encounter");
+        assert_eq!(combat.clock.expect("a clock").elapsed, RT_CLOCK_MAX);
+        for entity in [a(), b(), c()] {
+            let combatant = at.oracle.world().combatants().get(entity).expect("present");
+            assert!(!combatant.dead(), "the gate is the clock, not the dead");
+        }
+    }
+    let before = state_of(&mut at.host);
+    assert_eq!(
+        drive(&mut at, &sides, &actors, MVP_AI_BUDGET),
+        report(vec![], false)
+    );
+    at.assert_state(&before);
+    at.assert_authority();
+
+    // One tick below the bound every live candidate decides.
+    let mut below = Rig::new(&ai3rt_elapsed_value(RT_CLOCK_MAX - 1));
+    assert_eq!(
+        drive(&mut below, &sides, &actors, MVP_AI_BUDGET),
+        report(
+            vec![
+                ap(a(), Decision::Hold),
+                ap(b(), Decision::Hold),
+                ap(c(), Decision::Hold)
+            ],
+            false
+        )
+    );
+    below.assert_authority();
+}
+
+// ---------------------------------------------------------------------------
+// D-8: a refusal in real time does not stop the call (a29).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn d8_rt_refusal_does_not_stop_the_call() {
+    let sides = sides_abc();
+    let mut rig = Rig::new(&ai3rt_swing_value());
+    // B stands one metre from A, inside the strike's range, and is not
+    // controlled; C stands out of range and has no mesh, so it holds.
+    rig.host.place(b(), m(2, 1)).expect("places");
+    rig.mirror_place(b(), m(2, 1));
+
+    // Fill the capture journal with swings: each order resolves on the next
+    // tick (`round_ticks` 1) and appends one record, none acknowledged. The
+    // first order the journal has no room for stops the fill.
+    let swing_a = use_ability(a(), strike(), b());
+    let mut filled = 0_u32;
+    loop {
+        match rig.host.host_action(&swing_a) {
+            Ok(None) => {}
+            Err(HostError::CaptureFull) => break,
+            other => panic!("unexpected order result: {other:?}"),
+        }
+        rig.oracle
+            .perform_action(&swing_a)
+            .expect("the mirror orders");
+        rig.mirror_ack();
+        assert_eq!(rig.host.tick(), Ok(()));
+        rig.mirror_tick();
+        filled += 1;
+        assert!(filled <= 4096, "the journal never filled");
+    }
+    assert!(filled > 0, "the journal filled before one record");
+    assert_eq!(rig.host.last_capture(), 4096, "the capture journal is full");
+    rig.assert_authority();
+
+    // The first candidate's strike is refused by the full journal; C's `Hold`
+    // is still applied in the same call, after it.
+    let before = state_of(&mut rig.host);
+    assert_eq!(
+        drive(&mut rig, &sides, &[a(), c()], MVP_AI_BUDGET),
+        report(
+            vec![
+                rf(a(), Decision::Act(swing_a), HostError::CaptureFull),
+                ap(c(), Decision::Hold)
+            ],
+            false
+        )
+    );
+    rig.assert_state(&before);
+    rig.assert_authority();
+
+    // Control: with room the same call applies both, in order.
+    rig.host
+        .acknowledge_captures(rig.host.last_capture())
+        .expect("acks");
+    assert_eq!(
+        drive(&mut rig, &sides, &[a(), c()], MVP_AI_BUDGET),
+        report(
+            vec![ap(a(), Decision::Act(swing_a)), ap(c(), Decision::Hold)],
+            false
+        )
+    );
+    rig.oracle
+        .perform_action(&swing_a)
+        .expect("the mirror orders");
+    rig.mirror_ack();
+    rig.assert_authority();
 }
