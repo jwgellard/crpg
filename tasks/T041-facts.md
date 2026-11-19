@@ -69,7 +69,7 @@
 ## Existing testkit and test patterns
 
 - `Crate layout` (`crates/crpg-testkit/src/lib.rs:8`) — two modules, `harness` and `replay`, re-exported at the root (`crates/crpg-testkit/src/lib.rs:11`); tests-only adapters live in `tests/` and never ship.
-- `Fixtures` (`crates/crpg-testkit/fixtures/`) — three portable `.replay` inputs: `replay_basic`, `combat_basic`, `combat_srd`; per-target goldens beside them (`replay_basic`, `combat_basic`, `srd_lite` × Windows/MSVC + Linux/GNU).
+- `Fixtures and goldens` (`crates/crpg-testkit/AGENTS.md:263`) — portable input `fixtures/replay_basic.replay` plus per-target goldens (`crates/crpg-testkit/AGENTS.md:265`); `combat_basic`/`combat_srd` replay inputs and per-target goldens live beside them (see the combat sections of the same contract).
 - `T018c conformance` (`crates/crpg-net/tests/conformance.rs:1`) — net-local T018 exit gate: malicious clients, filtered desync oracle, 5,000-tick exercise, receipt liveness; sim-backed driver double plus `InMemoryTransport`, replicas compared against independent `ExpectedView`s.
 - `Malicious-client matrix` (`crates/crpg-net/tests/conformance.rs:391`) — Suite 1: forged and cross-client ids rejected and kindred hostile cases over the driver double.
 - `Filtered desync oracle` (`crates/crpg-net/tests/conformance.rs:1022`) — Suite 2: per-peer replicas pumped from due deltas and compared against expected views (`filtered_replica_converges_per_peer`, `crates/crpg-net/tests/conformance.rs:1039`).
@@ -101,4 +101,4 @@
 
 ## Agent log
 
-- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T041 facts · Skeleton with all section headings so later edits fill one section per commit.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T041 facts · Fact sheet for the headless-client/desync contract: all seven sections with checked `path:line` citations and no recommendations.
