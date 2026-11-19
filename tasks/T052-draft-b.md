@@ -56,16 +56,14 @@ Design decisions this contract makes. Each needs approval with the contract.
    running graphs are entities with a `ScriptContinuation` component
    (`docs/CRPG_ENGINE_SPEC.md:624`), so `World` gains three `ComponentStore`
    fields (`crates/crpg-sim/src/world.rs:104` is the `creatures` precedent,
-   `:109` the `movers` one). This reuses the whole store machinery for free:
-   despawn-total (`crates/crpg-sim/AGENTS.md:180–187`), no-dangling load
-   validation (`crates/crpg-sim/src/world.rs:150`), pair-list serde
-   (`crates/crpg-sim/AGENTS.md:205–213`) and absence-skip bytes
-   (`crates/crpg-sim/src/world.rs:102–108`). Own entities also keep transfer
-   total: the move contract moves one entity's `EntityMeta`, `Transform`,
-   record and mover (`crates/crpg-sim/AGENTS.md:148–161`), and a component
-   that lived on a game entity would have to extend that contract or fail
-   the move (the T139 trap, `crates/crpg-sim/AGENTS.md:594`); a continuation
-   entity is never a transfer candidate, so the check is one refusal.
+   `:109` the `movers` one). This reuses the store machinery for free:
+   despawn-total, no-dangling load validation, pair-list serde and
+   absence-skip bytes (`crates/crpg-sim/AGENTS.md:180–187`,
+   `:205–213`; `crates/crpg-sim/src/world.rs:102–108`, `:150`). Own
+   entities also keep transfer total: a component on a game entity would
+   have to extend the move contract or fail the move (the T139 trap,
+   `crates/crpg-sim/AGENTS.md:594`); a continuation entity is never a
+   transfer candidate, so the check is one refusal.
    *Rejected:* one `ScriptState` resource struct with `BTreeMap`s on
    `World` (a second serde/validation idiom beside the stores, and entity
    references inside it would need hand-written dangling checks).
@@ -90,7 +88,7 @@ Design decisions this contract makes. Each needs approval with the contract.
    `tasks/POST-T018-DECISIONS.md:383`–`389`) and T054 advances dialogue and
    quest components. The countdown is pure data mechanics, like the
    encounter clock advancing in its stage
-   (`crates/crpg-sim/AGENTS.md:385–391`); execution stays above `crpg-sim`, which still has no
+   (`crates/crpg-sim/AGENTS.md:385–391`); execution stays above `crpg-sim`,
    `crpg-script` edge (`tools/lint/deps.py` stays unedited).
    *Rejected:* no sim stage, host polls and decrements (the host cannot
    mutate authoritative state directly, root `AGENTS.md:13–16`; and the
@@ -438,17 +436,14 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
   except `remaining` (already 0). *Fails if:* the sim counts, caps or clears
   anything.
 - **G1 `continuation_golden`.** `tests/support/continuation_schedule.rs`
-  (also compiled by
-  `examples/generate_continuation_golden.rs`): seed 42, one continuation at
-  `remaining: 600`, one open dialogue, one quest stage, plus the T036b
-  movement walk so stage 5 runs beside stage 4. Save at tick 500, load, run
-  to 1000: per-step `state_hash` lines meet
+  (also compiled by `examples/generate_continuation_golden.rs`): seed 42,
+  one continuation at `remaining: 600`, one open dialogue, one quest stage,
+  plus the T036b movement walk so stage 5 runs beside stage 4. Save at tick
+  500, load, run to 1000: per-step `state_hash` lines meet
   `tests/goldens/continuation_v1.<target>.txt`, and equal the uninterrupted
   1000-tick run's hashes step for step (B-9). *Control:* the same schedule
   with no continuation entities reproduces the movement golden's hashes
-  exactly (absence-skip: no golden moves). *Fails if:* any of the 1001
-  lines differs, or the no-continuation run diverges from movement's
-  baseline.
+  exactly (absence-skip: no golden moves). *Fails if:* any line differs.
 - **G2 `restart_keeps_waits`.** Host file-backed save at tick 500 with an
   armed `remaining: 100` continuation, an open dialogue and quest stage
   `started`; reload under a greater incarnation; run to tick 600. The
@@ -526,17 +521,12 @@ one crate (`crpg-sim`), per the working rules (root `AGENTS.md:57–58`).
 
 ## Open questions (each with a recommendation)
 1. **Should `HOST_SAVE_VERSION` 1 → 2, or should the bump live on the
-   checkpoint instead?** The `World` bytes sit inside checkpoint opaque
-   payloads (`crates/crpg-server/src/checkpoint.rs:1`), so either layer can
-   carry the generation. *Recommend:* the host save (Reading 5) — saves
+   checkpoint instead?** *Recommend:* the host save (Reading 5) — saves
    are the spec's versioned unit (`docs/CRPG_ENGINE_SPEC.md:851`) and old
    files load unchanged.
-2. **Does G2 belong to T052's suite or to Gate 10's server suite?** G2
-   drives host save/load but changes no server file; it could live in
-   `crates/crpg-server/tests/host_save.rs` instead (Gate 10's home,
-   `crates/crpg-server/tests/host_save.rs:706`). *Recommend:* keep it in
-   T052's suite using the existing host helpers — the behaviour (B-10) is
-   T052's, and no server file is touched.
+2. **Does G2 belong to T052's suite or to Gate 10's server suite?**
+   *Recommend:* keep it in T052's suite using the existing host helpers —
+   the behaviour (B-10) is T052's, and no server file is touched.
 3. **One preflight error for all three stores, or one per store?** Transfer
    refusal and load rejection could name the offending store
    (`HasContinuation` vs `HasDialogue` vs `HasQuest`).
