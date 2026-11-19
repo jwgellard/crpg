@@ -488,6 +488,96 @@ Every startup error prints exactly one line to stderr —
 
 ## Tests
 
+Unit cases in `crates/crpg-server/tests/dedicated_binary.rs` for the pure
+`parse`/`resolve`/`Log` parts, plus black-box cases driving
+`env!("CARGO_BIN_EXE_crpg-server")` for the process-level behaviours (the
+`crpgc` discipline, `crates/crpg-cli/tests/demo.rs:3–9`). The serve path is
+proved by B-6/D6 against the existing host save fixture and a checked-in
+test-only DER cert/key (like the QUIC tests' DER fixture,
+`crates/crpg-net-quic/AGENTS.md` "test-only" trap), never an operator
+identity.
+
+- **D1 `help_and_version`.** `parse` of `["--help"]` → `Help`, of
+  `["--version"]` → `Version`; the binary's `--version` prints `0.1.0\n` to
+  stdout and exits 0 (the package version,
+  `crates/crpg-server/Cargo.toml:3`), and `--help` prints text containing
+  `Usage:` and `--listen` and exits 0. *Control:* `["--version", "--listen"]`
+  still prints the version and exits 0 before parsing the rest. *Fails if:*
+  `--help`/`--version` read a file, bind a socket, or exit non-zero.
+- **D2 `parse_errors`.** Each of `["--bogus"]`, `["--listen"]` (missing
+  value), `["--incarnation", "x"]`, `["--area-min", "0,0"]` (not 3 ints),
+  `["stray"]`, `["--area-min", "0,0,0"]` (no `--area-max`) returns the named
+  `CliError`; the binary prints `crpg-server: <Variant>` to stderr and exits
+  2. *Control:* `["--area-min", "0,0,0", "--area-max", "1,1,1"]` parses
+  cleanly. *Fails if:* any of these exits 0, or a malformed value is silently
+  accepted.
+- **D3 `precedence_and_missing`.** A config file with `listen` set and the
+  CLI giving `--listen` uses the CLI value; a file value with no CLI flag is
+  used; a required field absent from both is `Missing("<field>")`. *Control:*
+  the same file with the CLI flag omitted takes the file's `listen`. *Fails
+  if:* a CLI `None` overwrites a file value, or a present-but-empty value is
+  not `Missing`.
+- **D4 `file_loading`.** A missing `--cert` path → `ConfigError::Io`; a valid
+  DER cert/key pair loads into `ServerIdentity::new(cert, key)`. *Control:*
+  the same bytes read from a real temp file succeed. *Fails if:* a cert/key
+  that `bind` would reject loads without error, or a valid pair is refused.
+- **D5 `incarnation_guard`.** With `<save>.incarnation` containing `7`,
+  `--incarnation 7` → `IncarnationNotIncreasing { supplied: 7, last: 7 }`;
+  `--incarnation 8` → `Ok` and the sidecar is rewritten to `8`; a missing
+  sidecar with `--incarnation 1` → `Ok`. *Control:* `--incarnation 6` also
+  refuses (not just equality). *Fails if:* the guard allows a value ≤ `last`,
+  or rewrites the sidecar on a refused load.
+- **D6 `startup_order_and_start_line`.** With a host save, a test cert/key,
+  an invitation file and `--area-min/--area-max`, the binary binds, spawns
+  and writes exactly one `start` line whose `pin` is the 64-hex
+  `CertificatePin` of the cert, then serves. *Control:* without
+  `--area-min/--area-max` the binary still starts (B-7) and no `bind_area_bounds`
+  runs. *Fails if:* `bind_area_bounds` runs after unpause or after the loop
+  starts, the `start` line is written before spawn, or a missing save/cert
+  binds a socket.
+- **D7 `navigation_wiring`.** With bounds present, `bind_area_bounds(min,max)`
+  is called exactly once before unpause (a host whose `nav_revision()` was
+  `None` now returns `Some`); a `NavBake` refusal fails startup with exit 2.
+  *Control:* with no bounds, `nav_revision()` stays `None` and startup
+  succeeds. *Fails if:* the order is wrong (bound after unpause), or no-bounds
+  is treated as an error.
+- **D8 `last_report`.** `QuicHost::last_report()` is `None` before any pump;
+  after one `pump`, it is `Some` the report that call returned; after a
+  second pump it is the newer report. *Control:* a host that never pumps
+  stays `None` across `last_report` calls. *Fails if:* the field is saved in
+  a checkpoint (its bytes change), or `last_report` mutates the host.
+- **D9 `reject_line`.** `Log::reject(1000, 0, Some(30), Some(1), 4097)` writes
+  `crpg-server 1000 reject lane=0 code=30 peer=1 len=4097\n`;
+  `Log::reject(1000, 0, None, None, 0)` writes `crpg-server 1000 reject
+  lane=0 code=- peer=- len=0\n`. *Control:* `lane=1` changes `lane=0` to
+  `lane=1` and nothing else. *Fails if:* the line is not byte-exact, a field
+  is reordered, or a refused frame produces no line (B-13).
+- **D10 `log_destination`.** `Log::new(Stderr)` writes only to stderr;
+  `Log::new(Both(p))` writes the same `start`/`reject`/`stop` lines to both
+  stderr and the file at `p`. *Control:* `Log::from_writer(Vec<u8>)` captures
+  the exact bytes (used by D9). *Fails if:* a sink is skipped or the file is
+  truncated rather than appended.
+- **D11 `shutdown`.** After stdin EOF (or the line `quit`), the binary calls
+  `stop`/`join`, writes a final `save_host_file` when `--save` is set, writes
+  `crpg-server stop\n`, and exits 0. *Control:* a `quit` line and EOF produce
+  the same exit. *Fails if:* the loop thread is leaked, the final save is
+  skipped when `--save` is set, or exit is non-zero on a clean shutdown.
+- **D12 `log_line_order`.** A `start` line precedes every `reject` line, which
+  precedes the `stop` line, in the shared sink. *Control:* with no clients,
+  only `start` and `stop` appear. *Fails if:* a `reject` line precedes
+  `start`.
+- **D13 `no_panic_on_rejection`.** A scripted client sends an oversized
+  lane-0 frame; the server writes one `reject` line for it and keeps serving
+  (the next valid frame is accepted), and the process does not panic.
+  *Control:* the same client sending a valid frame produces no `reject` line.
+  *Fails if:* the server panics, drops the connection without a line, or a
+  `reject` write error propagates.
+- **C1–C3 (workflow review, not code).** A reviewer reads `.github/workflows/ci.yml`
+  and confirms the `server-artifacts` job: the two-OS matrix on GitHub-hosted
+  runners, `cargo build --release --locked -p crpg-server --bin crpg-server`,
+  the two artifact names and `if-no-files-found: error`, the `rust` scope
+  guard, and that no existing job or other workflow file changed.
+
 ## What must not change
 
 ## Dependency edges
