@@ -51,9 +51,45 @@ every place a parser or logger library would otherwise be tempting
 
 ## Parts
 
+Two parts, both S-set. T040a is S-set because the T040 row is `C → I, S`
+(`docs/IMPLEMENTATION_PLAN.md:245`); T040b is S-set because
+`.github/workflows/**` is in the serialized set (`docs/IMPLEMENTATION_PLAN.md:96`).
+Order: **T040a then T040b** — T040b's artifact job builds and uploads the
+binary T040a produces, so the job name and the binary name must be stable
+before the workflow lands. T040a may run alone; T040b starts after T040a
+merges.
+
+| Part | Crate / tree | Scope | S-set |
+|---|---|---|---|
+| T040a | `crpg-server` | the binary: CLI, config, certificate/key, invitations, save + incarnation, logging (the D67a line and its destination), shutdown, hosting the T154 loop, `bind_area_bounds`/`place` wiring | **yes** (T040 row) |
+| T040b | `.github/workflows/ci.yml` | the gate-12 dedicated-server artifact jobs (Windows/MSVC and Linux/GNU), no Rust | **yes** (workflows) |
+
+True prerequisite: T154a–d merged (`QuicHosting`, `runner`, the loop), T039
+(save), T023b (QUIC adapter), T153 (`Host::drive_ai`), T150c
+(`QuicHost::advance`, `register_v4_invitation`). The plan's stale
+`T023b` prerequisite (`docs/IMPLEMENTATION_PLAN.md:245`) predates the T154
+run loop; the handoff is `task/T154-c1:tasks/T154.md:245–252`.
+
 ### T040a owns
+- `crates/crpg-server/src/main.rs` (replaced: the entry, wiring and shutdown)
+- `crates/crpg-server/src/cli.rs` (new, binary-only: `std::env::args` parsing)
+- `crates/crpg-server/src/config.rs` (new, binary-only: JSON config load and
+  validation over the existing `serde_json` edge)
+- `crates/crpg-server/src/logline.rs` (new, binary-only: the std-only log
+  writer and its line formats)
+- `crates/crpg-server/src/quic.rs` (one additive item: `QuicHost::last_report`,
+  Reading 8; a Manager edit to T023b/T154d's surface lists)
+- `crates/crpg-server/tests/dedicated_binary.rs` (new: black-box binary cases
+  and unit cases for the pure `cli`/`config`/`logline` parts)
+- `docs/architecture/crpg-server.md` (the "planned and **not** here" list
+  shrinks), `crates/crpg-server/AGENTS.md` (invariant 7 fence amended, the
+  binary surface named, new traps)
+- goldens: none new, none moved.
 
 ### T040b owns
+- `.github/workflows/ci.yml` (one new `server-artifacts` job; no other
+  workflow file is created or touched)
+- goldens: none new, none moved.
 
 ## Readings
 
