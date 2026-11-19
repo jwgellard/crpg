@@ -1953,3 +1953,315 @@ enum Disposition {
     /// The binding was fenced: stop this connection.
     Stop,
 }
+
+// ---------------------------------------------------------------------------
+// Fix-round unit tests (F3, F5, F6): arms the public rig cannot race into.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::net::SocketAddr;
+    use std::time::Instant;
+
+    use crpg_net::protocol_resume::ResumeRequest;
+    use crpg_net_quic::{
+        ClientConfig, ClientLimits, QuicClient, ServerConfig, ServerIdentity, ServerLimits,
+    };
+    use crpg_sim::HistoryWorld;
+
+    use crate::host::{HostConfig, ProtocolSelection};
+
+    const NOW: u64 = 1_000;
+    const WAIT: Duration = Duration::from_secs(30);
+    const FIXTURE: &str = include_str!("../tests/fixtures/three_combatants.json");
+    const CERT: &[u8] = include_bytes!("../../crpg-net-quic/tests/fixtures/server_a.cert.der");
+    const KEY: &[u8] = include_bytes!("../../crpg-net-quic/tests/fixtures/server_a.key.pk8.der");
+    const CREDENTIAL: [u8; 32] = [0xA1; 32];
+
+    fn fixture() -> HistoryWorld {
+        let mut history: HistoryWorld =
+            serde_json::from_str(FIXTURE).expect("fixture loads through validated serde");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        history
+    }
+
+    fn server_identity() -> ServerIdentity {
+        ServerIdentity::new(CERT.to_vec(), KEY.to_vec())
+    }
+
+    fn client_config() -> ClientConfig {
+        ClientConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            pin: server_identity().pin(),
+            limits: ClientLimits::v1(),
+        }
+    }
+
+    fn credential() -> Credential {
+        Credential::new(CREDENTIAL.to_vec()).expect("credential length in transport bounds")
+    }
+
+    /// A resumable adapter over the fixture host, with A registered.
+    fn adapter() -> (QuicHost, u64) {
+        let host = Host::from_history(
+            fixture(),
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let server = QuicServer::bind_resumable(ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            identity: server_identity(),
+            limits: ServerLimits::v1(),
+        })
+        .expect("bind resumable server");
+        let qh = QuicHost::start_resumable(host, server, NOW).expect("starts over a fresh host");
+        let mut qh = qh;
+        qh.register_invitation(Invitation {
+            credential: credential(),
+            control: ControlGrant { actors: vec![] },
+            grants: DisclosureGrants::default(),
+        })
+        .expect("registers A");
+        (qh, NOW)
+    }
+
+    /// Pumps at `+100 ms` until `cond` holds; guards only.
+    fn pump_until(
+        qh: &mut QuicHost,
+        now: &mut u64,
+        what: &str,
+        mut cond: impl FnMut(&QuicPumpReport) -> bool,
+    ) -> QuicPumpReport {
+        let start = Instant::now();
+        loop {
+            *now += 100;
+            let report = qh.pump(*now).expect("pump");
+            if cond(&report) {
+                return report;
+            }
+            assert!(start.elapsed() < WAIT, "deadline: {what}");
+            qh.wait(Duration::from_millis(5));
+        }
+    }
+
+    /// Connects and accepts a `/2` hello of A through the adapter.
+    fn connect_v2(qh: &mut QuicHost, now: &mut u64) -> (QuicClient, ConnectionId, PeerHandle) {
+        let addr = qh.local_addr();
+        let hello = crpg_net_quic::Hello {
+            wire_version: 2,
+            credential: credential(),
+        };
+        let pending = std::thread::spawn(move || {
+            QuicClient::connect_framed(client_config(), addr, &hello, Framing::V2)
+        });
+        let report = pump_until(qh, now, "hello decided", |report| !report.hellos.is_empty());
+        assert_eq!(report.hellos.len(), 1, "{:?}", report.hellos);
+        let decision = report.hellos[0].clone();
+        let HelloOutcome::Accepted { peer, .. } = decision.outcome else {
+            panic!("expected Accepted, got {decision:?}");
+        };
+        let client = pending.join().expect("client thread").expect("connect");
+        (client, decision.conn, peer)
+    }
+
+    fn request(epoch: [u8; 16], proof_bytes: Vec<u8>) -> ResumeRequest {
+        ResumeRequest {
+            epoch,
+            fence: ConnectionFence::new(1).expect("first fence"),
+            proof: ResumeProof::new(proof_bytes).expect("32-byte proof"),
+            claims: Vec::new(),
+        }
+    }
+
+    /// F5a (C4): a frame on a connection whose session fence moved on is
+    /// refused and retired as `Resumed`; the host session stays bound.
+    #[test]
+    fn a_fenced_frame_retires_without_unbinding() {
+        let (mut qh, mut now) = adapter();
+        let (mut client, conn, peer) = connect_v2(&mut qh, &mut now);
+        let epoch = qh.host.epoch(peer).expect("bound");
+        // Move the session fence behind the adapter, as a live resume would.
+        let proof = resume_proof(&credential(), epoch).expect("proof");
+        let answer = qh
+            .host
+            .resume_peer(&request(epoch, proof.as_bytes().to_vec()), now)
+            .expect("resume decides");
+        assert!(matches!(answer, ResumeAnswer::Accepted { .. }));
+
+        client.try_send(&[2, 1, 0, 0]).expect("client lane-0 send");
+        let report = pump_until(&mut qh, &mut now, "frame refused", |report| {
+            report.frames_refused > 0
+        });
+        assert_eq!(report.frames_refused, 1);
+        assert_eq!(
+            report.fences,
+            vec![Fence {
+                conn,
+                peer,
+                cause: FenceCause::Resumed,
+            }]
+        );
+        assert!(
+            report
+                .calls
+                .iter()
+                .all(|call| !matches!(call, HostCall::UnbindPeer { .. })),
+            "the resumed binding is not unbound: {:?}",
+            report.calls
+        );
+        assert_eq!(qh.host().epoch(peer), Ok(epoch), "the peer stays bound");
+    }
+
+    /// F5b (C6): a frame for a session the host no longer has is refused and
+    /// fenced as `EpochClosed`, not `Resumed`.
+    #[test]
+    fn a_frame_for_an_unbound_peer_fences_as_epoch_closed() {
+        let (mut qh, mut now) = adapter();
+        let (mut client, conn, peer) = connect_v2(&mut qh, &mut now);
+        qh.host.unbind_peer(peer);
+        client.try_send(&[2, 1, 0, 0]).expect("client lane-0 send");
+        // Queue the frame before the pump: phase 2's fence check must see it
+        // before phase 4's epoch reconcile fences the connection.
+        let start = Instant::now();
+        while qh
+            .connection_stats(conn)
+            .map_or(0, |stats| stats.inbound_frames)
+            == 0
+        {
+            assert!(start.elapsed() < WAIT, "deadline: frame queued");
+            qh.wait(Duration::from_millis(5));
+        }
+        let report = pump_until(&mut qh, &mut now, "frame refused", |report| {
+            report.frames_refused > 0
+        });
+        assert_eq!(report.frames_refused, 1);
+        assert_eq!(
+            report.fences,
+            vec![Fence {
+                conn,
+                peer,
+                cause: FenceCause::EpochClosed,
+            }]
+        );
+        assert!(
+            report
+                .calls
+                .iter()
+                .all(|call| !matches!(call, HostCall::UnbindPeer { .. })),
+            "an unbound peer is not unbound again: {:?}",
+            report.calls
+        );
+        assert_eq!(qh.host().epoch(peer), Err(HostError::UnknownPeer));
+    }
+
+    /// X5: a held frame is discarded when a resumed binding retires. No
+    /// check-frame refusal can coincide with a held frame (the held retry
+    /// always runs first and stops the drain), so the private discard arm is
+    /// reached directly.
+    #[test]
+    fn a_held_frame_is_discarded_when_a_resumed_binding_retires() {
+        let (mut qh, mut now) = adapter();
+        let (client, conn, peer) = connect_v2(&mut qh, &mut now);
+        let _client = client;
+        match qh.conns.get_mut(&conn) {
+            Some(Conn::Bound(bound)) => bound.held = Some(vec![1, 2, 3]),
+            _ => panic!("expected a bound connection"),
+        }
+        let mut report = QuicPumpReport::new();
+        let fence = qh
+            .retire_resumed(conn, Some(&mut report))
+            .expect("a bound entry retires");
+        assert_eq!(
+            fence,
+            Fence {
+                conn,
+                peer,
+                cause: FenceCause::Resumed,
+            }
+        );
+        assert_eq!(report.frames_discarded, 1);
+        assert_eq!(report.fences, vec![fence]);
+    }
+
+    /// F6 (G2, G3): `Transport` and `Reset` losses start a grace too.
+    #[test]
+    fn transport_and_reset_losses_start_a_grace() {
+        for reason in [CloseReason::Transport, CloseReason::Reset] {
+            let (mut qh, mut now) = adapter();
+            let (_client, conn, peer) = connect_v2(&mut qh, &mut now);
+            match qh.conns.get_mut(&conn) {
+                Some(Conn::Bound(bound)) => {
+                    bound.transport_closed = Some(reason);
+                    bound.drained = true;
+                }
+                _ => panic!("expected a bound connection"),
+            }
+            let report = pump_until(&mut qh, &mut now, "grace from a silent loss", |report| {
+                report
+                    .calls
+                    .iter()
+                    .any(|call| matches!(call, HostCall::BeginGrace { result: Ok(_), .. }))
+            });
+            assert!(
+                report.calls.iter().any(|call| matches!(
+                    call,
+                    HostCall::BeginGrace {
+                        peer: p,
+                        result: Ok(_)
+                    } if *p == peer
+                )),
+                "a {reason:?} close is a silent loss: {:?}",
+                report.calls
+            );
+            assert!(qh.host().grace_deadline(peer).is_some());
+        }
+    }
+
+    /// F4b (O2): `end_grace_for` clears the grace record, not just the host
+    /// deadline. Phase 4's N-6 sweep clears a stale record on the next pump,
+    /// so the public hello path cannot distinguish the mutant; assert the
+    /// state directly after the public change, with no pump in between.
+    #[test]
+    fn a_grant_change_clears_the_grace_record() {
+        let (mut qh, mut now) = adapter();
+        let (client, conn, peer) = connect_v2(&mut qh, &mut now);
+        let _client = client;
+        match qh.conns.get_mut(&conn) {
+            Some(Conn::Bound(bound)) => {
+                bound.transport_closed = Some(CloseReason::IdleTimeout);
+                bound.drained = true;
+            }
+            _ => panic!("expected a bound connection"),
+        }
+        pump_until(&mut qh, &mut now, "begin grace", |report| {
+            report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::BeginGrace { result: Ok(_), .. }))
+        });
+        let invitation = qh
+            .invitations
+            .iter()
+            .find_map(|(id, record)| (record.graced == Some(peer)).then_some(*id))
+            .expect("the grace is recorded");
+        qh.set_invitation_grants(invitation, DisclosureGrants::default())
+            .expect("a valid grant change");
+        assert_eq!(qh.host().grace_deadline(peer), None);
+        assert!(
+            qh.invitations
+                .get(&invitation)
+                .expect("known invitation")
+                .graced
+                .is_none(),
+            "the ended grace's record is cleared"
+        );
+    }
+}

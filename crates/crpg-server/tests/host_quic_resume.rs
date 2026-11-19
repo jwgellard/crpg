@@ -288,7 +288,18 @@ fn connect_resume(
     session: Welcome,
     request: &[u8],
 ) -> ResumeConnect {
-    let pending = connect_resume_async(ClientLimits::v1(), qh.local_addr(), session, request);
+    connect_resume_via(qh, clock, qh.local_addr(), session, request)
+}
+
+/// As [`connect_resume`], against an explicit address (a relay).
+fn connect_resume_via(
+    qh: &mut QuicHost,
+    clock: &mut TestClock,
+    server: SocketAddr,
+    session: Welcome,
+    request: &[u8],
+) -> ResumeConnect {
+    let pending = connect_resume_async(ClientLimits::v1(), server, session, request);
     let steps = pump_until(qh, clock, 0, "resume decided", |_, report| {
         !report.resumes.is_empty()
     });
@@ -1163,4 +1174,225 @@ fn start_is_unchanged() {
     )
     .expect_err("a regressed clock refuses");
     assert_eq!(err.error, QuicHostError::TimeRegression);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round F1–F4: the surviving mutants of the resumable adapter.
+// ---------------------------------------------------------------------------
+
+/// The `Ok` deadline of the first `BeginGrace` in a trace.
+fn begin_grace_deadline(steps: &[Step]) -> u64 {
+    calls(steps)
+        .iter()
+        .find_map(|call| match call {
+            HostCall::BeginGrace {
+                result: Ok(deadline),
+                ..
+            } => Some(*deadline),
+            _ => None,
+        })
+        .expect("a BeginGrace succeeded")
+}
+
+/// F1 (G5): only a `/2` binding can be graced. A silently lost `/1` binding
+/// on a resumable adapter is unbound and never starts a grace.
+#[test]
+fn v1_silent_loss_never_begins_a_grace() {
+    let (mut qh, mut clock) = start_resumable_v2(grace_limits());
+    let aid = register_a(&mut qh);
+    let relay = UdpRelay::start(qh.local_addr(), RelayConfig::clean());
+    let (mut c1, _) = connect_hello(&mut qh, &mut clock, relay.addr(), Framing::V1);
+    c1.read_until("v1 initial", |c| !c.recv.is_empty());
+    let h1 = bound_peer(&qh, aid);
+    relay.set_blackhole(true);
+    let steps = pump_until(&mut qh, &mut clock, 100, "v1 silent loss", |_, report| {
+        report
+            .calls
+            .iter()
+            .any(|call| matches!(call, HostCall::UnbindPeer { peer } if *peer == h1))
+    });
+    let callset = calls(&steps);
+    assert!(
+        callset
+            .iter()
+            .any(|call| matches!(call, HostCall::UnbindPeer { peer } if *peer == h1)),
+        "a /1 silent loss unbinds: {callset:?}"
+    );
+    assert!(
+        callset
+            .iter()
+            .all(|call| !matches!(call, HostCall::BeginGrace { .. })),
+        "a /1 binding never tries a grace: {callset:?}"
+    );
+    assert_eq!(qh.host().grace_deadline(h1), None);
+}
+
+/// F2a (R12): the binding a resume creates is `/2` framing, so a second
+/// silent loss of the resumed connection starts another grace.
+#[test]
+fn a_resumed_binding_graces_again_on_silent_loss() {
+    let (mut qh, mut clock) = start_resumable_v2(grace_limits());
+    let aid = register_a(&mut qh);
+    let relay = UdpRelay::start(qh.local_addr(), RelayConfig::clean());
+    let (mut c1, _) = connect_hello(&mut qh, &mut clock, relay.addr(), Framing::V2);
+    c1.read_until("ticket then initial", |c| c.recv.len() >= 2);
+    let h1 = bound_peer(&qh, aid);
+    relay.set_blackhole(true);
+    let first = pump_until(&mut qh, &mut clock, 100, "begin grace", |_, report| {
+        report
+            .calls
+            .iter()
+            .any(|call| matches!(call, HostCall::BeginGrace { result: Ok(_), .. }))
+    });
+    let t = begin_grace_deadline(&first) - 30_000;
+
+    // Drop the blackholed client, then resume through the same relay.
+    drop(c1);
+    relay.set_blackhole(false);
+    clock.set(t + 29_999);
+    let request = encode_request(epoch(), 1, &proof(epoch()), &[(0, 0)]);
+    let (resume, resume_steps) = connect_resume_via(
+        &mut qh,
+        &mut clock,
+        relay.addr(),
+        Welcome {
+            wire_version: 2,
+            epoch: epoch(),
+        },
+        &request,
+    );
+    let (quic, answer) = resume.expect("resume accepted");
+    let mut expected = vec![0x91, 0x03, 0x31];
+    expected.extend_from_slice(&epoch());
+    expected.extend_from_slice(&[0x02, 0x01, 0x00, 0x00]); // no command receipted
+    assert_eq!(answer, expected);
+    let conn2 = resume_steps
+        .iter()
+        .flat_map(|(_, report)| report.resumes.clone())
+        .next()
+        .expect("a resume report")
+        .conn;
+    let _c2 = RClient::new(quic, conn2);
+
+    // The resumed binding is lost silently too: another grace, no unbind.
+    relay.set_blackhole(true);
+    let second = pump_until(&mut qh, &mut clock, 100, "second grace", |_, report| {
+        report
+            .calls
+            .iter()
+            .any(|call| matches!(call, HostCall::BeginGrace { result: Ok(_), .. }))
+    });
+    let callset = calls(&second);
+    assert!(
+        callset.iter().any(|call| matches!(
+            call,
+            HostCall::BeginGrace {
+                peer,
+                result: Ok(_)
+            } if *peer == h1
+        )),
+        "the resumed binding is graced again: {callset:?}"
+    );
+    assert!(
+        callset
+            .iter()
+            .all(|call| !matches!(call, HostCall::UnbindPeer { peer } if *peer == h1)),
+        "the second silent loss never unbinds: {callset:?}"
+    );
+    assert!(qh.host().grace_deadline(h1).is_some());
+}
+
+/// F2b (R13, R14): a resume records its connection as live and clears the
+/// grace, so a fresh hello supersedes exactly once and unbinds exactly once.
+#[test]
+fn a_fresh_hello_supersedes_a_resumed_binding() {
+    let (mut qh, mut clock) = start_resumable_v2(grace_limits());
+    let aid = register_a(&mut qh);
+    let relay = UdpRelay::start(qh.local_addr(), RelayConfig::clean());
+    let (mut c1, _) = connect_hello(&mut qh, &mut clock, relay.addr(), Framing::V2);
+    c1.read_until("ticket then initial", |c| c.recv.len() >= 2);
+    let h1 = bound_peer(&qh, aid);
+    relay.set_blackhole(true);
+    let first = pump_until(&mut qh, &mut clock, 100, "begin grace", |_, report| {
+        report
+            .calls
+            .iter()
+            .any(|call| matches!(call, HostCall::BeginGrace { result: Ok(_), .. }))
+    });
+    clock.set(begin_grace_deadline(&first) - 1);
+
+    let request = encode_request(epoch(), 1, &proof(epoch()), &[(0, 0)]);
+    let (resume, resume_steps) = connect_resume(
+        &mut qh,
+        &mut clock,
+        Welcome {
+            wire_version: 2,
+            epoch: epoch(),
+        },
+        &request,
+    );
+    let (quic, _answer) = resume.expect("resume accepted");
+    let conn2 = resume_steps
+        .iter()
+        .flat_map(|(_, report)| report.resumes.clone())
+        .next()
+        .expect("a resume report")
+        .conn;
+    let _c2 = RClient::new(quic, conn2);
+
+    // Without a pump in between, a fresh hello supersedes the resumed
+    // connection (not the ended grace) and unbinds h1 exactly once.
+    let (_c3, hello_steps) = connect_hello_direct(&mut qh, &mut clock, Framing::V2);
+    let fences: Vec<Fence> = hello_steps
+        .iter()
+        .flat_map(|(_, report)| report.fences.clone())
+        .collect();
+    assert_eq!(
+        fences,
+        vec![Fence {
+            conn: conn2,
+            peer: h1,
+            cause: FenceCause::Superseded,
+        }],
+        "the resumed connection is superseded"
+    );
+    let unbinds = calls(&hello_steps)
+        .iter()
+        .filter(|call| matches!(call, HostCall::UnbindPeer { peer } if *peer == h1))
+        .count();
+    assert_eq!(unbinds, 1, "the ended grace is not unbound again");
+}
+
+/// F4a (O4): `set_invitation_control` ends the grace it touches.
+#[test]
+fn control_change_ends_a_grace() {
+    let (mut qh, mut clock) = start_resumable_v2(grace_limits());
+    let aid = register_a(&mut qh);
+    let (_c, _relay, peer, deadline) = grace_over_relay(&mut qh, &mut clock);
+    assert_eq!(qh.host().grace_deadline(peer), Some(deadline));
+    qh.set_invitation_control(aid, all_actors())
+        .expect("a valid control ends the grace");
+    assert_eq!(qh.host().grace_deadline(peer), None);
+}
+
+/// F4b (O2): `set_invitation_grants` ends the grace and clears the record, so
+/// a hello pumped afterwards never unbinds the already-unbound peer again.
+#[test]
+fn grants_change_ends_a_grace_before_a_hello() {
+    let (mut qh, mut clock) = start_resumable_v2(grace_limits());
+    let aid = register_a(&mut qh);
+    let (_c, _relay, peer, _deadline) = grace_over_relay(&mut qh, &mut clock);
+    let change = qh.set_invitation_grants(aid, observer_grants());
+    assert_eq!(change, Ok(GrantChange::Stored));
+    assert_eq!(qh.host().grace_deadline(peer), None);
+
+    // No pump between the grant change and the hello.
+    let (_c2, steps) = connect_hello_direct(&mut qh, &mut clock, Framing::V2);
+    assert!(
+        calls(&steps)
+            .iter()
+            .all(|call| !matches!(call, HostCall::UnbindPeer { peer: p } if *p == peer)),
+        "the ended grace is not unbound again: {:?}",
+        calls(&steps)
+    );
 }
