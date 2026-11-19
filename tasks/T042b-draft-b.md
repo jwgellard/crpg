@@ -557,8 +557,12 @@ user's approval, which is why this contract does not create one
 (Reading 3, Open question 1).
 
 ## Permissions
-
-TODO (draft B).
+- goldens: none.
+- protected: none edited; `crpg-contracts`, `rust-toolchain.toml` untouched.
+- sanctioned edits: the new test file; D-1's architecture section;
+  D-2's trap entry in `crates/crpg-net/AGENTS.md` (dated, additive only).
+- platform: native Windows/MSVC and Linux (WSL), like every crate
+  (ADR-0012); the suite has no platform branch.
 
 ## Definition of done
 
