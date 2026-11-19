@@ -147,9 +147,8 @@ Design decisions this contract makes. Each needs approval with the contract.
 ## Interface
 
 All new code lives in `crates/crpg-server/src/main.rs` (the package-root
-binary, `crates/crpg-server/Cargo.toml:12-14`; no `src/bin/*.rs` exists in
-the workspace, fact sheet §"Existing binaries"). The `[lib]` target is
-untouched (`crates/crpg-server/Cargo.toml:9-10`). `Cargo.toml`,
+binary, `crates/crpg-server/Cargo.toml:12-14`; no `src/bin/*.rs` exists,
+fact sheet §"Existing binaries"). The `[lib]` target (`crates/crpg-server/Cargo.toml:9-10`),
 `Cargo.lock`, `deny.toml`, workflows and every other crate are untouched by
 T040a. Every item below is in `main.rs`, `std` only, with a doc comment
 (`crates/crpg-server/src/main.rs:1-2` keep both crate-root attributes).
