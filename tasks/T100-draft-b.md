@@ -363,6 +363,19 @@ the no-new-dependency alternative IS the design. Reused tools
 (`tools/agents/oc.py`, `crpgc`, `schemas/`) are invoked, not imported.
 
 ## Out of scope
+- Any change to `crpgc`, the schemas, the fixtures, the rulesets, or
+  any Rust crate (pure consumer: `crpgc` invocations only, per the
+  eleven subcommands of
+  `crates/crpg-cli/src/main.rs:255`–`crates/crpg-cli/src/main.rs:271`).
+- The T101 ADR itself (needs the T100 baseline,
+  `docs/IMPLEMENTATION_PLAN.md:301`) and the T102 prototype.
+- A bespoke model launcher or new agent role: `oc.py run --brief`
+  (`tools/agents/README.md:122`–`tools/agents/README.md:126`) is reused
+  as-is; no `oc.py`, `brief.py` or `verify_task.py` change.
+- Human-judged quality (style, lore, "good design"): the bench scores
+  only validity, playability, steps and errors.
+- Re-blessing records: `--compare` never rewrites a baseline; a new
+  baseline is a new scored run with its own `summary.json`.
 
 ## Open questions (each with a recommendation)
 
