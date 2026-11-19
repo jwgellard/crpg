@@ -685,3 +685,299 @@ fn v2_views_have_zeroed_position_columns() {
     assert!(view.moving().is_empty());
     assert!(view.move_receipts().is_empty());
 }
+
+/// B-A6: `step` with `refused = true` clears lane-0 pending; `false` keeps it.
+#[test]
+fn step_refused_clears_lane0_pending() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    client.submit(1, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+    client.step(&mut end, &options, true, 0).unwrap();
+    assert_eq!(client.pending, None);
+
+    // Control: the same with `refused = false` keeps the intent pending.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut control = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    control.step(&mut end, &options, false, 0).unwrap();
+    control.submit(1, 0, &mut end).unwrap();
+    assert_eq!(control.pending, Some(1));
+    control.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(control.pending, Some(1));
+}
+
+/// B-A7 check 3: `submit` refuses either argument negative with code 3.
+#[test]
+fn submit_negative_either_argument_is_bad_argument() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+
+    // Only the revision is negative.
+    let error = client.submit(-1, 0, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::BadArgument);
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Only the index is negative.
+    let error = client.submit(1, -1, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::BadArgument);
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Control: both non-negative are accepted.
+    client.submit(1, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+}
+
+/// B-A7 check 4: `submit` refuses a stale revision with code 4.
+#[test]
+fn submit_stale_revision_is_stale_options() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 1);
+
+    let error = client.submit(0, 0, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::StaleOptions);
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Control: the current revision is accepted.
+    client.submit(1, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+}
+
+/// B-A7 check 5: `submit` refuses while an intent is pending with code 5.
+#[test]
+fn submit_while_pending_is_intent_pending() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    client.submit(1, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+
+    // A second submit without a receipt is pending.
+    let error = client.submit(1, 1, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::IntentPending);
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+
+    // Control: after the receipt is stepped, a submit is accepted.
+    push(&link, v4(2, 9, vec![receipt(1, ReceiptStatus::Applied)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.pending, None);
+    client.submit(2, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(2));
+    assert_eq!(client.next_seq, 3);
+}
+
+/// B-A7 order 3, 4, 6, 5: two failing checks return the earlier code.
+#[test]
+fn submit_check_order_is_negative_stale_range_pending() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+
+    // Negative and stale at once: 3 wins over 4.
+    let error = client.submit(-5, 0, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::BadArgument);
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Stale and out of range at once: 4 wins over 6.
+    let error = client.submit(99, 5, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::StaleOptions);
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Out of range and pending at once: 6 wins over 5.
+    client.submit(1, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(1));
+    let error = client.submit(1, 5, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::NoSuchOption);
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+}
+
+/// B-A7 Errors: a lane-0 send onto a full link is 30 `link full`.
+#[test]
+fn lane0_send_onto_full_link_is_link_full() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    // `submit` onto a full up link.
+    let link = LocalLink::new(1);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    client.move_to(id(1), p(0, 0, 0), &mut end).unwrap();
+    assert_eq!(link.queued().0, 1);
+    let error = client.submit(1, 0, &mut end).unwrap_err();
+    assert_eq!(error.code, BridgeCode::IntentRefused);
+    assert_eq!(error.detail, "link full");
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Control: draining the up queue lets the same `submit` through.
+    link.authority_end().recv().expect("one frame");
+    client.submit(1, 0, &mut end).unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+
+    // `declare_move` onto a full up link, separately.
+    let link = LocalLink::new(1);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    client.move_to(id(1), p(0, 0, 0), &mut end).unwrap();
+    assert_eq!(link.queued().0, 1);
+    let error = client
+        .declare_move(1, p(32768, 0, 32768), &mut end)
+        .unwrap_err();
+    assert_eq!(error.code, BridgeCode::IntentRefused);
+    assert_eq!(error.detail, "link full");
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Control: draining lets the same `declare_move` through.
+    link.authority_end().recv().expect("one frame");
+    client
+        .declare_move(1, p(32768, 0, 32768), &mut end)
+        .unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+}
+
+/// B-A8 (1): `declare_move` accepts revision 0 at revision 0; -1 is 3.
+#[test]
+fn declare_move_accepts_revision_zero() {
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    assert_eq!(client.view().revision(), 0);
+    client.options = vec![offered(2, IntentBody::EndTurn)];
+    client
+        .declare_move(0, p(32768, 0, 32768), &mut end)
+        .unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+
+    // Control: -1 is a negative argument with no other change.
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut control = live();
+    control.options = vec![offered(2, IntentBody::EndTurn)];
+    let error = control
+        .declare_move(-1, p(32768, 0, 32768), &mut end)
+        .unwrap_err();
+    assert_eq!(error.code, BridgeCode::BadArgument);
+    assert_eq!(control.pending, None);
+    assert_eq!(control.next_seq, SEQ_FIRST);
+}
+
+/// B-A8 (2): `declare_move` with a revision above the view's is 4.
+#[test]
+fn declare_move_above_the_view_is_stale() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    assert_eq!(client.view().revision(), 1);
+
+    let error = client
+        .declare_move(2, p(32768, 0, 32768), &mut end)
+        .unwrap_err();
+    assert_eq!(error.code, BridgeCode::StaleOptions);
+    assert_eq!(client.pending, None);
+    assert_eq!(client.next_seq, SEQ_FIRST);
+
+    // Control: the view's own revision is accepted.
+    client
+        .declare_move(1, p(32768, 0, 32768), &mut end)
+        .unwrap();
+    assert_eq!(client.pending, Some(1));
+    assert_eq!(client.next_seq, 2);
+}
+
+/// B-A8: the declared move carries `options[0]`'s actor.
+#[test]
+fn declare_move_uses_the_first_option_actor() {
+    let options = vec![
+        offered(2, IntentBody::EndTurn),
+        offered(1, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut client = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    client.step(&mut end, &options, false, 0).unwrap();
+    client
+        .declare_move(1, p(32768, 0, 32768), &mut end)
+        .unwrap();
+    let bytes = link.authority_end().recv().expect("one frame");
+    let frame = decode_intent(&bytes).expect("intent decodes");
+    assert_eq!(frame.actor, id(2));
+
+    // Control: swapping the options swaps the actor.
+    let swapped = vec![
+        offered(1, IntentBody::EndTurn),
+        offered(2, IntentBody::EndTurn),
+    ];
+    let link = LocalLink::new(128);
+    let mut end = link.client_end();
+    let mut control = live();
+    push(&link, v4(1, 9, vec![enter(1), enter(2)]));
+    control.step(&mut end, &swapped, false, 0).unwrap();
+    control
+        .declare_move(1, p(32768, 0, 32768), &mut end)
+        .unwrap();
+    let bytes = link.authority_end().recv().expect("one frame");
+    let frame = decode_intent(&bytes).expect("intent decodes");
+    assert_eq!(frame.actor, id(1));
+}
