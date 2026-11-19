@@ -341,6 +341,125 @@ impl QuicHost {
 
 ## Behaviour
 
+Normative. Each item names the tests that prove it. **First failure wins** in
+every ordered list. "Startup fails" means: the message is written to stderr
+and the process exits with code 2 (usage/config/load errors) without binding
+a socket or starting the loop; only a caught server-loop error uses exit 1.
+
+B-1. **`--help` / `--version`.** `parse` returns `CliAction::Help` /
+`CliAction::Version`; `main` prints the usage text / `VERSION` to stdout and
+exits 0. Neither reads a file nor binds a socket. *Tests:* D1.
+
+B-2. **Parse errors.** An unknown flag, a flag missing its value, a
+malformed value (`--listen` not `IP:port`, `--incarnation` not decimal,
+`--area-min` not `x,y,z`), a stray positional argument, or one of
+`--area-min`/`--area-max` without the other returns the named `CliError`;
+`main` prints it to stderr and exits 2. *Tests:* D2.
+
+B-3. **Resolution and precedence.** `resolve` reads the `--config` JSON, then
+overlays every CLI flag that is `Some`; a flag present on the command line
+wins over the file. A required field absent from both (`listen`, `cert`,
+`key`, `invitations`, `save`, `campaign_id`, `campaign_version`,
+`incarnation`) is `ConfigError::Missing(field)`. *Tests:* D3.
+
+B-4. **File loading.** `cert`/`key` are read as raw bytes and become
+`ServerIdentity::new(cert, key)` (`crates/crpg-net-quic/src/identity.rs:83`);
+a missing or unreadable file is `ConfigError::Io`. `invitations` is a JSON
+array (open question Q4) parsed into `Vec<Invitation>`; `save` is a path, not
+read here. *Tests:* D4.
+
+B-5. **Incarnation guard.** Before `load_host_file`, `resolve` reads
+`<save>.incarnation` (`0` when absent); a supplied `incarnation` that does not
+exceed it is `ConfigError::IncarnationNotIncreasing`. After a successful
+load the sidecar is rewritten to the supplied value. *Tests:* D5.
+
+B-6. **Startup order.** In order: `resolve` (B-3..B-5); `load_host_file(save,
+&identity_facts, incarnation, now_ms)` (`crates/crpg-server/src/save.rs:287`);
+if `area_bounds` is `Some((min, max))`, `Host::bind_area_bounds(min, max)`
+(`crates/crpg-server/src/host.rs:4611`) — before unpausing, before the loop
+(Reading 10); register every invitation (`QuicHost::register_invitation`);
+`QuicServer::bind_resumable(ServerConfig { bind: listen, identity, limits:
+ServerLimits::v1() })` then `QuicHost::start_resumable(host, server, now_ms)`
+(`crates/crpg-server/src/quic.rs:578`); wrap in `QuicHosting::new`;
+`runner::spawn(HostLoop::new(QuicHosting::new(quic), now_ms),
+SystemClock::starting_at(now_ms))` (the handoff,
+`task/T154-c1:tasks/T154.md:248`). `now_ms` is one value read once at
+startup (the clock origin must equal the loop start, T154 Reading 13).
+*Tests:* D6.
+
+B-7. **Navigation wiring.** With `area_bounds`, `bind_area_bounds` is called
+once, before unpause and before the loop; a `NavBake` refusal is a startup
+failure (exit 2). Without `area_bounds` the host stays unbound
+(`nav_revision() == None`, `crates/crpg-server/src/host.rs:4625`) and this is
+not an error. Any mover the server itself spawns or transfers after binding
+is `place`d by it (Reading 10); the MVP smoke spawns none. *Tests:* D7.
+
+B-8. **The AI hook drains the report.** The `QuicAiHook` closure installed by
+`QuicHosting::set_ai` runs once per cycle, after intake (cycle order: intake,
+AI hook, advance, deliver; `tasks/T153.md` Reading 1). It reads
+`quic.last_report()` and writes one `reject` line per refused lane-0 or
+lane-1 frame, in the report's order, then does nothing else (no AI drive in
+the MVP, Reading 9). *Tests:* D8, D9.
+
+B-9. **The `reject` line.** Exactly the format of "Interface", one line per
+refused frame: `now_ms` is the cycle's injected time, `lane` is `0` or `1`,
+`code` is the refusal's numeric code (`-` when none), `peer` is the raw
+handle or `-`, `len` is the frame length. A `reject` write that fails is
+dropped, never retried, never a panic. *Tests:* D9.
+
+B-10. **The `start` line.** Written once, after the loop thread is spawned
+and running, with the bound `listen`, the `incarnation` and the
+`CertificatePin` of `identity` (the operator gives this to clients out of
+band, ADR-0025 `docs/adr/0025-lane0-quic-mapping-and-pinned-trust.md:53–55`).
+A failed `start` write fails startup. *Tests:* D6, D10.
+
+B-11. **Shutdown.** On stdin EOF or the line `quit`, the main thread calls
+`RunnerHandle::stop()` then `join()`, writes a final `save_host_file` when
+`--save` is set, writes the `stop` line, and exits 0. Any earlier error
+(`RunnerGone`, `RunnerPanicked`, a step error from `RunnerExit`) is written
+to stderr and exits 1. *Tests:* D11.
+
+B-12. **Log destination.** `Log::new(Stderr)` writes to `std::io::stderr`;
+`File(p)` and `Both(p)` also append to the file at `p` (created if absent).
+The same line is written to every sink, in order. *Tests:* D10, D12.
+
+B-13. **No panic on rejection.** A malformed or hostile client message is
+rejected cleanly by the host (`docs/CRPG_ENGINE_SPEC.md:1488`) and yields a
+`reject` line; the server process never panics. *Tests:* D13 (a scripted
+client sends an oversized frame; the server logs `reject` and keeps serving).
+
+B-14. **`QuicHost::last_report`.** `None` before any `pump`/`flush`; after
+one, `Some` the exact report that call returned, unchanged by later reads.
+It adds no checkpoint/save bytes (host state only) and no trace entry.
+*Tests:* D8 (unit), and every existing `host_quic` suite must pass unchanged.
+
+### T040b — the gate-12 artifact jobs
+
+C-1. **The `server-artifacts` job.** A new job in `.github/workflows/ci.yml`
+with `strategy.matrix.os = [ubuntu-latest, windows-latest]`,
+`runs-on: ${{ matrix.os }}`, on GitHub-hosted runners (S001,
+`.github/workflows/ci.yml:24–30`). It runs `cargo build --release --locked -p
+crpg-server --bin crpg-server`, then checks the binary exists
+(`target/release/crpg-server.exe` on Windows, `target/release/crpg-server`
+on Linux), and uploads it with `actions/upload-artifact@v7` named
+`crpg-server-linux-x86_64` / `crpg-server-windows-x86_64`,
+`if-no-files-found: error`, `retention-days: 14`. *Tests:* C1 (workflow
+review).
+
+C-2. **Gate-12 server half.** The job is the server half of gate 12
+(`docs/CRPG_ENGINE_SPEC.md:1333`); the client/editor half is T047c's
+(`.github/workflows/ci.yml:351–357`). The Linux job builds the Godot-free
+dedicated server: `cargo build -p crpg-server` must not name any godot
+package (BR-21 already pins the default-feature graph,
+`.github/workflows/ci.yml:154–174`). No other workflow file is added, and no
+existing job changes. *Tests:* C2 (workflow review).
+
+C-3. **Docs-only PRs still skip the Rust gates.** The new job runs on the
+same `steps.scope.outputs.rust` guard as `check`/`client`, so a
+documentation-only pull request reports it without building (the job always
+runs and reports, `.github/workflows/ci.yml:112–147`). *Tests:* C3 (workflow
+review).
+
 ## Errors
 
 ## Tests
