@@ -238,7 +238,138 @@ Design decisions this contract makes. Each needs approval with the contract.
 
 ## Interface
 
-_(filled next edit)_
+Production code: none. No `src/` file, public item, signature or `Display` of
+any crate changes; the harness lives in
+`crates/crpg-testkit/tests/support/headless_client.rs` and is included by
+each suite via `#[path = "support/headless_client.rs"] mod headless_client;`
+(Reading 10). Types are named so the review and later tasks cite them; private
+helpers are the implementer's. No `HashMap`/`HashSet`, no float, no clock,
+thread, sleep, socket or RNG (testkit AGENTS invariants 6–7): `BTreeMap`,
+`Fx16_16`/integers and injected `now_ms` only.
+
+```rust
+//! T041a: the scripted headless-client harness. Tests-only; never ships.
+
+use std::num::NonZeroUsize;
+
+use crpg_core::EntityId;
+use crpg_net::outbox_v4::{MoveBody, MoveIntent, MoveOutbox, OutboxError};
+use crpg_net::protocol::SessionEpoch;
+use crpg_net::protocol_transfer::{HealthFact, TurnFact};
+use crpg_net::replica_v4::ReplicaWorldV4;
+use crpg_net::transport::Transport;
+use crpg_server::host::PeerHandle;
+use crpg_server::run::{LocalClient, LocalError, LocalHost};
+
+/// One scripted headless client: the in-memory link plus the net-local
+/// modules a Godot-free client assembles (Reading 1).
+pub struct HeadlessClient {
+    /// The peer end of the local link: intents up, delivery frames down.
+    pub link: LocalClient,
+    /// The client's copy of its filtered v4 session.
+    pub replica: ReplicaWorldV4,
+    /// The lane-1 intent sender for this session's epoch.
+    pub outbox: MoveOutbox,
+    /// The actors this client may act as (its control grant), ascending.
+    pub control: Vec<EntityId>,
+}
+
+/// What one [`HeadlessClient::drain`] consumed, in the order it saw them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Drain {
+    /// Lane-0 delta frames applied to the replica.
+    pub deltas: usize,
+    /// Lane-1 receipts applied to the outbox.
+    pub receipts: usize,
+    /// Lane-1 samples applied to the replica.
+    pub samples: usize,
+    /// Frames skipped because their kind did not apply (foreign or unknown
+    /// first byte); never a panic.
+    pub skipped: usize,
+}
+
+impl HeadlessClient {
+    /// Attaches a fresh client for an already-bound `peer`, with an empty
+    /// replica and outbox for `epoch`. `control` is sorted ascending here.
+    pub fn attach(
+        local: &mut LocalHost,
+        peer: PeerHandle,
+        epoch: SessionEpoch,
+        control: Vec<EntityId>,
+        capacity: NonZeroUsize,
+    ) -> Result<Self, LocalError>;
+
+    /// Drains the link's delivery frames and applies each. Classification by
+    /// first byte (B-2): `b[0] == 4` → `codec_v4::decode_delta` →
+    /// `replica.apply_delta`; `b[0] == 0xA1` → `movement_v4::decode_down` →
+    /// `MoveDown::Receipt(r)` → `outbox.receive(&r)`; otherwise a sample
+    /// datagram → decode its entries → `replica.apply_sample`. A frame that
+    /// fails to classify or apply is counted in `skipped` and never panics.
+    pub fn drain(&mut self) -> Drain;
+
+    /// The client's own actor `NetId`, resolved from its replica rows: the
+    /// `net_id` of the row whose disclosed entity equals `control[0]`'s
+    /// authoring. `None` until the first delta discloses it.
+    pub fn own_net(&self) -> Option<crpg_net::protocol::NetId>;
+}
+```
+
+The two-client script driver (T041a, shared by T041b and T041c):
+
+```rust
+/// One scripted step for one client, applied at a tick. `Attack`, `EndTurn`
+/// and `DeclareMove` are lane-0 intents encoded by the test through
+/// `codec_v4::encode_intent`; `MoveTo`/`Halt` are lane-1 through
+/// `outbox.send` + `movement_v4::encode_intent`.
+pub enum ClientStep {
+    /// Lane-0 `DeclareAction`/`EndTurn`/`DeclareMove` intent bytes, or the
+    /// actor/body for the harness to encode.
+    Lane0 { seq: u64, observed_tick: u64, body: Lane0Body },
+    /// Lane-1 move for `actor` (a `NetId` this client controls).
+    Move { actor: crpg_net::protocol::NetId, body: MoveBody },
+}
+
+/// Drives `loop.step(now_ms)` once and drains both clients; `now_ms` starts
+/// at 0 and advances by 50 ms per tick (the `HostLoop` grid).
+pub fn drive_tick(
+    local: &mut LocalHost,
+    host_loop: &mut HostLoop<LocalHost>,
+    now_ms: u64,
+    clients: &mut [&mut HeadlessClient],
+);
+```
+
+The desync oracle (T041b), in `tests/desync.rs`:
+
+```rust
+/// The canonical visible state both a replica and a projection reduce to
+/// (Reading 2, 4). `rows` maps each visible `NetId` to its disclosed health
+/// (`None` = presence only); `turn` is the encounter's disclosed turn fact.
+/// Equality is `BTreeMap` equality — order-insensitive, semantic (ADR-0009).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonView {
+    pub rows: BTreeMap<crpg_net::protocol::NetId, Option<HealthFact>>,
+    pub turn: Option<TurnFact>,
+}
+
+/// Reduces a replica to its canonical view: `v3().entities()` →
+/// `(net_id, health)` and `v3().turn()`.
+pub fn replica_view(replica: &ReplicaWorldV4) -> CanonView;
+
+/// The independent oracle: builds an `interest::InterestView`, feeds it a
+/// `ViewerContext` whose `facts` are the test's own disclosure table for the
+/// client's grants (not the host's delivery), calls `project_snapshot`, and
+/// reduces the `SnapshotBody` (`entities` → `(entity, health)`, `turn`).
+pub fn expected_view(
+    view: &mut InterestView,
+    ctx: ViewerContext<'_>,
+) -> CanonView;
+```
+
+`HostLoop<LocalHost>` and `LocalHost::attach` are the existing run surface
+(`crates/crpg-server/src/run.rs:110`, `:361`); `codec_v4::encode_intent` /
+`decode_delta`, `movement_v4::encode_intent` / `decode_down` and the sample
+decode are the frozen codecs the harness calls by path and never re-implements.
 
 ## Behaviour
 
