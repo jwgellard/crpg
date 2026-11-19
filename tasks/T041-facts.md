@@ -92,7 +92,12 @@
 
 ## Rules that bind it
 
-TODO
+- `Testkit ALLOWED row` (`tools/lint/deps.py:68`) — `crpg-testkit: (None, {"crpg-godot"})`: may reach any workspace crate except the Godot bridge, since a testkit pulling `crpg-godot` would drag the engine into every dependent (`tools/lint/deps.py:63`).
+- `One-way ownership` (`AGENTS.md:36`) — testkit is an integration consumer depending down through `crpg-sim`; core/data/rules/sim must not depend on it, even for tests; their cross-layer tests live in testkit.
+- `Dev-depend condition` (`AGENTS.md:40`) — a higher crate may dev-depend on testkit only when every normal dependency testkit brings is already legal for it and testkit does not depend back; the `ALLOWED` table stays authoritative.
+- `Tests-only adapters never ship` (`crates/crpg-testkit/AGENTS.md:106`) — nothing in `tests/` may grow a runtime caller; the harness/replay library surface is shared with `crpgc` at runtime instead.
+- `E005 one-way rule` (`crates/crpg-testkit/AGENTS.md:272`) — this crate reaches `sim`; core, data, rules, sim never reach back, including through dev-dependencies.
+- `Crate hygiene` (`crates/crpg-testkit/AGENTS.md:112`) — `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`; every public item documented; no clock/threads/randomness of its own, file I/O confined to golden/read-write helpers.
 
 ## Agent log
 
