@@ -664,6 +664,46 @@ and by the gate-12 server build actually producing both artifacts.
 
 ## Open questions
 
+Each is a product or shape choice this draft could not settle from the
+binding inputs; each carries a recommendation.
+
+1. **Signal handling (Ctrl-C / SIGINT / SIGTERM).** A std-only server cannot
+   install a Windows console-control handler without `unsafe` (forbidden
+   outside `crpg-godot`, `AGENTS.md:25–27`), nor a Unix signal handler without
+   a dependency or `unsafe`. This draft's shutdown is stdin EOF / `quit`.
+   *Recommendation:* ship the std-only console for T040; file a follow-up for
+   OS signal handling (with a `ctrlc`-style dependency, H-dep) only if
+   operators need it before then.
+2. **Default listen address.** This draft makes `--listen` required rather
+   than invent a well-known port. *Recommendation:* keep it required; if the
+   user wants a default, name one now (e.g. `0.0.0.0:2106`) and it becomes a
+   `parse` default plus a D3 control.
+3. **Certificate/key file encoding.** `ServerIdentity::new` takes DER bytes
+   (`crates/crpg-net-quic/src/identity.rs:83`), so this draft reads cert/key
+   as DER. PEM needs `rustls-pemfile` (a dependency). *Recommendation:* DER
+   (std-only); document that operators convert PEM → DER.
+4. **Invitation file format and the grant vocabulary.** `Invitation` holds
+   `credential`, `control: ControlGrant`, `grants: DisclosureGrants`
+   (`crates/crpg-server/src/quic.rs:81–88`). The exact JSON encoding of the
+   grant shapes is not fixed here. *Recommendation:* a JSON array of
+   `{"credential": "<64 hex>"}` plus a control/disclosure shape that
+   serializes the existing types; T027b/c supply production grant values, and
+   the MVP smoke uses a degenerate "control and disclose every entity" shape.
+   The architect must pin the exact bytes before implementation.
+5. **AI on the dedicated server.** With no `crpg-data` edge the server cannot
+   build `crpg_ai::Sides`. *Recommendation:* run with no `drive_ai` in the
+   MVP (Reading 9); wire it in the campaign-load task.
+6. **Incarnation sidecar placement.** This draft uses `<save>.incarnation`.
+   *Recommendation:* keep it; if a server-state directory is preferred, name
+   it and the sidecar becomes `<state-dir>/<save-stem>.incarnation`.
+7. **`last_report` ownership.** T154d is contract-only, so the one additive
+   item in `quic.rs` is an amendment, not a rewrite. *Recommendation:* keep it
+   in T040a as specified, with the Manager-edit note below.
+8. **`--area-min`/`--area-max` value units.** This draft takes three raw
+   integers parsed to `Fx16_16`. *Recommendation:* raw integers (the crate's
+   own units, `crates/crpg-server/src/host.rs:4613`); metres would add a
+   float/scaling step to the CLI with no benefit to the smoke.
+
 ## Manager edits
 
 ## Agent log
