@@ -49,6 +49,52 @@ Binding sentences on the dedicated server, its binary, command line, configurati
 
 ## The run loop it would host
 
+Public items of `run.rs` (T154a–c, all built), one line each with signature, plus what T154d adds (contract only, not built):
+
+- `TICK_PERIOD_MS` (`crates/crpg-server/src/run.rs:29`) — `pub const TICK_PERIOD_MS: u64 = 50`, the 20 Hz cycle period.
+- `MAX_RETIRED_RECORDS` (`crates/crpg-server/src/run.rs:33`) — `pub const MAX_RETIRED_RECORDS: usize = 64`, cap on retired-link records.
+- `Hosting` (`crates/crpg-server/src/run.rs:36`) — `pub trait Hosting` with `type Error` and the five stages `intake`, `drive_ai`, `advance`, `deliver`, `retire_captures`.
+- `CycleReport` (`crates/crpg-server/src/run.rs:60`) — `pub struct CycleReport { pub now_ms: u64, pub advance: AdvanceReport }`.
+- `StepReport` (`crates/crpg-server/src/run.rs:69`) — `pub struct StepReport { pub cycle: Option<CycleReport>, pub missed: u64 }`.
+- `LoopError` (`crates/crpg-server/src/run.rs:78`) — `pub enum LoopError<E> { TimeRegression { last_ms, now_ms }, Hosting(E) }`.
+- `HostLoop` (`crates/crpg-server/src/run.rs:110`) — `pub struct HostLoop<H: Hosting>` over one hosting on a slot grid.
+- `HostLoop::new` (`crates/crpg-server/src/run.rs:127`) — `pub fn new(hosting: H, start_ms: u64) -> Self`, 50 ms period, first slot at `start_ms`.
+- `HostLoop::with_period` (`crates/crpg-server/src/run.rs:139`) — same with an explicit `NonZeroU64` period.
+- `HostLoop::step` (`crates/crpg-server/src/run.rs:154`) — runs at most one cycle at `now_ms`, skipping missed slots.
+- Loop accessors (`crates/crpg-server/src/run.rs:195-232`) — `period_ms`, `next_due_ms`, `cycles`, `missed`, `last_ms`, `hosting`, `hosting_mut`, `into_hosting`.
+- `AiHook` (`crates/crpg-server/src/run.rs:237`) — `pub type AiHook = Box<dyn FnMut(&mut Host, u64) -> Result<(), HostError> + Send>`.
+- `LinkStats` (`crates/crpg-server/src/run.rs:244`) — `#[non_exhaustive]` per-link counters (`received`, `refused`, `held`, `sent`).
+- `LinkStats::held_moves` (`crates/crpg-server/src/run.rs:254`) — T154c field counting lane-1 frames held for retry.
+- `LocalError` (`crates/crpg-server/src/run.rs:259`) — `pub enum LocalError { UnknownPeer, AlreadyAttached }`.
+- `LinkError` (`crates/crpg-server/src/run.rs:279`) — `pub enum LinkError { Full, Closed }`.
+- `LocalHost` (`crates/crpg-server/src/run.rs:332`) — the in-memory hosting: one `Host`, link table, retired list, AI hook.
+- `LocalHost::new` (`crates/crpg-server/src/run.rs:347`) — hosting over `host` with no links and no hook.
+- `LocalHost::attach` (`crates/crpg-server/src/run.rs:361`) — attaches a peer with two bounded queues, returning `LocalClient`.
+- `LocalHost::set_ai` (`crates/crpg-server/src/run.rs:396`) — sets or clears the AI hook.
+- `LocalHost::link_stats` (`crates/crpg-server/src/run.rs:401`) — per-link counters or `None`.
+- `LocalHost::take_retired` (`crates/crpg-server/src/run.rs:408`) — drains retired-link records in order, at most the cap.
+- `LocalHost::retired_dropped` (`crates/crpg-server/src/run.rs:413`) — total records dropped off a full retired list.
+- `LocalHost::host/host_mut/into_host` (`crates/crpg-server/src/run.rs:418-428`) — trusted reads, trusted operator calls, taking the host back out.
+- `LocalClient` (`crates/crpg-server/src/run.rs:818`) — the client end of a link: `Send`, not `Clone`, not `Sync`.
+- `LocalClient::is_closed` (`crates/crpg-server/src/run.rs:830`) — reads the server-end-gone flag.
+- `Transport for LocalClient` (`crates/crpg-server/src/run.rs:834`) — `send`/`recv` over the bounded queues with `LinkError`.
+- `Clock` (`crates/crpg-server/src/runner.rs:20`) — `pub trait Clock: Send + 'static { fn now_ms(&self) -> u64; }`.
+- `SystemClock` (`crates/crpg-server/src/runner.rs:28`) — wall-clock: origin plus whole milliseconds since construction.
+- `SystemClock::new/starting_at` (`crates/crpg-server/src/runner.rs:38-44`) — constructors; pass the loop's `start_ms` as origin.
+- `Clock for SystemClock` (`crates/crpg-server/src/runner.rs:59`) — `now_ms` saturates instead of wrapping.
+- `spawn` (`crates/crpg-server/src/runner.rs:88`) — drives a `HostLoop` on a thread named `crpg-server-loop`.
+- `RunnerHandle` (`crates/crpg-server/src/runner.rs:136`) — loop-thread owner: rendezvous with `call`, stop with `stop`/`join`.
+- `RunnerHandle::submit/call/stop/is_finished/join` (`crates/crpg-server/src/runner.rs:146-188`) — run a closure after the next step; wait for it; end the thread; poll/consume the exit.
+- `RunnerExit` (`crates/crpg-server/src/runner.rs:211`) — the loop as its last step left it plus the ending step error.
+- `RunnerGone` (`crates/crpg-server/src/runner.rs:221`) — calling a runner that already ended.
+- `RunnerPanicked` (`crates/crpg-server/src/runner.rs:235`) — joining after the loop thread died.
+- T154d `QuicAiHook` (`tasks/T154.md:407`) — `pub type QuicAiHook = Box<dyn FnMut(&mut QuicHost, u64) -> Result<(), QuicHostError> + Send>`.
+- T154d `QuicHosting` (`tasks/T154.md:409-416`) — dedicated hosting over one `QuicHost` with `new`, `set_ai`, `quic`, `quic_mut`, `into_quic`, and a `Hosting` impl.
+- T154d `QuicHost::flush` (`tasks/T154.md:421`) — runs `pump` phases 4–7 alone so deliver is a stage.
+- T154d pass-throughs (`tasks/T154.md:423-428`) — `drive_ai`, `pause`, `unpause` delegating to the host.
+- T154d save-into-dedicated proof (`tasks/T154.md:220-236`) — a single-player save loads into the dedicated hosting unchanged and runs, stepped by hand and on the runner.
+- T154 handoff to T040 (`tasks/T154.md:245-252`) — `main.rs` stays T040's: certificate, invitations, save identity and incarnation are its wiring.
+
 ## Host start-up today
 
 ## Existing binaries and their layout
