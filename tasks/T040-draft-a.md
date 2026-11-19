@@ -93,6 +93,105 @@ run loop; the handoff is `task/T154-c1:tasks/T154.md:245–252`.
 
 ## Readings
 
+Design decisions this contract makes. Each needs approval with the contract.
+
+1. **The binary is the OS adapter; the library's I/O fence stays.** ADR-0012
+   item 3 puts OS-specific process/filesystem/service/presentation logic above
+   `crpg-core`/`crpg-rules`/`crpg-sim` (`docs/adr/0012-windows-primary-platform.md:27–29`);
+   the dedicated binary is that adapter. So the binary's own modules
+   (`main.rs`, `cli.rs`, `config.rs`, `logline.rs`) may read the config,
+   certificate, key and invitation files, write log lines and read the
+   console with `std` directly. The *library* (`lib.rs` and its seven modules)
+   keeps invariant 7's fence: filesystem I/O only in `save.rs`, network I/O
+   only in `quic.rs`, one clock/thread only in `runner.rs`
+   (`crates/crpg-server/AGENTS.md:135–143`). The binary reaches `Host` only
+   through the library's public API. *Rejected:* reading config/certs/logs in
+   the library (spreads operator I/O through the reusable host, against
+   ADR-0012 item 3 and the E012 placement, `crates/crpg-server/AGENTS.md:24–26`).
+2. **Argument parsing is hand-rolled over `std::env::args`, a pure function.**
+   The flag set is the fixed, small list in "Interface"; a parser dependency
+   needs approval (root `AGENTS.md` "Do not add dependencies"). `parse` takes
+   an `Iterator<Item = String>`, so tests feed argument vectors without
+   spawning the process, as the crate already black-box-tests
+   (`crates/crpg-cli/tests/demo.rs:3–9`). *Rejected:* clap/pico-args (a new
+   dependency for ~12 flags).
+3. **Configuration is a JSON file over the existing `serde_json` edge; CLI
+   flags override it.** Every `Cli` field has a `--flag` and a config key;
+   a flag present on the command line wins over the file. Secrets are never
+   inline: the file names paths (`cert`, `key`, `invitations`), never bytes.
+   *Rejected:* TOML/YAML (a new parser); environment variables as the only
+   channel (undiscoverable and hard to pin in tests).
+4. **Logging is a std-only line writer; logs go to stderr by default, plus an
+   optional file.** D67a's "where do server logs go" is answered this way:
+   stderr by default (the headless server's stream), `--log-file <path>`
+   appending the same lines to a file. Lines are newline-terminated UTF-8
+   written through `&mut dyn io::Write`, so tests capture them to a `Vec<u8>`.
+   No log crate, no levels, no rotation (out of scope). *Rejected:* a logging
+   crate (new dependency); stdout for logs (stdout is reserved for the
+   machine-readable `--headless-deterministic` state hash,
+   `docs/CRPG_ENGINE_SPEC.md:958`).
+5. **The rejected-message line is one fixed line per refused frame, from the
+   pump report.** D67a: T042 pins the rejection and its text; T040 writes the
+   line (`tasks/DECISIONS-D67.md:7–12`). `QuicPumpReport` already counts and
+   traces every refusal (`frames_refused`, `calls`, `lane1`,
+   `crates/crpg-server/src/quic.rs:99–120`). The binary writes one `reject`
+   line per refused inbound lane-0 or lane-1 frame, in pump order, in the
+   fixed format of "Interface". *Rejected:* logging only the count (spec:1488
+   says "a log line" per message); logging every accepted message (noise).
+6. **Shutdown is a console EOF or the line `quit` on the main thread.** The
+   loop runs on `runner::spawn`'s thread (`crates/crpg-server/src/runner.rs:88`);
+   the main thread blocks reading stdin. On EOF or `quit` it calls
+   `RunnerHandle::stop()`, then `join()`, then a final quiescent
+   `save_host_file` when `--save` is set, writes the `stop` line, and exits 0.
+   This is std-only and platform-neutral. *Rejected:* a SIGINT/SIGTERM/Ctrl-C
+   handler (on Windows a console-control handler needs `unsafe`, forbidden
+   outside `crpg-godot` (`AGENTS.md:25–27`), and on Unix it needs a dependency
+   or `unsafe`); see the open question.
+7. **The incarnation is operator-supplied and guarded by a sidecar.** The
+   loader's `new_incarnation` must exceed every incarnation ever used for that
+   authority, or an older save would reuse epochs
+   (`crates/crpg-server/AGENTS.md:300–302`). The binary takes `--incarnation`
+   and, before `load_host_file`, reads `<save>.incarnation` (the last used
+   value, `0` when absent): the supplied value must exceed it, else startup
+   fails; after a successful load the sidecar is rewritten to the supplied
+   value. *Rejected:* trusting the operator's memory (the trap is explicit);
+   deriving the value from a wall clock (not monotonic within one second).
+8. **Rejections reach the binary through `QuicHost::last_report`, drained from
+   the AI hook.** The loop's `Hosting::intake` calls `QuicHost::pump` and drops
+   the report (`task/T154-c1:tasks/T154.md:459–464`); the report is not stored
+   today. T040 adds one additive item: `QuicHost` keeps the last
+   `QuicPumpReport` (set at the end of `pump` and `flush`) and
+   `pub fn last_report(&self) -> Option<&QuicPumpReport>`. The binary's
+   `QuicAiHook` closure runs right after intake in the cycle order (intake,
+   AI hook, advance, deliver; `tasks/T153.md` Reading 1), so it drains
+   `last_report` into `reject` lines once per cycle. *Rejected:* a second
+   `pump` to observe the report (it admits after the tick, T154 Reading 12);
+   the report on `QuicHosting` (the hook receives `&mut QuicHost`, not the
+   hosting).
+9. **The dedicated server runs with no AI hook beyond logging in the MVP.**
+   Driving `Host::drive_ai` needs `crpg_ai::Sides` built from authored data,
+   and `crpg-server` reads no `crpg-data` (`crates/crpg-server/AGENTS.md:151–154`,
+   `tasks/T153.md` Reading 3). The binary's `QuicAiHook` closure does the log
+   drain (Reading 8) and nothing else; wiring `drive_ai` is a follow-up for
+   the campaign-load task. *Rejected:* adding a `crpg-data` edge in T040 (a
+   new dependency that reverses D20's "no `crpg-data`" decision for a smoke
+   that needs no AI).
+10. **`bind_area_bounds` at area load and `place` after transfers/spawns take
+    operator-supplied bounds.** A restored host has `nav_revision() == None`
+    and must be re-bound (`tasks/T037.md:145–152`); the mesh is not in the
+    save. With no `crpg-data` edge, the area's two bounds are trusted operator
+    facts, like `SaveIdentity` (`crates/crpg-server/src/save.rs:87–94`),
+    supplied as `--area-min`/`--area-max`. When both are present the binary
+    calls `Host::bind_area_bounds(min, max)` right after load, before
+    unpausing and before the loop starts, and any mover the server itself
+    spawns or transfers after binding is `place`d by it (T037 Reading 5: only
+    binding places; later movers are the caller's,
+    `tasks/T037.md:160–167`). With no bounds supplied the server runs
+    navigation-free and movement requests return `NoNavMesh`, which is correct
+    for a movement-free encounter and is not a startup error. *Rejected:* a
+    `crpg-data` edge here (deferred to the campaign-load task); silently
+    skipping the backlog row.
+
 ## Interface
 
 ## Behaviour
