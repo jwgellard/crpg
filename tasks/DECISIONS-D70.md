@@ -1,6 +1,6 @@
 # Decision D70 — the dedicated server program (T040) questions and approval
 
-Status: **open, 2026-11-19. Waiting for the user.**
+Status: **answered by the user, 2026-11-19: D70a (b), D70b PEM and DER through `rustls-pki-types`, D70c (a), D70d approve. D70a and D70b differ from the recommendations.**
 
 T040 turns `crpg-server` into a program you can actually run as a
 dedicated server on Windows, and on Linux without Godot. It reads one
@@ -34,6 +34,12 @@ library.
 releases (T089), when servers will really run as services. Today nobody
 runs a dedicated server as a service.
 
+**Answer (user, 2026-11-19): (b).** Add `ctrlc` now; Ctrl-C and a service
+stop close cleanly and save, the same as `quit`, which stays. Written into
+T040 Reading 13 as `ctrlc` 3.5.2 with `termination`, no new thread. Two
+limits remain: closing the Windows console window does not guarantee a
+save, and a native Windows service needs a wrapper that sends Ctrl-C.
+
 ## D70b — what file format for the server's certificate and key? (T040 Reading 7)
 
 Players' games trust the server by its certificate (a fingerprint they
@@ -51,6 +57,12 @@ and PEM (the same bytes as text between `-----BEGIN ...-----` lines).
 
 **Recommend (a).** It is the smallest correct thing; PEM can be added later
 without changing anything else.
+
+**Answer (user, 2026-11-19): accept both, using `rustls-pki-types`.** The
+user approved it as a direct dependency of `crpg-server` (1.15.1, already in
+`Cargo.lock` through the QUIC stack, so no package is added). A file
+starting `-----BEGIN` is read as PEM with the crate's own reader; any other
+file is DER. Written into T040 Reading 7 and B-19.
 
 ## D70c — should the dedicated server run the monsters' AI? (T040 Reading 12)
 
@@ -73,6 +85,8 @@ read.
 
 **Recommend (a).** Without it the dedicated server cannot host a real fight,
 and gate 13 needs one.
+
+**Answer (user, 2026-11-19): (a)**, as recommended.
 
 ## D70d — approve the T040 contract
 
@@ -97,5 +111,10 @@ recommended).
 
 **Recommend approve**, with the answers to D70a–c written into the contract.
 
+**Answer (user, 2026-11-19): approve.** The `ctrlc` and `rustls-pki-types`
+lines in `crates/crpg-server/Cargo.toml` and the `Cargo.lock` entries they
+add (T040 "Dependency edges") are part of this approval.
+
 ## Agent log
 - 2026-11-19 (UTC) · claude-code/opus-5.5 (architect) + T040 contract · Drafted the T040 decision batch: how the server is stopped, the certificate format, AI on the dedicated server, and contract approval, each explained plainly with a recommendation.
+- 2026-11-19 (UTC) · claude-code/opus-5.5 (architect) + D70 revision · Recorded the user's answers (D70a (b) and D70b PEM and DER, both differing from the recommendations; D70c (a); D70d approve) and where each is written into the T040 contract.
