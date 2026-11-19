@@ -127,6 +127,22 @@ How a `Host` is built, bound, and started, what it needs, and the checkpoint/sav
 
 ## Existing binaries and their layout
 
+Every `[[bin]]`, every `src/bin/*.rs`, the `crpgc` structure, E012, and binary test discipline:
+
+- `crpg-server` `[[bin]]` (`crates/crpg-server/Cargo.toml:12-14`) — binary name `crpg-server`, entry `src/main.rs`.
+- `crpg-server` `[lib]` (`crates/crpg-server/Cargo.toml:9-10`) — library entry `src/lib.rs` beside the thin binary.
+- No `src/bin/*.rs` anywhere in the workspace (glob `crates/*/src/bin/*.rs` finds none) — both binaries are package-root `src/main.rs` files.
+- `crpgc` `[[bin]]` (`crates/crpg-cli/Cargo.toml:26-28`) — binary name `crpgc`, entry `src/main.rs`.
+- `crpgc` sources (`crates/crpg-cli/src`) — `main.rs` plus `apply.rs`, `combat_apply.rs`, `demo.rs`, `play.rs` command modules.
+- `crpg-server` binary refuses to run (`crates/crpg-server/src/main.rs:9-12`) — prints "dedicated adapter not yet implemented" and exits 1.
+- The binary is a wiring shell with no host policy (`crates/crpg-server/AGENTS.md:24-26`) — policy lives in the library.
+- Seven library modules, no glob re-export (`crates/crpg-server/src/lib.rs:8`) — `host`, `capture`, `checkpoint`, `save`, `quic`, `run`, `runner`.
+- Client/editor are Godot projects over `crpg-godot`, never Rust packages (`tasks/E012-binary-crate-naming.md:65-68`) — resolved binary naming.
+- `crpg-server` owns the reusable host as a library target plus a thin dedicated binary (`tasks/E012-binary-crate-naming.md:69-70`) — packaging resolution.
+- Spec §14 lists only `crpg-server [bin]` plus `crpg-cli [bin]` plus `crpg-godot [cdylib]` (`tasks/E012-binary-crate-naming.md:7-12`) — the deferred-task naming gap E012 closed.
+- Binary tests drive `env!("CARGO_BIN_EXE_crpgc")` as a real process (`crates/crpg-cli/tests/demo.rs:3`) — black-box binary discipline.
+- Exit-code plus stdout-byte assertions, never internals (`crates/crpg-cli/tests/demo.rs:3-9`) — what the black-box tests pin.
+
 ## CI today
 
 ## Rules that bind it
