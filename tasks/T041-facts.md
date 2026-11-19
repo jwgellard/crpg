@@ -81,7 +81,14 @@
 
 ## Dedicated server today
 
-TODO
+- `T040 not built` (`tasks/T040-facts.md:44`) — "Leave the program to T040": the runnable program waits for T040; the `crpg-server` binary prints "dedicated adapter not yet implemented" and exits 1 (`tasks/T040-facts.md:137`).
+- `§Requirements` (`tasks/T040-facts.md:3`) — binding sentences on the binary, CLI, config, logging, service behaviour, gate 12/13, pinned trust, and the T040/T041 log-line split.
+- `§The run loop it would host` (`tasks/T040-facts.md:50`) — the loop, hosting stages, and cadence T040 inherits.
+- `§Host start-up today` (`tasks/T040-facts.md:98`) — what host construction exists before the dedicated adapter.
+- `§Existing binaries and their layout` (`tasks/T040-facts.md:128`) — `crpg-server` lib plus thin binary, `crpgc` layout, E012 naming.
+- `§CI today` (`tasks/T040-facts.md:146`) — the CI picture as gathered for T040.
+- `§Rules that bind it` (`tasks/T040-facts.md:164`) — the lint/dependency rules constraining T040.
+- `CI jobs` (`.github/workflows/ci.yml:43`) — eight jobs, Ubuntu `guard` plus `secrets` (`.github/workflows/ci.yml:88`), matrix `check` on ubuntu+windows (`.github/workflows/ci.yml:102`), `client` on windows (`.github/workflows/ci.yml:192`), `deny` (`.github/workflows/ci.yml:359`), `lint-architecture` (`.github/workflows/ci.yml:379`), `lint-determinism` (`.github/workflows/ci.yml:391`), `lint-selftest` (`.github/workflows/ci.yml:403`).
 
 ## Rules that bind it
 
