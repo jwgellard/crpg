@@ -72,7 +72,8 @@ trait, `CycleReport`, `StepReport`, `LoopError`, `HostLoop`, `AiHook`,
 `LinkStats` (`#[non_exhaustive]`), `LocalError`, `LinkError`, `LocalHost` and
 `LocalClient` (its `crpg_net::transport::Transport` impl). The link table is
 private, and `run.rs` names no `crpg_ai` type. T154c adds one `LinkStats`
-field; T154d adds `QuicHosting` and `QuicAiHook`; neither changes a signature
+field, `held_moves` (lane-1 frames held for retry, B-11); T154d adds
+`QuicHosting` and `QuicAiHook`; neither changes a signature
 here.
 
 T154b's `runner` items: `Clock`, `SystemClock` (`new`, `starting_at`,
@@ -492,3 +493,4 @@ git diff --check
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + T025b-i · Recorded the host-side reconnect grace surface (ticket, grace, resume, fence), the grace-map bound in invariant 6 and the two T025b traps (a grace is not a binding; never build Accept without the proof), so the crate contract matches the reconnect code.
 - 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Recorded the resumable-adapter surface (`start_resumable`, `is_resumable`, `ResumeReport`/`ResumeOutcome`, `resumes`, the four `HostCall` variants, `FenceCause::Resumed`) and rewrote the `start`-precondition trap into the `start`/`start_resumable` split, so the crate contract matches the QUIC resume route the crate now speaks.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Added the seventh module `runner` to the surface (the `Clock`, `SystemClock`, `spawn` and `RunnerHandle` items) and amended invariant 7 with R-6's fenced exception, so the contract names the one thread and clock the crate now owns.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Named `LinkStats::held_moves` in the surface, so the contract records the lane-1 hold counter the local link now reports.
