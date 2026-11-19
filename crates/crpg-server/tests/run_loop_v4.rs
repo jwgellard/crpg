@@ -938,3 +938,334 @@ fn samples_drop_and_v1_peers_skip_lane1() {
         assert!(has_sample(&drain(&mut roomy)));
     }
 }
+
+// ---------------------------------------------------------------------------
+// T154c fix round part B (mutants d01-d11, c02-c09, s02-s04).
+// Expected values come from the contract (B-11, B-12, B-13), never from a run.
+// ---------------------------------------------------------------------------
+
+/// d01 + d03 (B-11). The drain stops once the held-move queue is at capacity:
+/// with `held_moves == capacity` a queued frame stays queued this cycle
+/// (`received` unchanged) and is taken once the hold clears. Kills the mutant
+/// that drops the `moves_full` break and the mutant that tests `>` not `>=`
+/// (at exactly `capacity` the mutant takes one more frame).
+#[test]
+fn drain_stops_when_hold_at_capacity() {
+    // Capacity 2, down never read: the window fills to 8, then holds build to
+    // exactly 2. Loosely derived from V2's 8-slot window, not read off a run.
+    let (host, p) = setup_quiet();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop.hosting_mut().attach(p, cap(2)).expect("attaches");
+    let mut sent = 0u64;
+    let mut now = 0u64;
+    let mut at_cap = false;
+    for _ in 0..40 {
+        if sent < 30 {
+            sent += 1;
+            client
+                .send(&mv(host_loop.hosting().host(), p, sent))
+                .expect("sends");
+        }
+        host_loop.step(now).expect("runs");
+        now += 50;
+        if host_loop.hosting().link_stats(p).expect("link").held_moves == 2 {
+            at_cap = true;
+            break;
+        }
+    }
+    assert!(at_cap, "the hold reaches exactly capacity 2");
+    let received = host_loop.hosting().link_stats(p).expect("link").received;
+    // One more frame behind a full hold stays queued: `received` unchanged.
+    sent += 1;
+    client
+        .send(&mv(host_loop.hosting().host(), p, sent))
+        .expect("sends");
+    host_loop.step(now).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.held_moves, 2);
+    assert_eq!(stats.received, received);
+    assert_eq!(stats.refused, 0);
+
+    // Control: capacity 64 with the same 9-frame burst holds 1, never stops.
+    let (host, p) = setup_quiet();
+    let mut wide = HostLoop::new(LocalHost::new(host), 0);
+    let mut roomy = wide.hosting_mut().attach(p, cap(64)).expect("attaches");
+    for seq in 1..=9 {
+        roomy
+            .send(&mv(wide.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    wide.step(0).expect("runs");
+    let stats = wide.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 9);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 1);
+}
+
+/// d05 (B-11). The behind-hold rule is lane-1 only: while lane-1 moves are
+/// held, a lane-0 frame behind them is still ingested (not held) and
+/// `held_moves` counts only the lane-1 frames.
+#[test]
+fn lane0_flows_while_lane1_held() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    for seq in 1..=12 {
+        client
+            .send(&mv(host_loop.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    client
+        .send(&pause_frame(host_loop.hosting().host(), p, 1))
+        .expect("sends");
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 13);
+    assert_eq!(stats.refused, 0);
+    assert!(!stats.held);
+    assert_eq!(stats.held_moves, 4);
+    assert!(host_loop.hosting().host().paused().is_some());
+
+    // Control: three moves fit the window, nothing holds, pause still applies.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    for seq in 1..=3 {
+        idle.send(&mv(quiet.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    idle.send(&pause_frame(quiet.hosting().host(), p, 1))
+        .expect("sends");
+    quiet.step(0).expect("runs");
+    let stats = quiet.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 4);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 0);
+    assert!(!stats.held);
+    assert!(quiet.hosting().host().paused().is_some());
+}
+
+/// d06 (B-11). A lane-1 frame held behind an earlier hold updates
+/// `held_moves`: 10 frames leave 8 admitted and 2 held.
+#[test]
+fn behind_hold_updates_held_moves() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    for seq in 1..=10 {
+        client
+            .send(&mv(host_loop.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 10);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 2);
+
+    // Control: eight frames fit the window exactly, nothing holds.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    for seq in 1..=8 {
+        idle.send(&mv(quiet.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    quiet.step(0).expect("runs");
+    let stats = quiet.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 8);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 0);
+}
+
+/// d11 (B-11). The lane-1 hold path updates `held_moves` at once: right after
+/// the cycle that held the first frame it reads 1, not 0.
+#[test]
+fn first_hold_updates_held_moves_at_once() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    for seq in 1..=9 {
+        client
+            .send(&mv(host_loop.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    host_loop.step(0).expect("runs");
+    let stats = host_loop.hosting().link_stats(p).expect("link");
+    assert_eq!(stats.received, 9);
+    assert_eq!(stats.refused, 0);
+    assert_eq!(stats.held_moves, 1);
+
+    // Control: eight frames hold nothing.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    for seq in 1..=8 {
+        idle.send(&mv(quiet.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    quiet.step(0).expect("runs");
+    assert_eq!(quiet.hosting().link_stats(p).expect("link").held_moves, 0);
+}
+
+/// c02 (B-12). Receipts leave the host only when the backlog is empty: with a
+/// receipt waiting in the backlog and new receipts in the host, the next
+/// cycle sends the backlog first and leaves the host's receipts untaken.
+#[test]
+fn receipts_wait_for_an_empty_backlog() {
+    // Capacity 2, client unread: two cycles build backlog [2] with host [3].
+    let (host, p) = setup_quiet();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop.hosting_mut().attach(p, cap(2)).expect("attaches");
+    client
+        .send(&mv(host_loop.hosting().host(), p, 1))
+        .expect("sends");
+    host_loop.step(0).expect("runs");
+    client
+        .send(&mv(host_loop.hosting().host(), p, 2))
+        .expect("sends");
+    host_loop.step(50).expect("runs");
+    client
+        .send(&mv(host_loop.hosting().host(), p, 3))
+        .expect("sends");
+    host_loop.step(100).expect("runs");
+    // Free exactly two slots: the next cycle must send backlog seq 2 alone.
+    assert_eq!(drain(&mut client).len(), 2);
+    client
+        .send(&mv(host_loop.hosting().host(), p, 4))
+        .expect("sends");
+    host_loop.step(150).expect("runs");
+    assert_eq!(receipts_of(&drain(&mut client)), vec![2]);
+
+    // Control: capacity 64 takes and sends all three at once, in order.
+    let (host, p) = setup_quiet();
+    let mut wide = HostLoop::new(LocalHost::new(host), 0);
+    let mut roomy = wide.hosting_mut().attach(p, cap(64)).expect("attaches");
+    for seq in 1..=3 {
+        roomy
+            .send(&mv(wide.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    wide.step(0).expect("runs");
+    assert_eq!(receipts_of(&drain(&mut roomy)), vec![1, 2, 3]);
+}
+
+/// c03 + c04 (B-12). A receipt that meets a full queue returns to the front
+/// of the backlog and is never dropped: every receipt arrives exactly once,
+/// in seq order 1, 2, 3.
+#[test]
+fn full_queue_returns_receipt_to_front_without_loss() {
+    let (host, p) = setup_quiet();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop.hosting_mut().attach(p, cap(1)).expect("attaches");
+    for seq in 1..=3 {
+        client
+            .send(&mv(host_loop.hosting().host(), p, seq))
+            .expect("sends");
+        host_loop.step(50 * (seq - 1)).expect("runs");
+    }
+    let mut seqs = Vec::new();
+    for now in (3..23).map(|i| i * 50) {
+        host_loop.step(now).expect("runs");
+        if let Some(frame) = client.recv() {
+            if let Ok(MoveDown::Receipt(receipt)) = decode_down(&frame) {
+                seqs.push(receipt.seq);
+            }
+        }
+        if seqs.len() == 3 {
+            break;
+        }
+    }
+    assert_eq!(seqs, vec![1, 2, 3]);
+
+    // Control: capacity 64 delivers all three in the first cycle.
+    let (host, p) = setup_quiet();
+    let mut wide = HostLoop::new(LocalHost::new(host), 0);
+    let mut roomy = wide.hosting_mut().attach(p, cap(64)).expect("attaches");
+    for seq in 1..=3 {
+        roomy
+            .send(&mv(wide.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    wide.step(0).expect("runs");
+    assert_eq!(receipts_of(&drain(&mut roomy)), vec![1, 2, 3]);
+}
+
+/// c05 (B-12). Each receipt sent counts in `sent`: with an empty down queue
+/// `sent` equals every frame the client can drain.
+#[test]
+fn sent_counts_every_receipt() {
+    let (host, p) = setup_quiet();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    for seq in 1..=3 {
+        client
+            .send(&mv(host_loop.hosting().host(), p, seq))
+            .expect("sends");
+    }
+    host_loop.step(0).expect("runs");
+    let frames = drain(&mut client);
+    assert_eq!(receipts_of(&frames), vec![1, 2, 3]);
+    assert_eq!(
+        host_loop.hosting().link_stats(p).expect("link").sent as usize,
+        frames.len()
+    );
+
+    // Control: no moves, `sent` equals the sample frames alone.
+    let (host, p) = setup_quiet();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let mut idle = quiet.hosting_mut().attach(p, cap(64)).expect("attaches");
+    quiet.step(0).expect("runs");
+    let frames = drain(&mut idle);
+    assert!(receipts_of(&frames).is_empty());
+    assert_eq!(
+        quiet.hosting().link_stats(p).expect("link").sent as usize,
+        frames.len()
+    );
+}
+
+/// s04 (B-13). Each sample sent counts in `sent`: a move-free ticking cycle
+/// sends only samples, and `sent` equals their count.
+#[test]
+fn sent_counts_every_sample() {
+    let (host, p) = setup();
+    let mut host_loop = HostLoop::new(LocalHost::new(host), 0);
+    let mut client = host_loop
+        .hosting_mut()
+        .attach(p, cap(64))
+        .expect("attaches");
+    client
+        .send(&mv(host_loop.hosting().host(), p, 1))
+        .expect("sends");
+    let mut frames = Vec::new();
+    for now in (0..3).map(|i| i * 50) {
+        host_loop.step(now).expect("runs");
+        frames.extend(drain(&mut client));
+    }
+    // One receipt (seq 1) plus a sample per ticking cycle: `sent` counts both.
+    assert!(has_sample(&frames));
+    assert_eq!(receipts_of(&frames), vec![1]);
+    assert_eq!(
+        host_loop.hosting().link_stats(p).expect("link").sent as usize,
+        frames.len()
+    );
+
+    // Control: an unread cycle still keeps the link with no error.
+    let (host, p) = setup();
+    let mut quiet = HostLoop::new(LocalHost::new(host), 0);
+    let _idle = quiet.hosting_mut().attach(p, cap(1)).expect("attaches");
+    quiet.step(0).expect("runs");
+    assert!(quiet.hosting().link_stats(p).is_some());
+}
