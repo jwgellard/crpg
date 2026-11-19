@@ -328,6 +328,91 @@ every display text is a `locale/en.json` key
 the canonical writer and `crpgc fmt` enforces it
 (`docs/CRPG_ENGINE_SPEC.md:450`).
 
+## Intent command layer
+
+A thin layer of consolidated verbs above T058's `EditCommand`, shared by the
+GUI and `crpgc apply` (D28j: added "above it, not in its place",
+`tasks/DECISIONS-2026-10-16.md:105`; R10 `docs/research/T099/R10-deep.md:12`).
+It lives in `crpg-edit` (T103's first owner, `docs/IMPLEMENTATION_PLAN.md:303`),
+so the GUI and the CLI call one implementation. It is **not** a second
+document model: every verb compiles to one or more `EditCommand`s and runs
+through `apply`/`apply_batch`, so the invariants, undo, caps and receipts are
+T058's unchanged.
+
+**Addressing (R4).** Identity is the agent-visible address: objects are named
+by `Ulid`, and a field is a schema field name, not a raw JSON pointer. JSON
+Pointers exist only for leaves a schema field cannot reach (R4,
+`docs/research/T099/R10-deep.md:27`). The layer resolves an `(id, field)`
+pair to `EditTarget::Object(id)` plus a relative pointer, using the same
+index `crpg-edit` derives (`crates/crpg-edit/AGENTS.md`, "never trust the
+opened index"). Edits are anchored (R5): a `set` names one uniquely-anchored
+object; an ambiguous anchor fails, never guesses
+(`docs/research/T099/R10-deep.md:32`).
+
+**Errors (R2).** The layer adds an actionable error surface above `EditError`.
+`EditError` is unchanged and is the last word on whether a command committed.
+The layer's own errors are machine-readable `{ pointer, code, suggestion }`
+triples (R2, `docs/research/T099/R10-deep.md:17`) for things `EditError`
+cannot say: an unknown field name (with a "did you mean" against the schema),
+a missing reference target, or an id that is not in the index. A structural
+refusal stays an `EditError`; a semantic finding stays a diagnostic on the
+receipt (`crates/crpg-edit/AGENTS.md`, invariant 7).
+
+**Plan step (R3).** `plan` is a reviewable, saveable list of verbs that
+`apply_plan` runs as one `apply_batch`. A plan never implies rollback: if it
+fails it fails atomically and nothing is half-applied (R3,
+`docs/research/T099/R10-deep.md:22`; T058 atomicity,
+`crates/crpg-edit/AGENTS.md`, invariant 1).
+
+**Receipts (R6).** Every verb returns the same `CommandReceipt` shape the GUI
+uses — `revision`, changed paths, diagnostics
+(`crates/crpg-edit/src/document.rs:75`) — so an agent's response is bounded
+(R6, `docs/research/T099/R10-deep.md:37`).
+
+The verbs. "Expands to" lists the `EditCommand`s; "Errors" lists the layer
+errors plus the relevant `EditError` variants. IDs are always caller-supplied.
+
+| Verb | Inputs | Expands to | Errors |
+|---|---|---|---|
+| `create` | `kind`, `slug`, `id` | `CreateDocument { path, document }` with a scaffolded document | `PathExists`, `BatchSize`, `InputTooLarge`; layer `unknown kind` |
+| `delete` | `id` (or `path`) | `DeleteObject` (root object ⇒ `DeleteDocument`) | `UnknownObject`, `MissingPath` |
+| `rename` | `from`, `to` | `RenameDocument` | `MissingPath`, `PathExists` |
+| `set` | `id`, `field`, `value` | `SetValue { Object(id), pointer, value }` | `UnknownObject`, `WrongKind`, `Pointer`, `InputTooLarge`; layer `unknown field` |
+| `set_at` | `path`, `pointer`, `value` | `SetValue { Document(path), pointer, value }` | `MissingPath`, `Pointer` |
+| `insert` | `id`, `field`, `value` | `InsertValue { Object(id), … }` | `UnknownObject`, `WrongKind`; layer `field not an array` |
+| `remove` | `id`, `field`, `index?` | `RemoveValue { Object(id), … }` | `UnknownObject`, `WrongKind`; layer `member not found` |
+| `link` | `id`, `field`, `target_id` | `SetValue` whose value is the target `Ulid`, checked as a reference | `UnknownObject`, `WrongKind`; a dangling target is a receipt diagnostic, not an error |
+| `place` | `area_id`, `placement` | `PlaceInstance` | `UnknownObject`, `WrongKind` |
+| `move` | `placement_id`, `transform` | `MovePlacement` | `UnknownObject`, `WrongKind` |
+| `plan` | `verbs[]` | none (returns a plan for review) | layer `invalid verb`, per-verb dry-run errors |
+| `apply_plan` | `plan` | `apply_batch` over the plan's commands | `BatchSize`, the failing command's error with index |
+| `validate` | — | `validate()` (read-only) | — |
+| `undo` / `redo` | — | `undo()` / `redo()` | `NothingToUndo`, `NothingToRedo` |
+
+Notes that pin the design:
+
+- **`create` scaffolds, never blanks** (R8, `docs/research/T099/R8-deep.md:9`):
+  the scaffold is a full, structurally valid document of the current schema
+  tag, so a `create` alone never leaves the campaign invalid. `crpgc new`
+  already builds one such document to stdout (`docs/architecture/crpg-cli.md:610`);
+  `create` is that document installed by `CreateDocument`.
+- **`link` is a first-class verb** because references are the one thing
+  authors (and agents) get wrong, and the layer can turn a target id into a
+  validated reference and report a dangling one on the receipt, where it
+  belongs (invariant 7). The alternative — making every reference a raw
+  `set` of an id string — is rejected in § Decisions.
+- **The verb set is under twenty** (fourteen verbs here), with 3–4 sentence
+  descriptions and eval-gated examples (R7,
+  `docs/research/T099/R10-deep.md:42`). T103 pins the exact list and the
+  `crpgc apply` JSON that encodes it; T059's JSON format "follows the T101
+  ADR" (`docs/IMPLEMENTATION_PLAN.md:316`), so `apply` is a JSON encoding of
+  these verbs, not of `EditCommand` directly.
+- **The GUI issues the same verbs.** A form field edit is a `set`; a
+  drag-drop placement is a `place`; the schema-derived property form is the
+  GUI's spelling of `set`/`insert`/`remove`, so agent and human edits land on
+  one transactional surface with receipts (R9,
+  `docs/research/T099/R9-deep.md:55`).
+
 ## Asset import
 
 ## Usability acceptance criteria per M6 package
