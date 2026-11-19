@@ -25,12 +25,12 @@ corrupts every byte with every value, and none checks that a decoded value
 re-encodes stably — which the client's replica applies whole
 (`docs/adr/0035-client-replica.md:12`) and the bridge re-applies
 (`docs/adr/0033-godot-bridge.md:152`). T042b adds that suite as one file,
-about 500 test lines (`tasks/BACKLOG.md:350`).
+about 500 test lines (`tasks/BACKLOG.md:355`).
 
 Every case feeds bytes a malicious server could send into a client-side
 decoder and pins the exact `CodecError` it must produce, with an accepted
 control beside it. Test-only: a case that shows a decoder bug is an open
-question, never a source change (D67b `tasks/DECISIONS-D67.md:14`).
+question, never a source change (D67b `tasks/DECISIONS-D67.md:16`).
 
 ## Parts
 
@@ -87,8 +87,10 @@ Design decisions this contract makes. Each needs approval with the contract.
    refusal or a frame whose canonical re-encoding is the corrupted bytes
    themselves, except inside ULID text where core accepts case and `I`/`L`/`O`
    aliases (`crates/crpg-core/src/ulid.rs:111–122`). `postcard` accepts
-   non-minimal varints (postcard 1.1.3), but no pinned frame has a varint
-   followed by `0x00` except an `actor`/`entity` before a tag, so no
+   non-minimal varints (postcard 1.1.3), but the only pinned frames where a
+   varint is followed by `0x00` are the delta op count (before its op tag) and
+   the Begin `transfer` (before `base_tick`); in both, a corrupted continuation
+   byte shifts a later field into a value the decoder refuses, so no
    single-byte corruption reaches that leniency. *Rejected:* `proptest` (a new
    dev-dependency, `AGENTS.md` "Do not add dependencies") and sampling instead
    of enumerating.
@@ -99,7 +101,7 @@ Design decisions this contract makes. Each needs approval with the contract.
    round-trips. *Rejected:* `PartialEq` on decoded values.
 7. **The "log line" at this level is the refusal's fixed `Display` text.**
    `crpg-net` does no I/O; every refusal is a `CodecError` with one of six
-   fixed texts (`codec.rs:68–79`). Writing the line to a file/console, and the
+   fixed texts (`codec.rs:72–83`). Writing the line to a file/console, and the
    client's close code (`BridgeCode::FrameUndecodable` 52, or QUIC
    `ProtocolViolation`), are other crates' jobs (Reading 1). *Rejected:* a
    logging dependency, and pinning the client close in a `crpg-net` test.
@@ -223,9 +225,9 @@ Notation: `EPOCH` = `[0x01, 0x02, …, 0x10]` (16 bytes); `net(n)` =
 `ABILITY` = `Ulid::from_parts(0x0123_4567_89AB, 0x0CDE_F012_3456_789A)`
 (`crates/crpg-core/src/ulid.rs:27`), text `014D2PF2DB0000SQQG28T5CY4T`.
 
-W-1. **The fixtures.** The delta header `D(v)` = `[v, 0x00]` (version, lane 0);
-the frame header then carries `server_tick` 5, `event_seq` 1, `op_count` 1, and
-the op. Every fixture, built by its decoder's encoder, equals its bytes, and
+W-1. **The fixtures.** The delta header `D(v)` = `[v, 0x00, 0x05, 0x01]`
+(version, lane 0, `server_tick` 5, `event_seq` 1); then `op_count`, then the
+op. Every fixture, built by its decoder's encoder, equals its bytes, and
 `verdict(bytes) == Accepted(bytes)` (each is canonical).
 
 | Fixture | Wire/Body | Value | Bytes | Len | `tag_at` |
@@ -252,8 +254,8 @@ wire's first byte, else `UnsupportedVersion`; `[b, c]` → `UnsupportedVersion`
 if `b` is not the first byte, else `WrongDirection` if `c` is not the lane,
 else `Malformed`. (The lane is at index 1 for all eight, so no wire tests
 emptiness explicitly; the empty input fails the version read.) For the bodies,
-`[]` → `Malformed`, `[0x00]` → `Malformed` (the `turn`/`encounter` read past
-the end). *Tests:* S2.
+`[]` and every one-byte `[b]` (0..=255) → `Malformed` (the `turn`/`encounter`
+read past the end). *Tests:* S2.
 
 W-3. **Oversize is refused first.** The cap of `V1`–`V4` and `T81`/`T82` is
 65,536 (`MAX_DELTA_FRAME_BYTES` `protocol.rs:64`; `MAX_DOWN_FRAME_BYTES`
@@ -294,17 +296,23 @@ W-8. **The tag/kind/op byte, all 256 values.** For a framed fixture `f` with
 | Fixture | `t` → verdict |
 |---|---|
 | `D1` (`V1`) | 0..=4 → `Accepted` (entity = 9); 5, 6, 7 → `Malformed` (more fields than remain); 8..=255 → `UnknownMessage` |
-| `D2` (`V2`) | 0..=4 → `Accepted`; 5, 6, 7, 8, 9, 10 → `Malformed`; 11..=255 → `UnknownMessage` |
-| `D3` (`V3`) | 0..=4 → `Accepted`; 5..=20 → `Malformed`; 21..=255 → `UnknownMessage` |
-| `D4` (`V4`) | 0..=4 → `Accepted`; 5..=22 → `Malformed`; 23..=255 → `UnknownMessage` |
+| `D2` (`V2`) | 0..=4 → `Accepted`; 5..=10 → `Malformed`; 11..=255 → `UnknownMessage` |
+| `D3` (`V3`) | 0..=4, 14, 16, 17, 18 → `Accepted`; 5..=13, 19, 20 → `Malformed`; 15, 21..=255 → `UnknownMessage` |
+| `D4` (`V4`) | 0..=4, 14, 16, 17, 18 → `Accepted`; 5..=13, 19..=22 → `Malformed`; 15, 23..=255 → `UnknownMessage` |
 | `B81`, `B82` | `0x10` → `Accepted(f)`; `0x11`, `0x12` → `Malformed` (fields of the other tag); `0x20`, `0x21` → `WrongDirection`; else → `UnknownMessage` |
 | `C81`, `C82` | `0x12` → `Accepted(f)`; `0x10`, `0x11` → `Malformed`; `0x20`, `0x21` → `WrongDirection`; else → `UnknownMessage` |
 | `Q91` | `0x30` → `Accepted(f)`; `0x31`, `0x32` → `Malformed`; `0x40` → `WrongDirection`; else → `UnknownMessage` |
 | `R1` | `0` → `Accepted(f)`; `1` → `Malformed`; else → `UnknownMessage` |
 | `S1` | `1` → `Accepted(f)`; `0` → `Malformed`; else → `UnknownMessage` |
 
+The delta `Accepted` set is exactly the ops whose fields are the one remaining
+byte `0x09`: the five entity ops (0..=4) plus v3/v4's single-`NetId` notices
+(16 `OrderEnded`, 17 `Joined`, 18 `Left`) and the scalar-only 14 `RoundStarted`
+(a single `u64` = 9); the `UnknownMessage` at tag 15 is `ModeChanged` reading a
+mode byte 9 that is neither 0 nor 1 (`codec_v3.rs:189–192`).
+
 The delta op-tag sets are frozen per version (tags 0..=7 v1, 0..=10 v2,
-0..=20 v3, 0..=22 v4; `codec.rs:336–387`, `codec_v2.rs:519–556`,
+0..=20 v3, 0..=22 v4; `codec.rs:334–389`, `codec_v2.rs:519–556`,
 `codec_v3.rs:929–1035`, `codec_v4.rs:347–363`). A body `tag_at` is `None`; the
 bodies have no discriminant byte. *Tests:* S8.
 
@@ -319,15 +327,16 @@ and checked before these fields, so a zero id is `Malformed`, never an
 W-10. **Hostile lengths are bounded before their bodies.** (a) Delta op count:
 `D(v) ++ [0x81, 0x02]` (count 257) → `LimitExceeded` for all four (checked
 before any op is read, `codec.rs:436–439` and the v2/v3/v4 twins); `D(v) ++
-[0x80, 0x02]` (count 256, no ops) → `Malformed`. (b) Transfer Begin: on `B81`
-(byte 21 is `total_bytes` low) `total_bytes` := 0 → `Malformed`, := 1,048,577
-→ `LimitExceeded`; `entity_count` := 1,025 → `LimitExceeded`;
-`segments_per_chunk` := 0 → `Malformed`, := 9 → `LimitExceeded`;
-`chunk_count` := 0 → `Malformed`, := 33 → `LimitExceeded`; a `chunk_count`
-that is not `div_ceil(total_bytes, segments_per_chunk * 4096)` → `Malformed`.
-`B82` uses the v3 caps (4,194,304 bytes, 128 chunks, `transfer_v3.rs:94–128`).
+[0x80, 0x02]` (count 256, no ops) → `Malformed`. (b) Transfer Begin
+(`B81`/`B82`): `total_bytes` := 0 → `Malformed`, := 1,048,577 (`0x81`) or
+4,194,305 (`0x82`) → `LimitExceeded`; `entity_count` := 1,025 →
+`LimitExceeded`; `segments_per_chunk` := 0 → `Malformed`, := 9 →
+`LimitExceeded`; `chunk_count` := 0 → `Malformed`, := 33 (`0x81`) or 129
+(`0x82`) → `LimitExceeded`; a `chunk_count` that is not
+`div_ceil(total_bytes, segments_per_chunk * 4096)` → `Malformed`
+(`codec_transfer.rs:265–321`, `transfer_v3.rs:444–499`).
 (c) Resume proof (byte 19 of `Q91`): := 15 → `Malformed`, := 128 → `Malformed`
-(19 bytes follow), := 129 → `LimitExceeded` (`codec_resume.rs:30–45`). (d)
+(16 bytes follow), := 129 → `LimitExceeded` (`codec_resume.rs:30–45`). (d)
 Movement sample (byte 5 of `S1`): count := 39 → `LimitExceeded`
 (`MAX_SAMPLE_ENTRIES` `movement_v4.rs:57`); `processed_seq` := `u64::MAX` →
 `Malformed` (over `SEQ_LAST`). (e) Body count (byte 0): := 1,025 →
@@ -358,9 +367,7 @@ every index `i < len` and every value `v != f[i]`, with `m = with_byte(&f, i,
 v)`, `verdict(&m)` is one of: `Refused(_)` other than `FrameTooLarge`;
 `Accepted(m)`; or, only inside ULID text, `Accepted(c)` where `c` equals `m`
 except at `i` (an alias re-encoded canonically, Reading 5). Never a panic,
-never an encoder error. No pinned fixture has a varint followed by `0x00`
-except an `entity`/`actor` before its tag, so no single-byte corruption reaches
-`postcard`'s non-minimal-varint leniency. *Tests:* S12.
+never an encoder error. *Tests:* S12.
 
 W-13. **Seeded noise is stable.** One `XorShift64(SEED)` drives, in order:
 (a) for each framed wire in `WIRES` order, 1,024 inputs: `len = 1 + (next() %
@@ -438,7 +445,7 @@ the input bytes (`{:02X?}`), so a failure is reproducible from the log alone.
   prefix. *Control:* the full fixture is `Accepted`.
 - **S5 `trailing_bytes_are_malformed`** (W-5). 39 inputs. *Control:* the
   fixture without the extra byte.
-- **S6 `foreign_first_bytes_are_unsupported`** (W-6). (a) 88 cross-wire cases
+- **S6 `foreign_first_bytes_are_unsupported`** (W-6). (a) 77 cross-wire cases
   over the 11 framed fixtures; (b) 11 × 255 version-byte cases. *Control:* each
   fixture to its own wire is `Accepted`.
 - **S7 `foreign_lanes_are_wrong_direction`** (W-7). 11 × 255. *Control:* the
