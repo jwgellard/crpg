@@ -46,7 +46,7 @@ use crpg_server::host::{
 use crpg_server::quic::{
     Fence, FenceCause, GrantChange, HelloDecision, HelloOutcome, HostCall, Invitation,
     InvitationId, Lane1Call, Lane1Trace, QuicHost, QuicHostError, QuicPumpReport, V4Invitation,
-    MAX_INVITATIONS,
+    MAX_DRAIN_PER_CONNECTION, MAX_INVITATIONS,
 };
 use crpg_sim::HistoryWorld;
 use serde_json::{json, Value};
@@ -431,6 +431,23 @@ fn connect_movement_refused(
 /// Waits (guard) until the transport has an event or a frame queued.
 fn await_transport(qh: &QuicHost, what: &str) {
     until(what, || qh.wait(Duration::from_millis(5)));
+}
+
+/// Guard: the client's lane-1 writer has handed every queued frame to QUIC
+/// and the server holds a lane-1 frame, then paces the server's reader with
+/// the transport's own wait (the client has no queued inbound frame, so the
+/// wait runs to its timeout). The adapter exposes no server-side lane-1
+/// count, so "all frames arrived" is a guard wait, never an oracle; the pace
+/// gives the reader the time a single-threaded pump would not.
+fn settle_lane1(qh: &QuicHost, client: &mut MvClient) {
+    until("the client wrote its lane-1 frames", || {
+        client.quic.lane1_stats().outbound_frames == 0
+    });
+    await_transport(qh, "a lane-1 frame is queued at the server");
+    client.read_available();
+    if client.closed.is_none() {
+        client.quic.wait(Duration::from_millis(20));
+    }
 }
 
 /// Pumps at `now` until `want` `IngestMove` calls have been traced, without
@@ -1321,16 +1338,29 @@ fn q4_trace_replays() {
 // Q5: a refused lane-1 frame is held and retried before any later one.
 // ---------------------------------------------------------------------------
 
-/// Pump 1 of Q5: nine `Halt`s sent before any advance; frames 1--8 admitted,
-/// frame 9 `QueueFull` and held. Returns the nine frames' bytes.
+/// Pump 1 of Q5: nine `Halt`s sent before any advance; frame 1--8 admitted,
+/// frame 9 `QueueFull` and held, all in one pump (C-3's per-pump drain bound).
+/// Returns the nine frames' bytes.
 fn q5_held_state(qh: &mut QuicHost, clock: &mut TestClock, client: &mut MvClient) -> Vec<Vec<u8>> {
     let expected: Vec<Vec<u8>> = (1..=9).map(|seq| halt_bytes(e(1), seq, 1)).collect();
     for bytes in &expected {
         client.send_lane1(bytes.clone());
     }
+    settle_lane1(qh, client);
     let now = CLOCK_START + 10;
-    let (reports, traces) = pump_ingests(qh, clock, now, 9);
-    assert_eq!(traces.len(), 9, "{traces:?}");
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    let traces: Vec<Lane1Trace> = report
+        .lane1
+        .iter()
+        .filter(|trace| matches!(trace.call, Lane1Call::IngestMove { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(
+        traces.len(),
+        9,
+        "the whole lane-1 backlog drains in the first pump: {report:?}"
+    );
     for (index, trace) in traces.iter().enumerate() {
         let seq = index as u64 + 1;
         let result = if seq <= 8 {
@@ -1352,7 +1382,7 @@ fn q5_held_state(qh: &mut QuicHost, clock: &mut TestClock, client: &mut MvClient
             }
         );
     }
-    assert_eq!(reports.last().expect("a pump").lane1_held, 1);
+    assert_eq!(report.lane1_held, 1);
     expected
 }
 
@@ -1435,18 +1465,296 @@ fn q5_queue_full_is_held_and_retried() {
     );
     assert_eq!(report.lane1_held, 0);
 
-    // One more decision window releases the ninth receipt.
+    // One more decision window releases the ninth receipt. The take waits for
+    // an empty lane-1 queue (Reading 12), so pump until the transport has
+    // handed the earlier eight to QUIC and the client holds all nine.
     let now = CLOCK_START + 60;
     assert!(qh.advance(now).expect("advance").ticked);
     clock.set(now);
-    let _ = qh.pump(now).expect("pump");
-    client.read_until("nine receipts", |client| client.receipts.len() >= 9);
+    let start = Instant::now();
+    loop {
+        let _ = qh.pump(now).expect("pump");
+        client.read_available();
+        if client.receipts.len() >= 9 {
+            break;
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: nine receipts");
+        qh.wait(Duration::from_millis(5));
+    }
     let seqs: Vec<u64> = client
         .receipts
         .iter()
         .map(|bytes| receipt_of(bytes).seq)
         .collect();
     assert_eq!(seqs, (1..=9).collect::<Vec<_>>());
+}
+
+/// Q5's held state, then `frames` sent behind the hold and settled over three
+/// pumps: the adapter retries the held frame first and reads nothing fresh, so
+/// every `frames` entry is in the transport's lane-1 queue when the hold is
+/// released. Returns the nine held frames' bytes.
+fn held_with_queued(
+    qh: &mut QuicHost,
+    clock: &mut TestClock,
+    client: &mut MvClient,
+    frames: &[Vec<u8>],
+) -> Vec<Vec<u8>> {
+    let expected = q5_held_state(qh, clock, client);
+    for bytes in frames {
+        client.send_lane1(bytes.clone());
+    }
+    settle_lane1(qh, client);
+    let now = clock.now();
+    for step in 1..=3 {
+        let now = now + step * 10;
+        clock.set(now);
+        let report = qh.pump(now).expect("pump");
+        let ingests = report
+            .lane1
+            .iter()
+            .filter(|trace| matches!(trace.call, Lane1Call::IngestMove { .. }))
+            .count();
+        assert_eq!(
+            ingests, 1,
+            "only the held retry is read while the hold persists: {report:?}"
+        );
+        assert_eq!(report.lane1_held, 1, "{report:?}");
+        qh.wait(Duration::from_millis(5));
+    }
+    expected
+}
+
+/// Releases Q5's hold: one pump after the decision window (the held frame
+/// still refuses and the released receipts are taken), then the pump that
+/// admits the held frame and reads every frame queued behind it.
+fn release_held(qh: &mut QuicHost, clock: &mut TestClock) -> QuicPumpReport {
+    let now = clock.now() + 10;
+    assert!(qh.advance(now).expect("advance").ticked);
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    assert_eq!(
+        report
+            .lane1
+            .iter()
+            .filter(|trace| matches!(trace.call, Lane1Call::IngestMove { .. }))
+            .count(),
+        1,
+        "the held frame still does not fit in the drain: {report:?}"
+    );
+    let now = clock.now() + 10;
+    clock.set(now);
+    qh.pump(now).expect("pump")
+}
+
+/// The lane-1 `IngestMove` traces of one pump, in order.
+fn ingests_of(report: &QuicPumpReport) -> Vec<Lane1Trace> {
+    report
+        .lane1
+        .iter()
+        .filter(|trace| matches!(trace.call, Lane1Call::IngestMove { .. }))
+        .cloned()
+        .collect()
+}
+
+/// Q5 (C-3 (1)--(2), Reading 14): nothing behind a held frame is read, and
+/// once the hold clears the next frame is drained in the same pump.
+#[test]
+fn q5_nothing_after_the_held_frame() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    let frame10 = halt_bytes(e(1), 10, 1);
+    let expected = held_with_queued(
+        &mut qh,
+        &mut clock,
+        &mut client,
+        std::slice::from_ref(&frame10),
+    );
+
+    // With the hold still in place, each pump retries frame 9 only.
+    let now = clock.now() + 10;
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    let traces = ingests_of(&report);
+    assert_eq!(traces.len(), 1, "{:?}", report.lane1);
+    assert_eq!(
+        traces[0].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 9,
+            len: expected[8].len(),
+            result: MoveAdmission::Refused {
+                seq: Some(9),
+                code: CodeV3::QueueFull,
+            },
+        }
+    );
+    assert_eq!(report.lane1_held, 1);
+    assert!(
+        !report
+            .lane1
+            .iter()
+            .any(|trace| matches!(&trace.call, Lane1Call::IngestMove { frame: 10, .. })),
+        "frame 10 overtook the held frame: {:?}",
+        report.lane1
+    );
+
+    // Released: frame 9 is admitted, then frame 10 in the same pump.
+    let report = release_held(&mut qh, &mut clock);
+    let traces = ingests_of(&report);
+    assert_eq!(traces.len(), 2, "{:?}", report.lane1);
+    assert_eq!(
+        traces[0].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 9,
+            len: expected[8].len(),
+            result: MoveAdmission::Admitted { seq: 9 },
+        }
+    );
+    assert_eq!(
+        traces[1].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 10,
+            len: frame10.len(),
+            result: MoveAdmission::Admitted { seq: 10 },
+        }
+    );
+    assert_eq!(report.lane1_held, 0);
+}
+
+/// Q5 (C-3 (2)): the fresh frame that is held stops its connection's drain in
+/// that same pump -- a later frame queued behind it is never read.
+#[test]
+fn q5_held_frame_stops_the_drain() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    let expected: Vec<Vec<u8>> = (1..=10).map(|seq| halt_bytes(e(1), seq, 1)).collect();
+    for bytes in &expected {
+        client.send_lane1(bytes.clone());
+    }
+    settle_lane1(&qh, &mut client);
+    let now = CLOCK_START + 10;
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    let traces = ingests_of(&report);
+    assert_eq!(
+        traces.len(),
+        9,
+        "frame 10 is read after the held frame: {:?}",
+        report.lane1
+    );
+    assert_eq!(
+        traces[8].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 9,
+            len: expected[8].len(),
+            result: MoveAdmission::Refused {
+                seq: Some(9),
+                code: CodeV3::QueueFull,
+            },
+        }
+    );
+    assert_eq!(report.lane1_held, 1);
+}
+
+/// Q5 (C-3 `MAX_DRAIN_PER_CONNECTION`): a pump drains every frame one
+/// connection's transport can hold, and not one connection's bound in total.
+/// The transport's lane-1 inbound queue holds 64 frames per connection, so
+/// "more than the bound queued" is three movement connections.
+#[test]
+fn q5_drain_bound_is_per_connection() {
+    let (mut qh, mut clock, invitation) = movement_adapter(true);
+    let _ = invitation.expect("INV registered");
+    let credentials = [
+        credential(&[0x51; 32]),
+        credential(&[0x61; 32]),
+        credential(&[0x62; 32]),
+    ];
+    for extra in &credentials[1..] {
+        let mut invitation = inv();
+        invitation.credential = extra.clone();
+        qh.register_v4_invitation(invitation).expect("registers");
+    }
+    let mut clients = Vec::new();
+    for bytes in &credentials {
+        let (client, _, _) = connect_movement(&mut qh, &mut clock, bytes);
+        clients.push(client);
+    }
+
+    const PER_CONNECTION: usize = 45;
+    assert!(
+        credentials.len() * PER_CONNECTION > MAX_DRAIN_PER_CONNECTION,
+        "the case must queue more than one connection's bound"
+    );
+    let stale = encode_intent(&MoveIntent {
+        epoch: [9; 16],
+        seq: 1,
+        actor: n(1),
+        body: MoveBody::Halt,
+    })
+    .expect("encodes");
+    for client in &mut clients {
+        for _ in 0..PER_CONNECTION {
+            client.send_lane1(stale.clone());
+        }
+    }
+    for client in &mut clients {
+        settle_lane1(&qh, client);
+    }
+
+    let now = CLOCK_START + 10;
+    clock.set(now);
+    let mut total = 0usize;
+    let mut refused = 0usize;
+    let mut per_connection: BTreeMap<ConnectionId, usize> = BTreeMap::new();
+    let start = Instant::now();
+    let wanted = credentials.len() * PER_CONNECTION;
+    while total < wanted {
+        let report = qh.pump(now).expect("pump");
+        let mut counts: BTreeMap<ConnectionId, usize> = BTreeMap::new();
+        for trace in &report.lane1 {
+            if let Lane1Call::IngestMove {
+                conn, len, result, ..
+            } = &trace.call
+            {
+                assert_eq!(*len, stale.len());
+                assert!(matches!(
+                    result,
+                    MoveAdmission::Refused {
+                        code: CodeV3::SessionExpired,
+                        ..
+                    }
+                ));
+                *counts.entry(*conn).or_default() += 1;
+            }
+        }
+        total += counts.values().sum::<usize>();
+        refused += report.lane1_refused;
+        assert_eq!(report.lane1_held, 0);
+        for (conn, count) in counts {
+            let best = per_connection.entry(conn).or_default();
+            *best = (*best).max(count);
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: the lane-1 drain");
+        qh.wait(Duration::from_millis(5));
+    }
+    assert_eq!(total, wanted);
+    assert_eq!(refused, wanted);
+    // C-3's bound is per connection and per pump: each connection's queue of
+    // `PER_CONNECTION` frames leaves in one pump, never one frame per pump.
+    assert_eq!(per_connection.len(), credentials.len());
+    for (conn, most) in &per_connection {
+        assert_eq!(
+            *most, PER_CONNECTION,
+            "{conn:?} did not drain its queue in one pump: {per_connection:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1570,10 +1878,208 @@ fn q6_refusals_dropped_or_fenced() {
     }
 }
 
+/// Q6 (C-3): a stale-epoch refusal is dropped and the drain continues, so a
+/// valid frame queued behind it is ingested in the same pump.
+#[test]
+fn q6_stale_then_valid_same_pump() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    let stale = encode_intent(&MoveIntent {
+        epoch: [9; 16],
+        seq: 10,
+        actor: n(1),
+        body: MoveBody::Halt,
+    })
+    .expect("encodes");
+    let valid = halt_bytes(e(1), 10, 1);
+    let _ = held_with_queued(
+        &mut qh,
+        &mut clock,
+        &mut client,
+        &[stale.clone(), valid.clone()],
+    );
+    let report = release_held(&mut qh, &mut clock);
+    let traces = ingests_of(&report);
+    assert_eq!(traces.len(), 3, "{:?}", report.lane1);
+    assert_eq!(
+        traces[1].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 10,
+            len: stale.len(),
+            result: MoveAdmission::Refused {
+                seq: Some(10),
+                code: CodeV3::SessionExpired,
+            },
+        }
+    );
+    assert_eq!(
+        traces[2].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 11,
+            len: valid.len(),
+            result: MoveAdmission::Admitted { seq: 10 },
+        }
+    );
+    assert_eq!(report.lane1_refused, 1);
+    assert!(report.fences.is_empty(), "{:?}", report.fences);
+}
+
+/// Q6 (C-3): a duplicate resend is answered and the drain continues.
+#[test]
+fn q6_duplicate_continues() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    let duplicate = halt_bytes(e(1), 1, 1);
+    let next = halt_bytes(e(1), 10, 1);
+    let _ = held_with_queued(
+        &mut qh,
+        &mut clock,
+        &mut client,
+        &[duplicate.clone(), next.clone()],
+    );
+    let report = release_held(&mut qh, &mut clock);
+    let traces = ingests_of(&report);
+    assert_eq!(traces.len(), 3, "{:?}", report.lane1);
+    assert!(
+        matches!(
+            &traces[1].call,
+            Lane1Call::IngestMove {
+                frame: 10,
+                len,
+                result: MoveAdmission::Duplicate { seq: 1, .. },
+                ..
+            } if *len == duplicate.len()
+        ),
+        "{:?}",
+        traces[1]
+    );
+    assert_eq!(
+        traces[2].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 11,
+            len: next.len(),
+            result: MoveAdmission::Admitted { seq: 10 },
+        }
+    );
+    assert_eq!(report.lane1_refused, 0);
+    assert!(report.fences.is_empty(), "{:?}", report.fences);
+}
+
+/// Q6 (C-3): a `Rejected` admission is terminal for its frame alone, and the
+/// drain continues to the next one.
+#[test]
+fn q6_rejected_continues() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    // `INV` controls `n(1)`--`n(3)`: `n(4)` resolves to no actor.
+    let rejected = halt_bytes(e(1), 10, 4);
+    let next = halt_bytes(e(1), 11, 1);
+    let _ = held_with_queued(
+        &mut qh,
+        &mut clock,
+        &mut client,
+        &[rejected.clone(), next.clone()],
+    );
+    let report = release_held(&mut qh, &mut clock);
+    let traces = ingests_of(&report);
+    assert_eq!(traces.len(), 3, "{:?}", report.lane1);
+    assert_eq!(
+        traces[1].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 10,
+            len: rejected.len(),
+            result: MoveAdmission::Rejected {
+                seq: 10,
+                code: CodeV3::NotAuthorized,
+            },
+        }
+    );
+    assert_eq!(
+        traces[2].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 11,
+            len: next.len(),
+            result: MoveAdmission::Admitted { seq: 11 },
+        }
+    );
+    assert_eq!(report.lane1_refused, 0);
+    assert!(report.fences.is_empty(), "{:?}", report.fences);
+}
+
+/// Q6 (C-3): after a `SeqConflict` closes the session, the next frame is
+/// `Unauthenticated`, both are counted, the drain fences `EpochClosed` and
+/// stops -- a third queued frame is never read.
+#[test]
+fn q6_seq_conflict_then_unauthenticated() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    // Frame 1's `Halt` is cached, so different bytes at seq 1 conflict.
+    let conflict = move_to_bytes(e(1), 1, 1, p(262_144, 0, 65_536));
+    let after_first = halt_bytes(e(1), 10, 1);
+    let after_second = halt_bytes(e(1), 11, 1);
+    let _ = held_with_queued(
+        &mut qh,
+        &mut clock,
+        &mut client,
+        &[conflict.clone(), after_first.clone(), after_second],
+    );
+    let report = release_held(&mut qh, &mut clock);
+    let traces = ingests_of(&report);
+    assert_eq!(traces.len(), 3, "{:?}", report.lane1);
+    assert_eq!(
+        traces[1].call,
+        Lane1Call::IngestMove {
+            conn: client.conn,
+            peer: client.peer,
+            frame: 10,
+            len: conflict.len(),
+            result: MoveAdmission::Refused {
+                seq: Some(1),
+                code: CodeV3::SeqConflict,
+            },
+        }
+    );
+    assert!(
+        matches!(
+            &traces[2].call,
+            Lane1Call::IngestMove {
+                conn,
+                peer,
+                frame: 11,
+                len,
+                result: MoveAdmission::Refused {
+                    code: CodeV3::Unauthenticated,
+                    ..
+                },
+            } if *conn == client.conn && *peer == client.peer && *len == after_first.len()
+        ),
+        "{:?}",
+        traces[2]
+    );
+    assert_eq!(report.lane1_refused, 2);
+    assert_eq!(
+        report.fences,
+        vec![Fence {
+            conn: client.conn,
+            peer: client.peer,
+            cause: FenceCause::EpochClosed,
+        }]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Q7: the two lanes drain independently.
 // ---------------------------------------------------------------------------
-
 #[test]
 fn q7_lanes_drain_independently() {
     let (mut qh, mut clock, _) = movement_adapter(true);
@@ -1634,6 +2140,7 @@ fn q8_departed_peer_and_retirement() {
     {
         let (mut qh, mut clock, _) = movement_adapter(true);
         let (client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+        let conn = client.conn;
         let peer = client.peer;
         let mut client = client;
         client.send_lane1(halt_bytes(e(1), 1, 1));
@@ -1646,6 +2153,31 @@ fn q8_departed_peer_and_retirement() {
                 .iter()
                 .any(|call| matches!(call, HostCall::UnbindPeer { peer: p } if *p == peer))
         });
+
+        // C-6: the unbind lands in the same pump that reports the transport
+        // close -- a binding never retires a pump late.
+        let close_step = steps
+            .iter()
+            .position(|(_, report)| {
+                report
+                    .transport_closes
+                    .iter()
+                    .any(|(closed, _)| *closed == conn)
+            })
+            .expect("the transport close is reported");
+        let unbind_step = steps
+            .iter()
+            .position(|(_, report)| {
+                report
+                    .calls
+                    .iter()
+                    .any(|call| matches!(call, HostCall::UnbindPeer { peer: p } if *p == peer))
+            })
+            .expect("the binding unbound");
+        assert_eq!(
+            unbind_step, close_step,
+            "the unbind lands in the pump that reports the close: {steps:#?}"
+        );
 
         // Both lane-1 ingests happened before the unbind, in (step, at) order.
         let mut unbind: Option<(usize, usize)> = None;
@@ -1752,6 +2284,119 @@ fn q8_departed_peer_and_retirement() {
     }
 }
 
+/// Q8 (C-6, C-3): a held lane-1 frame blocks retirement until it is retried
+/// and admitted; the departed peer's released receipts are discarded.
+#[test]
+fn q8_held_frame_delays_retirement() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    let conn = client.conn;
+    let peer = client.peer;
+    q5_held_state(&mut qh, &mut clock, &mut client);
+    let MvClient { quic, .. } = client;
+    let _ = quic.close(CloseCode::Normal, CloseMode::Discard);
+    until("the close is published", || {
+        qh.wait(Duration::from_millis(100))
+    });
+
+    // The close is seen, but the hold keeps the binding alive.
+    let now = CLOCK_START + 20;
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    assert_eq!(report.lane1_held, 1, "{report:?}");
+    assert_eq!(qh.binding(conn), Some(peer));
+    assert!(
+        !report
+            .calls
+            .iter()
+            .any(|call| matches!(call, HostCall::UnbindPeer { .. })),
+        "{:?}",
+        report.calls
+    );
+
+    // The decision window releases eight receipts; the departed peer's take
+    // discards them (C-5), and the held frame still does not fit.
+    let now = CLOCK_START + 30;
+    assert!(qh.advance(now).expect("advance").ticked);
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    assert_eq!(report.lane1_held, 1, "{report:?}");
+    assert_eq!(qh.binding(conn), Some(peer));
+    assert!(
+        !report
+            .calls
+            .iter()
+            .any(|call| matches!(call, HostCall::UnbindPeer { .. })),
+        "{:?}",
+        report.calls
+    );
+    let receipts = report
+        .lane1
+        .iter()
+        .find_map(|trace| match trace.call {
+            Lane1Call::TakeMoveReceipts { result: Ok(n), .. } => Some(n),
+            _ => None,
+        })
+        .expect("a receipt take");
+    assert_eq!(receipts, 8, "{:?}", report.lane1);
+    let samples = report
+        .lane1
+        .iter()
+        .find_map(|trace| match trace.call {
+            Lane1Call::TakeSamples { result: Ok(n), .. } => Some(n),
+            _ => None,
+        })
+        .expect("a sample take");
+    assert_eq!(report.lane1_sent, 0);
+    assert_eq!(report.lane1_discarded, receipts + samples, "{report:?}");
+
+    // With the receipts gone the retry fits; the same pump drains the closed
+    // lane 1 and retires the binding.
+    let now = CLOCK_START + 40;
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    assert!(
+        report.lane1.iter().any(|trace| trace.call
+            == Lane1Call::IngestMove {
+                conn,
+                peer,
+                frame: 9,
+                len: halt_bytes(e(1), 9, 1).len(),
+                result: MoveAdmission::Admitted { seq: 9 },
+            }),
+        "{:?}",
+        report.lane1
+    );
+    assert_eq!(report.lane1_held, 0);
+    assert!(report.calls.contains(&HostCall::UnbindPeer { peer }));
+    assert_eq!(qh.binding(conn), None);
+}
+
+/// Q8 (C-6): a retiring connection's queued lane-1 frames are drained and
+/// counted as discarded.
+#[test]
+fn q8_retiring_discards_lane1_frames() {
+    let (mut qh, mut clock, _) = movement_adapter(true);
+    let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    let conn = client.conn;
+    const FRAMES: usize = 3;
+    for seq in 1..=FRAMES as u64 {
+        client.send_lane1(halt_bytes(e(1), seq, 1));
+    }
+    settle_lane1(&qh, &mut client);
+    let fence = qh.disconnect(conn).expect("disconnects");
+    assert_eq!(fence.cause, FenceCause::Disconnected);
+
+    let now = CLOCK_START + 10;
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    assert_eq!(
+        report.lane1_discarded, FRAMES,
+        "every queued lane-1 frame of a retiring connection is discarded: {report:?}"
+    );
+    assert!(report.lane1.is_empty(), "{report:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Q9: shutdown flushes released receipts.
 // ---------------------------------------------------------------------------
@@ -1785,6 +2430,47 @@ fn q9_shutdown_flushes_receipts() {
     assert_eq!(frames.len(), 1, "one receipt");
     assert_eq!(receipt_of(&frames[0]).seq, 1);
     assert_eq!(reason, CloseReason::Peer { code: 1 });
+}
+
+/// Q9 (C-8): a receipt the transport can no longer take is counted as
+/// undelivered, and every receipt behind the first failure counts too.
+#[test]
+fn q9_undelivered_receipts_counted() {
+    // One released receipt behind a discarded close.
+    {
+        let (mut qh, mut clock, _) = movement_adapter(true);
+        let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+        client.send_lane1(halt_bytes(e(1), 1, 1));
+        let now = CLOCK_START + 10;
+        let _ = pump_ingests(&mut qh, &mut clock, now, 1);
+        let now = CLOCK_START + 20;
+        assert!(qh.advance(now).expect("advance").ticked);
+        let MvClient { quic, .. } = client;
+        let _ = quic.close(CloseCode::Normal, CloseMode::Discard);
+        until("the close is published", || {
+            qh.wait(Duration::from_millis(100))
+        });
+        assert_eq!(qh.shutdown(false).undelivered_receipts, 1);
+    }
+    // Several released receipts: every one after the first failure counts.
+    {
+        const RECEIPTS: usize = 3;
+        let (mut qh, mut clock, _) = movement_adapter(true);
+        let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+        for seq in 1..=RECEIPTS as u64 {
+            client.send_lane1(halt_bytes(e(1), seq, 1));
+        }
+        let now = CLOCK_START + 10;
+        let _ = pump_ingests(&mut qh, &mut clock, now, RECEIPTS);
+        let now = CLOCK_START + 20;
+        assert!(qh.advance(now).expect("advance").ticked);
+        let MvClient { quic, .. } = client;
+        let _ = quic.close(CloseCode::Normal, CloseMode::Discard);
+        until("the close is published", || {
+            qh.wait(Duration::from_millis(100))
+        });
+        assert_eq!(qh.shutdown(false).undelivered_receipts, RECEIPTS);
+    }
 }
 
 // ---------------------------------------------------------------------------
