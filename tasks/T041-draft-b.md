@@ -251,6 +251,26 @@ intake with that report (`tasks/T040.md:369-373`); otherwise the suite
 asserts on the pump report directly. *Tests:* H1–H6.
 
 ## Errors
+No new error type or variant in any crate. Every host-level refusal in B-5–
+B-10 surfaces as T040a's `Rejection` (`tasks/T040.md:227-252`) with one of
+T042's six fixed `Display` texts (`tasks/T042.md:507-514`), which the host
+maps to receipt codes (`crates/crpg-server/src/host.rs:3959-3964`):
+
+| Item | Value |
+|---|---|
+| intent for an entity outside the sender's grant | refused `NotAuthorized`; `Rejection` with its fixed text; authority unchanged (B-5) |
+| intent outside the admission time window | refused with its fixed text; authority unchanged (B-6) |
+| over-rate burst within the queue | held `QueueFull` and retried, never a rejection and never silent loss (B-7) |
+| sustained flood beyond the queue | clean rejection with its fixed text, never a panic (B-7) |
+| same-`seq` retry, canonical or alias encoding | cached retry through `Host::canonical`, never `SeqConflict` (B-8) |
+| request outside the peer's interest set | refused with its fixed text (B-9) |
+| oversized or undecodable frame | refused with its fixed text; nothing half-applied (B-10) |
+| resume past the session fence | refused; the fence (`crates/crpg-net/src/resume.rs:74`) is the only input producing `Accepted` (B-3) |
+| any host panic during a probe | the suite fails: a panic anywhere is a failure, never a verdict |
+
+A failing case is never answered by a new variant, a changed text or a host
+fix in T041 (the T042 S-1 rule, `tasks/T042.md:425-428`, applies at the host
+level too): the implementer stops and reports the case with its input bytes.
 
 ## Tests
 
