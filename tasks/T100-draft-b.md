@@ -354,6 +354,13 @@ untouched and still pass.
   moved.
 
 ## Dependency edges
+No new edge. `tools/author_bench/*.py` are stdlib-only Python; the
+Rust layering lint scans crate manifests only (`tools/lint/deps.py:1`–
+`tools/lint/deps.py:37`, `ALLOWED` at `:46`), so there is no `ALLOWED`
+row to add and `deps.py` is not edited. No external crate, no lockfile
+package, no new dependency approval question (`AGENTS.md:52`):
+the no-new-dependency alternative IS the design. Reused tools
+(`tools/agents/oc.py`, `crpgc`, `schemas/`) are invoked, not imported.
 
 ## Out of scope
 
