@@ -1,12 +1,11 @@
 # T040 — dedicated `crpg-server` binary (blind draft b)
 
-**Status: draft, 2026-11-19 (UTC); blind draft b, written without reading any
-other draft. Not approved: a Claude architect writes the final contract and
-the user approves it. Nothing here is approved.**
+**Status: draft, 2026-11-19 (UTC); blind draft b (no other draft read).
+Not approved: a Claude architect writes the final contract. Nothing here is
+approved.**
 
-Written from the fact sheet (`tasks/T040-facts.md`), the cited code, and the
-form of the approved T153 contract (`tasks/T153.md`). Every fact below was
-re-checked at `master` except where it is marked as an open question.
+Written from the fact sheet (`tasks/T040-facts.md`), re-checked code, and
+the approved T153 contract's form (`tasks/T153.md`).
 
 ## Task
 
@@ -15,8 +14,8 @@ today (`crates/crpg-server/src/main.rs:9-12` prints "dedicated adapter not yet
 implemented" and exits 1) becomes the runnable dedicated server for Windows
 and a Godot-free Linux build. It loads a host save, binds the navigation
 mesh, starts the T154 run loop on the resumable QUIC adapter, serves players
-until shutdown, and logs one server line per rejected client message. It also
-adds the CI artifact jobs that build both dedicated-server binaries (gate 12).
+until shutdown, and logs one server line per rejected client message. It
+adds the CI artifact jobs for both dedicated-server binaries (gate 12).
 Gate 13 smokes, the fixture-campaign breadth of gate 10, and campaign loading
 stay out (T041's). D66b leaves this program to T040
 (`tasks/DECISIONS-D66.md:18-25`); T154 hands it
