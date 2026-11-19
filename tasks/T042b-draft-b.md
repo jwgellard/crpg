@@ -619,7 +619,21 @@ test to fail; a surviving mutant is a finding):
 
 ## Open questions (each with a recommendation)
 
-TODO (draft B).
+1. **Should the welcome/close/bridge mapping get its own suite now?**
+   Reading 3 indexes them instead of testing them. *Recommend:* no —
+   keep this contract one crate (the D65b player-hosted trigger is still
+   in the future); file the cross-crate welcome/close/fault suite as the
+   follow-up row, owned by whichever crate the manager routes it to.
+2. **Should `B82`'s literal be hand-pinned later?** Reading 6 leaves the
+   empty v3 body literal encoder-derived. *Recommend:* yes, at
+   implementation time the implementer reports the encoder-pinned bytes
+   and the architect confirms them by hand against `encode_body` before
+   the contract is approved — no test weakening either way (S-1).
+3. **Who writes the client-side "log line"?** D67a (a) pins texts here
+   and leaves writing the line to the program; the client analog is the
+   `Fault.detail` / close reason. *Recommend:* unchanged — this contract
+   pins the refusal and its text; routing `detail` into any client log
+   belongs to the Godot/QUIC program tasks, not to this suite.
 
 ## Agent log
 
