@@ -244,8 +244,8 @@ two live `QuestProgress` share a `quest`; every `speaker` is live.
 ### `crates/crpg-sim/src/history.rs` — thin wrappers, no new variant
 ```rust
 impl HistoryWorld {
-    /// Stage a clone, spawn, drain the one legacy `Spawned`, commit one
-    /// `Spawned`; version untouched (Reading 6;
+    /// Spawn wrappers: stage a clone, spawn, drain the one legacy
+    /// `Spawned`, commit one `Spawned`; version untouched (Reading 6;
     /// `crates/crpg-sim/src/history.rs:623`–`644` is the shape).
     pub fn spawn_continuation(&mut self, c: ScriptContinuation) -> Result<EntityId, HistoryError>;
     pub fn spawn_dialogue(&mut self, d: OpenDialogue) -> Result<EntityId, HistoryError>;
@@ -256,9 +256,9 @@ impl HistoryWorld {
     pub fn set_quest_state(&mut self, e: EntityId, state: Ulid) -> Result<(), HistoryError>;
 }
 ```
-`HistoryWorld::tick` picks up the stage-5 countdown inside the staged
-world and commits it with whatever else the tick journals; a tick whose
-only change is countdown commits zero new envelopes.
+`HistoryWorld::tick` commits the stage-5 countdown inside the staged world
+with whatever else the tick journals; a countdown-only tick commits zero
+new envelopes.
 
 ## Behaviour
 Normative. Each item names the tests that prove it. "Unchanged" means
@@ -267,22 +267,19 @@ the call. **First failure wins** in every ordered list.
 
 B-1. **Spawns.** `spawn_continuation(c)` / `spawn_dialogue(d)` mint a fresh
 entity, insert the record and enqueue exactly one `Spawned` at the world's
-tick (`crates/crpg-sim/AGENTS.md:180–187`). `spawn_quest(q)` does the same unless a
-live `QuestProgress` already names `q.quest`: then
-`Err(ContinuationError::DuplicateQuest)` and unchanged. *Tests:* C1, C7.
-B-2. **Setters.** `set_remaining(e, r)` / `set_dialogue_node(e, n)` /
-`set_quest_state(e, s)` rewrite exactly the named field of the live record
-on `e` and enqueue nothing; a dead or absent `e`, or an entity holding no
-record of that kind, gives `Err(ContinuationError::Absent)` and unchanged.
-*Tests:* C2.
-B-3. **Despawn is total.** `despawn` of a holder removes the entity, strips
-all three stores with everything else, and enqueues exactly one `Despawned`
-(the invariant, `crates/crpg-sim/AGENTS.md:180–187`). *Tests:* C3.
+tick (`crates/crpg-sim/AGENTS.md:180–187`). `spawn_quest(q)` does the same
+unless a live `QuestProgress` already names `q.quest`: then
+`Err(DuplicateQuest)` and unchanged. *Tests:* C1, C7.
+B-2. **Setters.** The three setters rewrite exactly the named field of the
+live record on `e` and enqueue nothing; a dead, absent or wrong-kind `e`
+gives `Err(Absent)` and unchanged. *Tests:* C2.
+B-3. **Despawn is total.** `despawn` of a holder strips all three stores
+with the entity and enqueues exactly one `Despawned`
+(`crates/crpg-sim/AGENTS.md:180–187`). *Tests:* C3.
 B-4. **Transfer refuses holders.** `transfer_entity` (and the history pair)
-of an entity holding any of the three components fails with the new final
-preflight error and publishes neither side (Reading 1; the T139 trap,
-`crates/crpg-sim/AGENTS.md:594`). The check runs after every existing
-check, so any existing failure wins. *Tests:* C4.
+of a holder fails with the new final preflight error and publishes neither
+side (Reading 1; `crates/crpg-sim/AGENTS.md:594`). The check runs after
+every existing check. *Tests:* C4.
 B-5. **Stage 5 counts down.** Each `tick` (and `tick_with_movement`, which
 delegates), after `movement_system`, decrements every positive `remaining` by exactly
 one saturating; zero stays zero; nothing else moves; no event is enqueued
@@ -291,42 +288,36 @@ one saturating; zero stays zero; nothing else moves; no event is enqueued
 B-6. **Due query.** `continuations_due` returns exactly the holders with
 `remaining == 0`, ascending `EntityId`, and changes nothing. *Tests:* C5.
 B-7. **Round-trip.** A world with continuations (positive, zero and
-`saturating`-edge `remaining`), an open dialogue and two quest stages
-serializes through the pair-list shape and deserializes to an equal world:
-same records, same `state_hash`, same `continuations_due`
-(`docs/CRPG_ENGINE_SPEC.md:311`; the `creatures`/`movers` absence-skip
-precedent, `crates/crpg-sim/src/world.rs:102–108). *Tests:* C6.
-B-8. **Load rejects the incoherent.** Deserialization fails when any of the
-three stores names a non-live entity, when two live `QuestProgress` share a
-`quest`, or when a `speaker` is non-live — before any `World` is built
+large `remaining`), an open dialogue and two quest stages serializes and
+deserializes to an equal world: same records, same `state_hash`, same
+`continuations_due` (`docs/CRPG_ENGINE_SPEC.md:311`;
+`crates/crpg-sim/src/world.rs:102–108). *Tests:* C6.
+B-8. **Load rejects the incoherent.** Deserialization fails when any store
+names a non-live entity, two live `QuestProgress` share a `quest`, or a
+`speaker` is non-live — before any `World` is built
 (`crates/crpg-sim/src/world.rs:150`). *Tests:* C6.
 B-9. **Save/load equivalence.** A world with a `remaining: 600`
 continuation, an open dialogue and a quest stage, run 500 ticks, saved,
 loaded and run 500 more, hashes equal to the uninterrupted 1000-tick run —
 and the continuation is due at the same tick in both
-(`docs/CRPG_ENGINE_SPEC.md:853`; the Gate-10 shape,
+(`docs/CRPG_ENGINE_SPEC.md:853`;
 `crates/crpg-server/tests/host_save.rs:706`–`709`). *Tests:* G1.
-B-10. **Waiting outlives a server restart.** Host file-backed
-save/load with an armed continuation, an open dialogue and a quest stage:
-after reload under a strictly greater incarnation the records, the
-`remaining` values and the hashes match the uninterrupted run (Gate 10:
+B-10. **Waiting outlives a server restart.** Host file-backed save/load
+with an armed continuation, an open dialogue and a quest stage: after
+reload under a strictly greater incarnation the records, counts and hashes
+match the uninterrupted run (Gate 10:
 `docs/architecture/crpg-server.md:975`,
-`crates/crpg-server/AGENTS.md:293`). *Tests:* G2
-(notes the server-side version bump; implemented in the T052 suite with the
-existing host save helpers, no server file changes).
-B-11. **History wrappers.** Each spawn wrapper stages a clone, runs the
-`World` spawn, drains the one legacy `Spawned`, commits exactly one
-`Spawned` history event and leaves `version` untouched; each setter commits
-zero events and leaves journal and version untouched (Reading 6;
-`crates/crpg-sim/src/history.rs:623`–`644`). A gameplay failure
-(`ContinuationError`) commits nothing, including the entity allocation.
-*Tests:* C8.
+`crates/crpg-server/AGENTS.md:293`). *Tests:* G2 (in T052's suite with the
+existing host save helpers; no server file changes).
+B-11. **History wrappers.** Each spawn wrapper commits exactly one
+`Spawned` and leaves `version` untouched; each setter commits zero events
+(Reading 6; `crates/crpg-sim/src/history.rs:623`–`644`). A gameplay
+failure commits nothing, including the entity allocation. *Tests:* C8.
 B-12. **Budgets untouched.** 1024 dispatches and 100,000 units per resumed
 slice, depth ≤ 32 (`docs/CRPG_ENGINE_SPEC.md:630`); a `Wait` commits the
 slice and a resume gets a fresh budget (D17,
-`tasks/POST-T018-DECISIONS.md:383`–`389`). T052 enforces none of it: no
-counter, no budget field. The contract fails if it adds one. *Tests:* C9
-(compiles the constants' absence: a.resume draws nothing).
+`tasks/POST-T018-DECISIONS.md:383`–`389`). T052 enforces none of it. The
+contract fails if it adds a counter or a budget field. *Tests:* C9.
 
 ## Errors
 | Item | Value |
@@ -335,7 +326,7 @@ counter, no budget field. The contract fails if it adds one. *Tests:* C9
 | setter on a dead, absent or wrong-kind entity | `Err(ContinuationError::Absent { entity: EntityId })`, unchanged |
 | transfer of a holder of any of the three components | the new final-preflight `AreaError` (Reading 1), neither side published |
 | incoherent save (dangling store id, duplicate quest, non-live `speaker`) | load fails before any `World` is built (B-8) |
-| history wrapper over a full journal or a gameplay failure | `HistoryError` (`EventLimit`, `ByteLimit`, …) or `HistoryError::Combat`-analogous `ContinuationError` mapping; commits nothing (`crates/crpg-sim/src/history.rs:276`–`309` lists the variants) |
+| history wrapper over a full journal or a gameplay failure | `HistoryError` (`EventLimit`, `ByteLimit`, …: `crates/crpg-sim/src/history.rs:276`–`309`); commits nothing |
 
 One new enum, additive only:
 ```rust
@@ -366,20 +357,17 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
 
 - **C1 `spawns_enqueue_one_spawned`.** `W(1)`: `spawn_continuation({graph,
   node, remaining: 10})` → entity 0; `spawn_dialogue({dialogue, dnode,
-  speaker: 0})` → entity 1; `spawn_quest({quest, qstate})` → entity 2. Queue
-  holds exactly three `Spawned` at tick 0; `len() == 3`;
-  `continuations().len() == dialogues().len() == quests().len() == 1`.
+  speaker: 0})` → 1; `spawn_quest({quest, qstate})` → 2. Queue holds
+  exactly three `Spawned` at tick 0; each store holds one record.
   *Control:* a second `spawn_quest({quest, qstate2})` →
-  `Err(DuplicateQuest { quest })`, `len()` still 3, queue still three.
+  `Err(DuplicateQuest)`, `len()` still 3, queue still three.
   *Fails if:* a spawn enqueues anything but one `Spawned`, or the duplicate
-  quest publishes.
+  publishes.
 - **C2 `setters_rewrite_one_field`.** From C1's world:
-  `set_remaining(0, 4)` → record `{graph, node, 4}`;
-  `set_dialogue_node(1, dnode)` (same value) → unchanged bytes;
-  `set_quest_state(2, qstate2)` → `{quest, qstate2}`. Queue still three
-  `Spawned`; `state_hash` differs from C1's only in the two changed words.
-  *Control:* `set_remaining(1, 4)` (entity 1 holds a dialogue, not a
-  continuation) → `Err(Absent { entity: 1 })`, bytes identical.
+  `set_remaining(0, 4)`, `set_quest_state(2, qstate2)`;
+  `set_dialogue_node(1, dnode)` (same value) leaves bytes unchanged. Queue
+  still three `Spawned`. *Control:* `set_remaining(1, 4)` (entity 1 holds
+  a dialogue) → `Err(Absent)`, bytes identical.
   *Fails if:* a setter enqueues, touches another record, or accepts a
   wrong-kind entity.
 - **C3 `despawn_strips_all_three`.** From C1's world: `despawn(0)` →
@@ -406,25 +394,22 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
   *Control:* the uncorrupted JSON loads. *Fails if:* any corruption loads,
   or the round-trip hash moves.
 - **C7 `quest_single_flight_end_to_end`.** MVP shape
-  (`docs/CRPG_ENGINE_SPEC.md:1519`–`1526`): `spawn_quest({quest, started})`,
-  ticks pass, `set_quest_state(e, completed)`, `despawn(quest_npc)` (the NPC
-  may die without taking the quest — Reading 7). Final: quest reads
-  `completed`, NPC gone, hash stable across a save/load between the two
-  writes. *Control:* same run without the `despawn` → identical quest bytes.
+  (`docs/CRPG_ENGINE_SPEC.md:1519`–`1526`): `spawn_quest({quest, qstate})`,
+  ticks pass, `set_quest_state(e, qstate2)`, `despawn(quest_npc)` — the NPC
+  may die without taking the quest (Reading 7). Final: quest reads
+  `qstate2`, NPC gone, hash stable across a save/load between the writes.
+  *Control:* same run without the `despawn` → identical quest bytes.
   *Fails if:* NPC lifetime affects quest state.
 - **C8 `history_wrappers_journal_spawns_only`.** `HistoryWorld` from
   `W(3)`: `spawn_continuation` journals exactly one `Spawned`,
   `version() == 1`; `set_remaining` journals nothing, `version() == 1`;
-  `history_hash` moves on both (bytes covered). A duplicate
-  `spawn_quest` commits nothing: no envelope, no entity, still version 1.
+  both move `history_hash`. A duplicate `spawn_quest` commits nothing.
   *Control:* the same ops on the bare `World` give equal records.
   *Fails if:* a set journals, the version moves, or a failure commits.
-- **C9 `no_budgets_in_sim`.** A resumed-slice budget (1024 dispatches,
-  100_000 units, depth 32) appears nowhere in `crates/crpg-sim/src/`:
-  grep for `1024`, `100_000`/`100000` and `MAX_.*BUDGET` finds no new
-  definition; a due continuation ticked 2000 times stays due and unchanged
-  except `remaining` (already 0). *Fails if:* the sim counts, caps or clears
-  anything.
+- **C9 `no_budgets_in_sim`.** No resumed-slice budget (1024 dispatches,
+  100_000 units, depth 32) appears in `crates/crpg-sim/src/`; a due
+  continuation ticked 2000 times stays due, `remaining` 0.
+  *Fails if:* the sim counts, caps or clears anything.
 - **G1 `continuation_golden`.** `tests/support/continuation_schedule.rs`
   (also compiled by `examples/generate_continuation_golden.rs`): seed 42,
   one continuation at `remaining: 600`, one open dialogue, one quest stage,
