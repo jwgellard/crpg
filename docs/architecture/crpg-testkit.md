@@ -30,10 +30,10 @@ one crate in the ALLOWED table with an exclusion instead of a closed set.
 Under E005's topology, a testkit that pulled the engine would pull it into
 every higher crate using the helpers — which is why the bridge exclusion
 exists. Today it
-reaches `crpg-sim` (normal) and `crpg-core` (tests only), and no manifest
-takes testkit yet. Later helpers add edges with their tasks: data fixtures
-will want `crpg-data`, rules suites `crpg-rules`, each justified in its task
-file.
+reaches `crpg-sim` (normal) and `crpg-core`, `crpg-data`, `crpg-rules`,
+`crpg-server`, `crpg-net` and `crpg-nav` (tests only), and `crpg-cli` takes
+its normal edge at runtime. Later helpers add edges with their tasks: each
+justified in its task file.
 
 The direction is one-way by E005: testkit reaches down through sim, while
 core, data, rules, and sim never reach back, including through a
@@ -167,6 +167,28 @@ As-built: seed 285 with `K = 9` and `TOTAL_TICKS = 14`; the 13-test
 `srd_replay` suite pins the artifact, oracles, continuation, terminal, and
 per-target goldens; `combat_basic` artifacts stay byte-identical.
 
+## Authored movement through the host (T037e, tests-only)
+
+`tests/host_movement.rs` is the first suite to take the host as a
+dev-dependency: it proves T037a–d's movement surface end to end on real
+authored content with no source change anywhere. It includes
+`tests/support/combat.rs` for `combat_basic` and gives the loaded ruleset
+T148's `movement` block in memory before the start (speed and step 65,536
+raw, one primary-pool unit per step, plus `round_ticks: 4` for the real-time
+case), starts `first-blood` through `crpg-sim`, and wraps a `HistoryWorld` in
+`Host::from_history`. K1 binds the loaded `Area.bounds` with
+`bind_area_bounds` and checks the revision is nav's bake of exactly those
+bounds; K2 moves the goblin (contract erratum, session 74: initiative 9 acts
+first) by `DeclareMove`, pinning the page's receipt, `Moved` notice and spent
+primary pool; K3 walks the hero through a lane-1 `MoveTo` sent by
+`MoveOutbox` at the authored speed, taking the receipt and each tick's
+sample into `ReplicaWorldV4`; K4 saves a history-version-3 `Moved`, loads it
+at incarnation 2 and re-binds the same bounds, which clear nothing and leave
+the hash equal. The oracle is a clone of the started `HistoryWorld` driven by
+the same sim calls, with every route computed by calling `crpg_nav` directly.
+The three host-side edges (`crpg-server`, `crpg-net`, `crpg-nav`) are
+`[dev-dependencies]` only; no normal edge changed.
+
 ## What consumers inherit
 
 - **Comparable sequences.** Same interleaving everywhere means a hash at
@@ -197,3 +219,4 @@ per-target goldens; `combat_basic` artifacts stay byte-identical.
 - 2026-09-26 (UTC) · opencode/muse-spark + T016c crate opening · Recorded the tests-only combat adapter, artifact, observation, and independent native golden ownership actually built; generic harness and replay stay payload-agnostic.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e crate opening · Recorded the tests-only srd adapter, extended grammar with the end op, per-attack trace shape, and independent native golden ownership before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the module with the as-built srd replay (seed 285, K = 9, per-target goldens, combat_basic untouched).
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite and its three tests-only host edges (`crpg-server`, `crpg-net`, `crpg-nav`), so the crate doc names what `host_movement.rs` proves and why no normal edge moved. No source, fixture, or golden changed.

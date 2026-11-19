@@ -25,3 +25,10 @@ crpg-core = { path = "../crpg-core" }
 # 2026-09-26; ALLOWED already permits testkit -> {anything but crpg-godot}.
 crpg-data = { path = "../crpg-data" }
 crpg-rules = { path = "../crpg-rules" }
+# T037e authored movement suite (tests only): the host under a v4 client over
+# real campaign data. crpg-server, crpg-net and crpg-nav are existing
+# workspace path crates (T037 Question 1 (a), approved 2026-11-15), so the
+# lock grows by these edge entries only and no package is added.
+crpg-nav = { path = "../crpg-nav" }
+crpg-net = { path = "../crpg-net" }
+crpg-server = { path = "../crpg-server" }

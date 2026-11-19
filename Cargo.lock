@@ -279,7 +279,10 @@ version = "0.1.0"
 dependencies = [
  "crpg-core",
  "crpg-data",
+ "crpg-nav",
+ "crpg-net",
  "crpg-rules",
+ "crpg-server",
  "crpg-sim",
  "serde",
  "serde_json",

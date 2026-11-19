@@ -134,7 +134,13 @@ T009a replay format; both already in the graph, no new package or version),
 dev-only for the T016c combat adapter in `tests/` — production content
 loading and the typed trace oracle; approved in-session 2026-09-26, see
 [tasks/T016c.md](../../tasks/T016c.md); both already workspace members, so
-the lock grows by edge entries only).
+the lock grows by edge entries only), `crpg-server` + `crpg-net` + `crpg-nav`
+(path, dev-only for the T037e authored-movement suite in `tests/` — the host,
+its v4 client and the mesh the area bounds bake; approved at T037 Question 1
+(a), 2026-11-15, see [tasks/T037.md](../../tasks/T037.md); all three are
+workspace members, so the lock grows by edge entries only). The three host
+edges reach `crpg-net-quic`'s tokio and quinn through `crpg-server` in
+testkit's test build only, which is not I/O-restricted.
 No workspace crate beyond those — later helpers add their edges with their
 tasks, each justified in the task file. No external crate beyond what the
 workspace already holds; anything else needs approval.
@@ -193,6 +199,29 @@ with the hero dead and the goblin surviving at 1; alternate seed 286 with a
 different tick-1 focus face); 13-test `srd_replay` suite green on both
 natives with per-target goldens byte-stable; `combat_basic` replay,
 goldens, and suites pass unmodified.
+
+## Authored movement through the host (T037e, tests-only)
+
+`tests/host_movement.rs` proves T037a–d's movement surface end to end on
+`campaigns/fixtures/combat_basic`, included through the T016c support loader
+(`#[path = "support/combat.rs"] mod combat;`, with `#[allow(dead_code)]` so
+the unused adapter surface does not warn). No source, fixture, support file
+or golden changes: the loaded ruleset gets T148's `movement` block in memory
+(speed and step 65,536 raw, one primary-pool unit per step, `round_ticks: 4`
+only in the real-time case), `first-blood` starts through `crpg-sim`, and a
+`HistoryWorld` wraps in `Host::from_history`. K1 (`authored_area_binds`)
+binds the loaded `Area.bounds` and pins nav's bake revision and empty
+`cleared`/`placed`; K2 (`authored_turn_based_move`) moves the goblin — the
+contract erratum of session 74, because initiative 9 acts first — by
+`DeclareMove` and pins the page's receipt, `Moved` and 1→0 primary pool, then
+the second refusal and the next tick's sample; K3
+(`authored_real_time_walk`) sends a lane-1 `MoveTo` through `MoveOutbox` and
+pins the accepted receipt and each tick's sample at the authored speed into
+`ReplicaWorldV4`; K4 (`authored_checkpoint`) saves the history-version-3
+`Moved`, loads it at incarnation 2 and re-binds the same bounds, which clear
+nothing. The oracle is a clone of the started `HistoryWorld` driven by the
+same sim calls, with routes from `crpg_nav` directly, and every hash is
+checked after each mutation.
 
 ## Definition of done for any change
 
@@ -279,3 +308,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e crate opening · Extended the contract with the tests-only second-ruleset replay shape (srd-only adapter, accepted-only inputs with the new end op, pinned probe seed, per-target goldens) under tasks/T017e.md before source implementation.
 - 2026-09-27 (UTC) · opencode/muse-spark + T017e implementation · Aligned the contract with the as-built replay (seed 285, K = 9, 13-test srd_replay suite, per-target goldens, combat_basic untouched); no commit/push/PR.
 - 2026-11-01 (UTC) · opencode-go/deepseek-v4.1-flash + T139g · Re-baselined the four `combat_basic`/`srd_lite` goldens under T139 D5 and the D40c (b) approval, each target regenerated natively by the temporary `t139g_regenerate.rs` (deleted before commit) with the pinned Rust 1.98.0 on Windows/MSVC and genuine WSL Ubuntu 24.04 Linux/GNU. Only hash lines moved; the tag carriage changed no outcome, draw or event, and the unedited oracle tests still pass.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite (`K1`–`K4` over `combat_basic`), its in-memory ruleset edit and the three tests-only host edges, so later suites extend the real-data host proof instead of re-inventing it; no source, fixture or golden changed.
