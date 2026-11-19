@@ -605,6 +605,22 @@ identity.
 
 ## Dependency edges
 
+No new edge. The binary uses `std` plus what the crate already has:
+`serde_json` (`crates/crpg-server/Cargo.toml:32–33`) for the config and
+invitation files, `crpg-net-quic` for `ServerIdentity`/`CertificatePin`/
+`Credential`/`ServerConfig` (already an edge, `:27`), `crpg-core` for
+`Fx16_16`/`Ulid`/`EntityId`, and the library's own `quic`/`save`/`run`/
+`runner` modules. No `[dependencies]`, `[dev-dependencies]`,
+`[build-dependencies]` or `[target.*]` table changes, so `tools/lint/deps.py`
+sees the same graph and `ALLOWED` is untouched (`tools/lint/deps.py:46–72`).
+
+The no-new-dependency alternative is the point of Readings 2 and 4: where an
+argument parser or a logging crate would be used, `parse` is hand-rolled over
+`std::env::args` and `Log` is a `&mut dyn io::Write` writer. If the architect
+prefers clap or `tracing`, that is a new external dependency needing the
+user's H-dep approval (`AGENTS.md` "Do not add dependencies without being
+asked"); this draft does not add one.
+
 ## Definition of done
 
 ## Out of scope
