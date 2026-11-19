@@ -112,6 +112,83 @@ Design decisions this contract makes. Each needs approval with the contract.
    *Rejected:* wall-clock-derived "effort" (unreproducible across models).
 
 ## Interface
+Stdlib only, Python 3.11+ (the `oc.py` norm,
+`tools/agents/README.md:12`). No network, no model calls, no new
+dependency (`AGENTS.md:52`). Exit codes follow the `oc.py` buckets
+(`tools/agents/README.md:5`–`tools/agents/README.md:7`): 0 scored,
+1 a check failed, 2 usage or infrastructure.
+
+### Command line
+```text
+python tools/author_bench/run_bench.py --models M,... --out OUT
+    [--briefs DIR] [--ticks N] [--hash-every M] [--seed S]
+    [--timeout SEC] [--crpgc PATH]
+python tools/author_bench/run_bench.py --compare BASE.json CAND.json
+    [--out OUT]
+```
+`--models` is one `oc.py` `--model` ID per run
+(`tools/agents/README.md:15`–`tools/agents/README.md:28`); `--out` is
+the directory receiving one score record per (model, brief) plus
+`summary.json`. `--ticks`/`--hash-every`/`--seed` default to
+`100`/`50`/`0` and are passed to every `crpgc run` invocation, whose
+grammar is `crpgc run --ticks N --hash-every M [--seed S]`
+(`crates/crpg-cli/src/main.rs:52`). `--crpgc` defaults to
+`env!("CARGO_BIN_EXE_crpgc")`-built `crpgc` on `PATH`. `--compare`
+re-scores nothing: it diffs two record files.
+
+### File layout
+```text
+tools/author_bench/run_bench.py   # launch (via oc.py) + collect + write records
+tools/author_bench/score.py       # pure scoring: validity, playability, roll-up
+tools/author_bench/briefs/b1_single_file.md
+tools/author_bench/briefs/b2_small_campaign.md
+tools/author_bench/briefs/b3_full_campaign.md
+tools/author_bench/briefs/b4_rule_system.md
+tools/tests/test_author_bench.py  # unittest, fixed fakes only
+```
+
+### Brief format
+Each brief is a self-contained agent brief: goal, the allowed commands
+(the eleven subcommands of
+`crates/crpg-cli/src/main.rs:260`–`crates/crpg-cli/src/main.rs:270`),
+the allowed reads (`crpgc schema <stem>` for the seventeen stems of
+`crates/crpg-cli/src/main.rs:558`–`crates/crpg-cli/src/main.rs:579`,
+plus the checked-in `schemas/` files), the single output directory,
+and the acceptance (its files pass `crpgc validate --json`, where
+`crpgc validate <campaign-root> [--json]` is
+`crates/crpg-cli/src/main.rs:37`). B1 asks for one document of a named
+scaffold type (`crpgc new <type> --slug <s> --id <id>`,
+`crates/crpg-cli/src/main.rs:47`); B2 asks for a `combat_basic`-scale
+campaign (hero, goblin, one strike ability, one encounter); B3 asks
+for a `combat_srd`-scale campaign (two abilities, one effect, two
+outcome tables); B4 asks for a `minimal-d6`-scale rule system
+(ruleset document, one ability, one outcome table).
+
+### Score record (one JSON object per model × brief)
+```json
+{
+  "benchmark": "T100",
+  "model": "<oc.py model id>",
+  "brief": "b1_single_file",
+  "crpgc_version": "<`crpgc --version` or `CARGO_PKG_VERSION`>",
+  "valid": true,
+  "validate_exit": 0,
+  "diagnostics": 0,
+  "playable": true,
+  "run_exit": 0,
+  "run_samples": 2,
+  "steps": 7,
+  "errors": [{"command": "crpgc validate", "exit": 1, "line": "<last stderr line>" }],
+  "wall_s": 12.5,
+  "score": 100
+}
+```
+`score` is 0–100: 50 for `valid`, 30 for `playable`, 20 scaled by
+`max(0, 1 - errors / max(1, steps))`, rounded half up. `summary.json`
+holds the records array plus `{"baseline_of": "<path>"}` when this run
+is the baseline. `--compare` prints one line per brief:
+`model brief base_score cand_score delta verdict`, where verdict is
+`better|same|worse` on the score delta.
 
 ## Behaviour
 
