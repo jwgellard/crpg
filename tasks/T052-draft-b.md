@@ -88,7 +88,7 @@ Design decisions this contract makes. Each needs approval with the contract.
    is what the gate covers).
 4. **The countdown emits no event.** New `SimEvent` variants need consumers
    (the trap, `crates/crpg-sim/AGENTS.md:350–351`); no consumer of
-   "a wait elapsed" exists until T053. Due continuations are found by the
+   a wait elapsing starts before T053. Due continuations are found by the
    `continuations_due` query, like `legal_actions` enumeration (options are
    not leases, `docs/architecture/crpg-sim.md:340`).
    *Rejected:* a `WaitElapsed` event (unconsumed vocabulary in the hashed
@@ -373,11 +373,11 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
   *Control:* `despawn(7)` (never live) → `false`, queue length still 3.
   *Fails if:* the record survives its entity, or a dead id enqueues.
 - **C4 `transfer_refuses_holders`.** Two `World::new_in_area(seed, area)`
-  worlds (`crates/crpg-sim/AGENTS.md:148–161`): source holds entity 0 with a
-  continuation; `transfer_entity` → the new final-preflight error, source
-  still holds it, destination empty. *Control:* the same move with the
-  continuation despawned first succeeds. *Fails if:* the record is silently
-  dropped (the T139 trap) or an earlier check's error is replaced.
+  worlds (`crates/crpg-sim/AGENTS.md:148–161`): source holds a
+  continuation; `transfer_entity` → the new final-preflight error, neither
+  side publishes. *Control:* the same move after `despawn` succeeds.
+  *Fails if:* the record is silently dropped or an earlier error is
+  replaced.
 - **C5 `stage_five_counts_down`.** `W(2)` with `remaining: 3` (entity 0)
   and `remaining: 0` (entity 1): three `tick`s → `[0, 0]`;
   `continuations_due` is `[1]` before tick 1, `[0, 1]` after tick 3.
@@ -386,11 +386,10 @@ entities are arena indices 0, 1, 2… (generation 1 while live).
   *Fails if:* a tick moves by anything but one, a zero goes nonzero, an
   event is enqueued, or the order is not ascending.
 - **C6 `round_trip_and_load_rejection`.** C1's world → JSON → load: equal
-  records, equal `state_hash`, equal `continuations_due`. Hand-corrupted
-  inputs each fail to load: a continuation naming entity 9 (non-live); two
-  quest components naming `quest`; a dialogue with `speaker: 9`.
-  *Control:* the uncorrupted JSON loads. *Fails if:* any corruption loads,
-  or the round-trip hash moves.
+  records, hash and due query. Corrupted inputs each fail: a continuation
+  on entity 9 (non-live); two quest components sharing `quest`; a dialogue
+  with `speaker: 9`. *Control:* the uncorrupted JSON loads.
+  *Fails if:* any corruption loads, or the round-trip hash moves.
 - **C7 `quest_single_flight_end_to_end`.** MVP shape
   (`docs/CRPG_ENGINE_SPEC.md:1519`–`1526`): `spawn_quest({quest, qstate})`,
   ticks pass, `set_quest_state(e, qstate2)`, `despawn(quest_npc)` — the NPC
