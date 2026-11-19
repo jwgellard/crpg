@@ -422,3 +422,4 @@ and the dedicated leg proved at the library level only.
 
 ## Agent log
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T041 draft b · Skeleton with all section headings.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T041 draft b · Completed the blind contract: one tests-only part, seeded-fabric determinism, semantic comparison, T042 host-column cases and five open questions; every cited path:line re-checked in code.
