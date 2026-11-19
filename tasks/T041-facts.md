@@ -31,7 +31,18 @@
 
 ## Clients today
 
-TODO
+- `ClientSession`: none found — no type by that name exists in `crpg-net`, `crpg-net-quic`, or `crpg-server`.
+- `Transport` (`crates/crpg-net/src/transport.rs:14`) — `pub trait Transport` with `send(&[u8])` and `recv() -> Option<Vec<u8>>`; the byte pipe between two in-process endpoints, no threads/clock/I/O.
+- `InMemoryTransport` (`crates/crpg-net/src/sim.rs:396`) — the T018b simulated fabric implementing the byte pipe with bounded queues, injected time, and per-peer fault schedules.
+- `FaultSchedule` (`crates/crpg-net/src/sim.rs:321`) — deterministic loss/dup/reorder knobs: `loss_every` drops every nth datagram per peer (`crates/crpg-net/src/sim.rs:323`), `dup_every` duplicates (`crates/crpg-net/src/sim.rs:325`), `reorder_depth` bounds displacement (`crates/crpg-net/src/sim.rs:327`).
+- `InMemoryTransport::tick` (`crates/crpg-net/src/sim.rs:572`) — deterministic pump moving staged datagrams through faults into ready queues in ascending `PeerId` order.
+- `Protocol versions` (`crates/crpg-net/src/protocol.rs:25`) — v1 `PROTOCOL_VERSION: u8 = 1`, v2 (`crates/crpg-net/src/protocol_v2.rs:34`), v3 (`crates/crpg-net/src/protocol_v3.rs:40`), v4 (`crates/crpg-net/src/protocol_v4.rs:27`); selection is explicit, no autodetection.
+- `SessionFence` (`crates/crpg-net/src/resume.rs:74`) — orders connection generations and checks epoch/fence order; the host's explicit `ResumeDecision` is the only input producing `Accepted`.
+- `ReplicaWorld` (`crates/crpg-net/src/replica.rs:121`) — engine-neutral client copy of one filtered v2 session, applied via `apply_delta` (`crates/crpg-net/src/replica.rs:188`); the conformance `Replica` is a test oracle, not a shipped type.
+- `ReplicaWorldV4` (`crates/crpg-net/src/replica_v4.rs:55`) — v4 client replica with positions; `apply_sample` never fails (`crates/crpg-net/src/replica_v4.rs:148`) since lane-1 datagrams are unordered and lossy.
+- `MoveOutbox` (`crates/crpg-net/src/outbox_v4.rs:54`) — client-side lane-1 intent sender; `send` queues a `MoveIntent` (`crates/crpg-net/src/outbox_v4.rs:93`), `receive` takes only the oldest pending intent.
+- `QuicClient` (`crates/crpg-net-quic/src/client.rs:104`) — one connection, one UDP socket, one I/O thread with a synchronous non-blocking API over bounded queues (`crates/crpg-net-quic/src/client.rs:1`); `connect` dials a server (`crates/crpg-net-quic/src/client.rs:118`).
+- `Client module set` (`crates/crpg-net/src/lib.rs:66`) — `replica`, `replica_v3`, `replica_v4`, `outbox_v4`, `movement_v4`, `interest`, `sim`, and `transport` are all net-local modules a headless client assembles without Godot.
 
 ## Hosts and run loops today
 
