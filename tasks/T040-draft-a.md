@@ -157,14 +157,14 @@ Design decisions this contract makes. Each needs approval with the contract.
    value. *Rejected:* trusting the operator's memory (the trap is explicit);
    deriving the value from a wall clock (not monotonic within one second).
 8. **Rejections reach the binary through `QuicHost::last_report`, drained from
-   the AI hook.** The loop's `Hosting::intake` calls `QuicHost::pump` and drops
-   the report (`task/T154-c1:tasks/T154.md:459–464`); the report is not stored
-   today. T040 adds one additive item: `QuicHost` keeps the last
+   the AI hook.** The loop's `QuicHosting::intake` is `quic.pump(now)` with the
+   report discarded (`task/T154-c1:tasks/T154.md:608–609`); the report is not
+   stored today. T040 adds one additive item: `QuicHost` keeps the last
    `QuicPumpReport` (set at the end of `pump` and `flush`) and
    `pub fn last_report(&self) -> Option<&QuicPumpReport>`. The binary's
    `QuicAiHook` closure runs right after intake in the cycle order (intake,
-   AI hook, advance, deliver; `tasks/T153.md` Reading 1), so it drains
-   `last_report` into `reject` lines once per cycle. *Rejected:* a second
+   the AI hook, advance, deliver; `task/T154-c1:tasks/T154.md:459–462`), so it
+   drains `last_report` into `reject` lines once per cycle. *Rejected:* a second
    `pump` to observe the report (it admits after the tick, T154 Reading 12);
    the report on `QuicHosting` (the hook receives `&mut QuicHost`, not the
    hosting).
@@ -396,7 +396,7 @@ is `place`d by it (Reading 10); the MVP smoke spawns none. *Tests:* D7.
 
 B-8. **The AI hook drains the report.** The `QuicAiHook` closure installed by
 `QuicHosting::set_ai` runs once per cycle, after intake (cycle order: intake,
-AI hook, advance, deliver; `tasks/T153.md` Reading 1). It reads
+the AI hook, advance, deliver; `task/T154-c1:tasks/T154.md:459–462`). It reads
 `quic.last_report()` and writes one `reject` line per refused lane-0 or
 lane-1 frame, in the report's order, then does nothing else (no AI drive in
 the MVP, Reading 9). *Tests:* D8, D9.
