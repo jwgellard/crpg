@@ -399,6 +399,26 @@ and the dedicated leg proved at the library level only.
 - Any decoder, host or text fix: a failing case stops and reports (Errors).
 
 ## Open questions
+1. **May `crpg-testkit` gain a dev-only `crpg-net-quic` edge for G1?**
+   Loopback real-QUIC clients need the client type T041 cannot name today.
+   *Recommend (a):* approve the dev-only path edge — `ALLOWED` already
+   permits it, no new package enters the lock, tests-only like T037e's three
+   host edges. *(b):* decline; G1 becomes library-level `QuicHost` smoke
+   and loopback-QUIC waits for T070's binary harness.
+2. **If T040a lands first, must H1–H6 use its observer?** The contract holds
+   either way (B-12 asserts on the pump report directly). *Recommend:* keep
+   direct-pump assertions; observer reuse is a follow-up, not a rework.
+3. **What deadline guards G1?** Real QUIC keeps the rig's own guards; no new
+   sleeps. *Recommend:* reuse `crpg-server`'s rig guards unchanged at 1x
+   contention; a 30 s-guard hit (the QUIC-13 shape) stops and reports
+   instead of retrying blindly.
+4. **Scripted intents or the AI driver for the fight?** `Host::drive_ai` is
+   specified but unbuilt here. *Recommend:* scripted intents; an AI-driven
+   rematch is a T153 follow-up once the driver merges.
+5. **Is `combat_basic` + the in-memory movement edit the right fixture?**
+   It reuses T037e's proven shape with no new files. *Recommend yes;* a
+   dedicated scripted scenario becomes its own fixture task if the
+   implementer finds `first-blood` cannot stage a two-client fight.
 
 ## Agent log
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T041 draft b · Skeleton with all section headings.
