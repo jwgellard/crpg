@@ -415,6 +415,67 @@ Notes that pin the design:
 
 ## Asset import
 
+Custom content is a D28l item: "the asset-import flow in T101"
+(`tasks/DECISIONS-2026-10-16.md:152`) and a T099 angle
+(`docs/IMPLEMENTATION_PLAN.md:299`). Today nothing imports: `AssetsLock` only
+records caller-supplied hashes and settings (`crates/crpg-data/src/package.rs:92`),
+there is no `import`/`glTF`/`portrait`/`audio` function in `crates/*/src`, and
+the bridge has no asset call (`crates/crpg-godot/src/core/mod.rs:99`). This
+section designs the flow the M6 `Assets` FFI object (import/scan/thumbnail,
+`docs/CRPG_ENGINE_SPEC.md:1025`) and T047 implement.
+
+**The flow, as an author experiences it.**
+
+1. **Drop.** The author drops source files into `assets/models/`,
+   `assets/textures/`, `assets/audio/`, `assets/fonts/`
+   (`docs/CRPG_ENGINE_SPEC.md:503`), or uses the editor's "Import…" dialog,
+   which copies them there.
+2. **Scan.** The editor (or `crpgc` import command) scans the folder and, for
+   each new or changed source path, computes its BLAKE3 hash and records it
+   with default import settings in `assets.lock` (`AssetRecord { hash, import }`,
+   `crates/crpg-data/src/package.rs:82`), so imports are reproducible
+   (`docs/CRPG_ENGINE_SPEC.md:518`).
+3. **Conformance as a gate (R15).** Each asset is validated before it is
+   usable: glTF must carry a `SkeletonProfileHumanoid` rig with no Transform
+   or Scale on skeleton or parent nodes (`docs/research/T099/R15-deep.md:5,6`);
+   names and ids are capped at 16 characters (`docs/research/T099/R15-deep.md:8`);
+   portrait dimensions and texture map sets are checked
+   (`docs/research/T099/R15-deep.md:11`). A failure is a diagnostic with a
+   pointer into the source path, and the asset is **not** added to
+   `assets.lock` until it passes — validation gates packaging with a non-zero
+   exit (`docs/research/T099/R15-deep.md:13`).
+4. **Thumbnail.** The `Assets` object generates a preview thumbnail for the
+   asset browser, keyed by the same hash, so the explorer can show it without
+   opening the source.
+5. **Conflict check (R15).** Before the asset is referenced or packaged,
+   duplicate ids, filenames, rows and base-game overrides are reported
+   (`docs/research/T099/R15-deep.md:9`); the packaging dialog refuses to
+   package with unresolved conflicts or errors (`docs/CRPG_ENGINE_SPEC.md:1075`).
+6. **Lock and digest.** `campaign.lock` records the one `assets.lock` digest
+   (`assets_lock_digest`, `crates/crpg-data/src/package.rs:241`), keeping
+   package versions/checksums and the source-asset digest separate
+   (`docs/architecture/crpg-data.md:37`). A content-hashed manifest is the
+   packaged-byte authority (`docs/research/T099/R15-deep.md:10`); the
+   packaged `manifest.json` writer is T093 (`docs/IMPLEMENTATION_PLAN.md:393`).
+
+**Principles this flow enforces.**
+
+- **The library does not read the source asset** (`crates/crpg-data/src/package.rs:82`):
+  hashing and conformance live in the importer, not in `crpg-data`; the data
+  crate stays I/O-free and only records what the importer reports.
+- **Import is idempotent and reversible.** Re-running import re-hashes and
+  no-ops on unchanged paths; rejecting a transformed skeleton is a warning
+  that becomes a blocking error, and the `Overwrite Axis` option is previewed
+  and reversible (`docs/research/T099/R15-deep.md:7`).
+- **The agent uses the same flow headlessly.** `crpgc import` (or `apply` with
+  an asset verb) performs the identical scan-and-conformance steps, so an
+  agent's asset addition passes the same gate as a human's, with the same
+  diagnostics (the "Agent-generated content cannot bypass invariants the GUI
+  enforces" rule, `docs/CRPG_ENGINE_SPEC.md:1013`).
+- **glTF 2.0 in, Godot's pipeline, content-hashed** is the pinned format
+  decision (`docs/CRPG_ENGINE_SPEC.md:1750`); the flow does not add a second
+  pipeline.
+
 ## Usability acceptance criteria per M6 package
 
 ## Decisions
