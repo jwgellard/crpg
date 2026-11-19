@@ -42,6 +42,7 @@ crpg-core     ─┐
 crpg-sim      ─┤
 crpg-net      ─┼─> crpg-server (lib) ─> crpg-server (bin, thin)
 crpg-nav      ─┤     + serde/serde_json (checkpoint JSON)
+crpg-ai       ─┤
 crpg-net-quic ─┤
 crpg-persist  ─┘
 ```
@@ -50,9 +51,10 @@ Edges are D20's: normal path dependencies on `crpg-core`, `crpg-sim` and
 `crpg-net` plus workspace `serde`/`serde_json`, and T039's path edge to
 `crpg-persist` (approved in [T039](../../tasks/T039.md) §8/Decisions; its
 `zstd` tree was already locked through T038), T023b's path edge to
-`crpg-net-quic` (ADR-0024, T023 R12), and T037a's path edge to `crpg-nav`
+`crpg-net-quic` (ADR-0024, T023 R12), T037a's path edge to `crpg-nav`
 (ADR-0036 H1–H5, approved at T037 Question 1 (a)) for the mesh, its bake,
-queries and paths. That edge brings the transport's
+queries and paths, and T153's path edge to `crpg-ai` (D65f) for the MVP
+decision. That edge brings the transport's
 quinn/rustls/tokio tree in transitively, but `crpg-server` names none of
 those crates and has no direct edge to them. Nothing else. The host
 consumes T020's public `HistoryWorld` (`perform_action`, `read_after`,
@@ -972,7 +974,64 @@ the QUIC hosting (`QuicHosting`) is T154d's. Exact contract:
   `RunnerPanicked`. Exact contract:
   [T154](../../tasks/T154.md).
 
-## Gate 10 (save/load equivalence)
+## The MVP AI driver (T153)
+
+`Host::drive_ai(sides, actors, budget)` is the trusted host operation the
+embedding's AI hook calls between ticks (Reading 1): it runs
+`crpg_ai::decide` for the caller's AI-controlled combatants and turns each
+`Decision` into the host's own step — a turn-based move by `host_move`, a
+real-time move by `move_to`, an action by `host_action`, or `halt` — within an
+`AiBudget`, reporting what it did in an `AiReport` of `AiStep`s. The caller of
+the hook is T154's cycle: intake and `pump`, the AI hook, `advance`, deliver
+(`run.rs` already names `drive_ai` as its hook stage).
+
+- **One step per call in turn-based play (Readings 2, 5).** A turn-based call
+  decides for the active head only, at most once, so the embedding paces the
+  steps (the server never does). The turn cap (`AiBudget::decisions_per_turn`,
+  16 in `MVP_AI_BUDGET`) counts decisions across calls in a private, never-saved
+  `ai_turn { round, head, decisions }`; once the count reaches the budget the
+  call runs `host_action(EndTurn { head })` instead of deciding (an `EndTurn`
+  the head may always submit). A move keeps the turn and costs a pool unit; a
+  struck ability may keep or end it.
+- **Real time decides every live controlled combatant (Readings 6, 7).** The
+  candidates are the controlled set (ascending, deduplicated) filtered to live
+  combatants under `awaiting_orders`' own fight gate (a clock, two or more
+  alive, `elapsed < RT_CLOCK_MAX`), not only the "due with no order" ones.
+  At most `AiBudget::actors_per_drive` (8) are decided per call; more rotate by
+  `server_tick() % n` so every candidate is reached within a few ticks with no
+  stored cursor.
+- **The controlled set and `Sides` cross per call (Reading 3); the mesh is the
+  host's (Reading 4).** The host stores neither the controller list nor
+  `Sides`: the caller passes both, and the host holds no AI policy (T141a's
+  rule). `decide` gets `Some(&mesh)` exactly when the host holds a `HostNav`,
+  else `None`, so a restored host (no mesh until rebound) gets the no-move
+  fallbacks.
+- **Refusals and `decide` errors are steps; `Closed` is the only `Err`
+  (Readings 9, 10).** `Act(a)` → `host_action(&a)`; `Move` → `host_move`
+  (turn-based) or `move_to` (real time); `Halt` → `halt`; `Hold` → nothing. An
+  operation's `Ok` gives `Applied`, its `Err` a `Refused` (unchanged, `CaptureFull`
+  the reachable one), a `decide` `Err` an `Undecided` (unchanged); no retry, no
+  forced `EndTurn` after a refusal. Every effect goes through those four
+  operations, so it is recorded and published exactly as they are.
+- **Pause does not stop the driver (Reading 13; D65g); route parity is a unit
+  test and a compile-time tag check (Reading 12).** `crpg_ai::host_route`
+  equals `nav::plan_route` (`AI_ROUTE_TAG == HOST_ROUTE_TAG == RouteTag(0)`),
+  pinned at compile time and by the `host_route_equals_plan_route` unit test.
+- **State and determinism (D-11).** The only new state is `ai_turn`, `None`
+  from `new`, `from_history` and `load_checkpoint` and never saved, so a
+  restore mid-turn restarts the count. Two hosts with equal authority, mesh and
+  call history give equal reports and hashes; the driver reads no clock or RNG
+  beyond the operations it calls.
+
+The D-items are: D-1 `Closed` first; D-2 no fight → empty; D-3 the controlled
+set and mesh; D-4 the turn-based gate (no head or an uncontrolled head →
+empty); D-5 the turn-based step; D-6 the real-time step; D-7 the mapping; D-8
+errors are steps, never retries; D-9 pause is ignored; D-10 authority (every
+step's actor is in the controlled set and every applied `Act` is in
+`legal_actions`); D-11 state and determinism; D-12 route parity; D-13 a host
+that never calls `drive_ai` is byte-identical to today.
+
+
 
 Spec §15.4 step 10 is active as **file-backed host save/load continuation
 equivalence** (`tests/host_save.rs`, run by the existing
@@ -1047,3 +1106,4 @@ with T040/T041.
 - 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Extended the reconnect-grace section with the resumable-adapter route (`start_resumable`, the ticket after the `/2` welcome, fence tags, the resume answer, grace on a silent loss, what ends a grace, and the keyed-BLAKE3 proof), and updated the connection-to-binding map and the `bind_resumable` sentence to the as-built `graced`/`fence` fields and `poll_notice` polling, so the doc describes the QUIC side the crate now has.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Extended the run-loop section with the background runner (the injected `Clock`, `SystemClock::starting_at`, the `crpg-server-loop` step/closure/wait thread, the `RunnerHandle` rendezvous and stop, the step-error and panic exits, and the join-and-respawn), so the doc describes the thread and clock the crate now owns.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Extended the run-loop section with lane 1 on the local link (the `0xA1` intake arms and the hold queue, the receipt backlog that never drops, the samples that do, and the v1–v3 no-lane-1 mark), so the doc describes the receipts and samples the loop now delivers.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added "The MVP AI driver (T153)" (the `drive_ai` host operation, one turn-based step per call with a cross-call 16-decision cap, real-time decisions for every live controlled combatant rotated by the world tick, caller-supplied `Sides` and controlled set, the host's own mesh or `None`, refusals as steps with `Closed` the only `Err`, pause ignored, route parity pinned by a compile-time tag check and a unit test, and the never-saved `ai_turn` that a restore restarts) and the `crpg-ai` edge to the diagram and edge paragraph, so the doc describes the AI driver the host now runs.

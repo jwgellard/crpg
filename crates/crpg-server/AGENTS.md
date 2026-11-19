@@ -98,6 +98,13 @@ BeginGrace, ResumePeer}` and `FenceCause::Resumed`. The `resumable` flag,
 edge (D68 Question 1 (b)), and a refused resume closes at once with code 5
 or 7 (Question 2 (b)).
 
+T153's additive `host` items (D65f): `AiBudget`, `AiReport`, `AiStep`,
+`MVP_AI_BUDGET` and `Host::drive_ai`. `drive_ai` runs `crpg_ai::decide` for
+the caller's AI-controlled `actors` and maps each decision through the host's
+own operations (`host_action`, `host_move`, `move_to`, `halt`); `AiTurn` (the
+turn counter) is private in `src/host/ai.rs`, and `crpg_ai`/`crpg_sim` types
+are named by path, never re-exported.
+
 ## Invariants
 
 1. **The host is the only mutator.** `HistoryWorld` stays private: no
@@ -159,7 +166,9 @@ field against the returned `ActionOutcome`. T023b adds the
 direct quinn, quinn-proto, rustls or tokio edge, because `crpg-net-quic`
 exposes none of their types. T037a adds the `crpg-nav` path edge (ADR-0036
 H1–H5, the user's approval at T037 Question 1 (a)) for the mesh, its bake,
-queries and paths; the crate names no other navigation type. Anything else
+queries and paths; the crate names no other navigation type. T153 adds the
+`crpg-ai` path edge (D65f) for the MVP decision; its own edges (`crpg-core`,
+`crpg-sim`, `crpg-nav`) are already dependencies above. Anything else
 needs its own approval; never widen `deny.toml`.
 
 ## Definition of done for any change
@@ -234,10 +243,30 @@ git diff --check
   `awaiting_orders()` lists every combatant the AI must decide for (turn-based
   head; real-time due, alive, unordered); the host holds no AI policy and no
   controller list, and `host_action` executes whatever the caller decides
-  after `validate_action`. A host action is never a peer command: no
+  after `validate_action`. The AI driver decides for the caller's `actors`;
+  the host still keeps no controller list. A host action is never a peer
+  command: no
   sequence, receipt, `executions()` move or `last_combat_error`, and a
   refused one (`Combat(_)`, `CaptureFull`) changes nothing. `request_mode`
   journals nothing and records nothing.
+- **One turn-based step per call (T153).** `drive_ai` decides for the turn-based
+  head at most once: the embedding calls again for the next step, and the
+  server never paces. The turn cap counts `decide` calls across calls and, at
+  the count, ends the head's turn instead of deciding; never loop until the
+  turn ends inside one call.
+- **`ai_turn` is host state: a restore restarts the count (T153).** The AI
+  driver's `(round, head, decisions)` counter lives in the never-saved `ai_turn`
+  field, so `load_checkpoint` restarts it mid-turn. Do not derive it from the
+  journal, the captures or anything persisted.
+- **`decide` gets the host's own mesh or `None` (T153).** The driver passes
+  `Some(&self.nav.mesh)` exactly when a `HostNav` is bound, else `None` (a
+  restored host has no mesh until rebound). Never let a caller pass a different
+  mesh, or the AI's routes would diverge from the host's.
+- **Only `Closed` is an `Err`; refusals are steps (T153).** A host operation
+  that refuses (`CaptureFull` the reachable one) and a `decide` error become
+  `AiStep::Refused`/`AiStep::Undecided`, changing nothing and never retried;
+  `drive_ai` returns `Err` only for a shut-down host, and `HostError` gains no
+  variant.
 - **`tick` ignores pause; `advance` is the cadence (T141b).** `tick()` is the
   operator's primitive and runs on a paused host, so a `Restore`-paused host
   still ticks through it (gate 10). A driver that honours pause, the turn timer
@@ -494,3 +523,4 @@ git diff --check
 - 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Recorded the resumable-adapter surface (`start_resumable`, `is_resumable`, `ResumeReport`/`ResumeOutcome`, `resumes`, the four `HostCall` variants, `FenceCause::Resumed`) and rewrote the `start`-precondition trap into the `start`/`start_resumable` split, so the crate contract matches the QUIC resume route the crate now speaks.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Added the seventh module `runner` to the surface (the `Clock`, `SystemClock`, `spawn` and `RunnerHandle` items) and amended invariant 7 with R-6's fenced exception, so the contract names the one thread and clock the crate now owns.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Named `LinkStats::held_moves` in the surface, so the contract records the lane-1 hold counter the local link now reports.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added the AI-driver surface (`AiBudget`, `AiReport`, `AiStep`, `MVP_AI_BUDGET`, `Host::drive_ai`), the approved `crpg-ai` edge, the caller's-actors note on the T141a trap, and the four T153 traps (one turn-based step per call; `ai_turn` is host state that a restore restarts; `decide` gets the host's own mesh or `None`; only `Closed` is an `Err`, refusals are steps), so the crate contract matches the AI driver the host now runs.

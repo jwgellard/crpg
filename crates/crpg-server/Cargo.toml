@@ -17,6 +17,10 @@ path = "src/main.rs"
 # T022, approved by D20 (tasks/DECISIONS-2026-09-30.md): path edges only, plus
 # the workspace serde/serde_json already in Cargo.lock. No crates.io crate is
 # added by this crate; see the T018a-style audit in tasks/T022.md.
+# T153 (D65f): the MVP AI driver calls `crpg_ai::decide` and maps its decisions
+# through the host's own operations. Path edge only; crpg-ai's own edges
+# (core, sim, nav) are already dependencies below.
+crpg-ai = { path = "../crpg-ai" }
 crpg-core = { path = "../crpg-core" }
 # T037a (ADR-0036 H1-H5, approved by the user 2026-11-15, T037 Question 1 (a)):
 # the navigation mesh, its bake, queries and paths. Path edge only.
