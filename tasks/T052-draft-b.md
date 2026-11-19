@@ -272,6 +272,72 @@ world and commits it with whatever else the tick journals; a tick whose
 only change is countdown commits zero new envelopes.
 
 ## Behaviour
+Normative. Each item names the tests that prove it. "Unchanged" means
+`state_hash`, queue bytes, RNG streams, tick and every other store as before
+the call. **First failure wins** in every ordered list.
+
+B-1. **Spawns.** `spawn_continuation(c)` / `spawn_dialogue(d)` mint a fresh
+entity, insert the record and enqueue exactly one `Spawned` at the world's
+tick (`crates/crpg-sim/AGENTS.md:180–187`). `spawn_quest(q)` does the same unless a
+live `QuestProgress` already names `q.quest`: then
+`Err(ContinuationError::DuplicateQuest)` and unchanged. *Tests:* C1, C7.
+B-2. **Setters.** `set_remaining(e, r)` / `set_dialogue_node(e, n)` /
+`set_quest_state(e, s)` rewrite exactly the named field of the live record
+on `e` and enqueue nothing; a dead or absent `e`, or an entity holding no
+record of that kind, gives `Err(ContinuationError::Absent)` and unchanged.
+*Tests:* C2.
+B-3. **Despawn is total.** `despawn` of a holder removes the entity, strips
+all three stores with everything else, and enqueues exactly one `Despawned`
+(the invariant, `crates/crpg-sim/AGENTS.md:180–187`). *Tests:* C3.
+B-4. **Transfer refuses holders.** `transfer_entity` (and the history pair)
+of an entity holding any of the three components fails with the new final
+preflight error and publishes neither side (Reading 1; the T139 trap,
+`crates/crpg-sim/AGENTS.md:594`). The check runs after every existing
+check, so any existing failure wins. *Tests:* C4.
+B-5. **Stage 5 counts down.** Each `tick` (and `tick_with_movement`, which
+delegates), after `movement_system`, decrements every positive `remaining` by exactly
+one saturating; zero stays zero; nothing else moves; no event is enqueued
+(Readings 3–4). `end_turn` never touches the stores
+(`crates/crpg-sim/src/tick.rs:55`). *Tests:* C5, golden G1.
+B-6. **Due query.** `continuations_due` returns exactly the holders with
+`remaining == 0`, ascending `EntityId`, and changes nothing. *Tests:* C5.
+B-7. **Round-trip.** A world with continuations (positive, zero and
+`saturating`-edge `remaining`), an open dialogue and two quest stages
+serializes through the pair-list shape and deserializes to an equal world:
+same records, same `state_hash`, same `continuations_due`
+(`docs/CRPG_ENGINE_SPEC.md:311`; the `creatures`/`movers` absence-skip
+precedent, `crates/crpg-sim/src/world.rs:102–108). *Tests:* C6.
+B-8. **Load rejects the incoherent.** Deserialization fails when any of the
+three stores names a non-live entity, when two live `QuestProgress` share a
+`quest`, or when a `speaker` is non-live — before any `World` is built
+(`crates/crpg-sim/src/world.rs:150`). *Tests:* C6.
+B-9. **Save/load equivalence.** A world with a `remaining: 600`
+continuation, an open dialogue and a quest stage, run 500 ticks, saved,
+loaded and run 500 more, hashes equal to the uninterrupted 1000-tick run —
+and the continuation is due at the same tick in both
+(`docs/CRPG_ENGINE_SPEC.md:853`; the Gate-10 shape,
+`crates/crpg-server/tests/host_save.rs:706`–`709`). *Tests:* G1.
+B-10. **Waiting outlives a server restart.** Host file-backed
+save/load with an armed continuation, an open dialogue and a quest stage:
+after reload under a strictly greater incarnation the records, the
+`remaining` values and the hashes match the uninterrupted run (Gate 10:
+`docs/architecture/crpg-server.md:975`,
+`crates/crpg-server/AGENTS.md:293`). *Tests:* G2
+(notes the server-side version bump; implemented in the T052 suite with the
+existing host save helpers, no server file changes).
+B-11. **History wrappers.** Each spawn wrapper stages a clone, runs the
+`World` spawn, drains the one legacy `Spawned`, commits exactly one
+`Spawned` history event and leaves `version` untouched; each setter commits
+zero events and leaves journal and version untouched (Reading 6;
+`crates/crpg-sim/src/history.rs:623`–`644`). A gameplay failure
+(`ContinuationError`) commits nothing, including the entity allocation.
+*Tests:* C8.
+B-12. **Budgets untouched.** 1024 dispatches and 100,000 units per resumed
+slice, depth ≤ 32 (`docs/CRPG_ENGINE_SPEC.md:630`); a `Wait` commits the
+slice and a resume gets a fresh budget (D17,
+`tasks/POST-T018-DECISIONS.md:383`–`389`). T052 enforces none of it: no
+counter, no budget field. The contract fails if it adds one. *Tests:* C9
+(compiles the constants' absence: a.resume draws nothing).
 
 ## Errors
 
