@@ -495,6 +495,16 @@ saturating decrement at `remaining: 0` (no-op by construction).
   `crates/crpg-server/tests/host_save.rs:706`–`709`).
 
 ## Dependency edges
+| Edge | Section | `ALLOWED` |
+|---|---|---|
+| `crpg-sim` → `crpg-core` (already: `Ulid`, `EntityId`) | `[dependencies]` (normal, path) | permitted: the `crpg-sim` row already reaches all three (`crates/crpg-sim/AGENTS.md:307–312`) |
+| `crpg-sim` → `crpg-data` (already: none new) | none — T052 copies no authored type, only persists `Ulid`s | permitted and unused: the edge exists for the combat adapter (`docs/architecture/crpg-sim.md:27–31`); T052 adds no `use` of it |
+| `crpg-sim` → `crpg-script` | none — forbidden | would point upward (root `AGENTS.md:28–35`); `tools/lint/deps.py`'s `ALLOWED` table does not permit it and this contract needs no new edge |
+
+No new external crate and no new lockfile package: the three new types use
+`Ulid`/`EntityId` (already in scope), `serde`/`serde_json`/`blake3` as today
+(`crates/crpg-sim/AGENTS.md:307–312`). `deps.py` is not edited. One task =
+one crate (`crpg-sim`), per the working rules (root `AGENTS.md:57–58`).
 
 ## Out of scope
 
