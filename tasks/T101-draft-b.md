@@ -609,6 +609,41 @@ Each decision is numbered and states the alternative it rejects.
 
 ## Consequences
 
+- **T059 and T103 reorder relative to the current plan.** T059's `crpgc apply`
+  JSON "follows the T101 ADR" (`docs/IMPLEMENTATION_PLAN.md:316`), so its
+  contract cannot be written until the intent-layer verb list (§ Intent
+  command layer) is accepted. T103 (the intent layer, in `crpg-edit`) must
+  land before or with T059, not after. The plan lists T103 as "if T101 keeps
+  it" (`docs/IMPLEMENTATION_PLAN.md:303`); this draft keeps it, so the manager
+  promotes T103 to a prerequisite of T059.
+- **T053's contract waits on this draft.** "its contract waits on the T101
+  draft's event-authoring section" (`docs/IMPLEMENTATION_PLAN.md:283`). This
+  draft's § Task flows covers the MVP quest hook, but it does **not** design
+  the visual event-graph authoring surface — that is spec §11.4's event graph
+  editor (`docs/CRPG_ENGINE_SPEC.md:1071`) and M8's T073/T074
+  (`docs/IMPLEMENTATION_PLAN.md:346`), which the MVP excludes
+  (`docs/CRPG_ENGINE_SPEC.md:1608`). The architect's final ADR must either
+  state that explicitly or add the event-authoring section T053 waits on.
+- **The bridge grows an editor surface, not a second authority.** T060–T068
+  add `editor/` to `crpg-godot`, but every edit still flows through the
+  `crpg-edit` document and intent layer. The bridge's current open inputs
+  (campaign dir, encounter, side, seed — `crates/crpg-godot/src/core/mod.rs:99`)
+  are unchanged for the runtime path; the editor path is additive.
+- **No new crate is required for the intent layer.** It is a module of
+  `crpg-edit` (T103's owner), which keeps the closed command set, the caps and
+  the receipts in one place. A new crate would fragment the one-implementation
+  rule.
+- **The `Assets` FFI object and the importer are new surface.** They live in
+  the editor/importer (not `crpg-data`, which stays I/O-free per
+  `crates/crpg-data/src/package.rs:82`). T047 owns the importer; its contract
+  picks up the conformance gate and idempotence this section pins.
+- **M6 acceptance changes.** Every M6 contract now carries a usability
+  criterion (§ Usability acceptance criteria), and M6-R's exit gate — "No M6
+  contract is approved before then" (`tasks/DECISIONS-2026-10-16.md:108`) —
+  now has content to check against. The T102 prototype walkthrough
+  (`docs/IMPLEMENTATION_PLAN.md:302`) validates these flows before any M6 code
+  is committed.
+
 ## Open questions (each with a recommendation)
 
 ## Agent log
