@@ -7,6 +7,7 @@
 
 mod authority;
 mod client;
+mod client_v4;
 mod errors;
 mod link;
 
@@ -30,7 +31,7 @@ use client::Client;
 use errors::Fault;
 use link::{LinkEnd, LocalLink, LINK_FRAMES};
 
-pub use client::{SessionView, ViewEvent, ViewReceipt, ViewValue};
+pub use client::{SessionView, ViewEvent, ViewMoveReceipt, ViewReceipt, ViewValue};
 pub use errors::BridgeCode;
 
 /// One embedded single-player session; all GDScript-visible behaviour.

@@ -58,6 +58,10 @@ integration tests; T047b landed `src/shell.rs` and `apps/client`.
     indexing, `unwrap`/`expect` or arithmetic on GDScript values; its only
     arithmetic is the saturating millisecond conversion. `shell.rs` imports
     `crate::core::{..}` items, never the bare name `core`.
+16. **v2 is frozen: v4 work goes in `client_v4.rs` and `authority/v4.rs`.**
+    The v2 session, its client and every existing test keep their bytes;
+    the v4 client half (`ClientV4`, the position columns, `Moved` and
+    move receipts) never shares a code path with them.
 
 ## Definition of done for any change
 
@@ -174,3 +178,4 @@ Agent log:
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Corrected the runtime-error trap: a Godot 4.7.2 probe showed a `-> String` function that crashes returns `""`, not `null`, so the scene-sync cases now report success with an explicit `"PASS"` token and the runners fail on anything else.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Added the `hud.gd` engine gate and four GDScript traps (`_ready` vs `_initialize`, `find_child` ownership, `append_text`, the `""` sentinel) found while building the HUD cases.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Added the side-colour/dead-tint override trap and the mesh-only lift rule, so future work keeps the surface override out of `material_override` and the proxy node at `y = 0`.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Froze v2 for the v4 work: new protocol v4 code goes in `client_v4.rs` and `authority/v4.rs`, so the v4 client half lands without touching the v2 session or its tests.

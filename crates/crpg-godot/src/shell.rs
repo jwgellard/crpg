@@ -221,6 +221,7 @@ fn dictionary(entries: Vec<(&'static str, ViewValue<'_>)>) -> VarDictionary {
             ViewValue::Int(number) => number.to_variant(),
             ViewValue::Text(text) => GString::from(text).to_variant(),
             ViewValue::Bool(flag) => flag.to_variant(),
+            ViewValue::Ints(values) => PackedInt64Array::from(values).to_variant(),
         };
         out.set(key, &value);
     }
