@@ -399,3 +399,4 @@ the no-new-dependency alternative IS the design. Reused tools
 ## Agent log
 
 - 2026-11-19 (UTC) · muse-spark + T100 draft b · Skeleton.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T100 draft b · Filled the blind exact contract: oc.py-launched runs, validate+run scoring, fixture-pinned brief sizes, pure scoring with hand-computed test expectations.
