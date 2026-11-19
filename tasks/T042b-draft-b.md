@@ -548,8 +548,13 @@ from the log alone.
   (none is added or moved); every other crate.
 
 ## Dependency edges
-
-TODO (draft B): every new edge, ALLOWED status, no-new-dependency alternative.
+None. The suite uses `crpg-net`'s public API only; no dev-dependency is
+added, so `tools/lint/deps.py:54` (`ALLOWED["crpg-net"]`) and `deny.toml`
+need nothing. No `proptest`, no fuzzer (Reading 5). The indexed neighbours
+(welcome, close, bridge) are cited, never imported: a test edge into
+`crpg-net-quic` or `crpg-godot` would need an `ALLOWED` review and the
+user's approval, which is why this contract does not create one
+(Reading 3, Open question 1).
 
 ## Permissions
 
