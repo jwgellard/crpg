@@ -11,8 +11,9 @@
 //! frame, `pump`, `advance`, `take_delivery_entries` then
 //! `acknowledge_delivery` through the last, `acknowledge_captures(last_capture())`).
 
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fmt;
+use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,7 @@ use crpg_net::codec_v2;
 use crpg_net::protocol::{IntentBody, IntentFrame, NetId, LANE_COMBAT};
 use crpg_net::transport::Transport;
 use crpg_server::host::{
-    ControlGrant, DisclosureGrants, EntityDisclosure, Host, HostConfig, HostError,
+    AdvanceReport, ControlGrant, DisclosureGrants, EntityDisclosure, Host, HostConfig, HostError,
     IngestDisposition, PeerHandle, ProtocolSelection,
 };
 use crpg_server::run::{HostLoop, LocalHost, LoopError};
@@ -566,4 +567,247 @@ fn stop_and_respawn_keeps_the_local_client() {
     drop(LocalHost::new(host));
     assert_eq!(client.recv(), None);
     assert!(client.is_closed());
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: the thread steps on its own (t07/t08). Every `call` forces a
+// step, so U2/U9 never show a self-driven one. This case advances the
+// injected clock past the period and spins, with a 30 s deadline and no
+// `call`, until a step-counting `Hosting` shows a cycle ran.
+// ---------------------------------------------------------------------------
+
+/// A `Hosting` that counts every `advance`, so the test sees cycles without
+/// any `call` rendezvous forcing a step.
+struct StepCountingHosting {
+    steps: Arc<AtomicU64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct StepCountingError;
+
+impl fmt::Display for StepCountingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "StepCountingError")
+    }
+}
+
+impl std::error::Error for StepCountingError {}
+
+impl crpg_server::run::Hosting for StepCountingHosting {
+    type Error = StepCountingError;
+
+    fn intake(&mut self, _now_ms: u64) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn drive_ai(&mut self, _now_ms: u64) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn advance(&mut self, _now_ms: u64) -> Result<AdvanceReport, Self::Error> {
+        self.steps.fetch_add(1, Ordering::SeqCst);
+        Ok(AdvanceReport {
+            ticked: true,
+            timer_ended_turn: None,
+            paused: None,
+        })
+    }
+
+    fn deliver(&mut self, _now_ms: u64) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn retire_captures(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+/// The loop thread keeps the grid without any caller rendezvous: a wait made
+/// huge (t07/t08) would leave this spin short of its second cycle.
+#[test]
+fn thread_steps_on_its_own() {
+    let steps = Arc::new(AtomicU64::new(0));
+    let clock = ManualClock::new(0);
+    let hosting = StepCountingHosting {
+        steps: steps.clone(),
+    };
+    let handle = spawn(HostLoop::new(hosting, 0), clock.clone()).expect("spawns");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    // The first step runs on its own right after `spawn`, with no `call`.
+    while steps.load(Ordering::SeqCst) < 1 {
+        assert!(Instant::now() < deadline, "the thread must step on its own");
+        std::thread::yield_now();
+    }
+    // Advance the clock past the period; the next cycle must run on its own.
+    clock.set(500);
+    while steps.load(Ordering::SeqCst) < 2 {
+        assert!(Instant::now() < deadline, "the thread must step on its own");
+        std::thread::yield_now();
+    }
+    let exit = handle.join().expect("joins");
+    assert_eq!(exit.error, None);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: `stop` stops on its own (h01) and `is_finished` reports it
+// (h02/h03). After `stop()` alone the test spins on `is_finished()` with a
+// 30 s deadline until it is true, then `join()` gives `error: None`.
+// ---------------------------------------------------------------------------
+
+/// `stop()` ends the runner without a further rendezvous, and `is_finished`
+/// is false while running and true after the stop.
+#[test]
+fn stop_ends_the_runner_on_its_own() {
+    let clock = ManualClock::new(0);
+    let (handle, _clock) = spawn_empty(clock);
+    assert!(!handle.is_finished());
+    handle.stop();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !handle.is_finished() {
+        assert!(Instant::now() < deadline, "stop must end the thread");
+        std::thread::yield_now();
+    }
+    assert!(handle.is_finished());
+    let exit = handle.join().expect("joins");
+    assert_eq!(exit.error, None);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: dropping the handle joins (h06). The loop owns a `Clock` whose
+// `Drop` sets a shared flag; the flag is set immediately after `drop`
+// returns only when `Drop` joined instead of detaching.
+// ---------------------------------------------------------------------------
+
+/// A `Clock` that reports its own drop, so the test sees the loop thread
+/// end when the handle is dropped.
+struct DropNotifyingClock {
+    now: Arc<AtomicU64>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl Drop for DropNotifyingClock {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Clock for DropNotifyingClock {
+    fn now_ms(&self) -> u64 {
+        self.now.load(Ordering::SeqCst)
+    }
+}
+
+/// Dropping an unjoined handle stops and joins the thread (R-4): the clock
+/// the thread owns is dropped before `drop(handle)` returns.
+#[test]
+fn dropping_the_handle_joins_the_thread() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let handle = spawn(
+        HostLoop::new(LocalHost::new(empty()), 0),
+        DropNotifyingClock {
+            now: Arc::new(AtomicU64::new(0)),
+            dropped: dropped.clone(),
+        },
+    )
+    .expect("spawns");
+    drop(handle);
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: `Stop` runs no further step (t14). With a 3_600_000 ms period
+// no timeout can fire, so `cycles() == 1` after `stop()` + `join()` proves
+// the stop itself stepped nothing.
+// ---------------------------------------------------------------------------
+
+/// `stop()` ends the runner at its wait with no further step.
+#[test]
+fn stop_runs_no_further_step() {
+    let clock = ManualClock::new(0);
+    let period = NonZeroU64::new(3_600_000).expect("nonzero");
+    let handle = spawn(
+        HostLoop::with_period(LocalHost::new(empty()), 0, period),
+        clock.clone(),
+    )
+    .expect("spawns");
+    clock.set(3_600_000);
+    handle.stop();
+    let exit = handle.join().expect("joins");
+    assert_eq!(exit.error, None);
+    assert_eq!(exit.host_loop.cycles(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: the loop thread's contract name (t01, R-2).
+// ---------------------------------------------------------------------------
+
+/// The background thread is named exactly `crpg-server-loop`.
+#[test]
+fn loop_thread_has_the_contract_name() {
+    let clock = ManualClock::new(0);
+    let (handle, _clock) = spawn_empty(clock);
+    assert_eq!(
+        handle.call(|_| std::thread::current().name().map(str::to_owned)),
+        Ok(Some("crpg-server-loop".to_owned()))
+    );
+    let exit = handle.join().expect("joins");
+    assert_eq!(exit.error, None);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: `SystemClock` measures whole milliseconds (s04/s05/s08), and
+// `Default` is `starting_at(0)`.
+// ---------------------------------------------------------------------------
+
+/// `new()`, `default()` and `starting_at(5_000)` read whole milliseconds
+/// since construction, bracketed above by the test's own `Instant`.
+#[test]
+fn system_clock_measures_whole_milliseconds() {
+    let t0 = Instant::now();
+    let clock = SystemClock::new();
+    let t1 = Instant::now();
+    while t1.elapsed() < Duration::from_millis(30) {}
+    let now = clock.now_ms();
+    assert!(now >= 30);
+    assert!(now <= t0.elapsed().as_millis() as u64);
+
+    let t0 = Instant::now();
+    let clock = SystemClock::default();
+    let t1 = Instant::now();
+    while t1.elapsed() < Duration::from_millis(30) {}
+    let now = clock.now_ms();
+    assert!(now >= 30);
+    assert!(now <= t0.elapsed().as_millis() as u64);
+
+    let t0 = Instant::now();
+    let clock = SystemClock::starting_at(5_000);
+    let t1 = Instant::now();
+    while t1.elapsed() < Duration::from_millis(30) {}
+    let now = clock.now_ms();
+    assert!(now >= 5_030);
+    assert!(now <= 5_000 + t0.elapsed().as_millis() as u64);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: the millisecond addition saturates (s02).
+// ---------------------------------------------------------------------------
+
+/// `starting_at(u64::MAX)` still reads `u64::MAX` after time passes.
+#[test]
+fn system_clock_saturates_at_max() {
+    let clock = SystemClock::starting_at(u64::MAX);
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(2) {}
+    assert_eq!(clock.now_ms(), u64::MAX);
+}
+
+// ---------------------------------------------------------------------------
+// Fix round: the runner error `Display` texts (d01/d02, Errors table).
+// ---------------------------------------------------------------------------
+
+/// `RunnerGone` and `RunnerPanicked` carry exactly the contract's texts.
+#[test]
+fn runner_error_display_texts() {
+    assert_eq!(RunnerGone.to_string(), "RunnerGone at run/runner");
+    assert_eq!(RunnerPanicked.to_string(), "RunnerPanicked at run/runner");
 }

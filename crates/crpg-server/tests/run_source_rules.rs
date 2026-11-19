@@ -112,3 +112,29 @@ fn source_rules() {
         assert_no_token("runner.rs", &runner, token);
     }
 }
+
+/// Fix round (U8 source list): the hand-written `SOURCES` list cannot
+/// silently go stale — `runner.rs` is found by enumerating `src/*.rs`, so
+/// the fence scan cannot pass on an empty or drifted list.
+#[test]
+fn source_scan_covers_the_tree() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut names: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(&dir).expect("src lists");
+    for entry in entries {
+        let name = entry.expect("entry").file_name();
+        let name = name.to_str().expect("utf8").to_owned();
+        if name.ends_with(".rs") {
+            names.push(name);
+        }
+    }
+    names.sort();
+    assert!(!names.is_empty());
+    assert!(names.contains(&"runner.rs".to_owned()));
+    for (file, _) in SOURCES {
+        assert!(
+            names.contains(&file.to_string()),
+            "{file} is listed but missing on disk"
+        );
+    }
+}
