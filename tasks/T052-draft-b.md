@@ -524,7 +524,30 @@ one crate (`crpg-sim`), per the working rules (root `AGENTS.md:57–58`).
 - Any change to `crpg-godot`, dialogue UI or journal (T057,
   `docs/IMPLEMENTATION_PLAN.md:286`); any new lint rule or `ALLOWED` entry.
 
-## Open questions
+## Open questions (each with a recommendation)
+1. **Should `HOST_SAVE_VERSION` 1 → 2, or should the bump live on the
+   checkpoint instead?** The `World` bytes sit inside checkpoint opaque
+   payloads (`crates/crpg-server/src/checkpoint.rs:1`), so either layer can
+   carry the generation. *Recommend:* the host save (Reading 5) — saves
+   are the spec's versioned unit (`docs/CRPG_ENGINE_SPEC.md:851`) and old
+   files load unchanged.
+2. **Does G2 belong to T052's suite or to Gate 10's server suite?** G2
+   drives host save/load but changes no server file; it could live in
+   `crates/crpg-server/tests/host_save.rs` instead (Gate 10's home,
+   `crates/crpg-server/tests/host_save.rs:706`). *Recommend:* keep it in
+   T052's suite using the existing host helpers — the behaviour (B-10) is
+   T052's, and no server file is touched.
+3. **One preflight error for all three stores, or one per store?** Transfer
+   refusal and load rejection could name the offending store
+   (`HasContinuation` vs `HasDialogue` vs `HasQuest`).
+   *Recommend:* one error — the publisher cares that the entity cannot move,
+   not which script state holds it, and one variant keeps the `AreaError`
+   surface minimal.
+4. **Should `continuations_due` return ascending `EntityId` or store order?**
+   Store iteration is insertion order while timeline iteration is ascending
+   (`crates/crpg-sim/AGENTS.md:198–202`). *Recommend:* ascending — the
+   interpreter resumes in a deterministic order independent of spawn
+   history, and the sort is over the due set only.
 
 ## Agent log
 
