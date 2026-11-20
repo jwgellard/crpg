@@ -155,6 +155,12 @@ class AuthorbenchCase(unittest.TestCase):
             [sys.executable, str(AUTHORBENCH), *argv],
             capture_output=True, text=True, env=env or self.env())
 
+    def run_ab_bytes(self, *argv, env=None):
+        """Like `run_ab` but byte output, for byte-exact stdout comparisons."""
+        return subprocess.run(
+            [sys.executable, str(AUTHORBENCH), *argv],
+            capture_output=True, env=env or self.env())
+
     # CL1
     def test_cl1_setup_builds_templates(self):
         r = self.run_ab("setup", str(self.scratch))
@@ -199,7 +205,7 @@ class AuthorbenchCase(unittest.TestCase):
         for cmd, argv in cases:
             r = self.run_ab(cmd, *argv)
             self.assertEqual(r.returncode, 2, (cmd, r.stderr))
-            self.assertIn("scratch directory is inside the repository; refused", r.stderr)
+            self.assertIn(f"{cmd}: scratch directory is inside the repository; refused", r.stderr)
         self.assertFalse(inner.exists())
 
     # CL3
@@ -215,8 +221,14 @@ class AuthorbenchCase(unittest.TestCase):
         run_dir = out / "runs" / "campaign-extend" / "m_a_x"
         self.assertTrue(run_dir.is_dir())
         tools_text = (AUTHORBENCH_DIR / "tools-baseline.txt").read_text(encoding="utf-8")
+        prompt = (AUTHORBENCH_DIR / "briefs" / "campaign-extend" / "prompt.txt").read_text(encoding="utf-8")
+        # The run directory holds exactly the template parts (brief.md,
+        # schemas/, campaign/) plus opencode.json; a stray repository file
+        # must fail this listing.
+        self.assertEqual({p.name for p in run_dir.iterdir()},
+                         {"brief.md", "schemas", "campaign", "opencode.json"})
         brief_md = (run_dir / "brief.md").read_text(encoding="utf-8")
-        self.assertIn(tools_text.rstrip("\n"), brief_md)
+        self.assertEqual(brief_md, prompt.replace("{{TOOLS}}", tools_text.rstrip("\n")))
         self.assertNotIn("{{TOOLS}}", brief_md)
         self.assertTrue((run_dir / "schemas").is_dir())
         self.assertTrue((run_dir / "campaign").is_dir())
@@ -269,7 +281,7 @@ class AuthorbenchCase(unittest.TestCase):
         self.assertEqual(r3.returncode, 0, r3.stderr)
         out3 = self.scratch / "tools"
         brief_md3 = (out3 / "runs" / "campaign-extend" / "m_a_x" / "brief.md").read_text(encoding="utf-8")
-        self.assertIn("X", brief_md3)
+        self.assertEqual(brief_md3, prompt.replace("{{TOOLS}}", "X"))
         meta3 = json.loads((out3 / "logs" / "campaign-extend__m_a_x.jsonl.meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta3["tools_sha256"], hashlib.sha256(b"X").hexdigest())
 
@@ -331,8 +343,13 @@ class AuthorbenchCase(unittest.TestCase):
                     "--briefs", "campaign-extend", "--design", "baseline", env=self.env())
         r = self.run_ab("score", str(self.scratch), "--out", "baseline")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines()[0],
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0],
                          "SCORED baseline: 1 runs, 1 valid, 0 playable, 0 excluded (smoke ok)")
+        # the full table: one row per cell after the verdict line
+        self.assertEqual(lines[1],
+                         "| campaign-extend | m/a#x | n=1 | valid 1 | complete 0 | playable 0 | finished 1 | steps 2.0 | errors 0.0 |")
+        self.assertEqual(len(lines), 2)
         first = (self.scratch / "baseline" / "scores.json").read_bytes()
         scores = json.loads(first.decode("utf-8"))
         self.assertEqual(scores["tool"], "authorbench")
@@ -366,6 +383,38 @@ class AuthorbenchCase(unittest.TestCase):
         self.assertEqual(r2.returncode, 0)
         second = (self.scratch / "baseline" / "scores.json").read_bytes()
         self.assertEqual(first, second)
+
+        # score --json prints exactly the file's content, byte for byte
+        rj = self.run_ab_bytes("score", str(self.scratch), "--out", "baseline", "--json")
+        self.assertEqual(rj.returncode, 0)
+        self.assertEqual(rj.stdout, second)
+
+        # B-13: the generated files are LF, not CRLF (write_text would
+        # translate \n to \r\n on Windows), and opencode.json is exactly
+        # json.dumps(cfg, indent=2).
+        run_dir = self.scratch / "baseline" / "runs" / "campaign-extend" / "m_a_x"
+        meta_file = self.scratch / "baseline" / "logs" / "campaign-extend__m_a_x.jsonl.meta.json"
+        for path in (run_dir / "brief.md", run_dir / "opencode.json",
+                     meta_file, self.scratch / "baseline" / "scores.json"):
+            self.assertNotIn(b"\r\n", path.read_bytes(), path)
+        cfg = {
+            "$schema": "https://opencode.ai/config.json",
+            "autoupdate": False,
+            "share": "disabled",
+            "permission": {"execute": "deny", "webfetch": "deny", "websearch": "deny",
+                           "external_directory": "deny", "edit": "allow", "bash": "allow"},
+        }
+        self.assertEqual((run_dir / "opencode.json").read_bytes(),
+                         json.dumps(cfg, indent=2).encode("utf-8"))
+
+        # B-14: an explicit --crpgc decides alone — a bad one exits 2 rather
+        # than falling back to <out>/bin or resolve_crpgc(None)
+        r_bad = self.run_ab("score", str(self.scratch), "--out", "baseline", "--crpgc", "/no/file")
+        self.assertEqual(r_bad.returncode, 2, r_bad.stderr)
+        self.assertIn("no-crpgc: build it or pass --crpgc", r_bad.stderr)
+        # control: a good explicit --crpgc still scores
+        r_good = self.run_ab("score", str(self.scratch), "--out", "baseline", "--crpgc", str(FAKE))
+        self.assertEqual(r_good.returncode, 0, r_good.stderr)
         # control: add a wolf (3rd creature) and fake_combatants 3 -> complete, playable
         run_dir = self.scratch / "baseline" / "runs" / "campaign-extend" / "m_a_x"
         camp = run_dir / "campaign" / "campaign.json"
@@ -391,8 +440,13 @@ class AuthorbenchCase(unittest.TestCase):
                     env=self.env(FAKE_OC_MODE="rc1"))
         r = self.run_ab("score", str(self.scratch), "--out", "bad")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines()[0],
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0],
                          "SCORED bad: 1 runs, 0 valid, 0 playable, 1 excluded (smoke ok)")
+        # a null mean prints as "-"
+        self.assertEqual(lines[1],
+                         "| campaign-extend | m1 | n=0 | valid 0 | complete 0 | playable 0 | finished 0 | steps - | errors - |")
+        self.assertEqual(len(lines), 2)
         scores = json.loads((self.scratch / "bad" / "scores.json").read_text(encoding="utf-8"))
         row = scores["rows"][0]
         self.assertTrue(row["excluded"])
@@ -435,6 +489,9 @@ class AuthorbenchCase(unittest.TestCase):
         self.assertEqual(meta["rc"], 0)
         log_text = (self.scratch / "baseline" / "logs" / "campaign-extend__m1.jsonl").read_text(encoding="utf-8")
         self.assertEqual(log_text.count('"step_finish"'), 2)
+        # the log is deleted before each attempt, so the final log holds no
+        # "database is locked" line from the two locked attempts
+        self.assertNotIn("database is locked", log_text)
         # always locked: three attempts, then rc 1 and exit 1
         state2 = self.tmp / "state2"
         state2.mkdir()
@@ -496,8 +553,11 @@ class AuthorbenchCase(unittest.TestCase):
         for path in shipped:
             text = path.read_text(encoding="utf-8")
             self.assertIsNone(_BANNED_RE.search(text), path)
-        # control: the pin is live — a one-word change breaks the equality
-        self.assertNotEqual(BUILDS["campaign-small"], BUILDS["campaign-small"].replace("goblin", "orc", 1))
+        # control: the pin is live — the same equality check the real test runs
+        # (prompt.txt == HEAD + build + TAIL) fails on a one-word-changed build
+        changed = BUILDS["campaign-small"].replace("goblin", "orc", 1)
+        shipped = (AUTHORBENCH_DIR / "briefs" / "campaign-small" / "prompt.txt").read_text(encoding="utf-8")
+        self.assertNotEqual(HEAD + changed + TAIL, shipped)
 
     # CL11
     def test_cl11_compare_cli(self):
@@ -550,11 +610,19 @@ class AuthorbenchCase(unittest.TestCase):
         scores = json.loads((self.scratch / "baseline" / "scores.json").read_text(encoding="utf-8"))
         self.assertEqual(len(scores["rows"]), 1)
         self.assertEqual(scores["rows"][0]["brief"], "campaign-small")
-        # a failed run still scores, and `all` returns the run's exit code
-        r2 = self.run_ab("all", str(self.scratch), "--models", "m1", "--briefs", "campaign-small",
+        # a failed run still scores, and `all` returns the run's exit code.
+        # A fresh scratch proves `all` re-ran score: reusing the first `all`'s
+        # scratch would leave scores.json in place even if score were skipped.
+        scratch2 = self.tmp / "scratch2"
+        r2 = self.run_ab("all", str(scratch2), "--models", "m1", "--briefs", "campaign-small",
                          env=self.env(FAKE_OC_MODE="rc1"))
         self.assertEqual(r2.returncode, 1, r2.stderr)
-        self.assertTrue((self.scratch / "baseline" / "scores.json").is_file())
+        scores2 = json.loads((scratch2 / "baseline" / "scores.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(scores2["rows"]), 1)
+        row2 = scores2["rows"][0]
+        self.assertTrue(row2["excluded"])
+        self.assertEqual(row2["rc"], 1)
+        self.assertEqual(row2["steps"], 0)
         # no subcommand -> argparse usage, exit 2
         r3 = self.run_ab()
         self.assertEqual(r3.returncode, 2)

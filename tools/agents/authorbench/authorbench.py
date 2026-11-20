@@ -106,7 +106,10 @@ def write_opencode_json(run_dir: Path) -> None:
             "bash": "allow",
         },
     }
-    (Path(run_dir) / "opencode.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    # Write bytes, not `write_text`: on Windows `write_text` turns ``\n`` into
+    # ``\r\n``, and B-13 requires ``opencode.json`` to be exactly
+    # `json.dumps(cfg, indent=2)` (LF only).
+    (Path(run_dir) / "opencode.json").write_bytes(json.dumps(cfg, indent=2).encode("utf-8"))
 
 
 def render_brief(prompt: str, tools_text: str) -> str:
@@ -229,8 +232,8 @@ def cmd_run(scratch: str, args: argparse.Namespace) -> int:
         if run_dir.exists():
             shutil.rmtree(run_dir)
         shutil.copytree(scratch / "tpl" / name, run_dir)
-        (run_dir / "brief.md").write_text(
-            render_brief(briefs[name]["prompt"], tools_text), encoding="utf-8")
+        (run_dir / "brief.md").write_bytes(
+            render_brief(briefs[name]["prompt"], tools_text).encode("utf-8"))
         write_opencode_json(run_dir)
 
         log_name = f"{name}__{safe}.jsonl"
@@ -281,7 +284,7 @@ def cmd_run(scratch: str, args: argparse.Namespace) -> int:
             "tools_sha256": tools_sha256,
             "crpgc_sha256": crpgc_sha256,
         }
-        meta_path.write_text(json.dumps(meta, indent=1), encoding="utf-8")
+        meta_path.write_bytes(json.dumps(meta, indent=1).encode("utf-8"))
         print(f"{name} {model} rc={rc_out} {secs}s", flush=True)
         if cause == "timeout":
             return 1
@@ -327,18 +330,23 @@ def cmd_score(scratch: str, args: argparse.Namespace) -> int:
 
     crpgc = None
     if args.crpgc:
+        # An explicit --crpgc decides alone (B-10/B-14): it never falls back
+        # to <out>/bin or resolve_crpgc(None) when it does not name a file.
         crpgc = resolve_crpgc(args.crpgc)
-    if crpgc is None:
+        if crpgc is None:
+            print("authorbench: no-crpgc: build it or pass --crpgc", file=sys.stderr)
+            return 2
+    else:
         for suffix in (".exe", ".py", ""):
             candidate = results_dir / "bin" / f"crpgc{suffix}"
             if candidate.is_file():
                 crpgc = str(candidate.resolve())
                 break
-    if crpgc is None:
-        crpgc = resolve_crpgc(None)
-    if crpgc is None:
-        print("authorbench: no-crpgc: build it or pass --crpgc", file=sys.stderr)
-        return 2
+        if crpgc is None:
+            crpgc = resolve_crpgc(None)
+        if crpgc is None:
+            print("authorbench: no-crpgc: build it or pass --crpgc", file=sys.stderr)
+            return 2
 
     prefix = scoring.crpgc_prefix(crpgc)
     smoke = scoring.smoke_check(prefix)
@@ -390,10 +398,15 @@ def cmd_score(scratch: str, args: argparse.Namespace) -> int:
         "cells": cells,
     }
     results_dir.mkdir(parents=True, exist_ok=True)
-    (results_dir / "scores.json").write_text(json.dumps(scores, indent=1) + "\n", encoding="utf-8")
+    content = json.dumps(scores, indent=1) + "\n"
+    (results_dir / "scores.json").write_bytes(content.encode("utf-8"))
 
     if args.json:
-        print(json.dumps(scores, indent=1))
+        # Print the file's content only, byte-identical to scores.json (LF,
+        # no newline translation): write the bytes straight to the binary
+        # stdout, because `print` would turn `\n` into `\r\n` on Windows.
+        sys.stdout.buffer.write(content.encode("utf-8"))
+        sys.stdout.buffer.flush()
         return 0
 
     runs = len(rows)
