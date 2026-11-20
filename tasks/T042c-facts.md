@@ -30,6 +30,34 @@ Each entry cites an existing `path:line`.
 
 ## T042b today
 
+- `hostile_delta.rs` (`crates/crpg-net/tests/hostile_delta.rs:1`): T042b1, the four lane-0 delta decoders on `EntityEnter`, `Health` and `Receipt`; private `Wire` enum (`:28`) and `Fixture` (`:84`).
+- `hostile_delta_ops.rs` (`crates/crpg-net/tests/hostile_delta_ops.rs:1`): T042b2, the same four decoders on the v2 event op, the v3 fact ops and the v4 movement ops; private `Wire` (`:36`) and `Fixture` (`:92`).
+- `hostile_transfer.rs` (`crates/crpg-net/tests/hostile_transfer.rs:1`): T042b3, the `0x81`/`0x82` downstream frames and the two snapshot bodies; private `Subject` (`:33`) and `Fixture` (`:112`).
+- `hostile_session.rs` (`crates/crpg-net/tests/hostile_session.rs:1`): T042b4, the `0x91` resume downstream and the `0xA1` movement downstream; private `Subject` (`:30`) and `Fixture` (`:78`).
+- `rig: Verdict` (`crates/crpg-net/tests/support/hostile.rs:40`): `Refused(CodecError)` or `Accepted(canonical bytes)`.
+- `rig: reencoded` (`crates/crpg-net/tests/support/hostile.rs:50`): turns a decode result into a `Verdict`, panicking if the encoder refuses a decoded value.
+- `rig: with_byte / padded / cat / edit` (`crates/crpg-net/tests/support/hostile.rs:69`): the four literal- and row-building helpers; `edit` (`:95`) applies ascending `(at, remove, insert)` edits.
+- `rig: Want / Row / row / assert_row` (`crates/crpg-net/tests/support/hostile.rs:114`): expected verdicts `Refused`, `Same` (`Accepted(m)`) and `Orig` (`Accepted(f)`); `assert_row` (`:152`) prints both byte strings on failure.
+- `rig: XorShift64 / SEED / stable` (`crates/crpg-net/tests/support/hostile.rs:168`): the Marsaglia xorshift64 PRNG, the fixed seed `0x5EED_0000_0000_0042` (`:180`), and `stable` (`:183`: refusal, or an accepted canonical form that re-encodes to itself).
+- `rig: Counts / check_corruption` (`crates/crpg-net/tests/support/hostile.rs:191`): every byte against every other value must be a refusal other than `FrameTooLarge`, the same bytes, a ULID alias, or a shorter stable re-encoding; anything else panics.
+- `rig: fixtures are encoder-built and pinned` (`crates/crpg-net/tests/hostile_delta.rs:248`): `fixtures()` builds each value through its wire's encoder, `pinned()` (`:302`) holds the literal; HA1 (`:371`) asserts the two are equal and decode canonically.
+- `HA2 short_inputs_are_refused_exactly` (`crates/crpg-net/tests/hostile_delta.rs:411`): every input of at most two bytes gives `Malformed`, `UnsupportedVersion` or `WrongDirection` exactly.
+- `HA3 oversize_is_refused_first` (`crates/crpg-net/tests/hostile_delta.rs:470`): 65,537 bytes is `FrameTooLarge` before the version; 65,536 is `UnsupportedVersion`; a padded fixture is `Malformed`.
+- `HA4 every_truncation_is_malformed` (`crates/crpg-net/tests/hostile_delta.rs:522`): every strict prefix is `Malformed`.
+- `HA5 trailing_bytes_are_malformed` (`crates/crpg-net/tests/hostile_delta.rs:549`): one `0x00`, `0x01` or `0xFF` after a fixture is `Malformed`.
+- `HA6 foreign_first_bytes_are_unsupported` (`crates/crpg-net/tests/hostile_delta.rs:579`): a fixture given to another wire, and byte 0 replaced by each other value, is `UnsupportedVersion`.
+- `HA7 foreign_lanes_are_wrong_direction` (`crates/crpg-net/tests/hostile_delta.rs:624`): byte 1 replaced by each non-zero value is `WrongDirection`.
+- `HA8 op_tag_matrix` (`crates/crpg-net/tests/hostile_delta.rs:683`): all 256 op-tag values per wire land on the table's `Accepted(m)`, `Malformed` or `UnknownMessage`.
+- `HA9 header_scalars_and_op_count` (`crates/crpg-net/tests/hostile_delta.rs:723`): 257 ops is `LimitExceeded`; `u64`/varint overflows are `Malformed`; `server_tick` and `event_seq` accept the full `u64` range.
+- `HA10 health_and_receipt_fields` (`crates/crpg-net/tests/hostile_delta.rs:828`): Health's bool and `u32` bounds, Receipt's lane, `seq` range and version-scoped rejection codes.
+- `HA11 upstream_intents_sent_down_are_refused` (`crates/crpg-net/tests/hostile_delta.rs:1056`): an upstream intent on its own delta wire is `WrongDirection`, on another wire `UnsupportedVersion`.
+- `HA12 single_byte_corruption_is_refused_or_exact` (`crates/crpg-net/tests/hostile_delta.rs:1105`): 40,800 single-byte mutants, each refused or exact/stable.
+- `HA13 seeded_noise_is_stable` (`crates/crpg-net/tests/hostile_delta.rs:1212`): four seeded passes over the same wires, with the first three PRNG values pinned.
+- `HB1..HB11` (`crates/crpg-net/tests/hostile_delta_ops.rs:498`): fixtures pinned; truncation/trailing/foreign byte/foreign lane refused; ActionResolved, EntityFacts, Encounter/Timeline/Clock/HostFacts and Moved/Position rows; upstream frames refused; corruption and seeded noise stable.
+- `HC1..HC13` (`crates/crpg-net/tests/hostile_transfer.rs:480`): fixtures pinned; short/oversize/truncated/trailing/foreign frames refused; tag matrix; Begin/Chunk/Cancel fields and built chunks; body fields; upstream frames refused; corruption and seeded noise stable.
+- `HD1..HD13` (`crates/crpg-net/tests/hostile_session.rs:307`): fixtures pinned; short/oversize/truncated/trailing/foreign frames refused; tag and kind matrix; resume proof/answer fields; movement receipt/sample fields; upstream frames refused; corruption and seeded noise stable.
+- `architecture index` (`docs/architecture/crpg-net.md:323`): "Hostile-server suite (T042b)" names the support module and the four files (`:325`), the ten-decoder surface (`:332`) and the excluded QUIC/Godot layers (`:336`), the precedence and stability rule (`:341`), and the spec-class table (`:354`).
+
 ## crpg-net-quic client
 
 ## Godot bridge
