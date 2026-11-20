@@ -134,6 +134,30 @@ Each entry cites an existing `path:line`.
 
 ## Test harness options
 
+- `RawRuntime` (`crates/crpg-net-quic/tests/support/quic_rig.rs:212`): a current-thread tokio runtime on its own thread; `run` (`:238`) polls a future on the caller's thread.
+- `raw_connect` (`crates/crpg-net-quic/tests/support/quic_rig.rs:317`): a raw quinn client offering exactly one ALPN, pinned to the fixture DER cert by an independent verifier (`:255`).
+- `RawClient` (`crates/crpg-net-quic/tests/support/quic_rig.rs:310`): `open_and_write` (`:364`), `write` (`:374`), `finish` (`:380`), `read_welcome` (`:385`); `raw_lane` (`:349`) is the `/1` default and `frame_bytes` (`:353`) prefixes a 4-byte length.
+- `raw_movement` (`crates/crpg-net-quic/tests/support/movement_rig.rs:146`): a raw `/3` client with a chosen datagram receive buffer; `raw_movement_with` (`:155`) also fixes the stream window.
+- `raw_accepted` (`crates/crpg-net-quic/tests/support/movement_rig.rs:224`): a `RawMovement` (`:216`) already accepted at `/3` with a read welcome, holding the lane-0 streams and connection id.
+- `RawServer` (`crates/crpg-net-quic/tests/channel.rs:423`): the only raw quinn server used against `QuicClient`; `raw_server` (`:428`) builds it with the fixture cert and a chosen ALPN list, `accept_lane` (`:449`) takes the lane stream, `write`/`finish`/`close` (`:462`–`:472`) send arbitrary bytes and a close, and `closed_code` (`:480`) reads the peer's application code.
+- `accept_raw_hello` (`crates/crpg-net-quic/tests/channel.rs:495`): reads a `/1` hello frame and writes a `/1` welcome, so a test can reach the post-handshake reader quickly.
+- `raw_v2_connect` (`crates/crpg-net-quic/tests/channel.rs:2515`): the `/2` variant that connects a real `QuicClient` to `RawServer` and leaves the raw send stream open for bad frames; `channel_frame` (`:2536`) builds a well-formed `/2` frame.
+- `fixture identities` (`crates/crpg-net-quic/tests/support/quic_rig.rs:39`): `identity_a`, `pin_a`, `pin_b` (`:47`) load `tests/fixtures/server_*.{cert,key}.der`, marked binary in `.gitattributes`.
+- `crpg-testkit` (`crates/crpg-testkit/src/harness.rs:186`): `run_hash_sequence`, `write_golden` (`:199`) and `verify_golden` (`:227`) are replay-golden helpers; `crates/crpg-testkit/Cargo.toml:33` names `crpg-net` only — "none found" for a QUIC or hostile-server helper.
+- `Transport` (`crates/crpg-net/src/transport.rs:14`): the byte-transport trait the bridge's `LocalLink` and `QuicClient` implement.
+- `SimClock` (`crates/crpg-net/src/sim.rs:49`): an advanceable millisecond clock; `QueueCaps` (`:72`), `RateCaps` (`:113`) and `TokenBucket` (`:157`) are the simulated policy knobs.
+- `FaultSchedule` (`crates/crpg-net/src/sim.rs:321`): latency/jitter/loss/reorder settings; `clean` (`:334`) is the no-fault control.
+- `InMemoryTransport` (`crates/crpg-net/src/sim.rs:396`): `new` (`:411`), `add_peer` (`:436`), `send_to` (`:486`), `recv_from` (`:535`) and `tick` (`:572`) move whole frames between simulated peers.
+- `NetDriver` (`crates/crpg-net/tests/support/driver.rs:217`): drives the authoritative `World` over the simulated fabric; `bind_peer` (`:277`), `admit` (`:397`) and `admit_status` (`:419`) are the admission entry points used by conformance tests.
+- `decoder-only harness` (`crates/crpg-net/tests/hostile_delta.rs:2`): the T042b suites call decoders with byte slices directly — no clock, thread, I/O or RNG beyond the seeded xorshift.
+- `LocalLink` (`crates/crpg-godot/src/core/link.rs:22`): two bounded FIFOs of whole frames; `new` (`:41`), `authority_end` (`:50`), `client_end` (`:59`), `queued` (`:69`), and `Transport for LinkEnd` (`:74`) with `LinkFull` as the only error.
+- `open_fixture` (`crates/crpg-godot/src/core/tests.rs:100`): opens `combat_basic` and returns the authority end; `open_and_poll` (`:108`) polls once; `open_and_poll_side` (`:122`) also selects the player side (`"Goblin"` when options are wanted).
+- `ManualClock` (`crates/crpg-godot/src/core/authority/v4/tests.rs:29`): an `Arc<AtomicU64>` clock whose `set` (`:40`) fixes the runner's next `now_ms` (`impl Clock` at `:45`).
+- `call_result / call` (`crates/crpg-godot/src/core/authority/v4/tests.rs:252`, `:261`): run one closure on the v4 `HostLoop` thread through `core.runner()`.
+- `settle` (`crates/crpg-godot/src/core/authority/v4/tests.rs:273`): one between-cycles rendezvous, two polls at the same `now_ms`, returning the first non-zero code and the views whose revision rose.
+- `open_v4` (`crates/crpg-godot/src/core/authority/v4/tests.rs:230`): opens a v4 session against the manual clock and side.
+- `Probe` (`crates/crpg-godot/src/core/mod.rs:98`): the `#[cfg(test)]` panic seam (`Open`, `Submit`, `Poll`, `Close`, `LiveDrop`) used by the boundary-panic tests.
+
 ## Rules that bind it
 
 ## Agent log
