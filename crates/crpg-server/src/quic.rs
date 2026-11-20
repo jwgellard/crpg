@@ -31,6 +31,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crpg_net::codec_resume;
+use crpg_core::EntityId;
 use crpg_net::protocol::{ReceiptStatus, RejectionCode, POLICY_INGRESS_FRAMES_PER_PEER};
 use crpg_net::protocol_resume::{
     ConnectionFence, ResumeDown, ResumeProof, ResumeRejection, ResumeResult,
@@ -45,9 +46,9 @@ use crpg_net_quic::{
 use crate::checkpoint::CheckpointError;
 use crate::host::{
     is_narrowing, normalize_control, normalize_fact_grants, normalize_grants, AdmissionResult,
-    AdvanceReport, ControlGrant, DeliveryKind, DisclosureGrants, FactGrants, GrantUpdate, Host,
-    HostError, IngestDisposition, MoveAdmission, PeerHandle, PumpSummary, ResumeAnswer,
-    TransferDisposition, TransferRefusal,
+    AdvanceReport, AiBudget, AiReport, ControlGrant, DeliveryKind, DisclosureGrants, FactGrants,
+    GrantUpdate, Host, HostError, IngestDisposition, MoveAdmission, PeerHandle, PumpSummary,
+    ResumeAnswer, TransferDisposition, TransferRefusal,
 };
 
 // ---------------------------------------------------------------------------
@@ -754,7 +755,9 @@ impl QuicHost {
         }
         self.last_now_ms = now_ms;
         let mut report = QuicPumpReport::new();
-        let result = self.run_phases(now_ms, &mut report);
+        let result = self
+            .run_phases(now_ms, &mut report)
+            .and_then(|()| self.flush_phases(now_ms, &mut report));
         match result {
             Ok(()) => Ok(report),
             Err(error) => {
@@ -764,6 +767,31 @@ impl QuicHost {
         }
     }
 
+    /// Phases 4–7 of [`pump`](Self::pump) alone (T154d, B-15): reconcile,
+    /// deliver, retire closed peers and report, without polling the
+    /// transport, draining a connection or admitting. Errors: `Poisoned`;
+    /// `TimeRegression` below the adapter's last accepted `now_ms` (nothing
+    /// changes); otherwise the phases run and a host error poisons as in
+    /// `pump`.
+    pub fn flush(&mut self, now_ms: u64) -> Result<QuicPumpReport, QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        if now_ms < self.last_now_ms {
+            return Err(QuicHostError::TimeRegression);
+        }
+        self.last_now_ms = now_ms;
+        let mut report = QuicPumpReport::new();
+        match self.flush_phases(now_ms, &mut report) {
+            Ok(()) => Ok(report),
+            Err(error) => {
+                self.poisoned = true;
+                Err(QuicHostError::Host(error))
+            }
+        }
+    }
+
+    /// `pump`'s phases 1–3: events and notices, drain, admit.
     fn run_phases(&mut self, now_ms: u64, report: &mut QuicPumpReport) -> Result<(), HostError> {
         // 1. Events and notices.
         if self.resumable {
@@ -798,6 +826,12 @@ impl QuicHost {
         // 3. Admit.
         let summary = self.host.pump(now_ms)?;
         report.calls.push(HostCall::Pump { summary });
+        Ok(())
+    }
+
+    /// `pump`'s phases 4–7: reconcile, deliver, retire closed peers, report.
+    /// Shared body with [`flush`](Self::flush).
+    fn flush_phases(&mut self, now_ms: u64, report: &mut QuicPumpReport) -> Result<(), HostError> {
         // 4. Reconcile.
         for conn in self.bound_ids() {
             let Some((peer, epoch)) = self.bound(conn).map(|bound| (bound.peer, bound.epoch))
@@ -2364,6 +2398,47 @@ impl QuicHost {
         self.last_now_ms = now_ms;
         self.host
             .advance(now_ms)
+            .map_err(|error| self.host_error(error))
+    }
+
+    /// Trusted pass-through: `Host::drive_ai` (T153). `Poisoned` first, then
+    /// the host call, an error through [`host_error`](Self::host_error) (an
+    /// `Invariant` poisons). Never traced.
+    pub fn drive_ai(
+        &mut self,
+        sides: &crpg_ai::Sides,
+        actors: &[EntityId],
+        budget: AiBudget,
+    ) -> Result<AiReport, QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        self.host
+            .drive_ai(sides, actors, budget)
+            .map_err(|error| self.host_error(error))
+    }
+
+    /// Trusted pass-through: `Host::pause`. `Poisoned` first, then the host
+    /// call (which records `now_ms` and refuses a regression), an error
+    /// through [`host_error`](Self::host_error).
+    pub fn pause(&mut self, now_ms: u64) -> Result<(), QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        self.host
+            .pause(now_ms)
+            .map_err(|error| self.host_error(error))
+    }
+
+    /// Trusted pass-through: `Host::unpause`. `Poisoned` first, then the host
+    /// call (which records `now_ms` and refuses a regression), an error
+    /// through [`host_error`](Self::host_error).
+    pub fn unpause(&mut self, now_ms: u64) -> Result<(), QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        self.host
+            .unpause(now_ms)
             .map_err(|error| self.host_error(error))
     }
 
