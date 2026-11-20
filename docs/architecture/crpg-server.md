@@ -31,9 +31,10 @@ configuration (T040); reconnect, resume and the 30 s grace (T025a/T025b);
 production interest facts
 (T027a–c supply values for these grant shapes); save slot/autosave policy,
 the save directory and the incarnation source (T040); OS service
-integration; listen-server mixed mode; and the GM endpoint. The run loop and
-the in-memory local hosting exist since T154a, but nothing reads a clock or
-starts a thread yet (T154b) and the QUIC hosting of the same loop is T154d.
+integration; listen-server mixed mode; and the GM endpoint. The run loop and the in-memory local hosting exist since T154a, the
+background runner and its clock since T154b, and the QUIC hosting of the same
+loop since T154d; the binary still refuses to run until the dedicated product
+(T040) wires it.
 
 ## Where it sits
 
@@ -1048,6 +1049,26 @@ the QUIC hosting (`QuicHosting`) is T154d's. Exact contract:
   the pending closure (`RunnerGone`); a thread panic reports
   `RunnerPanicked`. Exact contract:
   [T154](../../tasks/T154.md).
+- **The dedicated hosting (T154d, B-14–B-17).** `QuicHosting` is the same
+  five stages over one `QuicHost`: `intake` is `pump` (report discarded),
+  `drive_ai` the optional `QuicAiHook`, `advance` the adapter's own,
+  `deliver` is `flush`, and `retire_captures` acknowledges through
+  `host().last_capture()`. `QuicHost::flush(now)` is `pump`'s phases 4–7
+  alone — `Poisoned`, then `TimeRegression` (below the adapter's last
+  `now_ms`; nothing changes), then record `now_ms`, then reconcile, deliver,
+  retire closed peers and report — and `pump` runs its phases 1–3 and then
+  the same body, so every existing `host_quic*` byte and call is unchanged.
+  `drive_ai`, `pause` and `unpause` are untraced trusted pass-throughs:
+  `Poisoned` first, then the host call, an error through `host_error` (an
+  `Invariant` poisons), which is how a loaded host takes its `Restore`
+  unpause. A single-player save therefore runs on the dedicated loop with no
+  conversion (Reading 11): the load is `Restore`-paused with no mesh and no
+  hook, the first cycles deliver and report `ticked: false`, and the
+  operator's `unpause` resumes the same authority the embedded loop had.
+  Reading 13's wiring is `runner::spawn(HostLoop::new(QuicHosting::new(quic),
+  now), SystemClock::starting_at(now))`, with `now` the host's load or start
+  time; a clock below it ends the runner with `TimeRegression` on its first
+  step.
 
 ## The MVP AI driver (T153)
 
@@ -1183,3 +1204,4 @@ with T040/T041.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Extended the run-loop section with lane 1 on the local link (the `0xA1` intake arms and the hold queue, the receipt backlog that never drops, the samples that do, and the v1–v3 no-lane-1 mark), so the doc describes the receipts and samples the loop now delivers.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added "The MVP AI driver (T153)" (the `drive_ai` host operation, one turn-based step per call with a cross-call 16-decision cap, real-time decisions for every live controlled combatant rotated by the world tick, caller-supplied `Sides` and controlled set, the host's own mesh or `None`, refusals as steps with `Closed` the only `Err`, pause ignored, route parity pinned by a compile-time tag check and a unit test, and the never-saved `ai_turn` that a restore restarts) and the `crpg-ai` edge to the diagram and edge paragraph, so the doc describes the AI driver the host now runs.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Added "QUIC v4 sessions (T150c)" (the `/3` route's v4 invitations, hello precedence, lane-1 drain and delivery, retire and fence, shutdown flush, the side trace and its `at`, and the untraced `advance`), so the doc describes the movement route the adapter now serves beside `/1` and `/2`.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Extended the run-loop section with the dedicated hosting (`QuicHosting`'s five stages, `flush` as `pump`'s phases 4–7 with `pump` running 1–3 then the same body, the three untraced pass-throughs, and a loaded save running through the `Restore` unpause) and updated Scope, so the doc describes the QUIC hosting the loop now has.

@@ -72,9 +72,14 @@ trait, `CycleReport`, `StepReport`, `LoopError`, `HostLoop`, `AiHook`,
 `LinkStats` (`#[non_exhaustive]`), `LocalError`, `LinkError`, `LocalHost` and
 `LocalClient` (its `crpg_net::transport::Transport` impl). The link table is
 private, and `run.rs` names no `crpg_ai` type. T154c adds one `LinkStats`
-field, `held_moves` (lane-1 frames held for retry, B-11); T154d adds
-`QuicHosting` and `QuicAiHook`; neither changes a signature
-here.
+field, `held_moves` (lane-1 frames held for retry, B-11); this does not
+change a signature here.
+
+T154d's `run` and `quic` items: `QuicHosting` (`new`, `set_ai`, `quic`,
+`quic_mut`, `into_quic`; its `Hosting` impl has `Error = QuicHostError`) and
+`QuicAiHook`, and `QuicHost::{flush, drive_ai, pause, unpause}`. `flush` is
+`pump`'s phases 4–7 alone and `pump` runs phases 1–3 then the same body;
+`drive_ai`, `pause` and `unpause` are untraced trusted pass-throughs.
 
 T154b's `runner` items: `Clock`, `SystemClock` (`new`, `starting_at`,
 `default`), `spawn`, `RunnerHandle` (`submit`, `call`, `stop`,
@@ -536,3 +541,4 @@ git diff --check
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Named `LinkStats::held_moves` in the surface, so the contract records the lane-1 hold counter the local link now reports.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added the AI-driver surface (`AiBudget`, `AiReport`, `AiStep`, `MVP_AI_BUDGET`, `Host::drive_ai`), the approved `crpg-ai` edge, the caller's-actors note on the T141a trap, and the four T153 traps (one turn-based step per call; `ai_turn` is host state that a restore restarts; `decide` gets the host's own mesh or `None`; only `Closed` is an `Err`, refusals are steps), so the crate contract matches the AI driver the host now runs.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Recorded the `/3` movement route's `quic` surface (`V4Invitation`, `Lane1Call`, `Lane1Trace`, `register_v4_invitation`, `advance`, the five lane-1 report counts, `undelivered_receipts`), added its gate and the four lane-1 traps, so the crate contract matches the route the adapter now serves beside `/1` and `/2`.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Recorded the dedicated hosting's surface (`QuicHosting`, `QuicAiHook`, and `QuicHost::{flush, drive_ai, pause, unpause}`, with `flush` as `pump`'s phases 4–7), so the crate contract names the stages the dedicated loop now runs.

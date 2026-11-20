@@ -30,8 +30,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crpg_net::codec_resume;
 use crpg_core::EntityId;
+use crpg_net::codec_resume;
 use crpg_net::protocol::{ReceiptStatus, RejectionCode, POLICY_INGRESS_FRAMES_PER_PEER};
 use crpg_net::protocol_resume::{
     ConnectionFence, ResumeDown, ResumeProof, ResumeRejection, ResumeResult,
