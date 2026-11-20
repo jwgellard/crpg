@@ -274,8 +274,34 @@ case `walk_waits_while_moving` pins B-11's moving gate directly — a sample
 at the previous destination that is still moving must not send the next leg
 — because the harness suite's `outbox.pending()` check cannot see a leg
 whose clean receipt clears in the same step. T041c adds
-`tests/host_malicious.rs` M1–M10 and the `crpg-net.md` index cells. No
-source, fixture, manifest or golden changes.
+`tests/host_malicious.rs` and the `crpg-net.md` index cells. It runs `Host`
+directly (Reading 12), because `LocalHost` discards the pump summary and a
+decode failure or an ingress refusal sends no receipt, so the clean
+rejection is visible only in `IngestDisposition` and `AdmissionResult`. The
+rig is B-21's: `start(TurnBased, None)` with `A` (hero, `Full`), `B` (goblin,
+`Full`) and `P` (goblin; the hero present with health only, no
+`action_target`) bound in that order through `bind_v4_peer`, each then
+published with T037e's `bind_client` steps; the goblin (initiative 9) holds
+the first turn and every session maps the hero to `n(1)` and the goblin to
+`n(2)`. Each case builds a fresh rig, asserts the exact `AdmissionResult` or
+`IngestDisposition`, that `state` (authority hash and `executions`) is
+unchanged, that the session is still bound (M9 aside), and carries a control
+that flips one input and is applied. The index: M1 unowned actor
+(`NotAuthorized`); M2 illegal times (`FutureTick` at `tick + 1`, `StaleTick`
+at `tick − 201`, applied at `tick − 200` after `idle(210)`); M3 out of turn
+(`IllegalAction`, `last_combat_error`'s `OutOfTurn { actor: hero, active:
+Some(goblin) }`); M4 out-of-interest targets (`NotAuthorized` for an unknown
+`n(99)` and for `P`'s ungranted `action_target`); M5 a 100-frame flood (the
+80-frame burst staged, 20 ingress `RateLimited`, the pump's 80
+`UnsupportedVersion`, recovered at 12 s); M6 oversize and truncated frames
+(`FrameTooLarge` with nothing staged, then `Malformed`, then the whole seq 1
+applied); M7 identical replay (cached `Applied`, no new execution); M8 a seq
+gap (`SeqGap`, so seq 1 is still applied) and 257 `FutureTick` seqs that
+evict seq 1 (its bytes then `StaleSeq`) while seq 2 stays a cached
+`FutureTick`; M9 a conflicting seq 1 (`SeqConflict`, the epoch fenced to
+`UnknownPeer`); M10 the non-canonical retry (a non-minimal seq varint, the
+lowercase `k` ability alias and the `O`/`0` alias each decode to the first
+frame and are cache hits). No source, fixture, manifest or golden changes.
 
 ## What consumers inherit
 
@@ -312,3 +338,4 @@ source, fixture, manifest or golden changes.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Added G23-G34 and the fixture edits they need (`reversed_abilities`, `step_cost`, `extra_cost`, `place_c`, a member registered without movement) to pin the mutant review's ordered rules exactly, so the suite fails on each named bug rather than passing by coincidence.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041a · Recorded the tests-only headless-client rig (`tests/support/headless.rs`): the `combat_basic` start, the QUIC-shaped simulated network, the v4 `HeadlessClient`, the `Arena` over `HostLoop<LocalHost>`, the twin-session and independent-mirror oracles, and the H1–H8 harness suite; no source, fixture, manifest or golden changed.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041b · Recorded the as-built D1 counts (135/136 applied moves, 19 intrusions, 83 reliable losses, 46 lost and 19 duplicated datagrams, about 2.6 s), the D2–D5 shape, and the extra `walk_waits_while_moving` case that pins B-11's moving gate; no source, fixture, manifest or golden changed.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041c · Recorded the host-level malicious table (`tests/host_malicious.rs`, M1–M10) and its B-21 rig on `Host` directly, so the M-table index and the exact dispositions each case pins are named in one place; no source, fixture, manifest or golden changed.

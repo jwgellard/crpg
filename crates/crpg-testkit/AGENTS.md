@@ -274,6 +274,30 @@ extra `walk_waits_while_moving` pins B-11's `!p.moving` gate: a clean
 receipt clears in the same step, so `outbox.pending()` cannot see an early
 leg and the case pins the receipt sequence instead.
 
+As built (T041c, `tests/host_malicious.rs`): the host-level malicious table
+runs `Host` directly (Reading 12) so an ingress refusal or a decode failure,
+which sends no receipt, is visible as the exact `IngestDisposition` or
+`AdmissionResult`. The rig is B-21's: `start(TurnBased, None)`, then `A`
+(hero, `Full`), `B` (goblin, `Full`) and `P` (goblin; the hero present with
+health only) through `bind_v4_peer`, each published by T037e's
+`bind_client` steps. Every case builds a fresh rig, asserts the exact value,
+that `state` (authority hash and `executions`) did not move, that the
+session is still bound (M9 aside), and flips one input as its applied
+control. The index: M1 unowned actor (`NotAuthorized`); M2 illegal times
+(`FutureTick` at `tick + 1`, `StaleTick` at `tick − 201`, fresh at
+`tick − 200` after `idle(210)`); M3 out of turn (`IllegalAction`, the
+`OutOfTurn` combat error); M4 out-of-interest targets (`NotAuthorized` for
+`n(99)` and for `P`'s ungranted `action_target`); M5 the 100-frame flood
+(80 staged, 20 `RateLimited`, the pump's 80 `UnsupportedVersion`, recovered
+at 12 s); M6 oversize then truncated (`FrameTooLarge`, nothing staged;
+`Malformed`; seq 1 applied); M7 identical replay (cached `Applied`);
+M8 a seq gap (`SeqGap`; seq 1 still applied) and 257 `FutureTick` seqs that
+evict seq 1 (`StaleSeq`) while seq 2 stays cached; M9 a conflicting seq 1
+(`SeqConflict`, epoch fenced to `UnknownPeer`); M10 the non-canonical retry
+(non-minimal seq varint, lowercase `k`, `O`/`0` alias: identical frames,
+cache hits). The `crpg-net.md` T042 index's "Host level" cells name the
+M-case that proves each spec class.
+
 ## Definition of done for any change
 
 ```
@@ -364,3 +388,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Extended the MVP AI suite contract with G23-G34: control-paired cases for the approach-target ordering, real-time precedence, standoff/step arithmetic, off-mesh goal, summed reserve, moverless distance and one-raw walk, and the fixture helpers they add; no dependency, source or golden change.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041a · Added the tests-only headless-client contract section: the shared `tests/support/headless.rs` rig (simulated network, v4 client, scripts, arena, twin-session and mirror oracles, `canon`/`world_view`) and the H1–H8 suite, with the two traps (never ack on the client's behalf; compare `canon` only after `settle()`) and the T041 definition of done; no dependency, source or golden change.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041b · Extended the section with the as-built D1 counts, the D2–D5 shape and `walk_waits_while_moving`, which pins B-11's moving gate where `outbox.pending()` cannot; no dependency, source or golden change.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041c · Extended the section with the host-level malicious table (`tests/host_malicious.rs`, M1–M10), its B-21 rig and the index of exact dispositions, so later suites extend the M-table instead of re-deriving it; no dependency, source or golden change.

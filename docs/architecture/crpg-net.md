@@ -311,13 +311,13 @@ that decode differently, is a defect. A new server-facing decoder is a new
 
 | Spec class (§16.2) | Wire level, `crpg-net` | Host level |
 |---|---|---|
-| Oversized packets | `malicious_client.rs` X3 | T041; `crates/crpg-server/tests/host_quic.rs` `quic_malicious_frames_rejected_without_mutation` |
-| Malformed frames | `malicious_client.rs` X2, X4–X8, X10–X13; the per-codec suites | T041; the same `host_quic.rs` test |
-| Intents for entities not owned | X9 (zero ids only); `conformance.rs` `forged_and_cross_client_ids_rejected` (T018c double) | T041 (`NotAuthorized`) |
-| Intents at illegal times | none: `observed_tick` is carried, not judged; `conformance.rs` `stale_and_future_ticks_rejected_terminally`, `unknown_ability_out_of_turn_and_self_target_rejected` (double) | T041 |
-| Flooding | `transport.rs` `token_bucket_replenishes_exactly`, `rate_buckets_gate_and_replenish_exactly`; `token_bucket_regression.rs`; `conformance.rs` `over_rate_bursts_rejected_before_admit`, `slow_peer_terminates_with_queue_full_never_silent_loss` | T041 |
-| Replay of old packets | none in a decoder (stateless); `reconnect_wire.rs` `fence_window_retries_lost_grants_without_reissuing`, `fenced_connection_frames_never_reach_admission`; `conformance.rs` `replayed_seq_same_bytes_cached_conflict_closes`, `seq_gap_does_not_advance_stale_never_reapplies` | T041 |
-| Requesting entities outside the interest set | `interest.rs` `i08_retired_ids_do_not_resolve`; `conformance.rs` `revoked_visibility_ids_rejected` | T041 |
+| Oversized packets | `malicious_client.rs` X3 | T041c M6; `crates/crpg-server/tests/host_quic.rs` `quic_malicious_frames_rejected_without_mutation` |
+| Malformed frames | `malicious_client.rs` X2, X4–X8, X10–X13; the per-codec suites | T041c M6; the same `host_quic.rs` test |
+| Intents for entities not owned | X9 (zero ids only); `conformance.rs` `forged_and_cross_client_ids_rejected` (T018c double) | T041c M1 (`NotAuthorized`) |
+| Intents at illegal times | none: `observed_tick` is carried, not judged; `conformance.rs` `stale_and_future_ticks_rejected_terminally`, `unknown_ability_out_of_turn_and_self_target_rejected` (double) | T041c M2, M3 |
+| Flooding | `transport.rs` `token_bucket_replenishes_exactly`, `rate_buckets_gate_and_replenish_exactly`; `token_bucket_regression.rs`; `conformance.rs` `over_rate_bursts_rejected_before_admit`, `slow_peer_terminates_with_queue_full_never_silent_loss` | T041c M5 |
+| Replay of old packets | none in a decoder (stateless); `reconnect_wire.rs` `fence_window_retries_lost_grants_without_reissuing`, `fenced_connection_frames_never_reach_admission`; `conformance.rs` `replayed_seq_same_bytes_cached_conflict_closes`, `seq_gap_does_not_advance_stale_never_reapplies` | T041c M7–M10 |
+| Requesting entities outside the interest set | `interest.rs` `i08_retired_ids_do_not_resolve`; `conformance.rs` `revoked_visibility_ids_rejected` | T041c M4 |
 | Clean rejection and a log line | every refusal is a `CodecError` with a fixed text (X14) | Question 1's owner |
 
 ## Hostile-server suite (T042b)
@@ -1408,3 +1408,4 @@ R9 drives a `ReassemblyPoolV4` into the replica.
 - 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the `replica_v4`/`outbox_v4` subsection with the replica's apply rules, the sample and anchor ordering rule and the outbox window and receipt order.
 - 2026-11-17 (UTC) · opencode-go/deepseek-v4.1-flash + T042a · Added the "Malicious-client suite (T042)" section (the eight-wire surface, the decode-stability rule and the spec-class index) and corrected the decode-order invariant to wire order, superseding the earlier semantic-checks-last wording by appending a dated note.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T042b-docs · Added the "Hostile-server suite (T042b)" section (the ten-decoder surface and its exclusions, the stability rule and a spec-class index of the four suites' tests) after the T042 section; no earlier section changed.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041c · Replaced each T041 cell of the T042 index's "Host level" column with the M-case that proves it (M1–M10 in `crates/crpg-testkit/tests/host_malicious.rs`), so the spec-class index names its evidence instead of a parent task; no other column changed.
