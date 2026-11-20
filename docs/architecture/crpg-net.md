@@ -320,6 +320,48 @@ that decode differently, is a defect. A new server-facing decoder is a new
 | Requesting entities outside the interest set | `interest.rs` `i08_retired_ids_do_not_resolve`; `conformance.rs` `revoked_visibility_ids_rejected` | T041 |
 | Clean rejection and a log line | every refusal is a `CodecError` with a fixed text (X14) | Question 1's owner |
 
+## Hostile-server suite (T042b)
+
+T042b adds `tests/support/hostile.rs` and four table-driven suites over the
+client side of the same byte boundary: `tests/hostile_delta.rs` (T042b1, the
+lane-0 v1–v4 delta decoders on `EntityEnter`, `Health` and `Receipt`),
+`tests/hostile_delta_ops.rs` (T042b2, the v2 event op, the v3 fact ops and the
+v4 movement ops through the same four decoders), `tests/hostile_transfer.rs`
+(T042b3, the `0x81`/`0x82` downstream frames and both snapshot bodies) and
+`tests/hostile_session.rs` (T042b4, the `0x91` resume downstream and the
+`0xA1` movement downstream). The surface is the ten decoders a server's bytes
+reach: `codec`/`codec_v2`/`codec_v3`/`codec_v4::decode_delta`,
+`codec_transfer::decode_down` and `decode_body`, `transfer_v3::decode_down`
+and `decode_body`, `codec_resume::decode_down` and
+`movement_v4::decode_down`. The QUIC `Welcome` decode, the client's close and
+the Godot bridge's fault mapping are other crates and stay untested here. It
+is the client-side mirror of T042's server-side suite; the argument and the
+behavioural rows are [T042b](../../tasks/T042b.md).
+
+The fixtures are encoder-built and pinned by literal, and each suite checks
+decode precedence in wire order (cap, version, lane, tag, then fields, then
+trailing bytes); every short input, truncation, foreign first byte, foreign
+lane and upstream frame sent downstream; every tag or kind byte; and every
+single-byte corruption. A corrupted byte must be a refusal other than
+`FrameTooLarge`, the exact same bytes, a ULID case alias, or a *shorter*
+string that is itself stable; the shorter branch is the one allowance for
+`postcard`'s non-minimal varints. Seeded noise from one fixed seed adds a pass
+that is not a row table. A decoder that accepts what its encoder refuses, or
+whose re-encoding decodes differently, is a defect;
+`single_byte_corruption_is_refused_or_exact` and `seeded_noise_is_stable` are
+the tests that say so in each file.
+
+| Spec class (§16.2) | Client-side decoders, `crpg-net` | Receivers and client programs |
+|---|---|---|
+| Oversized packets | `hostile_delta.rs`, `hostile_transfer.rs` and `hostile_session.rs` `oversize_is_refused_first` (delta frames, the `0x81`/`0x82` frames and both bodies, the `0x91`/`0xA1` frames); T042b1 covers the caps of the `hostile_delta_ops.rs` decoders | out of scope: the pools' size gates (T042b Reading 7) |
+| Malformed frames | `hostile_delta.rs` `short_inputs_are_refused_exactly`, `every_truncation_is_malformed`, `trailing_bytes_are_malformed`, `foreign_first_bytes_are_unsupported`, `foreign_lanes_are_wrong_direction`, `op_tag_matrix`, `header_scalars_and_op_count`, `health_and_receipt_fields`; `hostile_delta_ops.rs` `every_truncation_is_malformed`, `trailing_bytes_are_malformed`, `foreign_first_bytes_are_unsupported`, `foreign_lanes_are_wrong_direction`, `action_resolved_fields`, `entity_facts_fields`, `encounter_timeline_clock_host_fields`, `moved_and_position_fields`; `hostile_transfer.rs` `short_inputs_are_refused_exactly`, `every_truncation_is_malformed`, `trailing_bytes_are_malformed`, `foreign_first_bytes_are_unsupported`, `foreign_lanes_are_wrong_direction`, `tag_matrix`, `frame_fields_sweeps_and_built_chunks`, `body_fields`; `hostile_session.rs` `short_inputs_are_refused_exactly`, `every_truncation_is_malformed`, `trailing_bytes_are_malformed`, `foreign_first_bytes_are_unsupported`, `foreign_lanes_are_wrong_direction`, `tag_and_kind_matrix`, `resume_fields`, `movement_fields` | the bridge's fault 52 (`crates/crpg-godot`); out of scope here |
+| Intents for entities not owned | none: a decoder checks shape, not ownership (`hostile_delta.rs` `health_and_receipt_fields` pins that zero ids are refused) | the replica's refusals (T046, T140r2, T026p5 suites) |
+| Intents at illegal times | none: `server_tick` and `event_seq` are carried, not judged (`hostile_delta.rs` `header_scalars_and_op_count`) | the receivers |
+| Flooding | none: a decoder is a function of one byte slice and holds no budget | the client pools and the transfer receiver |
+| Replay of old packets | none in a decoder (stateless); `hostile_delta.rs` `header_scalars_and_op_count` pins that `event_seq` 0 is accepted, which is wire shape, not replay | the replica and pool gates |
+| Requesting entities outside the interest set | none: projection and interest are not decoders | `interest.rs`, `projection_v3`, `projection_v4` |
+| Clean rejection and a log line | every refusal is an existing `CodecError` whose fixed `Display` text `malicious_client.rs` `refusal_texts_are_fixed` already pins (T042, the same type); upstream frames sent downstream are refused by `hostile_delta.rs` `upstream_intents_sent_down_are_refused` and by `hostile_transfer.rs` and `hostile_session.rs` `upstream_frames_sent_down_are_refused` | writing the line and the close (fault 52, `ProtocolViolation`) belong to the client programs (D67a), `crpg-net-quic`/`crpg-godot` |
+
 ## v2 event wire (T021)
 
 `protocol_v2` adds the explicit history-projection vocabulary beside frozen
@@ -1365,3 +1407,4 @@ R9 drives a `ReassemblyPoolV4` into the replica.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 + T026p4 · Added the `pool_v4` subsection (what is re-exported from `pool_v3`, the V-1 substitution table and its runnable `diff -B` check, the two-pool mirror proof and version isolation); no earlier section changed.
 - 2026-11-15 (UTC) · claude-code/claude-sonnet-5-5 + T026p5 · Added the `replica_v4`/`outbox_v4` subsection with the replica's apply rules, the sample and anchor ordering rule and the outbox window and receipt order.
 - 2026-11-17 (UTC) · opencode-go/deepseek-v4.1-flash + T042a · Added the "Malicious-client suite (T042)" section (the eight-wire surface, the decode-stability rule and the spec-class index) and corrected the decode-order invariant to wire order, superseding the earlier semantic-checks-last wording by appending a dated note.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T042b-docs · Added the "Hostile-server suite (T042b)" section (the ten-decoder surface and its exclusions, the stability rule and a spec-class index of the four suites' tests) after the T042 section; no earlier section changed.
