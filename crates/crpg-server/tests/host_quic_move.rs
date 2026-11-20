@@ -982,6 +982,14 @@ fn q2_hello_and_invitation_precedence() {
                 ..
             } if *i == invitation && *peer == second.peer
         ));
+        // C-2 (6)/H07: the bind trace's `at` is the call list's length at the
+        // bind, after the supersession's `UnbindPeer` (calls[0]).
+        assert_eq!(binds[0].at, 1, "{:?}", report.lane1);
+        assert!(
+            matches!(report.calls.first(), Some(HostCall::UnbindPeer { .. })),
+            "the supersession is calls[0]: {:?}",
+            report.calls
+        );
         // The superseded client is closed with `SessionFenced`.
         let reason = client_close_reason(&mut first);
         assert_eq!(reason, CloseReason::Peer { code: 9 });
@@ -1241,6 +1249,43 @@ fn q3_script(
     let receipt = receipt_of(&client.receipts[0]);
     outbox.receive(&receipt).expect("the outbox accepts it");
     assert_eq!(outbox.processed_seq(), 1);
+
+    // C-4 (2): two decisions between pumps still replace the sample queue
+    // (T037c C6), and the pump sends every datagram the queue holds.
+    let now = clock.now() + 20;
+    let advance = qh.advance(now).expect("advance");
+    assert!(advance.ticked, "{advance:?}");
+    assert_eq!(twin.advance(now).expect("twin advance"), advance);
+    let now = now + 20;
+    let advance = qh.advance(now).expect("advance");
+    assert!(advance.ticked, "{advance:?}");
+    assert_eq!(twin.advance(now).expect("twin advance"), advance);
+    clock.set(now);
+    let report = qh.pump(now).expect("pump");
+    twin.apply(now, &report).expect("replay");
+    let samples = report
+        .lane1
+        .iter()
+        .find_map(|trace| match trace.call {
+            Lane1Call::TakeSamples { result: Ok(n), .. } => Some(n),
+            _ => None,
+        })
+        .expect("a sample take");
+    assert_eq!(
+        samples, 1,
+        "the later tick's sample replaced the first's: {report:?}"
+    );
+    assert_eq!(report.datagrams_sent, samples, "{report:?}");
+    let receipts = report
+        .lane1
+        .iter()
+        .find_map(|trace| match trace.call {
+            Lane1Call::TakeMoveReceipts { result: Ok(n), .. } => Some(n),
+            _ => None,
+        })
+        .expect("a receipt take");
+    assert_eq!(report.lane1_sent, receipts, "{report:?}");
+    client.read_available();
 
     while qh.host().server_tick() < 40 {
         let now = clock.now() + 20;
@@ -2256,7 +2301,7 @@ fn q8_departed_peer_and_retirement() {
         let (mut client, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
         let conn = client.conn;
         let peer = client.peer;
-        client.send_lane1(halt_bytes(e(1), 1, 1));
+        client.send_lane1(move_to_bytes(e(1), 1, 1, p(262_144, 0, 65_536)));
         let now = CLOCK_START + 10;
         let _ = pump_ingests(&mut qh, &mut clock, now, 1);
         let now = CLOCK_START + 20;
@@ -2277,7 +2322,25 @@ fn q8_departed_peer_and_retirement() {
             report.lane1
         );
         assert_eq!(report.lane1_sent, 0);
-        assert!(report.lane1_discarded >= 1, "{report:?}");
+        // C-5: every discarded receipt and sample is counted, exactly.
+        let receipts = report
+            .lane1
+            .iter()
+            .find_map(|trace| match trace.call {
+                Lane1Call::TakeMoveReceipts { result: Ok(n), .. } => Some(n),
+                _ => None,
+            })
+            .expect("a receipt take");
+        let samples = report
+            .lane1
+            .iter()
+            .find_map(|trace| match trace.call {
+                Lane1Call::TakeSamples { result: Ok(n), .. } => Some(n),
+                _ => None,
+            })
+            .expect("a sample take");
+        assert!(samples >= 1, "the advance queued a sample: {report:?}");
+        assert_eq!(report.lane1_discarded, receipts + samples, "{report:?}");
         assert!(report.calls.contains(&HostCall::UnbindPeer { peer }));
         assert_eq!(qh.binding(conn), None);
         assert_eq!(qh.host().session_wire(peer), Err(HostError::UnknownPeer));
@@ -2540,53 +2603,105 @@ fn q10_legacy_sessions_unchanged() {
         assert_eq!(report.lane1_discarded, 0);
         assert_eq!(report.lane1_held, 0);
     }
-    let mut calls = Vec::new();
+    // The leading pre-hello `[Pump]` steps vary in count with transport
+    // timing, so every step's list must be one of the `/2` route's exact
+    // shapes, and the bind, ingest and retirement pumps are pinned exactly.
     for (_, report) in &steps {
-        calls.extend(report.calls.iter().map(call_name));
-    }
-    // The route adds nothing: the same six calls in the same order (each
-    // distinct call kind occurs at least once, and the given order is a
-    // subsequence of the trace), plus the pre-existing pump/take cycle.
-    let mut seen: Vec<&str> = calls.clone();
-    seen.sort_unstable();
-    seen.dedup();
-    assert_eq!(
-        seen,
-        vec![
-            "AcknowledgeDelivery",
-            "BindSnapshotPeer",
-            "Ingest",
-            "Pump",
-            "TakeDelivery",
-            "UnbindPeer",
-        ],
-        "{calls:?}"
-    );
-    let expected = [
-        "BindSnapshotPeer",
-        "Ingest",
-        "Pump",
-        "TakeDelivery",
-        "AcknowledgeDelivery",
-        "UnbindPeer",
-    ];
-    let mut next = 0;
-    for name in &calls {
-        if next < expected.len() && *name == expected[next] {
-            next += 1;
+        let names: Vec<&str> = report.calls.iter().map(call_name).collect();
+        assert!(
+            matches!(
+                names.as_slice(),
+                ["Pump"]
+                    | ["Pump", "TakeDelivery"]
+                    | [
+                        "BindSnapshotPeer",
+                        "Pump",
+                        "TakeDelivery",
+                        "AcknowledgeDelivery"
+                    ]
+                    | ["Ingest", "Pump", "TakeDelivery", "AcknowledgeDelivery"]
+                    | ["Pump", "TakeDelivery", "UnbindPeer"]
+            ),
+            "a call list beside the `/2` route: {names:?}"
+        );
+        if !names.contains(&"UnbindPeer") {
+            assert!(
+                report.transport_closes.is_empty(),
+                "only the retirement pump reports the close: {:?}",
+                report.transport_closes
+            );
         }
     }
-    assert_eq!(next, expected.len(), "the call order: {calls:?}");
+    let hello = steps
+        .iter()
+        .find(|(_, report)| {
+            report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::BindSnapshotPeer { .. }))
+        })
+        .expect("the snapshot bind");
     assert_eq!(
-        calls
+        hello.1.calls.iter().map(call_name).collect::<Vec<_>>(),
+        vec![
+            "BindSnapshotPeer",
+            "Pump",
+            "TakeDelivery",
+            "AcknowledgeDelivery"
+        ]
+    );
+    let ingest = steps
+        .iter()
+        .find(|(_, report)| {
+            report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::Ingest { .. }))
+        })
+        .expect("the lane-0 ingest");
+    assert_eq!(
+        ingest.1.calls.iter().map(call_name).collect::<Vec<_>>(),
+        vec!["Ingest", "Pump", "TakeDelivery", "AcknowledgeDelivery"]
+    );
+    // C-6: the close is published in the pump that retires the binding.
+    let (_, retire) = steps.last().expect("the retirement pump");
+    assert_eq!(
+        retire.calls.iter().map(call_name).collect::<Vec<_>>(),
+        vec!["Pump", "TakeDelivery", "UnbindPeer"]
+    );
+    assert_eq!(
+        retire.transport_closes,
+        vec![(conn, CloseReason::Peer { code: 0 })]
+    );
+    assert_eq!(qh.binding(conn), None);
+    assert_eq!(
+        steps
             .iter()
-            .filter(|name| **name == "BindSnapshotPeer")
+            .filter(|(_, report)| report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::BindSnapshotPeer { .. })))
             .count(),
         1
     );
-    assert_eq!(calls.iter().filter(|name| **name == "Ingest").count(), 1);
     assert_eq!(
-        calls.iter().filter(|name| **name == "UnbindPeer").count(),
+        steps
+            .iter()
+            .filter(|(_, report)| report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::Ingest { .. })))
+            .count(),
+        1
+    );
+    assert_eq!(
+        steps
+            .iter()
+            .filter(|(_, report)| report
+                .calls
+                .iter()
+                .any(|call| matches!(call, HostCall::UnbindPeer { .. })))
+            .count(),
         1
     );
 }
@@ -2631,4 +2746,20 @@ fn q11_advance_pass_through() {
     let report = qh.advance(CLOCK_START + 60).expect("advance");
     assert_eq!(report, twin_report);
     assert_eq!(qh.host().authority_hash(), twin.authority_hash());
+
+    // C-9: `advance` records its `now_ms` for the next call's regression
+    // check, and an equal time is not a regression.
+    assert_eq!(
+        qh.pump(CLOCK_START + 55),
+        Err(QuicHostError::TimeRegression)
+    );
+    assert_eq!(
+        qh.host().authority_hash(),
+        twin.authority_hash(),
+        "a refused pump changes nothing"
+    );
+    assert!(
+        qh.advance(CLOCK_START + 60).is_ok(),
+        "an equal time is not below the last"
+    );
 }
