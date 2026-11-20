@@ -14,26 +14,31 @@ mod rig;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crpg_ai::{SideId, Sides};
 use crpg_core::Ulid;
 use crpg_net::codec_v2;
+use crpg_net::facts_v3::EncounterGrants;
 use crpg_net::protocol::{IntentBody, IntentFrame, LANE_COMBAT};
-use crpg_net::protocol_v3::PauseReason;
+use crpg_net::protocol_transfer::{TransferId, TransferUp};
+use crpg_net::protocol_v3::{PauseReason, PauseRights};
+use crpg_net::transfer_v3;
 use crpg_net::transport::Transport;
 use crpg_net_quic::{
     Channel, ClientLimits, CloseReason, ConnectError, Framing, Hello, QuicClient, QuicServer,
-    ServerConfig, ServerLimits,
+    ServerConfig, ServerLimits, MOVEMENT_WIRE_VERSION,
 };
 use crpg_server::host::{
-    DeliveryKind, DisclosureGrants, Host, HostConfig, HostError, PeerHandle, ProtocolSelection,
-    MVP_AI_BUDGET,
+    AiBudget, DeliveryKind, DisclosureGrants, EntityFactGrant, FactGrants, Host, HostConfig,
+    HostError, HostSettings, PeerHandle, ProtocolSelection, TransferDisposition,
+    DEFAULT_HOST_GRANTS, MVP_AI_BUDGET,
 };
 use crpg_server::quic::{
-    GrantChange, HelloOutcome, HostCall, InvitationId, QuicHost, QuicHostError,
+    GrantChange, HelloOutcome, HostCall, InvitationId, QuicHost, QuicHostError, V4Invitation,
 };
-use crpg_server::run::{HostLoop, LocalHost, LoopError, QuicHosting};
+use crpg_server::run::{HostLoop, LocalHost, LoopError, QuicAiHook, QuicHosting};
 use crpg_server::runner::{spawn, SystemClock};
 use crpg_server::save::{load_host_file, save_host_file, SaveIdentity};
 use rig::*;
@@ -559,4 +564,475 @@ fn q5_captures_are_retired() {
         "the save carried a capture journal"
     );
     assert_eq!(host.capture_acknowledged(), host.last_capture());
+}
+
+// ---------------------------------------------------------------------------
+// Fix round A (T154d-fix-a): the test gaps the mutant run found. Each case is
+// named `fa_<n>_<what>` after its brief item and pins one contract item.
+// ---------------------------------------------------------------------------
+
+/// A fresh adapter over `TB3` and a bound server: the refusal cases below
+/// need nothing but the adapter's own time and the host's.
+fn fresh_adapter() -> QuicHost {
+    QuicHost::start(tb3(0), bind_dual(), 0).expect("starts")
+}
+
+/// fa_1 (QF4, B-15): `flush` records its `now_ms`, so a later pump or flush
+/// below it is a time regression.
+#[test]
+fn fa_1_flush_records_now_ms() {
+    let mut qh = fresh_adapter();
+    qh.flush(10).expect("flushes at 10");
+    let before = host_state(qh.host());
+    assert_eq!(
+        qh.pump(9),
+        Err(QuicHostError::TimeRegression),
+        "flush(10) recorded 10"
+    );
+    assert_eq!(
+        qh.flush(9),
+        Err(QuicHostError::TimeRegression),
+        "flush(10) recorded 10"
+    );
+    assert_eq!(host_state(qh.host()), before, "a refusal changes nothing");
+    qh.pump(10).expect("10 is still the last accepted time");
+}
+
+/// fa_2 (QF5, B-15): a refused `flush` leaves the last accepted time alone,
+/// so the same regression is still refused afterwards.
+#[test]
+fn fa_2_a_refused_flush_changes_nothing() {
+    let mut qh = fresh_adapter();
+    qh.flush(10).expect("flushes at 10");
+    let before = host_state(qh.host());
+    assert_eq!(qh.flush(9), Err(QuicHostError::TimeRegression));
+    assert_eq!(
+        qh.pump(9),
+        Err(QuicHostError::TimeRegression),
+        "the refused flush did not record 9"
+    );
+    assert_eq!(
+        qh.flush(9),
+        Err(QuicHostError::TimeRegression),
+        "the refused flush did not record 9"
+    );
+    assert_eq!(host_state(qh.host()), before, "a refusal changes nothing");
+    qh.pump(10).expect("the refusal did not poison");
+}
+
+/// fa_3 (QD3, B-16): `drive_ai` passes the caller's budget through. A budget
+/// of zero decisions per turn forces the turn cap, which the MVP budget does
+/// not do on the same authority.
+#[test]
+fn fa_3_drive_ai_passes_the_budget_through() {
+    let sides =
+        Sides::new(vec![(a(), SideId(1)), (b(), SideId(2)), (c(), SideId(1))]).expect("sides");
+    let zero = AiBudget {
+        decisions_per_turn: 0,
+        actors_per_drive: 8,
+    };
+    let mut qh = fresh_adapter();
+    let mut twin = tb3(0);
+    let through = qh
+        .drive_ai(&sides, &[a(), b(), c()], zero)
+        .expect("passes through");
+    let same = twin
+        .drive_ai(&sides, &[a(), b(), c()], zero)
+        .expect("decides");
+    assert_eq!(through, same, "the twin given the same budget agrees");
+    assert!(through.capped, "zero decisions per turn forces the cap");
+    assert_eq!(through.steps.len(), 1, "the cap's one forced step");
+
+    let mut mvp = tb3(0);
+    let default = mvp
+        .drive_ai(&sides, &[a(), b(), c()], MVP_AI_BUDGET)
+        .expect("decides");
+    assert_ne!(through, default, "the caller's budget, never MVP_AI_BUDGET");
+}
+
+/// fa_4 (QA3, B-16): `pause` hands the host its own `now_ms`, so the host
+/// records it and later refuses an earlier time.
+#[test]
+fn fa_4_pause_records_now_ms() {
+    let mut qh = fresh_adapter();
+    qh.pause(5).expect("pauses");
+    assert_eq!(qh.host().paused(), Some(PauseReason::Operator));
+    assert_eq!(
+        qh.unpause(4),
+        Err(QuicHostError::Host(HostError::TimeRegression)),
+        "the host recorded the pause's 5"
+    );
+    assert_eq!(qh.host().paused(), Some(PauseReason::Operator));
+    qh.unpause(5).expect("the recorded time itself is accepted");
+    assert_eq!(qh.host().paused(), None);
+}
+
+/// fa_5 (QU4, B-16): `unpause` returns the host's error instead of
+/// swallowing it.
+#[test]
+fn fa_5_unpause_returns_the_host_error() {
+    let mut qh = fresh_adapter();
+    qh.pause(5).expect("pauses");
+    let before = host_state(qh.host());
+    assert_eq!(
+        qh.unpause(4),
+        Err(QuicHostError::Host(HostError::TimeRegression)),
+        "a host error is returned, not swallowed"
+    );
+    assert_eq!(host_state(qh.host()), before, "the refusal changed nothing");
+    assert_eq!(qh.host().paused(), Some(PauseReason::Operator));
+    qh.unpause(5)
+        .expect("still unpausable at the recorded time");
+}
+
+/// fa_6 (RI3, B-14): the intake pump's failure is the step's error. The
+/// host's accepted time is ahead of the step, so `Host::pump` inside the
+/// intake pump fails and poisons the adapter; a swallowed intake would let
+/// the cycle reach `advance`, whose poisoned check reports `Poisoned`
+/// instead.
+#[test]
+fn fa_6_intake_error_is_the_loop_error() {
+    let mut qh = fresh_adapter();
+    qh.pause(1_000)
+        .expect("moves the host's time ahead of the step");
+    let mut host_loop = HostLoop::new(QuicHosting::new(qh), 0);
+    assert_eq!(
+        host_loop.step(100),
+        Err(LoopError::Hosting(QuicHostError::Host(
+            HostError::TimeRegression
+        ))),
+        "the intake pump's host error is the step's error"
+    );
+    assert_eq!(
+        host_loop.hosting().quic().host().server_tick(),
+        0,
+        "no later stage ran"
+    );
+}
+
+/// fa_7 (RA1, RA2, RS1; B-14 and `set_ai`): the `drive_ai` stage is the hook
+/// when one is set, once per step, given the cycle's `now_ms`.
+#[test]
+fn fa_7_the_ai_hook_runs_once_per_step() {
+    let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let hook: QuicAiHook = Box::new(move |quic, now_ms| {
+        recorded.lock().expect("lock").push(now_ms);
+        let sides =
+            Sides::new(vec![(a(), SideId(1)), (b(), SideId(2)), (c(), SideId(1))]).expect("sides");
+        quic.drive_ai(&sides, &[a(), b(), c()], MVP_AI_BUDGET)
+            .map(|_report| ())
+    });
+    let mut hosting = QuicHosting::new(fresh_adapter());
+    hosting.set_ai(Some(hook));
+    let mut host_loop = HostLoop::new(hosting, 100);
+    host_loop.step(100).expect("steps");
+    host_loop.step(150).expect("steps");
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        vec![100, 150],
+        "once per step, in cycle order, with the cycle's now_ms"
+    );
+
+    // Control: a hosting with no hook runs the cycle and records nothing.
+    let after = seen.lock().expect("lock").clone();
+    let mut no_hook = HostLoop::new(QuicHosting::new(fresh_adapter()), 100);
+    no_hook.step(100).expect("steps");
+    no_hook.step(150).expect("steps");
+    assert_eq!(*seen.lock().expect("lock"), after, "no hook, no call");
+}
+
+/// fa_8 (RA3, Errors): the hook's error is the loop's error and no later
+/// stage runs.
+#[test]
+fn fa_8_the_ai_hook_error_is_the_loop_error() {
+    let hook: QuicAiHook =
+        Box::new(|_quic, _now_ms| Err(QuicHostError::Host(HostError::QueueFull)));
+    let mut hosting = QuicHosting::new(fresh_adapter());
+    hosting.set_ai(Some(hook));
+    let mut host_loop = HostLoop::new(hosting, 0);
+    assert_eq!(
+        host_loop.step(0),
+        Err(LoopError::Hosting(QuicHostError::Host(
+            HostError::QueueFull
+        )))
+    );
+    assert_eq!(
+        host_loop.hosting().quic().host().server_tick(),
+        0,
+        "advance did not run"
+    );
+    assert_eq!(host_loop.cycles(), 1);
+    assert_eq!(host_loop.next_due_ms(), 50);
+}
+
+/// fa_9 (RS2, `set_ai`): `set_ai(None)` clears the hook.
+#[test]
+fn fa_9_set_ai_none_clears_the_hook() {
+    let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let hook: QuicAiHook = Box::new(move |_quic, now_ms| {
+        recorded.lock().expect("lock").push(now_ms);
+        Ok(())
+    });
+    let mut hosting = QuicHosting::new(fresh_adapter());
+    hosting.set_ai(Some(hook));
+    let mut host_loop = HostLoop::new(hosting, 100);
+    host_loop.step(100).expect("steps");
+    assert_eq!(*seen.lock().expect("lock"), vec![100]);
+    host_loop.hosting_mut().set_ai(None);
+    host_loop.step(150).expect("steps");
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        vec![100],
+        "set_ai(None) cleared the hook"
+    );
+}
+
+// The `/3` client fa_10 needs. Only a v3/v4 session receives a tick's
+// publication (a v1/v2 session gets frames only from its own admitted
+// commands, which the intake pump's own phases 4–7 already send), so the
+// deliver stage is observable there alone.
+
+fn bind_movement_dual() -> QuicServer {
+    QuicServer::bind_movement(ServerConfig {
+        bind: loopback(),
+        identity: identity(),
+        limits: ServerLimits::v1(),
+    })
+    .expect("binds a movement loopback server")
+}
+
+fn v4_facts() -> FactGrants {
+    let flags = |entity| EntityFactGrant {
+        entity,
+        pools: true,
+        effects: true,
+        stats: true,
+        tags: true,
+    };
+    FactGrants {
+        entities: vec![flags(a()), flags(b()), flags(c())],
+        encounter: EncounterGrants {
+            mode: true,
+            pending_mode: true,
+            clock: true,
+            timeline: true,
+        },
+        host: DEFAULT_HOST_GRANTS,
+    }
+}
+
+fn v4_invitation() -> V4Invitation {
+    V4Invitation {
+        credential: credential(&cred_bytes(0)),
+        control: control(&[a(), b(), c()]),
+        grants: full_grants(),
+        facts: v4_facts(),
+        rights: PauseRights {
+            pause: true,
+            unpause: true,
+        },
+    }
+}
+
+fn connect_v4_async(
+    server: std::net::SocketAddr,
+    credential_bytes: &[u8],
+) -> std::thread::JoinHandle<Result<QuicClient, ConnectError>> {
+    let config = client_config(ClientLimits::v1());
+    let hello = Hello {
+        wire_version: MOVEMENT_WIRE_VERSION,
+        credential: credential(credential_bytes),
+    };
+    std::thread::spawn(move || QuicClient::connect_movement(config, server, &hello))
+}
+
+/// A `/3` client that reads frames whole: a v3 session's lane 0 is v3-encoded,
+/// so it is not decoded here.
+struct RawClient {
+    quic: QuicClient,
+    peer: PeerHandle,
+    recv: Vec<(Channel, Vec<u8>)>,
+    closed: Option<CloseReason>,
+}
+
+impl RawClient {
+    fn read_available(&mut self) -> usize {
+        let mut count = 0;
+        if self.closed.is_some() {
+            return 0;
+        }
+        loop {
+            match self.quic.try_recv_channel() {
+                Ok(Some(frame)) => {
+                    self.recv.push(frame);
+                    count += 1;
+                }
+                Ok(None) => break,
+                Err(reason) => {
+                    self.closed = Some(reason);
+                    break;
+                }
+            }
+        }
+        count
+    }
+
+    fn lane0_frames(&self) -> usize {
+        self.recv
+            .iter()
+            .filter(|(channel, _)| *channel == Channel::Lane0)
+            .count()
+    }
+
+    fn read_until(&mut self, what: &str, mut cond: impl FnMut(&RawClient) -> bool) {
+        let start = Instant::now();
+        loop {
+            self.read_available();
+            if cond(self) {
+                return;
+            }
+            assert!(start.elapsed() < DEADLINE, "deadline: {what}");
+            self.quic.wait(Duration::from_millis(5));
+        }
+    }
+}
+
+/// Connects a `/3` client and waits for its bind delta (the transfer is
+/// staged before it, so the delta is the bind's one lane-0 frame).
+fn connect_v4(qh: &mut QuicHost, now: u64, credential_bytes: &[u8]) -> RawClient {
+    let pending = connect_v4_async(qh.local_addr(), credential_bytes);
+    let start = Instant::now();
+    let decision = loop {
+        let report = qh.pump(now).expect("pump");
+        if let Some(decision) = report.hellos.into_iter().next() {
+            break decision;
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: hello decided");
+        qh.wait(Duration::from_millis(5));
+    };
+    let HelloOutcome::Accepted { peer, .. } = decision.outcome else {
+        panic!("expected Accepted, got {decision:?}");
+    };
+    let quic = pending.join().expect("client thread").expect("connect");
+    let mut client = RawClient {
+        quic,
+        peer,
+        recv: Vec::new(),
+        closed: None,
+    };
+    client.read_until("bind delta", |c| c.lane0_frames() >= 1);
+    client
+}
+
+/// Answers the bind's snapshot, so the session is no longer throttled (a v3
+/// session with a transfer in flight logs a subset of its publications).
+fn publish_bind_snapshot(qh: &mut QuicHost, client: &mut RawClient, now: u64) {
+    let epoch = qh.host().epoch(client.peer).expect("bound");
+    let bytes = transfer_v3::encode_up(&TransferUp::Published {
+        epoch,
+        transfer: TransferId::new(1).expect("nonzero"),
+    })
+    .expect("encodes");
+    client
+        .quic
+        .try_send_channel(Channel::Transfer, &bytes)
+        .expect("client publishes");
+    let start = Instant::now();
+    loop {
+        let report = qh.pump(now).expect("pump");
+        if report.calls.iter().any(|call| {
+            matches!(
+                call,
+                HostCall::IngestTransfer {
+                    result: TransferDisposition::Published,
+                    ..
+                }
+            )
+        }) {
+            return;
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: Published ingested");
+        qh.wait(Duration::from_millis(5));
+    }
+}
+
+/// fa_10 (RD1, B-14): the deliver stage is `flush(now)`. A turn timer ends
+/// A's turn in the tick, whose page is staged after intake, so only the
+/// cycle's own deliver sends it: no further pump runs.
+#[test]
+fn fa_10_deliver_sends_the_ticks_delta() {
+    let mut host = tb3(0);
+    host.set_settings(
+        HostSettings {
+            turn_timer_ms: Some(20),
+            ..HostSettings::multiplayer()
+        },
+        0,
+    )
+    .expect("arms the turn timer");
+    let mut qh = QuicHost::start(host, bind_movement_dual(), 0).expect("starts");
+    qh.register_v4_invitation(v4_invitation())
+        .expect("registers");
+    let mut client = connect_v4(&mut qh, 0, &cred_bytes(0));
+    publish_bind_snapshot(&mut qh, &mut client, 0);
+    let before = client.lane0_frames();
+
+    let mut host_loop = HostLoop::new(QuicHosting::new(qh), 0);
+    let step = host_loop.step(50).expect("steps").cycle.expect("a cycle");
+    assert!(step.advance.ticked);
+    assert_eq!(
+        step.advance.timer_ended_turn,
+        Some(a()),
+        "the timer ended A's turn"
+    );
+    client.read_until("the tick's page, before any further pump", |c| {
+        c.lane0_frames() > before
+    });
+    assert!(client.closed.is_none(), "the connection lives");
+}
+
+/// A save whose capture journal has one unacknowledged record: the command is
+/// admitted and applied on the host directly, so no loop's retire stage ran.
+fn unacknowledged_save(case: &str) -> PathBuf {
+    let path = temp_path(case);
+    let mut host = tb3(0);
+    let peer = host
+        .bind_peer(control(&[a(), b(), c()]), full_grants(), 0)
+        .expect("binds");
+    let frame = end_frame(&host, peer, 1);
+    host.ingest(peer, &frame, 0).expect("stages");
+    host.pump(0).expect("admits");
+    host.advance(0).expect("advances");
+    assert!(
+        host.last_capture() > host.capture_acknowledged(),
+        "the save carries an unacknowledged capture"
+    );
+    save_host_file(&path, &host, &ident()).expect("quiescent save");
+    path
+}
+
+/// fa_11 (RC1, RC2, RC3; B-14): retire is
+/// `acknowledge_captures(last_capture)`.
+#[test]
+fn fa_11_retire_acknowledges_the_last_capture() {
+    let path = unacknowledged_save("fa_11");
+    let mut host_loop = HostLoop::new(QuicHosting::new(load_dedicated(&path, 2, 100)), 100);
+    let host = host_loop.hosting().quic().host();
+    assert!(
+        host.last_capture() > host.capture_acknowledged(),
+        "the load keeps the record unacknowledged"
+    );
+    let last = host.last_capture();
+
+    let step = host_loop.step(100).expect("steps").cycle.expect("a cycle");
+    assert_eq!(step.advance.paused, Some(PauseReason::Restore));
+    let host = host_loop.hosting().quic().host();
+    assert_eq!(host.last_capture(), last, "no new capture");
+    assert_eq!(
+        host.capture_acknowledged(),
+        host.last_capture(),
+        "retire acknowledged through the last capture"
+    );
 }
