@@ -97,6 +97,41 @@ Each entry cites an existing `path:line`.
 
 ## Godot bridge
 
+- `BridgeCode` (`crates/crpg-godot/src/core/errors.rs:12`): the closed ADR-0033 §11 table; `is_fatal` is exactly 50..=55 (`:88`).
+- `52 / 53 / 54` (`crates/crpg-godot/src/core/errors.rs:46`): `FrameUndecodable` (52), `ReplicaRejected` (53), `UnexpectedTransfer` (54), each fatal.
+- `Fault` (`crates/crpg-godot/src/core/errors.rs:95`): one code plus the diagnostic `detail` string.
+- `host_fault` (`crates/crpg-godot/src/core/errors.rs:106`): `HostError::Closed` → 50, every other host failure → 51.
+- `v2 decode fault` (`crates/crpg-godot/src/core/client.rs:443`): `decode_delta` failure → `FrameUndecodable` with the codec's `Display`.
+- `v2 replica fault` (`crates/crpg-godot/src/core/client.rs:447`): `ReplicaWorld::apply_delta` failure → `ReplicaRejected`; the view stays at its previous revision (`:433`).
+- `v2 submit link full` (`crates/crpg-godot/src/core/client.rs:654`): a full link is `IntentRefused`, not fatal.
+- `transfer in a hand-off` (`crates/crpg-godot/src/core/authority.rs:64`): a `DeliveryKind::Transfer` entry → `UnexpectedTransfer` (54).
+- `v4 lane split` (`crates/crpg-godot/src/core/client_v4.rs:100`): `0x82` bytes go to `offer_transfer`; `0xA1` bytes to `decode_down`; everything else to `offer_delta`.
+- `v4 transfer reply faults` (`crates/crpg-godot/src/core/client_v4.rs:112`): a reply that does not encode or does not fit the link → `ReplicaRejected` (53).
+- `v4 movement decode fault` (`crates/crpg-godot/src/core/client_v4.rs:124`): `decode_down` failure → `FrameUndecodable` (52).
+- `v4 outbox refusal` (`crates/crpg-godot/src/core/client_v4.rs:130`): `MoveOutbox::receive` failure → `ReplicaRejected` (53).
+- `v4 sample` (`crates/crpg-godot/src/core/client_v4.rs:137`): `apply_sample` returns nothing and never faults.
+- `v4 pool offer` (`crates/crpg-godot/src/core/client_v4.rs:141`): `offer_delta` maps through `transfer_fault`; the drained update goes through `apply_update` (`:145`).
+- `v4 snapshot refusal` (`crates/crpg-godot/src/core/client_v4.rs:305`): `apply_snapshot` failure → 53.
+- `v4 delta refusal` (`crates/crpg-godot/src/core/client_v4.rs:313`): `apply_delta` failure → 53; the ops are then applied to the view (`:318`).
+- `transfer_fault` (`crates/crpg-godot/src/core/client_v4.rs:549`): `TransferError::Codec` → 52, every other `TransferError` → 53.
+- `poll guard` (`crates/crpg-godot/src/core/mod.rs:248`): `catch_unwind` around `poll_guarded`; a panic becomes 55 (`:934`) and fences.
+- `v2 poll fault` (`crates/crpg-godot/src/core/mod.rs:732`): a client or authority `Fault` goes to `fail_fault`, which fences on a fatal code (`:896`).
+- `v4 client fault` (`crates/crpg-godot/src/core/mod.rs:774`): a `ClientV4::step` `Fault` fences through `fail_fault` (`:778`).
+- `v4 loop end` (`crates/crpg-godot/src/core/mod.rs:817`): a panicked runner → 55, a hosting error → `host_fault` (50/51), a time regression → 51, a read error/link close/stop → 51.
+- `fail / last_error` (`crates/crpg-godot/src/core/mod.rs:887`): a non-fatal result only records `"<NAME>: <detail>"`; `fail_fault` (`:896`) fences a fatal code and keeps that text.
+- `every_code_matches_the_adr_table` (`crates/crpg-godot/src/core/errors/tests.rs:11`): asserts all 20 codes' numbers, names and fatality, including 52/53/54.
+- `host_failures_split_on_closed` (`crates/crpg-godot/src/core/errors/tests.rs:55`): only `HostError::Closed` is 50; every other host failure is 51.
+- `bad_frames_are_fatal_and_never_skipped` (`crates/crpg-godot/src/core/client/tests.rs:496`): `[0xff]` → 52; an `event_seq` gap → 53 with the view `Rc` unchanged; a control frame at the next seq is accepted.
+- `a_leave_shrinks_every_column_and_a_retired_id_cannot_return` (`crates/crpg-godot/src/core/client/tests.rs:662`): a retired id re-entering is 53 (`:718`), the view keeps revision 4.
+- `bad_frames_are_fatal` (`crates/crpg-godot/src/core/client_v4/tests.rs:607`): a short `0xA1` frame → 52; a v2 delta on a v4 session → 52; a `Position` op before its row → 53; each leaves revision 0.
+- `lane1_receipts_complete_the_outbox_in_order` (`crates/crpg-godot/src/core/client_v4/tests.rs:399`): a receipt for seq 2 before seq 1 is 53, detail `"Unexpected at movement/outbox"` (`:477`), and the view is unchanged.
+- `non_codec_transfer_error_is_replica_rejected` (`crates/crpg-godot/src/core/client_v4/tests.rs:1349`): two buffered deltas with one seq and different bytes → 53; the same bytes twice is a harmless duplicate.
+- `hand_off_stops_at_the_first_full_link` (`crates/crpg-godot/src/core/authority/tests.rs:127`): a `Transfer` entry → 54; a full link stops at the last queued ordinal.
+- `corrupt_frame_fences_and_close_resets` (`crates/crpg-godot/src/core/tests.rs:825`): `[0xff]` downstream → `poll` 52, fenced, revision kept, `FRAME_UNDECODABLE` prefix, every later `poll`/`submit_option` repeats 52; `close` resets to 0 and the text survives; `open` clears it.
+- `submit_precedence_pairs` (`crates/crpg-godot/src/core/tests.rs:673`): on a fenced session a valid revision returns 52 while a negative argument still returns 3 (`:693`).
+- `panics_are_caught_at_every_boundary` (`crates/crpg-godot/src/core/tests.rs:928`): a teardown panic during a 52 fence keeps 52 and `FRAME_UNDECODABLE` (`:966`).
+- `a_refused_frame_clears_the_pending_submit` (`crates/crpg-godot/src/core/tests.rs:1213`): 80 malformed upstream frames give `IntentRefused` (30), not a fence; the pending seq is cleared so the next submit sends.
+
 ## Test harness options
 
 ## Rules that bind it
