@@ -12,6 +12,7 @@ use headless::*;
 
 use crpg_core::{EntityId, Ulid};
 use crpg_net::facts_v3::EncounterGrants;
+use crpg_net::movement_v4::{self, MoveBody, MoveDown, MoveSample, SampleEntry};
 use crpg_net::protocol_v3::{ReceiptStatus as ReceiptV3, RejectionCode};
 use crpg_net::protocol_v4::{IntentBody, Point};
 use crpg_server::host::{
@@ -327,6 +328,22 @@ fn h6_arena_binds_twins_and_converges() {
         world_view(&arena.client("B").replica)
     );
     assert_eq!(arena.authority(), arena.mirror_hash());
+
+    // B-14: `canon` carries each replica's rows and turn, and `twin` names the
+    // twin rather than the client itself.
+    let canon_a = canon(&arena.client("A").replica);
+    assert_eq!(canon_a.entities.len(), 2, "canon keeps both rows");
+    assert_eq!(canon_a.entities[0].net_id, n(1));
+    assert_eq!(canon_a.entities[1].net_id, n(2));
+    assert_eq!(
+        canon_a.turn,
+        arena.client("A").replica.v3().turn().cloned(),
+        "canon keeps the turn fact"
+    );
+    assert!(canon_a.turn.is_some(), "the turn fact is disclosed");
+    assert_eq!(arena.twin("A").name, "A~");
+    assert_eq!(arena.twin("A").peer.get(), 2);
+    assert_eq!(arena.twin("B").peer.get(), 4);
 }
 
 /// H7: a `Patrol` script moves once, waits for the receipt, then ends its
@@ -356,8 +373,25 @@ fn h7_patrol_moves_then_ends_turn() {
         },
     ];
     let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, true);
-    arena.run(10);
+    // B-13: every frame's `observed_tick` is the replica's server tick at the
+    // moment the script ran (the state after the previous cycle).
+    for _ in 0..10 {
+        let before = arena.client("B").replica.v3().server_tick();
+        let sent = arena.client("B").sent.len();
+        arena.step();
+        for frame in &arena.client("B").sent[sent..] {
+            assert_eq!(
+                frame.observed_tick, before,
+                "seq {} observed tick",
+                frame.seq
+            );
+        }
+    }
     let b = arena.client("B");
+    assert!(
+        b.sent.iter().any(|f| f.observed_tick > 0),
+        "a late frame carries a nonzero observed tick"
+    );
     assert_eq!(b.sent.len(), 2, "B sends exactly a move then an end turn");
     assert_eq!(b.sent[0].seq, 1);
     assert_eq!(b.sent[0].actor, n(2));
@@ -380,6 +414,15 @@ fn h7_patrol_moves_then_ends_turn() {
         canon(&b.replica).positions.get(&n(2)),
         Some(&(pt(32768, 0, 0), false)),
         "the arrival sample moved B's replica"
+    );
+    assert_eq!(
+        canon(&b.replica).timeline,
+        b.replica.v3().timeline().map(<[_]>::to_vec),
+        "canon keeps the timeline image"
+    );
+    assert!(
+        canon(&b.replica).timeline.is_some(),
+        "an action exposes the timeline"
     );
     assert_eq!(arena.authority(), arena.mirror_hash());
 
@@ -449,15 +492,38 @@ fn h8_settle_empties_and_resume_restores() {
     ];
     let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, true);
     arena.run(50);
+    let before = arena.cycle;
     arena.settle();
+    assert_eq!(
+        arena.cycle,
+        before + SETTLE_CYCLES,
+        "a settle runs SETTLE_CYCLES cycles"
+    );
     for client in &arena.clients {
         assert_eq!(client.in_flight(), 0);
         assert!(client.paused);
+        assert_eq!(
+            client.faults,
+            Faults::CLEAN,
+            "{} settles under a clean profile",
+            client.name
+        );
     }
     arena.resume();
     assert_eq!(arena.client("A").faults, Faults::SPEC);
     assert!(!arena.client("A").paused);
     assert_eq!(arena.client("A~").faults, Faults::CLEAN);
+
+    // B-7: a settle saves the profile it finds, not the one the seat was
+    // built with.
+    arena.client_mut("A").faults = Faults::CLEAN;
+    arena.settle();
+    arena.resume();
+    assert_eq!(
+        arena.client("A").faults,
+        Faults::CLEAN,
+        "the second settle saved the profile it found"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -733,6 +799,20 @@ fn arena_channels_use_their_seed_name_and_kind() {
         "the down0 channel draws on stream \"A/down0\""
     );
 
+    let mut expected_down1 = Channel::new(ChannelKind::Reliable, NET_SEED, "A/down1");
+    for i in 0..64u64 {
+        arena
+            .client_mut("A")
+            .channel_mut(Which::Down1)
+            .send(i, frame(i), faults);
+        expected_down1.send(i, frame(i), faults);
+    }
+    assert_eq!(
+        drain_channel(arena.client_mut("A").channel_mut(Which::Down1), 500),
+        drain_channel(&mut expected_down1, 500),
+        "the down1 channel draws on stream \"A/down1\""
+    );
+
     let lossy = Faults {
         loss_percent: 100,
         ..Faults::CLEAN
@@ -842,6 +922,14 @@ fn intruder_frames_are_not_mirrored() {
     arena.run(20);
     let o = arena.client("O");
     assert_eq!(o.sent.len(), 4, "cycles 4, 8, 12 and 16");
+    assert!(
+        o.sent.iter().all(|f| f.actor == n(1)),
+        "the intrusion targets the hero"
+    );
+    assert!(
+        o.sent.iter().all(|f| matches!(f.body, IntentBody::EndTurn)),
+        "an intrusion is an EndTurn, not a move"
+    );
     assert_eq!(o.receipts.len(), 4);
     for seq in 1..=4u64 {
         assert_eq!(
@@ -1022,7 +1110,13 @@ fn samples_move_the_replica_between_anchors() {
     let mut seen: Vec<(Point, bool)> = Vec::new();
     for _ in 0..8 {
         arena.step();
-        if let Some(state) = arena.client("A").replica.position(n(1)) {
+        let rep = &arena.client("A").replica;
+        assert_eq!(
+            canon(rep).positions.get(&n(1)),
+            rep.position(n(1)).map(|p| (p.point, p.moving)).as_ref(),
+            "canon keeps the moving flag"
+        );
+        if let Some(state) = rep.position(n(1)) {
             let pair = (state.point, state.moving);
             if seen.last() != Some(&pair) {
                 seen.push(pair);
@@ -1036,5 +1130,567 @@ fn samples_move_the_replica_between_anchors() {
     assert!(
         seen.contains(&(pt(65536, 0, 65536), false)),
         "the arrival sample reaches the destination: {seen:?}"
+    );
+    let rep = &arena.client("A").replica;
+    assert_eq!(
+        canon(rep).encounter,
+        *rep.v3().encounter(),
+        "canon keeps the encounter image"
+    );
+    assert_ne!(
+        canon(rep).encounter,
+        crpg_net::protocol_v3::EncounterFacts::default(),
+        "a real-time encounter is not the default image"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fix round B: the remaining B-7, Interface and script/canon gaps.
+// ---------------------------------------------------------------------------
+
+/// Interface: `in_flight` counts every channel, including `up` and the
+/// datagram lane.
+#[test]
+fn in_flight_counts_all_four_channels() {
+    let (hero, _goblin) = combatants();
+    let seats = vec![Seat {
+        name: "A",
+        control: vec![hero],
+        grants: Grants::Full,
+        faults: Faults::CLEAN,
+        script: Script::Idle,
+        twin: false,
+    }];
+    let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, false);
+    let a = arena.client_mut("A");
+    a.channel_mut(Which::Up).send(0, vec![1], Faults::CLEAN);
+    a.channel_mut(Which::Down0).send(0, vec![2], Faults::CLEAN);
+    a.channel_mut(Which::Down1).send(0, vec![3], Faults::CLEAN);
+    a.channel_mut(Which::Datagram)
+        .send(0, vec![4], Faults::CLEAN);
+    assert_eq!(a.in_flight(), 4, "one frame in each of the four channels");
+    assert_eq!(a.channel_mut(Which::Down0).len(), 1);
+    assert_eq!(a.channel_mut(Which::Down1).len(), 1);
+}
+
+/// Interface/B-18: `held_delta_bytes` reports the delta pages the gate is
+/// holding, not a constant zero.
+#[test]
+fn held_delta_bytes_reports_a_buffered_page() {
+    let (hero, goblin) = combatants();
+    let seats = vec![
+        Seat {
+            name: "A",
+            control: vec![hero],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Fight {
+                actor: n(1),
+                target: n(2),
+                first_move: pt(32768, 0, 32768),
+            },
+            twin: false,
+        },
+        Seat {
+            name: "B",
+            control: vec![goblin],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Fight {
+                actor: n(2),
+                target: n(1),
+                first_move: pt(32768, 0, 0),
+            },
+            twin: false,
+        },
+    ];
+    let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, false);
+    arena.run(3);
+    assert_eq!(
+        arena.client("A").held_delta_bytes(),
+        0,
+        "nothing is held before the gap"
+    );
+    arena.client_mut("A").channel_mut(Which::Down0).drop_next();
+    let mut held = false;
+    for _ in 0..100 {
+        arena.step();
+        if arena.client("A").held_delta_bytes() > 0 {
+            held = true;
+            break;
+        }
+    }
+    assert!(
+        held,
+        "a dropped delta leaves the next page buffered behind its gap"
+    );
+}
+
+/// B-8(b): a `Patrol` acts once per turn fact. Both sends from an
+/// unauthorised seat are refused, and the unchanged fact never makes it act
+/// again.
+#[test]
+fn patrol_acts_once_per_turn_fact() {
+    let (_hero, _goblin) = combatants();
+    let seats = vec![Seat {
+        name: "O",
+        control: Vec::new(),
+        grants: Grants::Observer,
+        faults: Faults::CLEAN,
+        script: Script::Patrol {
+            actor: n(2),
+            points: [pt(32768, 0, 0), pt(0, 0, 0)],
+        },
+        twin: false,
+    }];
+    let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, false);
+    arena.run(10);
+    let o = arena.client("O");
+    assert_eq!(
+        o.sent.len(),
+        2,
+        "one move and one end turn for the single turn fact"
+    );
+    assert!(matches!(
+        o.sent[0].body,
+        IntentBody::DeclareMove { destination } if destination == pt(32768, 0, 0)
+    ));
+    assert_eq!(o.sent[0].actor, n(2));
+    assert!(matches!(o.sent[1].body, IntentBody::EndTurn));
+    assert_eq!(o.sent[1].actor, n(2));
+    assert_eq!(
+        o.receipts.get(&1),
+        Some(&vec![ReceiptV3::Rejected(RejectionCode::NotAuthorized)]),
+        "the move is refused"
+    );
+    assert_eq!(
+        o.receipts.get(&2),
+        Some(&vec![ReceiptV3::Rejected(RejectionCode::NotAuthorized)]),
+        "the end turn is refused"
+    );
+    assert_eq!(o.moves_applied(), 0);
+}
+
+/// B-8(a): the end turn is conditioned on the receipt belonging to the turn
+/// fact it moved under. A receipt that lands on a later, hero-owned turn ends
+/// nothing.
+#[test]
+fn patrol_does_not_end_a_new_turn_for_an_old_receipt() {
+    let (hero, goblin) = combatants();
+    // `C` is first so its `EndTurn` on the hero lands while the goblin still
+    // owns the turn and is refused; `B`'s end turn then hands the turn back to
+    // the hero, so the hero's turn stays visible to `A` every cycle. `A`'s
+    // own move is delayed past that turn, so its receipt lands on a later
+    // hero turn fact.
+    let seats = vec![
+        Seat {
+            name: "C",
+            control: vec![hero],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Intruder {
+                actor: n(1),
+                every: 1,
+            },
+            twin: false,
+        },
+        Seat {
+            name: "A",
+            control: vec![hero],
+            grants: Grants::Full,
+            faults: Faults {
+                latency: 4,
+                ..Faults::CLEAN
+            },
+            script: Script::Patrol {
+                actor: n(1),
+                points: [pt(32768, 0, 32768), pt(0, 0, 0)],
+            },
+            twin: false,
+        },
+        Seat {
+            name: "B",
+            control: vec![goblin],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Patrol {
+                actor: n(2),
+                points: [pt(32768, 0, 0), pt(0, 0, 0)],
+            },
+            twin: false,
+        },
+    ];
+    let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, false);
+    let mut acted = None;
+    let mut at_receipt = None;
+    for _ in 0..120 {
+        let before = arena.client("A").replica.v3().turn().cloned();
+        let sent_before = arena.client("A").sent.len();
+        arena.step();
+        let a = arena.client("A");
+        if acted.is_none() && a.sent.len() > sent_before {
+            acted = Some(before);
+        }
+        if acted.is_some() && a.receipts.contains_key(&1) {
+            at_receipt = Some(a.replica.v3().turn().cloned());
+            break;
+        }
+    }
+    let acted = acted.expect("A sends its first move");
+    let turn = at_receipt.expect("A's first move is receipted");
+    assert_eq!(
+        turn.clone().expect("a turn fact").active,
+        Some(n(1)),
+        "the delayed receipt lands on a later hero turn"
+    );
+    assert_ne!(turn, acted, "the receipt lands on a later turn fact");
+    let sent = arena.client("A").sent.len();
+    let bodies: Vec<_> = arena.client("A").sent[..sent]
+        .iter()
+        .map(|f| f.body)
+        .collect();
+    arena.step();
+    let a = arena.client("A");
+    assert!(
+        !a.sent[sent..]
+            .iter()
+            .any(|f| matches!(f.body, IntentBody::EndTurn)),
+        "an old receipt ends no later turn: {:?} then {:?}",
+        bodies,
+        &a.sent[sent..]
+    );
+    assert!(a
+        .sent
+        .iter()
+        .all(|f| matches!(f.body, IntentBody::DeclareMove { .. } | IntentBody::EndTurn)));
+}
+
+/// B-9/B-12: a fight opens with its own first move, then strikes, the mirror
+/// agrees after every step, and nobody acts once a row is dead.
+#[test]
+fn fight_moves_once_strikes_and_stops_at_death() {
+    let (hero, goblin) = combatants();
+    let seats = vec![
+        Seat {
+            name: "A",
+            control: vec![hero],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Fight {
+                actor: n(1),
+                target: n(2),
+                first_move: pt(32768, 0, 32768),
+            },
+            twin: false,
+        },
+        Seat {
+            name: "B",
+            control: vec![goblin],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Fight {
+                actor: n(2),
+                target: n(1),
+                first_move: pt(32768, 0, 0),
+            },
+            twin: false,
+        },
+    ];
+    let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, true);
+    let mut dead_at = None;
+    for step in 0..1_000 {
+        arena.step();
+        assert_eq!(
+            arena.authority(),
+            arena.mirror_hash(),
+            "the mirror after step {step}"
+        );
+        if dead_at.is_none()
+            && ["A", "B"].iter().any(|name| {
+                arena
+                    .client(name)
+                    .replica
+                    .v3()
+                    .entities()
+                    .iter()
+                    .any(|row| row.health.as_ref().is_some_and(|h| h.dead))
+            })
+        {
+            dead_at = Some((arena.client("A").sent.len(), arena.client("B").sent.len()));
+        }
+        if dead_at.is_some() {
+            break;
+        }
+    }
+    let (a_sent, b_sent) = dead_at.expect("the fight ends");
+    let a = arena.client("A");
+    let b = arena.client("B");
+    assert!(matches!(
+        a.sent[0].body,
+        IntentBody::DeclareMove { destination } if destination == pt(32768, 0, 32768)
+    ));
+    assert!(matches!(
+        b.sent[0].body,
+        IntentBody::DeclareMove { destination } if destination == pt(32768, 0, 0)
+    ));
+    assert!(
+        a.sent
+            .iter()
+            .any(|f| matches!(f.body, IntentBody::DeclareAction { ability, target } if ability == strike() && target == n(2))),
+        "the hero strikes the goblin"
+    );
+    assert!(
+        b.sent
+            .iter()
+            .any(|f| matches!(f.body, IntentBody::DeclareAction { ability, target } if ability == strike() && target == n(1))),
+        "the goblin strikes the hero"
+    );
+    arena.run(20);
+    assert_eq!(arena.client("A").sent.len(), a_sent, "A stops at the death");
+    assert_eq!(arena.client("B").sent.len(), b_sent, "B stops at the death");
+    assert_eq!(arena.authority(), arena.mirror_hash());
+}
+
+/// B-13: a lane-0 send goes out under the seat's own faults, not a clean
+/// profile. With every reliable send losing `MAX_LOSSES` times, the answer
+/// pays both directions' retransmission delays.
+#[test]
+fn lane_zero_send_pays_the_seat_faults() {
+    let (hero, goblin) = combatants();
+    let seats = vec![
+        Seat {
+            name: "A",
+            control: vec![hero],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Idle,
+            twin: false,
+        },
+        Seat {
+            name: "B",
+            control: vec![goblin],
+            grants: Grants::Full,
+            faults: Faults {
+                loss_percent: 100,
+                ..Faults::CLEAN
+            },
+            script: Script::Patrol {
+                actor: n(2),
+                points: [pt(32768, 0, 0), pt(0, 0, 0)],
+            },
+            twin: false,
+        },
+    ];
+    let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, false);
+    let mut send_cycle = None;
+    let mut receipt_cycle = None;
+    for _ in 0..80 {
+        let c = arena.cycle;
+        arena.step();
+        let b = arena.client("B");
+        if send_cycle.is_none() && !b.sent.is_empty() {
+            send_cycle = Some(c);
+        }
+        if receipt_cycle.is_none() {
+            if let Some(&(_, at)) = b.receipt_cycles.iter().find(|(seq, _)| *seq == 1) {
+                receipt_cycle = Some(at);
+            }
+        }
+        if receipt_cycle.is_some() {
+            break;
+        }
+    }
+    let send = send_cycle.expect("B sends its move");
+    let receipt = receipt_cycle.expect("the move's receipt arrives");
+    assert!(
+        receipt >= send + 2 * u64::from(MAX_LOSSES),
+        "the intent and its receipt each pay MAX_LOSSES x rto: send {send}, receipt {receipt}"
+    );
+    assert_eq!(
+        arena.client("B").receipts.get(&1),
+        Some(&vec![ReceiptV3::Applied])
+    );
+}
+
+/// B-11: a walk waits for a disclosed position, then for the previous intent
+/// to clear, and only continues once the arrival sample has cleared `moving`.
+#[test]
+fn walk_gates_on_position_pending_and_motion() {
+    let (hero, _goblin) = combatants();
+    let seats = vec![Seat {
+        name: "A",
+        control: vec![hero],
+        grants: Grants::Full,
+        faults: Faults::CLEAN,
+        script: Script::Walk {
+            actor: n(1),
+            points: [pt(65536, 0, 65536), pt(0, 0, 0)],
+        },
+        twin: false,
+    }];
+    let mut arena = Arena::new(EncounterMode::RealTime, Some(4), seats, NET_SEED, false);
+
+    // P15: at cycle 0 the replica has no position, so the walk sends nothing.
+    arena.step();
+    assert!(
+        arena.client("A").move_receipts.is_empty(),
+        "no lane-1 intent before a position is disclosed"
+    );
+
+    // Cycle 1 discloses the position and sends the first leg.
+    arena.step();
+    assert_eq!(
+        arena.client("A").outbox.pending().len(),
+        0,
+        "the clean receipt clears the first leg"
+    );
+
+    // P17: a position at the destination that is still moving is not an
+    // arrival.
+    let sample = MoveSample {
+        server_tick: 1_000_000,
+        processed_seq: 0,
+        entries: vec![SampleEntry {
+            entity: n(1),
+            point: pt(65536, 0, 65536),
+            moving: true,
+        }],
+    };
+    let bytes = movement_v4::encode_down(&MoveDown::Sample(sample)).expect("a sample encodes");
+    let now = arena.cycle;
+    arena
+        .client_mut("A")
+        .channel_mut(Which::Datagram)
+        .send(now, bytes, Faults::CLEAN);
+    arena.step();
+    {
+        let a = arena.client("A");
+        assert_eq!(
+            a.replica.position(n(1)).map(|p| (p.point, p.moving)),
+            Some((pt(65536, 0, 65536), true)),
+            "the crafted sample is the newest position"
+        );
+        assert_eq!(a.outbox.pending().len(), 0);
+    }
+    arena.step();
+    assert_eq!(
+        arena.client("A").outbox.pending().len(),
+        0,
+        "a moving destination does not send the next leg"
+    );
+
+    // P16: an arrival with an intent already in flight does not send another.
+    let sample = MoveSample {
+        server_tick: 1_000_001,
+        processed_seq: 0,
+        entries: vec![SampleEntry {
+            entity: n(1),
+            point: pt(65536, 0, 65536),
+            moving: false,
+        }],
+    };
+    let bytes = movement_v4::encode_down(&MoveDown::Sample(sample)).expect("a sample encodes");
+    let now = arena.cycle;
+    arena
+        .client_mut("A")
+        .channel_mut(Which::Datagram)
+        .send(now, bytes, Faults::CLEAN);
+    arena.step();
+    assert_eq!(
+        arena
+            .client("A")
+            .replica
+            .position(n(1))
+            .map(|p| (p.point, p.moving)),
+        Some((pt(65536, 0, 65536), false)),
+        "the crafted arrival is the newest position"
+    );
+    arena
+        .client_mut("A")
+        .outbox
+        .send(
+            n(1),
+            MoveBody::MoveTo {
+                destination: pt(0, 0, 0),
+            },
+        )
+        .expect("the outbox takes a pending leg");
+    assert_eq!(arena.client("A").outbox.pending().len(), 1);
+    arena.step();
+    assert_eq!(
+        arena.client("A").outbox.pending().len(),
+        1,
+        "a pending intent blocks the next leg"
+    );
+}
+
+/// B-14: every `canon` field is the replica's, `world_view` strips only the
+/// per-viewer order and host facts, and `authority` hashes the host.
+#[test]
+fn comparison_reports_the_contract_fields() {
+    let (hero, goblin) = combatants();
+    let seats = vec![
+        Seat {
+            name: "A",
+            control: vec![hero],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Idle,
+            twin: true,
+        },
+        Seat {
+            name: "B",
+            control: vec![goblin],
+            grants: Grants::Full,
+            faults: Faults::CLEAN,
+            script: Script::Idle,
+            twin: false,
+        },
+    ];
+    let mut arena = Arena::new(EncounterMode::TurnBased, None, seats, NET_SEED, true);
+    arena.run(30);
+    let rep = &arena.client("A").replica;
+    let c = canon(rep);
+    assert_eq!(c.entities, rep.v3().entities().to_vec(), "entities");
+    assert_eq!(c.turn, rep.v3().turn().cloned(), "turn");
+    assert_eq!(c.encounter, *rep.v3().encounter(), "encounter");
+    assert_eq!(
+        c.timeline,
+        rep.v3().timeline().map(<[_]>::to_vec),
+        "timeline"
+    );
+    assert_eq!(c.pause, rep.v3().pause(), "pause");
+    assert!(c.pause.is_some(), "the clock is disclosed");
+    assert_eq!(c.host_facts, rep.v3().host_facts().cloned(), "host facts");
+    assert!(c.host_facts.is_some(), "the host facts are disclosed");
+    assert_eq!(
+        c.positions.get(&n(1)),
+        rep.position(n(1)).map(|p| (p.point, p.moving)).as_ref(),
+        "positions"
+    );
+
+    let view = world_view(rep);
+    assert_eq!(view.host_facts, None);
+    assert!(
+        view.entities.iter().all(|row| row.facts.order.is_none()),
+        "world_view strips every order"
+    );
+    assert_eq!(arena.twin("A").name, "A~");
+    assert_eq!(arena.twin("A").peer.get(), 2);
+
+    let host = arena.host_loop.hosting().host().authority_hash();
+    assert_eq!(arena.authority(), host);
+    arena
+        .mirror
+        .as_mut()
+        .expect("a mirror")
+        .world
+        .tick_with_movement()
+        .expect("the mirror ticks");
+    assert_ne!(arena.mirror_hash(), host, "the mirror has moved on");
+    assert_eq!(
+        arena.authority(),
+        host,
+        "authority is the loop host's hash, never the mirror's"
     );
 }
