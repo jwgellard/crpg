@@ -9,6 +9,9 @@
 
 use std::collections::BTreeSet;
 
+#[allow(dead_code)]
+mod support;
+
 use crpg_core::{EntityId, Ulid};
 use crpg_sim::{
     end_turn, history_hash, state_hash, tick, tick_with_movement, transfer_entity,
@@ -16,6 +19,8 @@ use crpg_sim::{
     HistoryWorld, OpenDialogue, QuestProgress, ScriptContinuation, SimEvent, Transform, World,
 };
 use serde_json::{json, Value};
+
+use support::Fixture;
 
 fn u(n: u8) -> Ulid {
     format!("{}{n}", "0".repeat(25))
@@ -477,6 +482,94 @@ fn transfer_history_refuses_holders() {
         .expect("a participant with no open dialogue moves");
     assert!(destination.world().contains(moved));
     assert!(!source.world().contains(participant));
+}
+
+/// B-9 (Reading 10): the `ScriptState` check runs after the T139
+/// `PlacementInUse` check. A holder whose transfer also collides with a
+/// destination record is refused as `PlacementInUse`, in both functions, with
+/// both sides unchanged. Controls: the same holder against a destination with
+/// no collision is `ScriptState`, and after `close_dialogue` it moves.
+#[test]
+fn fa_1_transfer_placement_conflict_wins_over_script_state() {
+    let fixture = Fixture::standard();
+    let placement = fixture.placement_a;
+
+    // Plain worlds: put a record of `placement` in the destination, then a
+    // second record of it (with an open dialogue) in the source.
+    let mut source = World::new_in_area(0, fixture.area);
+    let mut destination = World::new_in_area(0, u(2));
+    let first = fixture.register(&mut source, placement).expect("registers");
+    transfer_entity(&mut source, &mut destination, first).expect("the first record moves");
+    let holder = fixture.register(&mut source, placement).expect("registers");
+    source.transforms_mut().insert(holder, flat_transform());
+    source.open_dialogue(holder, dlg(5)).unwrap();
+
+    let (source_text, destination_text) = (text(&source), text(&destination));
+    assert_eq!(
+        transfer_entity(&mut source, &mut destination, holder),
+        Err(AreaError::PlacementInUse { placement })
+    );
+    assert_eq!(
+        (text(&source), text(&destination)),
+        (source_text, destination_text),
+        "a refusal publishes neither side"
+    );
+
+    // Control: the same holder against a destination holding no record is
+    // `ScriptState`, so the holder is still refused once placement is free.
+    let mut free = World::new_in_area(0, u(3));
+    assert_eq!(
+        transfer_entity(&mut source, &mut free, holder),
+        Err(AreaError::ScriptState { entity: holder })
+    );
+
+    // Control: after the dialogue closes the record moves.
+    source.close_dialogue(holder).unwrap();
+    let moved = transfer_entity(&mut source, &mut free, holder).expect("moves");
+    assert!(free.contains(moved));
+    assert!(!source.contains(holder));
+
+    // The same precedence through the history pair.
+    let mut source = HistoryWorld::new_in_area(0, fixture.area);
+    let mut destination = HistoryWorld::new_in_area(0, u(2));
+    let first = fixture
+        .register_history(&mut source, placement)
+        .expect("registers");
+    transfer_history_entity(&mut source, &mut destination, first).expect("the first record moves");
+    let holder = fixture
+        .register_history(&mut source, placement)
+        .expect("registers");
+    source.open_dialogue(holder, dlg(5)).unwrap();
+
+    let (source_text, destination_text) = (
+        serde_json::to_string(&source).unwrap(),
+        serde_json::to_string(&destination).unwrap(),
+    );
+    assert_eq!(
+        transfer_history_entity(&mut source, &mut destination, holder),
+        Err(AreaError::PlacementInUse { placement })
+    );
+    assert_eq!(
+        (
+            serde_json::to_string(&source).unwrap(),
+            serde_json::to_string(&destination).unwrap()
+        ),
+        (source_text, destination_text),
+        "a refusal publishes neither wrapper"
+    );
+
+    // Control: the same holder against a free destination is `ScriptState`.
+    let mut free = HistoryWorld::new_in_area(0, u(3));
+    assert_eq!(
+        transfer_history_entity(&mut source, &mut free, holder),
+        Err(AreaError::ScriptState { entity: holder })
+    );
+
+    // Control: after the dialogue closes the record moves.
+    source.close_dialogue(holder).unwrap();
+    let moved = transfer_history_entity(&mut source, &mut free, holder).expect("moves");
+    assert!(free.world().contains(moved));
+    assert!(!source.world().contains(holder));
 }
 
 // ------------------------------------------------------------------- C9 / B-10
