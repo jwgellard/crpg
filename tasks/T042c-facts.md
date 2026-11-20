@@ -160,6 +160,24 @@ Each entry cites an existing `path:line`.
 
 ## Rules that bind it
 
+- `ALLOWED table` (`tools/lint/deps.py:46`): the enforced edge list; a crate missing from it is itself a violation (`tools/lint/deps.py:7`).
+- `crpg-net-quic row` (`tools/lint/deps.py:59`): `({"crpg-net"}, set())` — one workspace edge, no dev-dependency exception.
+- `crpg-godot row` (`tools/lint/deps.py:71`): `(None, set())` — any workspace crate is allowed and none is excluded.
+- `crpg-testkit row` (`tools/lint/deps.py:68`): `(None, {"crpg-godot"})` — any crate but `crpg-godot`.
+- `IO-free crates` (`tools/lint/deps.py:81`): `crpg-core`, `crpg-data`, `crpg-rules`, `crpg-sim`, `crpg-net` may not name `tokio`, `quinn`, `rustls`, `ring`, `mio` or `socket2` (`tools/lint/deps.py:82`); `crpg-net-quic` is not in either set.
+- `unsafe and godot` (`tools/lint/deps.py:75`): only `crpg-godot` may depend on `godot` or use `unsafe`; every other crate root must carry `#![forbid(unsafe_code)]` (`tools/lint/deps.py:88`).
+- `determinism lint scope` (`tools/lint/determinism.py:67`): `CRATES` is `crpg-core`, `crpg-rules`, `crpg-sim`, `crpg-nav`, `crpg-ai` only — `crpg-net-quic`, `crpg-godot` and `crpg-testkit` are not scanned by it.
+- `determinism float scope` (`tools/lint/determinism.py:69`): the full float ban covers `crpg-core`, `crpg-rules`, `crpg-nav`, `crpg-ai`; `crpg-sim` gets the `f64`-only rule (`tools/lint/determinism.py:274`).
+- `§1.4 serialized set` (`docs/IMPLEMENTATION_PLAN.md:86`): serialize anything touching `crpg-contracts`, the `World`/tick order, schema versions, the GDExtension boundary in `crpg-godot` (`docs/IMPLEMENTATION_PLAN.md:95`), or the workspace manifest/`deny.toml`/workflows; packages marked **S** in §3 join it (`docs/IMPLEMENTATION_PLAN.md:98`).
+- `§1.4 superseded` (`docs/IMPLEMENTATION_PLAN.md:84`): §1.3–§1.4 are replaced by `docs/AGENT_TEAM_PLAN.md` §§4–6.
+- `GDExtension boundary is shell.rs` (`crates/crpg-godot/AGENTS.md:56`): the one hand-written `unsafe` is `unsafe impl ExtensionLibrary for CrpgExtension` in `shell.rs`; the core below it is Godot-free (`crates/crpg-godot/AGENTS.md:12`), so a test-only change in `src/core/**` names no `shell.rs` line and no Godot API.
+- `v2 frozen` (`crates/crpg-godot/AGENTS.md:65`): v4 work goes in `client_v4.rs` and `authority/v4.rs`; the v2 session and its tests keep their bytes.
+- `core bans` (`crates/crpg-godot/AGENTS.md:37`): no float, `HashMap`/`HashSet`, `Instant` or `SystemTime` in the core; maps are `BTreeMap`.
+- `one task = one crate` (`AGENTS.md:57`): a task that needs two crates stops and says so.
+- `no new dependencies` (`AGENTS.md:52`): dependencies are not added without being asked.
+- `testkit rule` (`AGENTS.md:36`): `crpg-testkit` is an integration consumer, not a dependency of the layers it tests; a higher crate may dev-depend on it only when every normal dependency testkit brings is already legal for that crate and testkit does not depend back (`AGENTS.md:39`); the `ALLOWED` table stays authoritative (`AGENTS.md:41`).
+- `testkit may not reach crpg-godot` (`crates/crpg-godot/AGENTS.md:110`): `client.rs` and `link.rs` never name `crpg_server`, `crpg_sim`, `EntityId` or `authority`, keeping the K31 source rule and the dependency direction intact.
+
 ## Agent log
 
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T042c facts · Gathering the requirements, existing suites, refusal paths and constraints the T042c contract will be written from.
