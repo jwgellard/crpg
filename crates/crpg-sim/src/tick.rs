@@ -64,6 +64,8 @@ pub fn end_turn(world: &mut World) -> Option<(InitiativeKey, EntityId)> {
 fn run_systems(world: &mut World, facts: &mut TickFacts) {
     // §10 stage 2 (timers, durations, refreshes) — T138: the encounter clock.
     encounter_clock_system(world, facts);
+    // §10 stage 2 (timers, durations, refreshes) — T052: script waits count down.
+    crate::continuation::wait_system(world);
     // §10 stage 3 (timeline order) — T138: RT execution of due orders.
     timeline_system(world, facts);
     // §10 stage 4 (movement) — T036: routes advance, mirrors rewrite.

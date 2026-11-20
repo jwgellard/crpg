@@ -11,7 +11,10 @@
 //! authorized owner — not automatic navigation, and not a client operation.
 //! They move only the currently supported noncombat, unscheduled shape
 //! (`EntityMeta` plus an optional `Transform`, an optional `CreatureState` and
-//! an optional `Mover`, T036), allocating a fresh identity in the destination. Runtime identity across worlds is `(area, EntityId)`
+//! an optional `Mover`, T036), allocating a fresh identity in the destination.
+//! An entity holding a script continuation or an open dialogue (T052) is
+//! refused as `ScriptState`: the move could not carry that state.
+//! Runtime identity across worlds is `(area, EntityId)`
 //! because two worlds can mint equal arena ids. Anything the move cannot
 //! carry fails the whole transfer instead of disappearing.
 
@@ -65,6 +68,11 @@ pub enum AreaError {
         /// The placement.
         placement: Ulid,
     },
+    /// The entity holds a script continuation or an open dialogue (T052).
+    ScriptState {
+        /// The holder.
+        entity: EntityId,
+    },
     /// The source journal cannot accept the removal.
     SourceHistory(HistoryError),
     /// The destination journal cannot accept the spawn.
@@ -83,6 +91,7 @@ impl fmt::Display for AreaError {
             Self::ScheduledEntity { .. } => "ScheduledEntity",
             Self::InvalidTransform { .. } => "InvalidTransform",
             Self::PlacementInUse { .. } => "PlacementInUse",
+            Self::ScriptState { .. } => "ScriptState",
             Self::SourceHistory(_) => "SourceHistory",
             Self::DestinationHistory(_) => "DestinationHistory",
         };
@@ -140,6 +149,11 @@ fn preflight(source: &World, destination: &World, entity: EntityId) -> Result<()
         if held {
             return Err(AreaError::PlacementInUse { placement });
         }
+    }
+    // T052 (Reading 10): a continuation or an open dialogue cannot move, and
+    // would otherwise be silently dropped. Checked last.
+    if source.continuations().contains(entity) || source.dialogues().contains(entity) {
+        return Err(AreaError::ScriptState { entity });
     }
     Ok(())
 }

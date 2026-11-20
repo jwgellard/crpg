@@ -50,6 +50,7 @@ use crate::combat::{
     CombatAction, CombatError, EncounterMode, EncounterSpec, EncounterSummary, TickEvent,
     TransitionFacts,
 };
+use crate::continuation::{ContinuationError, OpenDialogue, ScriptContinuation};
 use crate::creature::{CreatureSpec, CreatureState, Entrant};
 use crate::event::SimEvent;
 use crate::movement::{
@@ -307,6 +308,8 @@ pub enum HistoryError {
     StringLimit,
     /// The staged movement operation failed; nothing was committed (T036).
     Move(MoveError),
+    /// A script-state operation was refused; nothing was committed (T052).
+    Script(ContinuationError),
 }
 
 impl fmt::Display for HistoryError {
@@ -315,6 +318,7 @@ impl fmt::Display for HistoryError {
         match self {
             Self::Combat(error) => write!(f, "{error}"),
             Self::Move(error) => write!(f, "{error}"),
+            Self::Script(error) => write!(f, "{error}"),
             Self::InvalidPageLimit { .. } => write!(f, "InvalidPageLimit at history"),
             Self::StaleCursor { .. } => write!(f, "StaleCursor at history"),
             Self::FutureCursor { .. } => write!(f, "FutureCursor at history"),
@@ -332,6 +336,7 @@ impl std::error::Error for HistoryError {
         match self {
             Self::Combat(error) => Some(error),
             Self::Move(error) => Some(error),
+            Self::Script(error) => Some(error),
             _ => None,
         }
     }
@@ -636,6 +641,104 @@ impl HistoryWorld {
         }
         self.commit(world, events, tick)?;
         Ok(id)
+    }
+
+    /// Journaled [`World::spawn_continuation`] (T052): mints the holder and
+    /// commits exactly one `Spawned`; a full journal fails with the commit's
+    /// own error and allocates nothing.
+    pub fn spawn_continuation(&mut self, c: ScriptContinuation) -> Result<EntityId, HistoryError> {
+        let mut world = self.world.clone();
+        let id = world.spawn_continuation(c);
+        let drained = world.events_mut().drain();
+        let tick = world.tick();
+        debug_assert_eq!(drained.len(), 1, "spawn enqueues exactly one event");
+        let mut events = Vec::with_capacity(drained.len());
+        for envelope in &drained {
+            events.push(translate_legacy(&envelope.payload));
+        }
+        self.commit(world, events, tick)?;
+        Ok(id)
+    }
+
+    /// Journaled [`World::set_continuation`] (T052); commits zero events. A
+    /// refusal is [`HistoryError::Script`].
+    pub fn set_continuation(
+        &mut self,
+        entity: EntityId,
+        c: ScriptContinuation,
+    ) -> Result<ScriptContinuation, HistoryError> {
+        let mut world = self.world.clone();
+        let old = world
+            .set_continuation(entity, c)
+            .map_err(HistoryError::Script)?;
+        self.commit_script(world)?;
+        Ok(old)
+    }
+
+    /// Journaled [`World::open_dialogue`] (T052); commits zero events. A
+    /// refusal is [`HistoryError::Script`].
+    pub fn open_dialogue(
+        &mut self,
+        participant: EntityId,
+        d: OpenDialogue,
+    ) -> Result<(), HistoryError> {
+        let mut world = self.world.clone();
+        world
+            .open_dialogue(participant, d)
+            .map_err(HistoryError::Script)?;
+        self.commit_script(world)
+    }
+
+    /// Journaled [`World::set_dialogue_node`] (T052); commits zero events. A
+    /// refusal is [`HistoryError::Script`].
+    pub fn set_dialogue_node(
+        &mut self,
+        participant: EntityId,
+        node: Ulid,
+    ) -> Result<Ulid, HistoryError> {
+        let mut world = self.world.clone();
+        let old = world
+            .set_dialogue_node(participant, node)
+            .map_err(HistoryError::Script)?;
+        self.commit_script(world)?;
+        Ok(old)
+    }
+
+    /// Journaled [`World::close_dialogue`] (T052); commits zero events. A
+    /// refusal is [`HistoryError::Script`].
+    pub fn close_dialogue(&mut self, participant: EntityId) -> Result<OpenDialogue, HistoryError> {
+        let mut world = self.world.clone();
+        let closed = world
+            .close_dialogue(participant)
+            .map_err(HistoryError::Script)?;
+        self.commit_script(world)?;
+        Ok(closed)
+    }
+
+    /// Journaled [`World::set_quest_state`] (T052); commits zero events.
+    pub fn set_quest_state(
+        &mut self,
+        quest: Ulid,
+        state: Ulid,
+    ) -> Result<Option<Ulid>, HistoryError> {
+        let mut world = self.world.clone();
+        let old = world.set_quest_state(quest, state);
+        self.commit_script(world)?;
+        Ok(old)
+    }
+
+    /// Journaled [`World::remove_quest`] (T052); commits zero events.
+    pub fn remove_quest(&mut self, quest: Ulid) -> Result<Option<Ulid>, HistoryError> {
+        let mut world = self.world.clone();
+        let old = world.remove_quest(quest);
+        self.commit_script(world)?;
+        Ok(old)
+    }
+
+    /// Commits a staged script-state world with no events (T052).
+    fn commit_script(&mut self, world: World) -> Result<(), HistoryError> {
+        let tick = world.tick();
+        self.commit(world, Vec::new(), tick)
     }
 
     /// Journaled registration (T139, ADR-0029 T16): stages
