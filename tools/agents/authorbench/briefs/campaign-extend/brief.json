@@ -1,0 +1,11 @@
+{
+ "name": "campaign-extend",
+ "kind": "extend",
+ "starter": "campaigns/fixtures/combat_basic",
+ "minimum": {
+  "creature": 3
+ },
+ "ruleset_slug": null,
+ "min_combatants": 3,
+ "timeout_s": 900
+}

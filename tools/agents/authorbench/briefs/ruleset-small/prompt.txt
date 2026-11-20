@@ -1,0 +1,19 @@
+# Authoring task
+
+You are building game content for a CRPG engine. Work only inside this directory.
+
+## What to build
+
+Define a small rule system and show that it plays. The rule system is named `tiny-d8` (slug `tiny-d8`). It has three attributes (vigor, finesse, wit) and a health stat; a creature has one action each turn. It has one ability, `cut`, that costs one action and rolls one eight-sided die against the attacker's vigor; it succeeds when the roll is no higher than the vigor, a success deals 3 damage and a failure deals none. It has one outcome table of your own, named `d8-under`. Then build the smallest campaign in `campaign/` that uses it: a campaign named `tiny-test`, one world, one area, two creatures (`squire` and `rat`) placed in the area, and one encounter in which they fight. The fight must start with two combatants.
+
+## What you have
+
+{{TOOLS}}
+
+## Rules of the exercise
+
+- Use only `crpgc` and the files in `schemas/`. Do not look for other documentation and do not read anything outside this directory.
+- Put the finished campaign in the `campaign/` directory here. Every document is a JSON file.
+- Check your work with `crpgc validate campaign --json` and keep going until it exits 0.
+- Then check that it plays: give `crpgc play --campaign campaign` its choices on standard input, one number per line.
+- When you are finished, reply with the single word DONE. If you cannot finish, reply with the word STUCK and one sentence saying why.

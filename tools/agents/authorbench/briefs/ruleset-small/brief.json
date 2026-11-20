@@ -1,0 +1,15 @@
+{
+ "name": "ruleset-small",
+ "kind": "ruleset",
+ "starter": null,
+ "minimum": {
+  "creature": 2,
+  "ability": 1,
+  "outcome-table": 1,
+  "ruleset": 1,
+  "encounter": 1
+ },
+ "ruleset_slug": "tiny-d8",
+ "min_combatants": 2,
+ "timeout_s": 1800
+}

@@ -1,0 +1,6 @@
+# Models the authoring benchmark runs by default (T100). Edit freely.
+opencode-go/deepseek-v4.1-flash
+opencode-go/deepseek-v4-pro
+opencode-go/muse-spark-1.3-contributor
+opencode-go/glm-5.3
+opencode-go/claude-haiku-5-5

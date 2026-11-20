@@ -1,0 +1,16 @@
+`crpgc` is the engine's command-line tool; it is on your PATH.
+
+  crpgc validate <campaign-root> [--json]
+      Checks a campaign directory. Exit 0 means no error was found. With --json it prints a JSON array of diagnostics.
+  crpgc new <type> --slug <s> --id <id> [--entry-id <id>]
+      Prints one minimal valid document of that type to standard output. <type> is creature, item, dialogue or quest.
+  crpgc schema <type>
+      Prints one JSON Schema. <type> is campaign, world, area, creature, item, dialogue, quest, faction, graph, placements, triggers, locale, variables, campaign-lock, assets-lock, placement or action-signature.
+  crpgc explain <id> [--root <campaign-root>]
+      Prints one object of a campaign by its id.
+  crpgc fmt [<campaign-root>] [--check]
+      Rewrites documents in canonical form; with --check it lists the ones that are not.
+  crpgc play --campaign <campaign-root> [--encounter <ulid>] [--side <name>] [--seed N]
+      Plays one encounter in the terminal. It reads one number per line from standard input to pick an option; `q` quits.
+
+The directory `schemas/` holds all 23 JSON Schema files, including the six that `crpgc schema` does not print: ability, effect, encounter, outcome-table, ruleset and ui.
