@@ -261,6 +261,19 @@ T041a also runs `cargo test -p crpg-testkit --locked --test headless_harness`
 and reports its time (T041b runs `--test desync` with D1's time; T041c runs
 `--test host_malicious`).
 
+As built (T041b, `tests/desync.rs`): D1 runs L1 as five blocks of 1,000
+`Faults::SPEC` steps with a settle/checkpoint after each — as built, A 135
+and B 136 applied `DeclareMove`s, 19 `NotAuthorized` intrusions, 83 reliable
+losses, 46 lost and 19 duplicated datagrams, about 2.6 s in the debug test
+profile. D2 repeats 1,000 steps on `NET_SEED` (hashes, `sent`, receipt
+cycles) and requires `NET_SEED + 1` to change A's receipt cycles; D3 drops
+one down-0 frame and requires A to split from its twin while B, O and the
+authority stay converged; D4 walks both lane-1 clients to exactly `1..=k`
+accepted receipts with `k >= 20`; D5 is the gate-13 embedded fight. The
+extra `walk_waits_while_moving` pins B-11's `!p.moving` gate: a clean
+receipt clears in the same step, so `outbox.pending()` cannot see an early
+leg and the case pins the receipt sequence instead.
+
 ## Definition of done for any change
 
 ```
@@ -350,3 +363,4 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the two approved dev-only edges (`crpg-ai`, `crpg-nav`) for the MVP AI behaviour suite, so a later suite can reuse the fixture without re-justifying the dependency direction.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Extended the MVP AI suite contract with G23-G34: control-paired cases for the approach-target ordering, real-time precedence, standoff/step arithmetic, off-mesh goal, summed reserve, moverless distance and one-raw walk, and the fixture helpers they add; no dependency, source or golden change.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041a · Added the tests-only headless-client contract section: the shared `tests/support/headless.rs` rig (simulated network, v4 client, scripts, arena, twin-session and mirror oracles, `canon`/`world_view`) and the H1–H8 suite, with the two traps (never ack on the client's behalf; compare `canon` only after `settle()`) and the T041 definition of done; no dependency, source or golden change.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041b · Extended the section with the as-built D1 counts, the D2–D5 shape and `walk_waits_while_moving`, which pins B-11's moving gate where `outbox.pending()` cannot; no dependency, source or golden change.

@@ -252,9 +252,30 @@ equal the mirror's `history_hash` and `canon` must agree across twins.
 `canon`/`world_view` leave out the ticks and event sequences that
 legitimately differ per session. `tests/headless_harness.rs` is the H1–H8
 suite proving the network, the arena, the scripts, the settle/resume cycle
-and the comparison. T041b adds `tests/desync.rs` D1–D5 (and the D1 counts);
-T041c adds `tests/host_malicious.rs` M1–M10 and the `crpg-net.md` index
-cells. No source, fixture, manifest or golden changes.
+and the comparison. T041b adds `tests/desync.rs`. D1
+(`five_thousand_ticks_under_loss_and_jitter`) runs L1 — two patrolling
+players and an observer that intrudes every 250 cycles, each with a
+faultless twin — as five blocks of 1,000 `Faults::SPEC` steps, asserting
+`authority() == mirror_hash()` after every 100th step and the full
+settle/checkpoint before resuming. As built, the run's counts are A 135 and
+B 136 applied `DeclareMove`s, 19 intrusions (all `NotAuthorized`), 83
+reliable losses, and 46 lost plus 19 duplicated datagrams; D1 takes about
+2.6 s in the debug test profile. D2 (`seeded_runs_repeat`) pins the
+authority hashes, `sent` frames and receipt cycles of two 1,000-step runs
+against `NET_SEED` and requires `NET_SEED + 1` to change A's receipt
+cycles. D3 (`a_frame_lost_for_good_is_caught`) drops one down-0 frame for
+good and requires A to diverge from its twin while B, O and the authority
+stay converged. D4 (`lane_one_walks_under_loss`) walks both players on lane
+1 in real time under `Faults::SPEC` and pins the receipts to exactly `1..=k`,
+all `Accepted`, with `k >= 20`. D5 (`two_clients_move_fight_and_agree`) is
+the gate-13 embedded leg: both clients move once, strike to one death, and
+agree with each other and with the mirror's combatant health. The extra
+case `walk_waits_while_moving` pins B-11's moving gate directly — a sample
+at the previous destination that is still moving must not send the next leg
+— because the harness suite's `outbox.pending()` check cannot see a leg
+whose clean receipt clears in the same step. T041c adds
+`tests/host_malicious.rs` M1–M10 and the `crpg-net.md` index cells. No
+source, fixture, manifest or golden changes.
 
 ## What consumers inherit
 
@@ -290,3 +311,4 @@ cells. No source, fixture, manifest or golden changes.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the tests-only MVP AI decision suite: the private fixture's provenance and typed edits, the G1-G22 shape with its controls, and the two dev-only edges, so the crate doc names the suite's owner and its boundary.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Added G23-G34 and the fixture edits they need (`reversed_abilities`, `step_cost`, `extra_cost`, `place_c`, a member registered without movement) to pin the mutant review's ordered rules exactly, so the suite fails on each named bug rather than passing by coincidence.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041a · Recorded the tests-only headless-client rig (`tests/support/headless.rs`): the `combat_basic` start, the QUIC-shaped simulated network, the v4 `HeadlessClient`, the `Arena` over `HostLoop<LocalHost>`, the twin-session and independent-mirror oracles, and the H1–H8 harness suite; no source, fixture, manifest or golden changed.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041b · Recorded the as-built D1 counts (135/136 applied moves, 19 intrusions, 83 reliable losses, 46 lost and 19 duplicated datagrams, about 2.6 s), the D2–D5 shape, and the extra `walk_waits_while_moving` case that pins B-11's moving gate; no source, fixture, manifest or golden changed.
