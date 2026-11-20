@@ -60,6 +60,41 @@ Each entry cites an existing `path:line`.
 
 ## crpg-net-quic client
 
+- `Welcome` (`crates/crpg-net-quic/src/handshake.rs:320`): server→client first frame after acceptance, `wire_version: u8` and `epoch: [u8; 16]`.
+- `Welcome::encode` (`crates/crpg-net-quic/src/handshake.rs:329`): `[wire_version][epoch: 16]`, `WELCOME_BYTES` long; `encode_for` (`:334`) applies the ALPN version rule.
+- `Welcome::decode` (`crates/crpg-net-quic/src/handshake.rs:343`): length ≠ 17 → `Malformed`, then an unknown version → `UnsupportedWireVersion`; the epoch is copied opaquely.
+- `Welcome::decode_for` (`crates/crpg-net-quic/src/handshake.rs:348`): the same checks with the connection's ALPN rule.
+- `wire_version_ok` (`crates/crpg-net-quic/src/handshake.rs:375`): `/3` carries exactly version 4; `/1` and `/2` carry 1 or 2.
+- `HandshakeError` (`crates/crpg-net-quic/src/handshake.rs:364`): `Malformed`, `UnsupportedWireVersion`, `CredentialLength` — the only handshake refusals.
+- `ConnectError::InvalidWelcome` (`crates/crpg-net-quic/src/client.rs:64`): the welcome, or a resume answer, is malformed or names another version; the client closes with `ProtocolViolation`.
+- `welcome header length check` (`crates/crpg-net-quic/src/client.rs:977`): a 4-byte length other than 17 returns `InvalidWelcome`.
+- `welcome body decode` (`crates/crpg-net-quic/src/client.rs:983`): any `HandshakeError` from `Welcome::decode_for` maps to `InvalidWelcome`.
+- `welcome version must equal the hello's` (`crates/crpg-net-quic/src/client.rs:984`): a mismatch returns `InvalidWelcome`.
+- `resume answer header` (`crates/crpg-net-quic/src/client.rs:1024`): byte 0 must be `Channel::Resume` (`0x91`), else `InvalidWelcome`; `parse_answer_len` (`:1027`) accepts only 1..=65,536.
+- `read_welcome_part` (`crates/crpg-net-quic/src/client.rs:1052`): a lost connection is `lost_error`, any other read failure is `invalid_welcome` (`:1060`).
+- `invalid_welcome` (`crates/crpg-net-quic/src/client.rs:1064`): `close_quinn(connection, CloseCode::ProtocolViolation)` then `ConnectError::InvalidWelcome`.
+- `lost_error` (`crates/crpg-net-quic/src/client.rs:1070`): peer `ApplicationClosed` → `ConnectError::Refused { code }`, otherwise `ConnectError::Lost` (`:1075`).
+- `handshake_error` (`crates/crpg-net-quic/src/client.rs:1080`): `PinMismatch`, `EndpointFull` on `CONNECTION_REFUSED`, `Refused`, `TimedOut`, `Reset`, `Lost(Local(Normal))` for local close, and `Handshake` for the rest.
+- `negotiated-ALPN check` (`crates/crpg-net-quic/src/client.rs:945`): under `/2` or `/3` a negotiated protocol other than the one offered closes with `ProtocolViolation` and returns `Handshake`.
+- `frame_error_code` (`crates/crpg-net-quic/src/queue.rs:946`): zero length or an unknown channel is `ProtocolViolation`; an over-cap length is `FrameTooLarge` with no body read.
+- `read_lane_frame` (`crates/crpg-net-quic/src/queue.rs:956`): reads the 4-byte header and body; `/2` upstream rejects a `0x91` opening as `ProtocolViolation` (`:977`).
+- `read_fail` (`crates/crpg-net-quic/src/queue.rs:988`): a FIN mid-frame or `RESET_STREAM` is `ProtocolViolation`; any other read error is `Lost`.
+- `datagram_reader` (`crates/crpg-net-quic/src/queue.rs:1151`): an empty datagram closes `ProtocolViolation` (`:1157`), one above `MAX_DATAGRAM_BYTES` closes `FrameTooLarge` (`:1161`).
+- `try_recv` (`crates/crpg-net-quic/src/client.rs:450`): `Ok(None)` when empty; `Err(CloseReason)` only once closed **and** drained; a transfer or resume frame at the head still returns `Ok(None)`.
+- `try_recv_channel` / `try_recv_lane1` / `try_recv_datagram` (`crates/crpg-net-quic/src/client.rs:471`, `:509`, `:523`): the same drained-then-error rule per queue.
+- `close_reason` (`crates/crpg-net-quic/src/client.rs:610`): `EndpointFailed` if the I/O thread failed, else the record's first close reason.
+- `close` (`crates/crpg-net-quic/src/client.rs:621`): takes `CloseCode` and `CloseMode`, runs `stop`, joins the I/O thread, returns `CloseReport`.
+- `stop` (`crates/crpg-net-quic/src/client.rs:629`): builds the flush request with `FlushClose::flush_close` (`:634`); `Flush` waits for the record's close (`:641`); `Discard` records `Local(code)` (`:661`); then sets `Stop { code, deadline }` (`:667`).
+- `Drop` (`crates/crpg-net-quic/src/client.rs:693`): closes with `Normal` in `Discard` mode (`:698`).
+- `CloseCode` (`crates/crpg-net-quic/src/close.rs:10`): `Normal` 0, `Shutdown` 1, `ProtocolViolation` 2, `FrameTooLarge` 3, `HelloTimeout` 4, `AuthRefused` 5, `VersionRefused` 6, `ServerBusy` 7, `AuthTimeout` 8, `SessionFenced` 9; `from_u64` (`:41`) returns `None` outside 0..=9.
+- `CloseMode` (`crates/crpg-net-quic/src/close.rs:76`): `Flush` writes queued frames, FINs, waits for the ack, then `CONNECTION_CLOSE`; `Discard` drops unqueued frames and closes at once.
+- `CloseReason` (`crates/crpg-net-quic/src/close.rs:88`): `Local(CloseCode)`, `Peer { code: u64 }`, `IdleTimeout`, `Transport`, `Reset`, `EndpointFailed`.
+- `v2_client_reader_close_codes` (`crates/crpg-net-quic/tests/channel.rs:2545`): a raw quinn server writes valid lane-0/transfer/resume frames, then one bad 4-byte header per case; asserts the client returns `Local(ProtocolViolation)` (code 2) for a zero length, an unknown channel or a wrong direction, `Local(FrameTooLarge)` (code 3) for an over-cap length, and the peer sees the same code; frames before the bad one still drain.
+- `v2_client_reader_close_codes, FIN mid-frame` (`crates/crpg-net-quic/tests/channel.rs:2587`): a short body followed by FIN makes `try_recv_channel` return `Local(ProtocolViolation)` and the peer see code 2.
+- `connect_resume_answer_checks_and_timeout` (`crates/crpg-net-quic/tests/channel.rs:2654`): six resume answers — a `/1` welcome, a foreign channel byte, a zero length, a 0x010001 length, a truncated body with FIN — each gives `ConnectError::InvalidWelcome` and the peer sees close 2 (`:2689`).
+- `frame_and_handshake_bytes_are_exact` (`crates/crpg-net-quic/tests/quic.rs:72`): direct `Welcome::decode` checks — 16 bytes, 17 zeros, a 17-byte trailing input are `Malformed`; version 3 is `UnsupportedWireVersion` (`:153`–`:164`). It does not feed a live client.
+- `none found` (`crates/crpg-net-quic/tests/channel.rs:2515`): no test drives `QuicClient::connect` against a raw server that sends a malformed 17-byte welcome, a welcome whose version differs from the hello's, or a header length other than 17; `raw_v2_connect` always sends a valid welcome (`:2530`).
+
 ## Godot bridge
 
 ## Test harness options
