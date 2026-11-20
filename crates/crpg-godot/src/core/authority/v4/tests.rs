@@ -3,15 +3,18 @@
 //! never wall time (T154 R-3).
 
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crpg_net::protocol_v3::PauseRights;
 use crpg_net::transport::Transport;
 use crpg_server::run::{HostLoop, LocalHost};
 use crpg_server::runner::{Clock, RunnerGone};
 
+use super::read_options;
 use crate::core::client::{SessionView, ViewEvent, ViewMoveReceipt, ViewReceipt};
 use crate::core::link::{LocalLink, LINK_FRAMES};
 use crate::core::{BridgeCode, BridgeCore, Probe};
@@ -127,6 +130,99 @@ fn bad_area_campaign() -> TempCampaign {
         .join("area.json");
     let content = "{\n  \"ambience\": null,\n  \"bounds\": {\n    \"max\": [\n      0,\n      65536,\n      65536\n    ],\n    \"min\": [\n      0,\n      0,\n      0\n    ]\n  },\n  \"id\": \"0000000000000000000000000D\",\n  \"name\": \"fixture.start\",\n  \"neighbours\": [],\n  \"schema\": \"crpg.area/1\",\n  \"slug\": \"start\"\n}";
     fs::write(&area, content).expect("write area");
+    campaign
+}
+
+/// BASIC grown to three combatants: two goblins on the `Goblin` side
+/// (initiatives 9 and 10, the first acting) and the Hero (11). The first
+/// goblin's options therefore open with an attack on its ally (the second
+/// goblin) before the attack on the Hero (T151b fix round A, B15).
+fn two_goblins_campaign() -> TempCampaign {
+    let campaign = TempCampaign::new("two-goblins");
+    let placements = campaign
+        .path()
+        .join("areas")
+        .join("start")
+        .join("placements.json");
+    let content = r#"{
+  "area": "0000000000000000000000000D",
+  "placements": [
+    {
+      "id": "0000000000000000000000000E",
+      "name": "fixture.hero-spawn",
+      "overrides": {},
+      "prefab": "0000000000000000000000000G",
+      "slug": "hero-spawn",
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [65536, 65536, 65536]
+      }
+    },
+    {
+      "id": "0000000000000000000000000F",
+      "name": "fixture.goblin-spawn",
+      "overrides": {},
+      "prefab": "0000000000000000000000000H",
+      "slug": "goblin-spawn",
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [65536, 65536, 65536]
+      }
+    },
+    {
+      "id": "0000000000000000000000000Q",
+      "name": "fixture.goblin-spawn-b",
+      "overrides": {},
+      "prefab": "0000000000000000000000000H",
+      "slug": "goblin-spawn-b",
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [65536, 65536, 65536]
+      }
+    }
+  ],
+  "schema": "crpg.placements/1"
+}"#;
+    fs::write(&placements, content).expect("write placements");
+
+    let encounter = campaign.path().join("encounters").join("first-blood.json");
+    let content = r#"{
+  "id": "0000000000000000000000000N",
+  "name": "fixture.first-blood",
+  "participants": [
+    {
+      "initiative": 9,
+      "placement": "0000000000000000000000000F"
+    },
+    {
+      "initiative": 10,
+      "placement": "0000000000000000000000000Q"
+    },
+    {
+      "initiative": 11,
+      "placement": "0000000000000000000000000E"
+    }
+  ],
+  "ruleset": "0000000000000000000000000J",
+  "schema": "crpg.encounter/1",
+  "slug": "first-blood"
+}"#;
+    fs::write(&encounter, content).expect("write encounter");
+
+    // The new placement's locale key, so semantic validation resolves it.
+    let locale = campaign.path().join("locale").join("en.json");
+    let text = fs::read_to_string(&locale).expect("locale");
+    let needle = "    \"fixture.goblin\": \"Goblin\",\n";
+    assert_eq!(text.matches(needle).count(), 1, "one goblin locale line");
+    let replaced = text.replacen(
+        needle,
+        "    \"fixture.goblin\": \"Goblin\",\n    \"fixture.goblin-spawn-b\": \"Goblin Spawn B\",\n",
+        1,
+    );
+    fs::write(&locale, replaced).expect("write locale");
     campaign
 }
 
@@ -926,4 +1022,212 @@ fn close_ends_the_loop() {
     let (code, _views) = settle(&mut core, &clock, 0);
     assert_eq!(code, BridgeCode::Ok);
     assert!(core.view().revision() >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// T151b fix round A: the six cases the mutant run (reviews/T151b) left alive.
+// ---------------------------------------------------------------------------
+
+/// fa_1 (B04, B-B1, Reading 3): the player binds with the least-privilege
+/// pause rights. `pause_rights` is the host's own read of the v4 session.
+#[test]
+fn fa_1_pause_rights_are_the_least_privilege_default() {
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    assert_eq!(open_v4(&mut core, &clock, "Goblin"), BridgeCode::Ok);
+    let (p, _q) = core.v4_peers().expect("live v4");
+    assert_eq!(
+        call(&core, move |l| l.hosting().host().pause_rights(p)),
+        Ok(PauseRights::default())
+    );
+    assert_eq!(
+        PauseRights::default(),
+        PauseRights {
+            pause: false,
+            unpause: false
+        }
+    );
+
+    // Control: a v2 session never binds v4 pause rights at all.
+    let mut v2 = BridgeCore::new();
+    let _link = open_v2(&mut v2, "Goblin");
+    assert!(v2.v4_peers().is_none());
+}
+
+/// fa_2 (B14, B-B2): the NPC's `IntentFrame` carries the host's tick as its
+/// `observed_tick`. The host reads it on admission: zero would be past
+/// `POLICY_OBSERVED_TICK_WINDOW` (200 ticks) once the loop has ticked past
+/// 200, so the NPC's intent is refused as `StaleTick` and no action lands.
+#[test]
+fn fa_2_npc_observed_tick_is_the_server_tick() {
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    // The player is the goblin, so the NPC hero has no options until the
+    // goblin ends its turn; the hook cannot fire during the long run-up.
+    assert_eq!(open_v4(&mut core, &clock, "Goblin"), BridgeCode::Ok);
+    assert_eq!(settle(&mut core, &clock, 0).0, BridgeCode::Ok);
+
+    // One cycle per 50 ms step, so 210 cycles put the host past tick 200.
+    for k in 1..=209u64 {
+        clock.set(50 * k);
+        call(&core, |_| ());
+    }
+    let (code, _views) = settle(&mut core, &clock, 50 * 210);
+    assert_eq!(code, BridgeCode::Ok);
+    let tick = call(&core, |l| l.hosting().host().server_tick());
+    assert!(
+        tick > 200,
+        "the host is past the observed-tick window: {tick}"
+    );
+
+    // End the goblin's turn; the hero's options appear in that cycle and the
+    // pacer fires 600 ms later, when a zero observed tick is stale.
+    let view = core.view();
+    let end_turn = view
+        .option_labels()
+        .iter()
+        .position(|label| label == "End turn")
+        .expect("end turn offered");
+    let revision = view.revision();
+    drop(view);
+    assert_eq!(
+        core.submit_option(revision, end_turn as i64),
+        BridgeCode::Ok
+    );
+    for k in 211..=230u64 {
+        clock.set(50 * k);
+        call(&core, |_| ());
+    }
+    let (code, views) = settle(&mut core, &clock, 50 * 231);
+    assert_eq!(code, BridgeCode::Ok);
+    let actions: Vec<(i64, i64)> = events(&views)
+        .into_iter()
+        .filter_map(|event| match event {
+            ViewEvent::ActionResolved { actor, target, .. } => Some((actor, target)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        actions.len(),
+        1,
+        "the hero acts once when observed_tick is the host tick"
+    );
+    assert_eq!(actions[0].0, 1, "the hero, not the goblin, acted");
+}
+
+/// fa_3 (B15, B-B2): `choose_npc` is given the real sides table. On a
+/// three-combatant fixture whose first option is an attack on an ally, the
+/// empty-table `Some(0)` fallback would attack the ally; the real table
+/// picks the first attack on another side.
+#[test]
+fn fa_3_npc_sides_table_chooses_a_cross_side_attack() {
+    let campaign = two_goblins_campaign();
+    let dir = campaign.path().to_str().expect("temp path is UTF-8");
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    assert_eq!(
+        core.open_v4_with(dir, "", "Hero", 1, clock.clone()),
+        BridgeCode::Ok
+    );
+    for t in [0u64, 550, 600, 650] {
+        let (code, _views) = settle(&mut core, &clock, t);
+        assert_eq!(code, BridgeCode::Ok, "settle at {t}");
+    }
+    let view = core.view();
+    let hero_row = view
+        .names()
+        .iter()
+        .position(|name| name == "Hero")
+        .expect("the hero is a row");
+    let hero_id = view.net_ids()[hero_row];
+    let target = view
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            ViewEvent::ActionResolved { target, .. } => Some(*target),
+            _ => None,
+        })
+        .expect("the goblin acted");
+    assert_eq!(
+        target, hero_id,
+        "the sides table makes the goblin attack the hero, not its ally"
+    );
+}
+
+/// fa_4 (B24, B-B4/B-B5): a read error in the between-cycles reply is
+/// `host_fault(&e)`, not the loop-stopped text. The NPC peer has no local
+/// link, so `read_options` answers `UnknownPeer` while the loop runs.
+#[test]
+fn fa_4_read_error_maps_through_host_fault() {
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    assert_eq!(open_v4(&mut core, &clock, "Goblin"), BridgeCode::Ok);
+    assert_eq!(settle(&mut core, &clock, 0).0, BridgeCode::Ok);
+    let (_p, q) = core.v4_peers().expect("live v4");
+    {
+        let crate::core::State::OpenV4(live) = &mut core.state else {
+            unreachable!("live v4");
+        };
+        live.reply = Some(live.runner.submit(move |l| read_options(l, q)));
+    }
+    call(&core, |_| ());
+    let code = core.poll(50);
+    assert_eq!(code, BridgeCode::HostFailed);
+    assert_eq!(
+        core.last_error(),
+        "HOST_FAILED: UnknownPeer at host/admission"
+    );
+    assert!(core.runner().is_none());
+    assert_eq!(core.poll(50), BridgeCode::HostFailed);
+}
+
+/// fa_5 (B28, B-B9, B14): `close` ends the loop and leaves no runner; a
+/// client retained across the close sees no frame the close produced and
+/// then ends. Only the `shutdown` call can change the host, and the host is
+/// gone with the joined loop, so this is the strongest observable form.
+#[test]
+fn fa_5_close_ends_the_loop_without_a_live_host() {
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    assert_eq!(open_v4(&mut core, &clock, ""), BridgeCode::Ok);
+    assert_eq!(settle(&mut core, &clock, 0).0, BridgeCode::Ok);
+
+    // Attach the NPC and keep the player's client outside the session, so
+    // the close path can be read after the runner and host are gone.
+    let (_p, q) = core.v4_peers().expect("live v4");
+    let npc_client = call(&core, move |l| {
+        l.hosting_mut()
+            .attach(q, NonZeroUsize::new(LINK_FRAMES).expect("nonzero"))
+            .expect("the NPC attaches")
+    });
+    let mut player_client = {
+        let crate::core::State::OpenV4(live) = &mut core.state else {
+            unreachable!("live v4");
+        };
+        std::mem::replace(&mut live.link, npc_client)
+    };
+    let quiescent = player_client.recv();
+    assert!(quiescent.is_none(), "the client was drained by settle(0)");
+
+    core.close();
+    assert!(core.runner().is_none());
+    assert_eq!(core.view().revision(), 0);
+    assert_eq!(core.poll(50), BridgeCode::NotOpen);
+    assert!(player_client.send(&[]).is_err(), "the link ended");
+}
+
+/// fa_6 (B31, B-B8): `revision < 0` is the bound, so revision 0 is accepted
+/// and reaches the client's own checks (no options yet: 6).
+#[test]
+fn fa_6_declare_move_accepts_revision_zero() {
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    assert_eq!(open_v4(&mut core, &clock, "Goblin"), BridgeCode::Ok);
+    assert_eq!(core.view().revision(), 0);
+    assert_eq!(core.declare_move(0, 0, 0, 0), BridgeCode::NoSuchOption);
+    assert_eq!(core.last_error(), "NO_SUCH_OPTION: no actor to move");
+
+    // Control: the negative bound still refuses -1 before the session.
+    assert_eq!(core.declare_move(-1, 0, 0, 0), BridgeCode::BadArgument);
+    assert_eq!(core.last_error(), "BAD_ARGUMENT: negative argument");
 }
