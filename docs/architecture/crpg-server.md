@@ -709,7 +709,8 @@ and `bind_dual`.
   `UnknownConnection` record the transport close (first wins) and mark
   `lane1_drained`; `NotAccepted`/`NotPending`/`InvalidWelcome` fence. The
   two lanes never gate each other, and a host error returns from the pump
-  and poisons.
+  and poisons. On a resumable adapter each fresh lane-1 frame (not the held
+  retry) is `check_frame`d first (T155c C-3).
 - **Lane-1 delivery (C-4/C-5, phase 5).** After the unchanged `deliver`, a
   movement binding whose transport is open takes receipts only when
   `lane1_stats(conn).outbound_frames == 0` (one take then fits the 128-frame
@@ -939,26 +940,35 @@ wire, with `start` left byte-for-byte unchanged:
 - **Start.** `start_resumable(host, server, now)` has `start`'s precedence
   (`HostClosed` → `HostInUse` → `TimeRegression`), `HostInUse` counting
   graces; `is_resumable()` reports the flag. A resumable adapter polls
-  `poll_notice` and handles `ServerNotice::Resume` in phase 1.
+  `poll_notice` and handles `ServerNotice::Resume` in phase 1. Its server
+  may be a `bind_movement_resumable` one: see "Resume on `/3`" below.
 - **Ticket (N-3).** After a `/2` hello's `accept` succeeds and the binding
   is recorded, the adapter calls `issue_resume_ticket(peer,
   resume_proof(credential, epoch)?)` and sends the bytes on
   `Channel::Resume`: the first frame after the welcome. A `/1` binding gets
-  no ticket, and a `start` adapter sends none.
+  no ticket, and a `start` adapter sends none. A `/3` hello is a `V2`
+  binding too, so it gets one (T155c C-6, after T155a made v4 sessions
+  resumable).
 - **Fence tags (N-4).** A hello binding holds `ConnectionFence::FIRST`, a
   resume binding its `granted`. In phase 2 each fresh frame (not a held
   retry) is `check_frame`d before routing: `SessionFenced` retires the
   connection with cause `Resumed`, `UnknownPeer` fences it `EpochClosed`,
-  and any other error poisons.
+  and any other error poisons. A movement binding's fresh lane-1 frames
+  are checked the same way (T155c C-3, ADR-0032 H2): the same
+  `HostCall::CheckFrame` in `calls`, immediately before the frame's
+  `IngestMove` trace. `SessionFenced` and `UnknownPeer` count
+  `lane1_refused` (not `frames_refused`) and retire or fence as on lane 0.
 - **Resume (N-5).** One `ServerNotice::Resume` is decoded, decided by
   `resume_peer`, and answered: a `Rejected` closes at once with code 5
   (`AuthRefused`, for `Denied`) or 7 (`ServerBusy`); an `Accepted` retires
   a still-bound old connection with `retire_resumed` (no unbind), encodes
   the answer, `accept_resume`s and binds the connection with `fence =
   granted` and `Framing::V2`. The staged snapshot is delivered in phase 5,
-  after the answer.
+  after the answer. A resumed binding's `movement` flag is the transport's
+  (`QuicServer::movement(conn)`, read before `resume_peer`; an error there
+  is `Lost { EndpointFailed }` with no host call, unreachable in practice).
 - **Grace on a silent loss (N-7).** Phase 6 starts a grace only for a
-  closed, drained, unheld `/2` binding whose reason is `IdleTimeout`,
+  closed, drained, unheld `/2` or `/3` binding whose reason is `IdleTimeout`,
   `Transport` or `Reset`: `begin_grace` (traced `BeginGrace`), `Ok` →
   `record.graced = Some(peer)`; `NotResumable` → unbind as today. Every
   other binding unbinds exactly as today. Phase 4 also clears any
@@ -972,6 +982,16 @@ wire, with `start` left byte-for-byte unchanged:
   credential must be exactly 32 bytes); the `blake3` edge is approved by
   D68 Question 1 (b). No proof bytes reach a `HostCall`, report, `Debug` or
   error.
+- **Resume on `/3` (T155c, C-1..C-4).** A `bind_movement_resumable` server
+  takes a resume opening on `crpg-lane0/3`; `start_resumable` over it no
+  longer poisons on the first hello, because the ticket succeeds for v4. The
+  resumed binding is a movement binding, drained, delivered, retired and
+  graced as a hello-bound one. Lane 1 carries no progress on the resume wire
+  (T155 Reading 2): the client resends its pending intents, and the host
+  (T155a) has un-admitted the unanswered ones at grace and at resume.
+  `retire_resumed` counts a held lane-1 frame in `lane1_discarded`, as
+  `fence` does. One adapter owns one server, so a v4 epoch is never resumed
+  over `/2` or the reverse (T155 Reading 7).
 
 ## The run loop (T154)
 
@@ -1170,8 +1190,14 @@ at most one of: an `Ingest` refused with a code other than `QueueFull`
 (`Rejection::Ingest`; a `QueueFull` frame is held and retried, not rejected),
 an `IngestTransfer` refused (`Transfer`), a `CheckFrame` that failed
 (`Frame`), or, for a `Pump` summary, every result with status `Rejected` that
-is not the retained head (`Admission`). Lane-1 traces are not read: the
-resumable endpoint carries no lane 1.
+is not the retained head (`Admission`). The `lane1` traces are merged in by
+position (T155c C-5, `tasks/T155.md` Reading 9): a trace at `at` comes before
+`calls[at]` and one at `calls.len()` comes last, and each gives at most one
+`Rejection::Move` — an `IngestMove` that `Refused` with a code other than
+`QueueFull` (held and retried) or `Rejected` at admission. Intents the
+decision window refuses are not in a pump report and are not rejections here.
+`Move`'s `Display` is `move conn={c} peer={p} frame={f} len={l} seq={s}
+code={k}` (`{s}` the sequence or `-`, `{k}` the v3 code as a number).
 
 Two reachable paths are easy to confuse. `Host::ingest` decides byte-level
 admission only (rate, size, queue room) and never decodes, so an undecodable
@@ -1213,7 +1239,9 @@ Required: `listen` (socket address), `certificate`, `private_key`,
 `invitations`, `save`, `campaign_id`, `campaign_version`. Optional: `area`
 (`{ "min": [x, y, z], "max": [x, y, z] }` in whole world units,
 `-32768..=32767`, bound with `Host::bind_area_bounds` before the world is
-unpaused), `ai` (a file of `sides` and `controlled`, driven once per loop
+unpaused), `movement` (T155d: `true` serves the movement wire, below; absent,
+`null` or `false` is T040b's combat wire; `true` without `area` is
+`crpg-server: error config: movement needs area`), `ai` (a file of `sides` and `controlled`, driven once per loop
 cycle through `QuicHost::drive_ai`), `log_file` (appended, created if absent,
 its parent directory is not created). A relative path resolves against the
 configuration file's own directory. The certificate and key files are PEM
@@ -1222,7 +1250,16 @@ by a leading `-----BEGIN` after any ASCII whitespace; PKCS#1 and SEC1 PEM keys
 are refused ("no items found"). The invitations file is a JSON array of 1 to
 `MAX_INVITATIONS` entries, each with `credential` (64 lowercase hex digits),
 `control` and `grants`, every key required, mapping field for field onto
-`Invitation`. Credentials are parsed and registered, never printed.
+`Invitation`. Credentials are parsed and registered, never printed. In a
+movement world (T155d) an entry also carries `facts` (`entities`, each with
+`entity`, `pools`, `effects`, `stats`, `tags`; `encounter` with `mode`,
+`pending_mode`, `clock`, `timeline`; `host` with `pause_reason`, `auto_pause`,
+`turn_timer`) and `rights` (`pause`, `unpause`), every key required, mapping
+onto `V4Invitation`'s `FactGrants` and `PauseRights`; the entry is registered
+with `register_v4_invitation`. Outside a movement world `facts` and `rights`
+are refused (`entry {i}: facts and rights need movement`), and inside one
+they are required (`entry {i}: movement needs facts and rights`); both are
+stage-`invitations` errors, so nothing is spent.
 
 **The incarnation** is automatic. The loader needs one above every one ever
 used for the authority, so the binary keeps `<save>.incarnation` (decimal and a
@@ -1237,8 +1274,12 @@ and exit 1; nothing after it runs): `config`, `log`, `certificate`,
 `register`, `spawn`, `signals`. Every file is read and validated before the
 incarnation is spent; the mesh is bound before the unpause (a restored host
 is unbound and `Restore`-paused); the endpoint is `bind_resumable` with
-`start_resumable`. The last line of start-up is
+`start_resumable`, or, with `movement` on (T155d), `bind_movement_resumable`
+(`/3` only, so a `/2` hello is a handshake failure and a movement hello to a
+combat server is too; one `QuicHost` serves one wire per world, ADR-0026). The
+last line of start-up is
 `crpg-server: start listen=... incarnation=N pin=<64 hex> nav=bound|none ai=on|off invitations=K`,
+followed by ` movement=on` in a movement world and by nothing otherwise,
 written after the signal handler is set. `pin` is the certificate pin clients
 hold.
 
@@ -1280,7 +1321,11 @@ nothing, since the handler's thread is busy in the first. A forced kill
 `rustls-pki-types` (PEM decoding through `pem::PemObject`; already locked
 through the QUIC stack). No workspace edge is added.
 
-**Tests.** `tests/server_binary.rs` drives the built binary black box
+**Tests.** `tests/server_binary_movement.rs` (T155d) drives the movement
+switch over the same black-box rig: the configuration and invitation refusals,
+the start-line suffix, a `/3` hello that gets its resume ticket while a `/2`
+hello is refused, the combat endpoint unchanged, and a refused lane-1 intent
+that is one `reject` line. `tests/server_binary.rs` drives the built binary black box
 (`CARGO_BIN_EXE_crpg-server`): help and version, usage errors, configuration
 and invitation refusals that spend nothing, the sidecar, the served, logged and
 saved-on-`quit` run, end of input, the area and AI files, a registration
@@ -1309,8 +1354,8 @@ starts the binary with standard output discarded and standard error read by
 one thread into a channel, and checks the start line exactly (incarnation 8,
 the rig's pin, `nav=none ai=off invitations=2`). Two `QuicClient`s connect on
 `/1` with wire version 2, so they speak v2 deltas with no transfers and no
-movement lane; the binary serves no `/3` endpoint, so movement over the
-dedicated server is not smoked here (D71a, T041e). The epoch's first half is
+movement lane; a combat-world binary serves no `/3` endpoint, so movement over the
+dedicated server is smoked by G2, below (D71a, T041e). The epoch's first half is
 8 and its second half is the peer handle (1, 2).
 
 **What it proves.** (1) Player 2 ends the turn of `a`, which it does not
@@ -1336,6 +1381,32 @@ adds exactly one `code=15` reject line that the log check expects; any other
 refusal panics `refused`. The binary paces by the wall clock, so every wait is
 a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
 (`Drop` on `Server`) kills and reaps the child on every failure path.
+
+**G2: movement over the dedicated binary (T155e = T041e).** A second test in
+the same file, `dedicated_server_two_clients_move_to_identical_positions`, runs
+the binary in movement mode (T155d). Its `setup_movement` saves the `MV3rt`
+three-mover authority (`mv3rt_value()` and `history_of()` copied from
+`host_quic_move.rs`), writes two movement invitations (`0x11` controlling `a`,
+`0x22` controlling `b`, full grants and facts, no pause right) and adds
+`"movement": true` and a 10 m square `area` to the configuration. Two `Mover`
+players connect on `/3` (`connect_movement`), each with a `ReassemblyPoolV4`,
+a `ReplicaWorldV4` and a `MoveOutbox`, and publish after the first snapshot as
+`host_lane1.rs`'s `Client` does. The test proves, in order: (1) the start line
+ends `nav=bound ai=off invitations=2 movement=on`; (2) each player's first
+lane-stream frame is its 52-byte resume ticket and its replica anchors the
+three start points; (3) each player walks its own mover and player 2 also
+sends a `MoveTo` for `a`'s mover; (4) the receipts are `[Accepted]` and
+`[Accepted, Rejected(NotAuthorized)]`, and the log holds exactly one reject
+line, `move conn=.. peer=2 frame=2 len=.. seq=2 code=17`; (5) samples bring
+both replicas to the same end positions, none moving; (6) `quit` exits 0 and
+the log is the start, the reject and the stop line; (7) the save, read only
+after that exit and loaded at incarnation 9, anchors the same end positions
+through a fresh `bind_v4_peer` observer. Control: the start points differ from
+the end points for the two walkers. Readings: the replicas' positions are
+compared without their sample ticks (two players need not see the same refresh
+tick), and no `start_tick` is pinned (the server's tick is wall-clock paced);
+the test never resumes through the binary (a silent loss needs the 60 s idle
+timeout, `tasks/T155.md` "Out of scope").
 
 ## Authorities and consumers
 
@@ -1401,3 +1472,6 @@ a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Added "The dedicated binary (T040b)" (the OS-adapter shell, the configuration, invitations, AI and PEM/DER files, the automatic incarnation sidecar, the start-up order, the rejection log, the one `finish` stop path with its Windows and signal limits, and the exit codes) and dropped the binary wiring, certificate loading, invitation format, operator configuration and incarnation source from the "not here" list, so the doc describes the program the crate now ships.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T041d · Added "Gate-13 dedicated smoke (T041d)" (what G1 does over the real binary and two QUIC clients, what it proves, and the readings: DER files, `t` as loop time, the StaleTick re-send and its code-15 lines), so the doc describes the smoke the crate now has.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Made v4 (movement) sessions resumable and documented the lane-1 reset at grace and resume in "Reconnect grace (T025b)", so the doc matches `resumable_kind` and `reset_lane1`.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Documented the `/3` resume route (the movement flag, the lane-1 fence check, the retired lane-1 frame count) and replaced "Lane-1 traces are not read" with the `Rejection::Move` merge, so the doc matches the adapter now.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155d · Extended "The dedicated binary (T040b)" with the `movement` key, the `facts` and `rights` invitation keys, the `bind_movement_resumable` bind and the ` movement=on` start-line suffix, so the doc matches the binary T155d ships.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155e · Added the G2 paragraph to "Gate-13 dedicated smoke (T041d)" (movement over the dedicated binary: what the test sets up, proves in seven steps and reads), and corrected G1's sentence that movement is not smoked, so the doc matches the smoke the crate now has.

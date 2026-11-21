@@ -1,0 +1,12 @@
+# Exact gitleaks findings judged false positives. One fingerprint per line
+# (commit:file:rule:line); rules stay default and every other finding fails.
+# Add a line only for a finding a human has read and judged not a secret.
+# Never quote the flagged text in a comment here: the comment is scanned too.
+#
+# 2026-11-21, PR #103 (user-approved): two T155c mutant-run test lists, where
+# a q6 test name containing the word for not-logged-in, followed by the next
+# test name, matches generic-api-key. No secret. The third line is this file's
+# own first version, whose comment quoted those names.
+c4fea6d981736e3879642fffc9cb0c6ac258891d:reviews/T155c/run.log:generic-api-key:38
+c4fea6d981736e3879642fffc9cb0c6ac258891d:reviews/T155c/results.jsonl:generic-api-key:38
+b65d4eede6a88f896f9feb53416c0b19a3760302:.gitleaksignore:generic-api-key:6

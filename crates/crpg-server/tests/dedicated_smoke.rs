@@ -629,3 +629,665 @@ fn dedicated_server_two_clients_fight_to_identical_state() {
     let quit_save = std::fs::read(&saved).expect("quit save");
     assert_ne!(quit_save, setup_save, "the quit wrote the save (T041-E2)");
 }
+// ---------------------------------------------------------------------------
+// T155e (= T041e): movement over the dedicated binary (G2, D71a).
+// ---------------------------------------------------------------------------
+
+use crpg_net::movement_v4::{
+    decode_down, encode_intent, MoveBody, MoveDown, MoveIntent, MoveOutcome, MoveReceipt,
+};
+use crpg_net::outbox_v4::MoveOutbox;
+use crpg_net::pool_v4::{
+    GateMode, ReassemblyPoolV4, ReceiverIdV4, ReplicaUpdateV4, TransferLimitsV3,
+};
+use crpg_net::protocol::NetId;
+use crpg_net::protocol_transfer::{TransferId, TransferUp};
+use crpg_net::protocol_v3::{PauseRights, RejectionCode as MoveCode};
+use crpg_net::protocol_v4::{Point, SessionEpoch};
+use crpg_net::replica_v4::ReplicaWorldV4;
+use crpg_net::transfer_v3;
+use crpg_net_quic::{Channel, MOVEMENT_WIRE_VERSION};
+use crpg_server::host::{
+    DeliveryKind, EntityFactGrant, FactGrants, Host, PeerHandle, TransferDisposition,
+    DEFAULT_HOST_GRANTS,
+};
+
+const MOVEMENT_FIXTURE: &str = include_str!("fixtures/three_combatants.json");
+
+/// `host_quic_move.rs`'s `tb3c_value`: the three-combatant fixture, version 2,
+/// a four-tick round clock.
+fn tb3c_value() -> Value {
+    let mut value: Value = serde_json::from_str(MOVEMENT_FIXTURE).expect("fixture parses");
+    value["version"] = json!(2);
+    value["world"]["combat"]["clock"] = json!({"round_ticks": 4, "elapsed": 0});
+    value
+}
+
+/// `tb3c_value` in real time with every timeline entry at tick 0.
+fn rt3_value() -> Value {
+    let mut value = tb3c_value();
+    value["world"]["combat"]["mode"] = json!("real_time");
+    value["world"]["combat"]["active"] = Value::Null;
+    for entry in value["world"]["timeline"].as_array_mut().expect("timeline") {
+        entry[0] = json!(0);
+    }
+    value
+}
+
+/// The movers, transforms and movement definition of `MV3rt`.
+fn movement_edits(mut value: Value) -> Value {
+    value["world"]["movers"] = json!([
+        [{"index": 0, "generation": 1},
+         {"position": [65536, 0, 65536], "speed": 65536, "step": 655360}],
+        [{"index": 1, "generation": 1},
+         {"position": [196608, 0, 65536], "speed": 65536, "step": 655360}],
+        [{"index": 2, "generation": 1},
+         {"position": [65536, 0, 327680], "speed": 65536, "step": 655360}]
+    ]);
+    value["world"]["transforms"] = json!([
+        [{"index": 0, "generation": 1},
+         {"position": [1.0, 0.0, 1.0], "velocity": [0.0, 0.0, 0.0]}],
+        [{"index": 1, "generation": 1},
+         {"position": [3.0, 0.0, 1.0], "velocity": [0.0, 0.0, 0.0]}],
+        [{"index": 2, "generation": 1},
+         {"position": [1.0, 0.0, 5.0], "velocity": [0.0, 0.0, 0.0]}]
+    ]);
+    value["world"]["combat"]["definition"]["movement"] = json!({
+        "measure": "euclidean",
+        "pool": "000000000000000000000000JY",
+        "step_cost": 1
+    });
+    value
+}
+
+fn mv3rt_value() -> Value {
+    movement_edits(rt3_value())
+}
+
+/// The authority from `value`, its four start envelopes acknowledged.
+fn history_of(value: &Value) -> HistoryWorld {
+    let mut history: HistoryWorld =
+        serde_json::from_value(value.clone()).expect("fixture loads through validated serde");
+    history
+        .acknowledge(history.last_sequence())
+        .expect("acknowledges its own range");
+    history
+}
+
+/// A raw wire point `[x, y, z]`.
+fn pt(x: i32, y: i32, z: i32) -> Point {
+    Point::new([x, y, z]).expect("within the wire bound")
+}
+
+/// One invitation's `facts`: every flag of all three entities, the encounter
+/// and the host.
+fn facts_json() -> Value {
+    let flags = |entity: &crpg_core::EntityId| {
+        json!({
+            "entity": serde_json::to_value(entity).expect("entity json"),
+            "pools": true, "effects": true, "stats": true, "tags": true
+        })
+    };
+    json!({
+        "entities": [flags(&rig::a()), flags(&rig::b()), flags(&rig::c())],
+        "encounter": {"mode": true, "pending_mode": true, "clock": true, "timeline": true},
+        "host": {"pause_reason": true, "auto_pause": true, "turn_timer": true}
+    })
+}
+
+/// One movement entry of the invitations file: full grants, full facts and no
+/// pause right.
+fn movement_invitation_json(byte: u8, control: &[crpg_core::EntityId]) -> Value {
+    let mut entry = invitation_json(byte, control);
+    entry["facts"] = facts_json();
+    entry["rights"] = json!({"pause": false, "unpause": false});
+    entry
+}
+
+/// T155e's `setup`: the save is the `MV3rt` authority, the invitations are
+/// `0x11` controlling `a` and `0x22` controlling `b`, and the configuration
+/// adds `movement` and a 10 m square `area`.
+fn setup_movement(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).expect("creates the directory");
+    std::fs::write(dir.join("server.cert.der"), rig::SERVER_A_CERT).expect("cert");
+    std::fs::write(dir.join("server.key.pk8.der"), rig::SERVER_A_KEY).expect("key");
+    let host = Host::from_history(history_of(&mv3rt_value()), rig::host_config(rig::V2), 0)
+        .expect("wraps the movement authority");
+    save_host_file(&dir.join("world.save"), &host, &id()).expect("saves the movement host");
+    std::fs::write(dir.join("world.save.incarnation"), "7\n").expect("sidecar");
+    let invitations = json!([
+        movement_invitation_json(0x11, &[rig::a()]),
+        movement_invitation_json(0x22, &[rig::b()])
+    ]);
+    std::fs::write(
+        dir.join("invitations.json"),
+        serde_json::to_vec(&invitations).expect("json"),
+    )
+    .expect("invitations");
+    let config = json!({
+        "listen": "127.0.0.1:0",
+        "certificate": "server.cert.der",
+        "private_key": "server.key.pk8.der",
+        "invitations": "invitations.json",
+        "save": "world.save",
+        "campaign_id": CAMPAIGN,
+        "campaign_version": "1.0.0",
+        "movement": true,
+        "area": {"min": [0, 0, 0], "max": [10, 0, 10]}
+    });
+    std::fs::write(
+        dir.join("server.json"),
+        serde_json::to_vec(&config).expect("json"),
+    )
+    .expect("config");
+}
+
+/// Spawns the binary over `dir/server.json` as [`Server::spawn`] does, and
+/// checks the movement world's start line. Returns the server and that line.
+fn spawn_movement(dir: &Path) -> (Server, String) {
+    let mut child = Command::new(BIN)
+        .arg("--config")
+        .arg(dir.join("server.json"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawns the server");
+    let stdin = child.stdin.take().expect("piped stdin");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (send, lines) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut server = Server {
+        child,
+        stdin,
+        lines,
+        port: 0,
+        seen: Vec::new(),
+    };
+    let first = server.next_line("the start line");
+    let port: u16 = first
+        .strip_prefix("crpg-server: start listen=127.0.0.1:")
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|port| port.parse().ok())
+        .unwrap_or_else(|| panic!("expected the start line, got {first:?}"));
+    assert_eq!(
+        first,
+        format!(
+            "crpg-server: start listen=127.0.0.1:{port} incarnation=8 pin={} nav=bound ai=off invitations=2 movement=on",
+            rig::SERVER_A_PIN_HEX
+        )
+    );
+    server.port = port;
+    (server, first)
+}
+
+/// A movement player: one real `crpg-lane0/3` client, the lane-0 gate and
+/// replica of `host_lane1.rs`'s `Client`, and the lane-1 outbox.
+struct Mover {
+    quic: QuicClient,
+    epoch: [u8; 16],
+    pool: ReassemblyPoolV4,
+    rid: ReceiverIdV4,
+    replica: ReplicaWorldV4,
+    snapshot: Option<TransferId>,
+    outbox: MoveOutbox,
+    /// Every lane-1 receipt, in arrival order.
+    receipts: Vec<MoveReceipt>,
+    /// The first frame the lane stream delivered.
+    first: Option<(Channel, Vec<u8>)>,
+    started: Instant,
+}
+
+impl Mover {
+    /// Connects with the credential of 32 bytes `byte`; the welcome is version
+    /// 4 and its epoch holds incarnation 8 and handle `peer`.
+    fn connect(port: u16, byte: u8, peer: u64) -> Mover {
+        let hello = Hello {
+            wire_version: MOVEMENT_WIRE_VERSION,
+            credential: rig::credential(&[byte; 32]),
+        };
+        let server = SocketAddr::from(([127, 0, 0, 1], port));
+        let quic =
+            QuicClient::connect_movement(rig::client_config(ClientLimits::v1()), server, &hello)
+                .unwrap_or_else(|error| panic!("mover {peer} cannot connect: {error:?}"));
+        let welcome = quic.welcome();
+        assert_eq!(welcome.wire_version, 4, "a version 4 welcome");
+        assert_eq!(welcome.epoch, rig::epoch_of(8, peer), "incarnation 8");
+        let epoch = welcome.epoch;
+        let mut pool = ReassemblyPoolV4::new(TransferLimitsV3::v3()).expect("v3 limits");
+        let rid = pool
+            .add_receiver(epoch, GateMode::AwaitSnapshot)
+            .expect("receiver");
+        Mover {
+            quic,
+            epoch,
+            pool,
+            rid,
+            replica: ReplicaWorldV4::new(SessionEpoch(epoch)),
+            snapshot: None,
+            outbox: MoveOutbox::new(epoch),
+            receipts: Vec::new(),
+            first: None,
+            started: Instant::now(),
+        }
+    }
+
+    /// Applies one lane-1 or datagram message: a receipt completes the oldest
+    /// pending intent, a sample moves the replica's positions.
+    fn take_down(&mut self, bytes: &[u8]) {
+        match decode_down(bytes).expect("a lane-1 message decodes") {
+            MoveDown::Receipt(receipt) => {
+                self.outbox
+                    .receive(&receipt)
+                    .expect("the receipt completes the oldest pending intent");
+                self.receipts.push(receipt);
+            }
+            MoveDown::Sample(sample) => {
+                self.replica.apply_sample(&sample);
+            }
+        }
+    }
+
+    /// Reads everything available: lane-0 frames into the gate (publishing the
+    /// first snapshot), then lane-1 frames and datagrams.
+    fn pump(&mut self) {
+        let now = self.started.elapsed().as_millis() as u64;
+        loop {
+            match self.quic.try_recv_channel() {
+                Ok(Some((channel, bytes))) => {
+                    if self.first.is_none() {
+                        self.first = Some((channel, bytes.clone()));
+                    }
+                    match channel {
+                        Channel::Resume => {}
+                        Channel::Transfer => {
+                            self.pool
+                                .offer_transfer(self.rid, &bytes, now)
+                                .expect("the gate accepts the transfer frame");
+                        }
+                        Channel::Lane0 => {
+                            self.pool
+                                .offer_delta(self.rid, &bytes, now)
+                                .expect("the gate accepts the delta frame");
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(reason) => panic!("the connection closed: {reason:?}"),
+            }
+        }
+        while let Some(update) = self.pool.pop_update(self.rid) {
+            match update {
+                ReplicaUpdateV4::Snapshot(publication) => {
+                    self.snapshot = Some(publication.transfer);
+                    self.replica.apply_snapshot(&publication).expect("applies");
+                    let bytes = transfer_v3::encode_up(&TransferUp::Published {
+                        epoch: self.epoch,
+                        transfer: publication.transfer,
+                    })
+                    .expect("encodes");
+                    self.quic
+                        .try_send_channel(Channel::Transfer, &bytes)
+                        .expect("publishes");
+                }
+                ReplicaUpdateV4::Delta(frame) => {
+                    self.replica.apply_delta(&frame).expect("applies");
+                }
+            }
+        }
+        loop {
+            match self.quic.try_recv_lane1() {
+                Ok(Some(bytes)) => self.take_down(&bytes),
+                Ok(None) => break,
+                Err(reason) => panic!("the connection closed: {reason:?}"),
+            }
+        }
+        loop {
+            match self.quic.try_recv_datagram() {
+                Ok(Some(bytes)) => self.take_down(&bytes),
+                Ok(None) => break,
+                Err(reason) => panic!("the connection closed: {reason:?}"),
+            }
+        }
+    }
+
+    /// Guard: pumps until `cond` holds, panicking `"deadline: {what}"` after
+    /// `rig::DEADLINE`.
+    fn until(&mut self, what: &str, cond: impl Fn(&Mover) -> bool) {
+        let start = Instant::now();
+        loop {
+            self.pump();
+            if cond(self) {
+                return;
+            }
+            assert!(start.elapsed() < rig::DEADLINE, "deadline: {what}");
+            self.quic.wait(Duration::from_millis(5));
+        }
+    }
+
+    /// Waits for the first anchored image: a snapshot and three positions.
+    fn ready(&mut self) {
+        self.until("the first anchored positions", |m| {
+            m.snapshot.is_some() && m.replica.positions().len() == 3
+        });
+    }
+
+    /// Mints and sends one lane-1 intent for the replica entity `actor`;
+    /// returns its encoded bytes.
+    fn send(&mut self, actor: u64, body: MoveBody) -> Vec<u8> {
+        let intent: MoveIntent = self
+            .outbox
+            .send(rig::n(actor), body)
+            .expect("the window has room");
+        let bytes = encode_intent(&intent).expect("encodes");
+        self.quic.try_send_lane1(&bytes).expect("sends on lane 1");
+        bytes
+    }
+
+    /// The disclosed positions without their ticks: `(point, moving)` by id.
+    fn visible(&self) -> BTreeMap<NetId, (Point, bool)> {
+        self.replica
+            .positions()
+            .iter()
+            .map(|(id, state)| (*id, (state.point, state.moving)))
+            .collect()
+    }
+}
+
+/// The three movers at their start points, none moving.
+fn start_positions() -> BTreeMap<NetId, (Point, bool)> {
+    BTreeMap::from([
+        (rig::n(1), (pt(65536, 0, 65536), false)),
+        (rig::n(2), (pt(196608, 0, 65536), false)),
+        (rig::n(3), (pt(65536, 0, 327680), false)),
+    ])
+}
+
+/// The three movers after both players' walks, none moving.
+fn end_positions() -> BTreeMap<NetId, (Point, bool)> {
+    BTreeMap::from([
+        (rig::n(1), (pt(262144, 0, 65536), false)),
+        (rig::n(2), (pt(196608, 0, 262144), false)),
+        (rig::n(3), (pt(65536, 0, 327680), false)),
+    ])
+}
+
+/// Step (2): the first lane-stream frame is the resume ticket, byte for byte
+/// (`[0x91, 0x03, 0x30] ++ epoch ++ [0x20] ++ proof`, 52 bytes), and the first
+/// anchored positions are the start points.
+fn assert_first_image(mover: &Mover, credential: u8) {
+    let mut message = b"crpg-resume-proof/1".to_vec();
+    message.extend_from_slice(&mover.epoch);
+    let mut ticket = vec![0x91, 0x03, 0x30];
+    ticket.extend_from_slice(&mover.epoch);
+    ticket.push(0x20);
+    ticket.extend_from_slice(blake3::keyed_hash(&[credential; 32], &message).as_bytes());
+    assert_eq!(ticket.len(), 52, "the ticket is 52 bytes");
+    assert_eq!(mover.first, Some((Channel::Resume, ticket)));
+    assert_eq!(mover.visible(), start_positions(), "the anchored positions");
+}
+
+/// Step (4): the receipts the player read, as `(seq, actor, rejection)`: a
+/// `None` is an `Accepted` receipt, a `Some` the exact rejection. The outbox
+/// holds nothing pending afterwards.
+fn assert_receipts(mover: &Mover, expected: &[(u64, u64, Option<MoveCode>)]) {
+    assert_eq!(mover.receipts.len(), expected.len(), "the receipt count");
+    for (receipt, (seq, actor, rejection)) in mover.receipts.iter().zip(expected) {
+        assert_eq!(receipt.epoch, mover.epoch);
+        assert_eq!(receipt.seq, *seq);
+        assert_eq!(receipt.actor, rig::n(*actor));
+        match rejection {
+            None => assert!(
+                matches!(receipt.outcome, MoveOutcome::Accepted { .. }),
+                "seq {seq}: {:?}",
+                receipt.outcome
+            ),
+            Some(code) => assert_eq!(receipt.outcome, MoveOutcome::Rejected(*code), "seq {seq}"),
+        }
+    }
+    assert!(
+        mover.outbox.pending().is_empty(),
+        "every intent is receipted"
+    );
+    assert_eq!(mover.outbox.processed_seq(), expected.len() as u64);
+}
+
+/// Step (4): the one reject line of a lane-1 refusal,
+/// `crpg-server: reject t={t} move conn={c} peer=.. frame=.. len=.. seq=.. code=..`.
+fn assert_move_reject_line(line: &str, peer: u64, frame: u64, len: usize, seq: u64, code: u8) {
+    let rest = line
+        .strip_prefix("crpg-server: reject t=")
+        .unwrap_or_else(|| panic!("expected a reject line, got {line:?}"));
+    let (t, rest) = rest.split_once(' ').expect("a time and a rejection");
+    assert!(t.parse::<u64>().is_ok(), "t={t} is a decimal number");
+    let rest = rest.strip_prefix("move conn=").expect("a move rejection");
+    let (conn, rest) = rest.split_once(' ').expect("a connection and the rest");
+    assert!(
+        conn.parse::<u64>().is_ok(),
+        "conn={conn} is a decimal number"
+    );
+    assert_eq!(
+        rest,
+        format!("peer={peer} frame={frame} len={len} seq={seq} code={code}")
+    );
+}
+
+/// Step (5): guard until both players show `end` and nothing else.
+fn wait_for_end(p1: &mut Mover, p2: &mut Mover) {
+    let start = Instant::now();
+    loop {
+        p1.pump();
+        p2.pump();
+        if p1.visible() == end_positions() && p2.visible() == end_positions() {
+            return;
+        }
+        assert!(
+            start.elapsed() < rig::DEADLINE,
+            "deadline: the end positions"
+        );
+        p1.quic.wait(Duration::from_millis(2));
+        p2.quic.wait(Duration::from_millis(2));
+    }
+}
+
+/// Step (6): the log is the start line, the one reject line and the stop
+/// line, and no line holds either credential's hex.
+fn assert_movement_lines(lines: &[String], start: &str, reject: &str, saved: &Path) {
+    let stop = format!("crpg-server: stop reason=quit saved={}", saved.display());
+    assert_eq!(lines, [start.to_owned(), reject.to_owned(), stop]);
+    for line in lines {
+        assert!(!line.contains(&credential_hex(0x11)), "credential 1");
+        assert!(!line.contains(&credential_hex(0x22)), "credential 2");
+    }
+}
+
+/// A fresh `bind_v4_peer` observer of the host, with its own gate and replica
+/// (`host_lane1.rs`'s `Client`).
+struct Observer {
+    epoch: [u8; 16],
+    pool: ReassemblyPoolV4,
+    rid: ReceiverIdV4,
+    replica: ReplicaWorldV4,
+    snapshot: Option<TransferId>,
+}
+
+impl Observer {
+    fn new(epoch: [u8; 16]) -> Observer {
+        let mut pool = ReassemblyPoolV4::new(TransferLimitsV3::v3()).expect("v3 limits");
+        let rid = pool
+            .add_receiver(epoch, GateMode::AwaitSnapshot)
+            .expect("receiver");
+        Observer {
+            epoch,
+            pool,
+            rid,
+            replica: ReplicaWorldV4::new(SessionEpoch(epoch)),
+            snapshot: None,
+        }
+    }
+
+    /// Takes and acknowledges every entry of `peer`, then applies the updates.
+    fn drain(&mut self, host: &mut Host, peer: PeerHandle) {
+        let entries = host.take_delivery_entries(peer).expect("bound");
+        for entry in &entries {
+            match entry.kind {
+                DeliveryKind::Transfer => {
+                    self.pool
+                        .offer_transfer(self.rid, &entry.bytes, 0)
+                        .expect("the gate accepts the frame");
+                }
+                DeliveryKind::Delta => {
+                    self.pool
+                        .offer_delta(self.rid, &entry.bytes, 0)
+                        .expect("the gate accepts the frame");
+                }
+            }
+        }
+        if let Some(last) = entries.last() {
+            host.acknowledge_delivery(peer, last.ordinal).expect("acks");
+        }
+        while let Some(update) = self.pool.pop_update(self.rid) {
+            match update {
+                ReplicaUpdateV4::Snapshot(publication) => {
+                    self.snapshot = Some(publication.transfer);
+                    self.replica.apply_snapshot(&publication).expect("applies");
+                }
+                ReplicaUpdateV4::Delta(frame) => {
+                    self.replica.apply_delta(&frame).expect("applies");
+                }
+            }
+        }
+    }
+}
+
+/// Step (7): the save at `path`, loaded at incarnation 9 and observed through
+/// a fresh `bind_v4_peer` session, anchors `end` with nothing moving.
+fn assert_saved_positions(path: &Path, end: &BTreeMap<NetId, (Point, bool)>) {
+    let loaded = load_host_file(path, &id(), 9, 0).expect("the quit save loads");
+    let mut host = loaded.host;
+    let facts = FactGrants {
+        entities: [rig::a(), rig::b(), rig::c()]
+            .into_iter()
+            .map(|entity| EntityFactGrant {
+                entity,
+                pools: true,
+                effects: true,
+                stats: true,
+                tags: true,
+            })
+            .collect(),
+        encounter: crpg_net::facts_v3::EncounterGrants {
+            mode: true,
+            pending_mode: true,
+            clock: true,
+            timeline: true,
+        },
+        host: DEFAULT_HOST_GRANTS,
+    };
+    let rights = PauseRights {
+        pause: false,
+        unpause: false,
+    };
+    let peer = host
+        .bind_v4_peer(
+            rig::control(&[rig::a()]),
+            rig::full_grants(),
+            facts,
+            rights,
+            0,
+        )
+        .expect("binds the observer");
+    let mut observer = Observer::new(host.epoch(peer).expect("bound"));
+    observer.drain(&mut host, peer);
+    let bytes = transfer_v3::encode_up(&TransferUp::Published {
+        epoch: observer.epoch,
+        transfer: observer.snapshot.expect("a snapshot was published"),
+    })
+    .expect("encodes");
+    assert_eq!(
+        host.ingest_transfer(peer, &bytes, 0).expect("open"),
+        TransferDisposition::Published
+    );
+    observer.drain(&mut host, peer);
+    let seen: BTreeMap<NetId, (Point, bool)> = observer
+        .replica
+        .positions()
+        .iter()
+        .map(|(id, state)| (*id, (state.point, state.moving)))
+        .collect();
+    assert_eq!(&seen, end, "the save holds the end positions");
+}
+
+// ---------------------------------------------------------------------------
+// G2.
+// ---------------------------------------------------------------------------
+
+/// G2 (D71a): the dedicated server in movement mode, two real `/3` clients
+/// that walk their own movers to identical visible positions, a refused move
+/// in the log and not applied, a clean quit whose save holds the same end
+/// positions. Control: the start positions differ from the end positions.
+#[test]
+fn dedicated_server_two_clients_move_to_identical_positions() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("t155e-g2");
+    setup_movement(&dir);
+    // T041-E2: the quit must write the save, not leave setup's file in place.
+    let setup_save = std::fs::read(dir.join("world.save")).expect("setup save");
+
+    // (1) The start line (checked by the spawn).
+    let (mut server, start_line) = spawn_movement(&dir);
+
+    // (2) Both players connect, get a ticket and anchor the start positions.
+    let mut p1 = Mover::connect(server.port, 0x11, 1);
+    let mut p2 = Mover::connect(server.port, 0x22, 2);
+    p1.ready();
+    p2.ready();
+    assert_first_image(&p1, 0x11);
+    assert_first_image(&p2, 0x22);
+    // Control: the start positions are not the end positions.
+    let (start, end) = (start_positions(), end_positions());
+    assert_ne!(start[&rig::n(1)], end[&rig::n(1)], "n(1) walks");
+    assert_ne!(start[&rig::n(2)], end[&rig::n(2)], "n(2) walks");
+    assert_eq!(start[&rig::n(3)], end[&rig::n(3)], "n(3) stays");
+
+    // (3) Each player walks its own mover; player 2 also tries n(1).
+    let walk = |x, z| MoveBody::MoveTo {
+        destination: pt(x, 0, z),
+    };
+    p1.send(1, walk(262144, 65536));
+    p2.send(2, walk(196608, 262144));
+    let intrusion = p2.send(1, walk(262144, 262144));
+
+    // (4) Receipts, and the one reject line.
+    p1.until("player 1's receipt", |m| m.receipts.len() == 1);
+    p2.until("player 2's receipts", |m| m.receipts.len() == 2);
+    assert_receipts(&p1, &[(1, 1, None)]);
+    assert_receipts(&p2, &[(1, 2, None), (2, 1, Some(MoveCode::NotAuthorized))]);
+    let reject = server.next_line("the intrusion's reject line");
+    assert_move_reject_line(&reject, 2, 2, intrusion.len(), 2, 17);
+
+    // (5) Samples bring both replicas to the same end positions.
+    wait_for_end(&mut p1, &mut p2);
+    assert_eq!(p1.visible(), end, "player 1's positions");
+    assert_eq!(p2.visible(), end, "player 2's positions");
+    assert_eq!(p1.visible(), p2.visible(), "the two replicas agree");
+
+    // (6) Quit: exit 0, and a log of exactly the start, the reject and the stop.
+    let (status, lines) = server.quit();
+    assert_eq!(status.code(), Some(0), "a clean exit");
+    let saved = dir.join("world.save");
+    assert_movement_lines(&lines, &start_line, &reject, &saved);
+
+    // (7) The save, read only after the quit has exited, anchors the same
+    // end positions.
+    let quit_save = std::fs::read(&saved).expect("quit save");
+    assert_ne!(quit_save, setup_save, "the quit wrote the save (T041-E2)");
+    assert_saved_positions(&saved, &end);
+}

@@ -182,8 +182,9 @@ impl QuicPumpReport {
     }
 
     /// Every rejection in this report, in the order of B-1: refused hellos,
-    /// refused resume openings, then the `calls` in order (T040a). This is
-    /// the only place a rejected client message is defined (Reading 5).
+    /// refused resume openings, then the `calls` in order with the lane-1
+    /// traces merged in by position (T040a, T155 C-5). This is the only
+    /// place a rejected client message is defined (Reading 5).
     pub fn rejections(&self) -> Vec<Rejection> {
         let mut out = Vec::new();
         for decision in &self.hellos {
@@ -202,7 +203,12 @@ impl QuicPumpReport {
                 });
             }
         }
-        for call in &self.calls {
+        // T155 C-5: the lane-1 traces merge into `calls` by position.
+        let mut lane1 = self.lane1.iter().peekable();
+        for (k, call) in self.calls.iter().enumerate() {
+            while let Some(trace) = lane1.next_if(|trace| trace.at <= k) {
+                push_move(trace, &mut out);
+            }
             match call {
                 HostCall::Ingest {
                     conn,
@@ -260,8 +266,39 @@ impl QuicPumpReport {
                 _ => {}
             }
         }
+        for trace in lane1 {
+            push_move(trace, &mut out);
+        }
         out
     }
+}
+
+/// T155 C-5: one lane-1 trace as a `Rejection::Move`, or nothing. A
+/// `QueueFull` refusal is held and retried, so it is not a rejection.
+fn push_move(trace: &Lane1Trace, out: &mut Vec<Rejection>) {
+    let Lane1Call::IngestMove {
+        conn,
+        peer,
+        frame,
+        len,
+        result,
+    } = &trace.call
+    else {
+        return;
+    };
+    let (seq, code) = match result {
+        MoveAdmission::Refused { seq, code } if *code != CodeV3::QueueFull => (*seq, *code),
+        MoveAdmission::Rejected { seq, code } => (Some(*seq), *code),
+        _ => return,
+    };
+    out.push(Rejection::Move {
+        conn: *conn,
+        peer: *peer,
+        frame: *frame,
+        len: *len,
+        seq,
+        code,
+    });
 }
 
 /// One rejected client message, read from a pump report (Reading 5).
@@ -327,6 +364,22 @@ pub enum Rejection {
         /// What `check_frame` returned.
         error: HostError,
     },
+    /// A lane-1 frame `ingest_move` refused (never `QueueFull`), or an
+    /// intent it admitted as `Rejected` (T155 Reading 9).
+    Move {
+        /// The connection the frame came from.
+        conn: ConnectionId,
+        /// Its binding.
+        peer: PeerHandle,
+        /// The frame's ordinal on the connection's lane-1 stream.
+        frame: u64,
+        /// The frame's length in bytes.
+        len: usize,
+        /// The intent's sequence, when decoding got that far.
+        seq: Option<u64>,
+        /// The v3 rejection code.
+        code: CodeV3,
+    },
 }
 
 impl fmt::Display for Rejection {
@@ -388,6 +441,28 @@ impl fmt::Display for Rejection {
                 peer.get(),
                 error
             ),
+            Self::Move {
+                conn,
+                peer,
+                frame,
+                len,
+                seq,
+                code,
+            } => {
+                write!(
+                    f,
+                    "move conn={} peer={} frame={} len={} seq=",
+                    conn.get(),
+                    peer.get(),
+                    frame,
+                    len
+                )?;
+                match seq {
+                    Some(seq) => write!(f, "{seq}")?,
+                    None => f.write_str("-")?,
+                }
+                write!(f, " code={}", *code as u8)
+            }
         }
     }
 }
@@ -886,10 +961,10 @@ impl QuicHost {
     /// On failure, both are returned unchanged.
     ///
     /// The server must come from `QuicServer::bind`, `QuicServer::bind_dual`
-    /// or `QuicServer::bind_movement`, never `QuicServer::bind_resumable`:
-    /// the adapter polls only `poll_event`, which stops for good at a resume
-    /// notice, and no public call tells a resumable server apart. T025b lifts
-    /// this precondition.
+    /// or `QuicServer::bind_movement`, never `QuicServer::bind_resumable` or
+    /// `QuicServer::bind_movement_resumable`: the adapter polls only
+    /// `poll_event`, which stops for good at a resume notice, and no public
+    /// call tells a resumable server apart. T025b lifts this precondition.
     pub fn start(
         host: Host,
         server: QuicServer,
@@ -1196,6 +1271,17 @@ impl QuicHost {
                 return Ok(());
             }
         };
+        // (1b) T155 C-1: the connection's kind, read before any host call.
+        // An `Err` is unreachable (a pending record stays visible).
+        let Ok(movement) = self.server.movement(conn) else {
+            report.resumes.push(ResumeReport {
+                conn,
+                outcome: ResumeOutcome::Lost {
+                    reason: CloseReason::EndpointFailed,
+                },
+            });
+            return Ok(());
+        };
         // (2) Decide.
         let result = self.host.resume_peer(&request, now_ms);
         report.calls.push(HostCall::ResumePeer {
@@ -1254,7 +1340,7 @@ impl QuicHost {
                     epoch: accepted.epoch,
                     invitation,
                     framing: Framing::V2,
-                    movement: false,
+                    movement,
                     fence: accepted.granted,
                     frames: 0,
                     lane1_frames: 0,
@@ -1748,6 +1834,36 @@ impl QuicHost {
                 Ok(Some(frame)) => {
                     if let Some(bound) = self.bound_mut(conn) {
                         bound.lane1_frames += 1;
+                    }
+                    // T155 C-3 (ADR-0032 H2): fence-tag each fresh lane-1
+                    // frame as a lane-0 frame is (a held retry is exempt).
+                    if self.resumable {
+                        let Some((peer, fence)) =
+                            self.bound(conn).map(|bound| (bound.peer, bound.fence))
+                        else {
+                            return Ok(());
+                        };
+                        let check = self.host.check_frame(peer, fence);
+                        report.calls.push(HostCall::CheckFrame {
+                            conn,
+                            peer,
+                            fence,
+                            result: check.clone(),
+                        });
+                        match check {
+                            Ok(()) => {}
+                            Err(HostError::SessionFenced) => {
+                                report.lane1_refused += 1;
+                                self.retire_resumed(conn, Some(report));
+                                return Ok(());
+                            }
+                            Err(HostError::UnknownPeer) => {
+                                report.lane1_refused += 1;
+                                self.fence(conn, FenceCause::EpochClosed, Some(report));
+                                return Ok(());
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                     match self.ingest_move_one(conn, &frame, now_ms, report)? {
                         Disposition::Continue => {}
@@ -2312,6 +2428,10 @@ impl QuicHost {
         if let Some(report) = report {
             if bound.held.is_some() {
                 report.frames_discarded += 1;
+            }
+            // T155 C-4: a held lane-1 frame is discarded too.
+            if bound.held_lane1.is_some() {
+                report.lane1_discarded += 1;
             }
             report.fences.push(fence);
         }
@@ -3441,5 +3561,545 @@ mod tests {
                 HostError::UnknownPeer
             )
         );
+    }
+
+    /// T155 QR5 (C-5): lane-1 traces merge into the `calls` by position. A
+    /// trace at `at` comes before `calls[at]`; one at `calls.len()` comes
+    /// last; a `QueueFull` refusal is listed nowhere. Connection ids come
+    /// from real refused hellos (`ConnectionId::from_raw` is `pub(crate)` in
+    /// `crpg-net-quic`), the peer from a scratch host.
+    #[test]
+    fn lane1_rejections_merge_by_position() {
+        let (mut qh, mut now) = adapter();
+        let addr = qh.local_addr();
+        let mut conns = Vec::new();
+        for _ in 0..3 {
+            let hello = crpg_net_quic::Hello {
+                wire_version: 2,
+                credential: Credential::new(vec![0xB2; 32]).expect("32-byte credential"),
+            };
+            let pending = std::thread::spawn(move || {
+                QuicClient::connect_framed(client_config(), addr, &hello, Framing::V2)
+            });
+            let report = pump_until(&mut qh, &mut now, "hello decided", |report| {
+                !report.hellos.is_empty()
+            });
+            assert_eq!(report.hellos.len(), 1, "{:?}", report.hellos);
+            conns.push(report.hellos[0].conn);
+            assert!(
+                pending.join().expect("client thread").is_err(),
+                "the unknown credential is refused"
+            );
+        }
+        let (k1, k2, k3) = (conns[0], conns[1], conns[2]);
+        assert!(k1 < k2 && k2 < k3, "real ids rise: {conns:?}");
+
+        let mut host = Host::from_history(
+            fixture(),
+            HostConfig {
+                protocol: ProtocolSelection::V1,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let p = host
+            .bind_peer(
+                ControlGrant { actors: vec![] },
+                DisclosureGrants::default(),
+                NOW,
+            )
+            .expect("binds");
+
+        let mut report = QuicPumpReport::new();
+        report.calls.push(HostCall::Ingest {
+            conn: k1,
+            peer: p,
+            frame: 1,
+            len: 3,
+            result: IngestDisposition::Refused {
+                status: ReceiptStatus::Rejected(RejectionCode::Malformed),
+            },
+        });
+        report.calls.push(HostCall::Pump {
+            summary: PumpSummary {
+                admitted: 0,
+                applied: 0,
+                rejected: 0,
+                backpressured: 0,
+                dropped_replies: 0,
+                results: Vec::new(),
+            },
+        });
+        report.lane1.push(Lane1Trace {
+            at: 0,
+            call: Lane1Call::IngestMove {
+                conn: k2,
+                peer: p,
+                frame: 1,
+                len: 5,
+                result: MoveAdmission::Rejected {
+                    seq: 4,
+                    code: CodeV3::NotAuthorized,
+                },
+            },
+        });
+        report.lane1.push(Lane1Trace {
+            at: 1,
+            call: Lane1Call::IngestMove {
+                conn: k2,
+                peer: p,
+                frame: 2,
+                len: 5,
+                result: MoveAdmission::Refused {
+                    seq: Some(5),
+                    code: CodeV3::QueueFull,
+                },
+            },
+        });
+        report.lane1.push(Lane1Trace {
+            at: 2,
+            call: Lane1Call::IngestMove {
+                conn: k3,
+                peer: p,
+                frame: 1,
+                len: 1,
+                result: MoveAdmission::Refused {
+                    seq: None,
+                    code: CodeV3::Malformed,
+                },
+            },
+        });
+
+        let found = report.rejections();
+        assert_eq!(
+            found,
+            vec![
+                Rejection::Move {
+                    conn: k2,
+                    peer: p,
+                    frame: 1,
+                    len: 5,
+                    seq: Some(4),
+                    code: CodeV3::NotAuthorized,
+                },
+                Rejection::Ingest {
+                    conn: k1,
+                    peer: p,
+                    frame: 1,
+                    len: 3,
+                    code: RejectionCode::Malformed,
+                },
+                Rejection::Move {
+                    conn: k3,
+                    peer: p,
+                    frame: 1,
+                    len: 1,
+                    seq: None,
+                    code: CodeV3::Malformed,
+                },
+            ]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            format!("move conn={} peer=1 frame=1 len=5 seq=4 code=17", k2.get())
+        );
+        assert_eq!(
+            found[2].to_string(),
+            format!("move conn={} peer=1 frame=1 len=1 seq=- code=6", k3.get())
+        );
+
+        // M19: a non-`QueueFull` trace between two calls stays between them.
+        let mut between = QuicPumpReport::new();
+        for frame in [1, 2] {
+            between.calls.push(HostCall::Ingest {
+                conn: k1,
+                peer: p,
+                frame,
+                len: 3,
+                result: IngestDisposition::Refused {
+                    status: ReceiptStatus::Rejected(RejectionCode::Malformed),
+                },
+            });
+        }
+        between.calls.push(HostCall::Pump {
+            summary: PumpSummary {
+                admitted: 0,
+                applied: 0,
+                rejected: 0,
+                backpressured: 0,
+                dropped_replies: 0,
+                results: Vec::new(),
+            },
+        });
+        between.lane1.push(Lane1Trace {
+            at: 1,
+            call: Lane1Call::IngestMove {
+                conn: k2,
+                peer: p,
+                frame: 3,
+                len: 6,
+                result: MoveAdmission::Rejected {
+                    seq: 9,
+                    code: CodeV3::NotAuthorized,
+                },
+            },
+        });
+        assert_eq!(
+            between.rejections(),
+            vec![
+                Rejection::Ingest {
+                    conn: k1,
+                    peer: p,
+                    frame: 1,
+                    len: 3,
+                    code: RejectionCode::Malformed,
+                },
+                Rejection::Move {
+                    conn: k2,
+                    peer: p,
+                    frame: 3,
+                    len: 6,
+                    seq: Some(9),
+                    code: CodeV3::NotAuthorized,
+                },
+                Rejection::Ingest {
+                    conn: k1,
+                    peer: p,
+                    frame: 2,
+                    len: 3,
+                    code: RejectionCode::Malformed,
+                },
+            ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // T155c fix round A: the lane-1 fence check's error arms (C-3) are not
+    // reachable through the public API (a live resume retires the old
+    // connection at once, so no fenced frame survives to a drain), so the
+    // host is moved behind the adapter, as F5a and F5b do.
+    // -----------------------------------------------------------------------
+
+    fn mv_value() -> serde_json::Value {
+        use serde_json::json;
+        let mut value: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture parses");
+        value["version"] = json!(2);
+        value["world"]["combat"]["clock"] = json!({"round_ticks": 4, "elapsed": 0});
+        value["world"]["combat"]["mode"] = json!("real_time");
+        value["world"]["combat"]["active"] = serde_json::Value::Null;
+        for entry in value["world"]["timeline"].as_array_mut().expect("timeline") {
+            entry[0] = json!(0);
+        }
+        value["world"]["movers"] = json!([
+            [{"index": 0, "generation": 1},
+             {"position": [65536, 0, 65536], "speed": 65536, "step": 655360}],
+            [{"index": 1, "generation": 1},
+             {"position": [196608, 0, 65536], "speed": 65536, "step": 655360}],
+            [{"index": 2, "generation": 1},
+             {"position": [65536, 0, 327680], "speed": 65536, "step": 655360}]
+        ]);
+        value["world"]["transforms"] = json!([
+            [{"index": 0, "generation": 1},
+             {"position": [1.0, 0.0, 1.0], "velocity": [0.0, 0.0, 0.0]}],
+            [{"index": 1, "generation": 1},
+             {"position": [3.0, 0.0, 1.0], "velocity": [0.0, 0.0, 0.0]}],
+            [{"index": 2, "generation": 1},
+             {"position": [1.0, 0.0, 5.0], "velocity": [0.0, 0.0, 0.0]}]
+        ]);
+        value["world"]["combat"]["definition"]["movement"] = json!({
+            "measure": "euclidean",
+            "pool": "000000000000000000000000JY",
+            "step_cost": 1
+        });
+        value
+    }
+
+    /// A resumable movement adapter over a moved authority bound to a 10 m
+    /// square, one v4 invitation registered per seed.
+    fn movement_adapter(seeds: &[u8]) -> (QuicHost, u64) {
+        use crpg_core::Fx16_16;
+        use crpg_nav::{bake_box, NavRect};
+        let mut history: HistoryWorld =
+            serde_json::from_value(mv_value()).expect("fixture loads through validated serde");
+        history
+            .acknowledge(history.last_sequence())
+            .expect("acknowledges its own range");
+        let mut host = Host::from_history(
+            history,
+            HostConfig {
+                protocol: ProtocolSelection::V2,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let mesh = bake_box(
+            Fx16_16::ZERO,
+            NavRect {
+                min_x: Fx16_16::ZERO,
+                min_z: Fx16_16::ZERO,
+                max_x: Fx16_16::from_int(10),
+                max_z: Fx16_16::from_int(10),
+            },
+            &[],
+        )
+        .expect("bakes");
+        host.bind_nav_mesh(mesh).expect("binds the mesh");
+        let server = QuicServer::bind_movement_resumable(ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            identity: server_identity(),
+            limits: ServerLimits::v1(),
+        })
+        .expect("bind movement resumable server");
+        let mut qh =
+            QuicHost::start_resumable(host, server, NOW).expect("starts over a fresh host");
+        for seed in seeds {
+            qh.register_v4_invitation(V4Invitation {
+                credential: Credential::new(vec![*seed; 32]).expect("32-byte credential"),
+                control: ControlGrant { actors: vec![] },
+                grants: DisclosureGrants::default(),
+                facts: FactGrants::default(),
+                rights: PauseRights::default(),
+            })
+            .expect("registers the principal");
+        }
+        (qh, NOW)
+    }
+
+    /// Connects and accepts a version-4 hello of the credential `[seed; 32]`.
+    fn connect_movement(
+        qh: &mut QuicHost,
+        now: &mut u64,
+        seed: u8,
+    ) -> (QuicClient, ConnectionId, PeerHandle) {
+        let addr = qh.local_addr();
+        let hello = crpg_net_quic::Hello {
+            wire_version: MOVEMENT_WIRE_VERSION,
+            credential: Credential::new(vec![seed; 32]).expect("32-byte credential"),
+        };
+        let pending =
+            std::thread::spawn(move || QuicClient::connect_movement(client_config(), addr, &hello));
+        let report = pump_until(qh, now, "hello decided", |report| !report.hellos.is_empty());
+        assert_eq!(report.hellos.len(), 1, "{:?}", report.hellos);
+        let decision = report.hellos[0].clone();
+        let HelloOutcome::Accepted { peer, .. } = decision.outcome else {
+            panic!("expected Accepted, got {decision:?}");
+        };
+        let client = pending.join().expect("client thread").expect("connect");
+        (client, decision.conn, peer)
+    }
+
+    /// Guard: the server holds a lane-1 frame for `conn`, so the next pump's
+    /// drain sees it before phase 4 can fence the connection.
+    fn await_lane1_frame(qh: &QuicHost, conn: ConnectionId) {
+        let start = Instant::now();
+        while qh
+            .server
+            .lane1_stats(conn)
+            .map_or(0, |stats| stats.inbound_frames)
+            == 0
+        {
+            assert!(start.elapsed() < WAIT, "deadline: lane-1 frame queued");
+            qh.wait(Duration::from_millis(5));
+        }
+    }
+
+    /// Guard: the client reads until its connection is closed; returns why.
+    fn await_close(client: &mut QuicClient) -> CloseReason {
+        let start = Instant::now();
+        loop {
+            if let Err(reason) = client.try_recv_channel() {
+                return reason;
+            }
+            assert!(start.elapsed() < WAIT, "deadline: connection closed");
+            client.wait(Duration::from_millis(5));
+        }
+    }
+
+    /// Moves the host session's fence on, as a live resume would.
+    fn resume_behind(qh: &mut QuicHost, peer: PeerHandle, seed: u8, now: u64) {
+        let epoch = qh.host.epoch(peer).expect("bound");
+        let credential = Credential::new(vec![seed; 32]).expect("32-byte credential");
+        let proof = resume_proof(&credential, epoch).expect("proof");
+        let answer = qh
+            .host
+            .resume_peer(
+                &ResumeRequest {
+                    epoch,
+                    fence: ConnectionFence::new(1).expect("first fence"),
+                    proof,
+                    claims: vec![crpg_net::protocol_resume::LaneClaim {
+                        lane: 0,
+                        receipted_through: 0,
+                    }],
+                },
+                now,
+            )
+            .expect("resume decides");
+        assert!(
+            matches!(answer, ResumeAnswer::Accepted { .. }),
+            "{answer:?}"
+        );
+    }
+
+    /// T155 C-3 (M4, M5, M25): a lane-1 frame whose fence check is
+    /// `SessionFenced` is counted in `lane1_refused`, retires the connection
+    /// as `Resumed` (closed `SessionFenced`, code 9), never reaches
+    /// `ingest_move` and never unbinds the peer.
+    #[test]
+    fn a_fenced_lane1_frame_retires_as_resumed() {
+        let (mut qh, mut now) = movement_adapter(&[0x51]);
+        let (mut client, conn, peer) = connect_movement(&mut qh, &mut now, 0x51);
+        let epoch = qh.host.epoch(peer).expect("bound");
+        resume_behind(&mut qh, peer, 0x51, now);
+        client.try_send_lane1(&[0xA1]).expect("client lane-1 send");
+        await_lane1_frame(&qh, conn);
+        now += 100;
+        let report = qh.pump(now).expect("pump");
+        assert_eq!(report.lane1_refused, 1);
+        assert_eq!(report.frames_refused, 0);
+        assert_eq!(
+            report.fences,
+            vec![Fence {
+                conn,
+                peer,
+                cause: FenceCause::Resumed,
+            }]
+        );
+        assert_eq!(
+            report.calls[0],
+            HostCall::CheckFrame {
+                conn,
+                peer,
+                fence: ConnectionFence::FIRST,
+                result: Err(HostError::SessionFenced),
+            }
+        );
+        assert!(
+            report
+                .calls
+                .iter()
+                .all(|call| !matches!(call, HostCall::UnbindPeer { .. })),
+            "the resumed binding is not unbound: {:?}",
+            report.calls
+        );
+        assert_eq!(report.lane1, Vec::new(), "the frame is never ingested");
+        assert_eq!(
+            report.rejections(),
+            vec![Rejection::Frame {
+                conn,
+                peer,
+                error: HostError::SessionFenced,
+            }]
+        );
+        assert_eq!(qh.host().epoch(peer), Ok(epoch), "the peer stays bound");
+        assert_eq!(await_close(&mut client), CloseReason::Peer { code: 9 });
+    }
+
+    /// T155 C-3 (M6, M7, M7b, M24, M26): a lane-1 frame for a session the
+    /// host no longer has is counted in `lane1_refused` only, fences the
+    /// connection as `EpochClosed` and never reaches `ingest_move`.
+    #[test]
+    fn a_lane1_frame_for_an_unbound_peer_fences_as_epoch_closed() {
+        let (mut qh, mut now) = movement_adapter(&[0x51]);
+        let (mut client, conn, peer) = connect_movement(&mut qh, &mut now, 0x51);
+        qh.host.unbind_peer(peer);
+        client.try_send_lane1(&[0xA1]).expect("client lane-1 send");
+        await_lane1_frame(&qh, conn);
+        now += 100;
+        let report = qh.pump(now).expect("pump");
+        assert_eq!(report.lane1_refused, 1);
+        assert_eq!(report.frames_refused, 0);
+        assert_eq!(
+            report.fences,
+            vec![Fence {
+                conn,
+                peer,
+                cause: FenceCause::EpochClosed,
+            }]
+        );
+        assert_eq!(
+            report.calls[0],
+            HostCall::CheckFrame {
+                conn,
+                peer,
+                fence: ConnectionFence::FIRST,
+                result: Err(HostError::UnknownPeer),
+            }
+        );
+        assert!(
+            report
+                .calls
+                .iter()
+                .all(|call| !matches!(call, HostCall::UnbindPeer { .. })),
+            "an unbound peer is not unbound again: {:?}",
+            report.calls
+        );
+        assert_eq!(report.lane1, Vec::new(), "the frame is never ingested");
+        assert_eq!(
+            report.rejections(),
+            vec![Rejection::Frame {
+                conn,
+                peer,
+                error: HostError::UnknownPeer,
+            }]
+        );
+        assert_eq!(qh.host().epoch(peer), Err(HostError::UnknownPeer));
+        assert_eq!(await_close(&mut client), CloseReason::Peer { code: 9 });
+    }
+
+    /// T155 C-3 (M6): the `UnknownPeer` fence is taken in the drain, not left
+    /// to phase 4's reconcile. A lower connection (unbound peer) and a higher
+    /// one (fence moved on), both refused in phase 2: the fences come in
+    /// connection order. Were the lower one left to phase 4, it would come
+    /// after the higher one.
+    #[test]
+    fn lane1_fences_are_taken_in_the_drain_in_connection_order() {
+        let (mut qh, mut now) = movement_adapter(&[0x51, 0x52]);
+        let (mut low, low_conn, low_peer) = connect_movement(&mut qh, &mut now, 0x51);
+        let (mut high, high_conn, high_peer) = connect_movement(&mut qh, &mut now, 0x52);
+        assert!(low_conn < high_conn);
+        qh.host.unbind_peer(low_peer);
+        resume_behind(&mut qh, high_peer, 0x52, now);
+        low.try_send_lane1(&[0xA1]).expect("client lane-1 send");
+        high.try_send_lane1(&[0xA1]).expect("client lane-1 send");
+        await_lane1_frame(&qh, low_conn);
+        await_lane1_frame(&qh, high_conn);
+        now += 100;
+        let report = qh.pump(now).expect("pump");
+        assert_eq!(report.lane1_refused, 2);
+        assert_eq!(report.frames_refused, 0);
+        assert_eq!(
+            report.fences,
+            vec![
+                Fence {
+                    conn: low_conn,
+                    peer: low_peer,
+                    cause: FenceCause::EpochClosed,
+                },
+                Fence {
+                    conn: high_conn,
+                    peer: high_peer,
+                    cause: FenceCause::Resumed,
+                },
+            ]
+        );
+        assert_eq!(report.lane1, Vec::new(), "no frame is ingested");
+    }
+
+    /// T155 C-3 (M8): a fence-check error other than `SessionFenced` and
+    /// `UnknownPeer` is returned and poisons the adapter. A host that is
+    /// closed answers `Closed`.
+    #[test]
+    fn any_other_lane1_fence_error_poisons_the_adapter() {
+        let (mut qh, mut now) = movement_adapter(&[0x51]);
+        let (mut client, conn, _peer) = connect_movement(&mut qh, &mut now, 0x51);
+        let _ = qh.host.shutdown();
+        client.try_send_lane1(&[0xA1]).expect("client lane-1 send");
+        await_lane1_frame(&qh, conn);
+        now += 100;
+        assert_eq!(qh.pump(now), Err(QuicHostError::Host(HostError::Closed)));
+        assert_eq!(qh.pump(now + 100), Err(QuicHostError::Poisoned));
     }
 }
