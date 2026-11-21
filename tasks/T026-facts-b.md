@@ -62,6 +62,19 @@
 
 ## CI and run
 
+- CI client job `client` runs on `windows-latest` with `timeout-minutes: 60` (`.github/workflows/ci.yml:192-194`).
+- CI fetches Godot 4.7.2 from the pinned release zip with SHA-256/SHA-512 checks and expects version `4.7.2.stable.official.ed1daf0bf` (`.github/workflows/ci.yml:247-274`).
+- CI seeds `apps/client/.godot/extension_list.cfg` before import (`.github/workflows/ci.yml:275-283`).
+- CI runs `cargo clippy -p crpg-godot --features engine --all-targets --locked -- -D warnings` and `cargo build -p crpg-godot --features engine --locked` (`.github/workflows/ci.yml:225-228`).
+- CI imports with `Godot4 --headless --path apps/client --import` (`.github/workflows/ci.yml:284-292`), then runs `load.gd` (`.github/workflows/ci.yml:293-301`) and its missing-campaign control expecting exit 3 (`.github/workflows/ci.yml:302-312`), then `smoke.gd` (`.github/workflows/ci.yml:313-321`) and its control expecting exit 3 (`.github/workflows/ci.yml:322-332`).
+- CI stages and uploads the `crpg-client-slice-windows-x86_64` artifact (`.github/workflows/ci.yml:333-358`).
+- BR-21 check proves the default-feature graph has no godot package and the engine control resolves `godot v0.5.5` (`.github/workflows/ci.yml:154-174`).
+- Local build/test commands: `cargo build -p crpg-godot --features engine -j 2`, `cargo clippy -p crpg-godot --features engine --all-targets --locked -j 2 -- -D warnings`, `cargo build -p crpg-godot --features engine --locked -j 2` (`.github/workflows` not local; listed in `crates/crpg-godot/AGENTS.md:93-96`).
+- Local Godot runs: `Godot4 --headless --path apps/client --import`; `Godot4 --headless --path apps/client -s res://tests/load.gd`; `scene_sync.gd`; `hud.gd`; `smoke.gd`; `movement.gd` (local only) (`crates/crpg-godot/AGENTS.md:97-102`).
+- Local control: `CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/load.gd` exits 3 (`crates/crpg-godot/AGENTS.md:103`).
+- `Godot4` is available in PATH (`AGENTS.md:88`).
+- Frame render command: `Godot4 --path apps/client --resolution 1280x720 --write-movie <dir>/f.png --quit-after 90` (`docs/PROJECT_STATE.md:52`).
+
 ## Agent log
 
 - 2026-11-21 (UTC) · opencode-go/beam-free + T026 facts B · Fact sheet B for the Godot client side, citations only.
