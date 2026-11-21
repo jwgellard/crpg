@@ -57,6 +57,47 @@ impl CrpgSession {
         code
     }
 
+    /// Opens a protocol v4 session on the server run loop; 0 on success,
+    /// otherwise a bridge code. `opened_at` is set exactly as `open` sets it.
+    #[func]
+    fn open_v4(
+        &mut self,
+        campaign_dir: GString,
+        encounter_id: GString,
+        player_side: GString,
+        seed: i64,
+    ) -> i64 {
+        let code = self.core.open_v4(
+            &campaign_dir.to_string(),
+            &encounter_id.to_string(),
+            &player_side.to_string(),
+            seed,
+        );
+        let code = code.as_i64();
+        if code == 0 {
+            self.opened_at = Some(Instant::now());
+        }
+        code
+    }
+
+    /// Turn-based move of the current options' actor to a raw `Fx16_16` point.
+    #[func]
+    fn declare_move(&mut self, revision: i64, x: i64, y: i64, z: i64) -> i64 {
+        self.core.declare_move(revision, x, y, z).as_i64()
+    }
+
+    /// Real-time move of the entity with network id `actor` (lane 1).
+    #[func]
+    fn move_to(&mut self, actor: i64, x: i64, y: i64, z: i64) -> i64 {
+        self.core.move_to(actor, x, y, z).as_i64()
+    }
+
+    /// Real-time halt of the entity with network id `actor` (lane 1).
+    #[func]
+    fn halt(&mut self, actor: i64) -> i64 {
+        self.core.halt(actor).as_i64()
+    }
+
     /// Advances the session by the wall-clock time since `open`.
     #[func]
     fn poll(&mut self) -> i64 {
@@ -185,6 +226,34 @@ impl CrpgView {
     #[func]
     fn option_targets(&self) -> PackedInt64Array {
         PackedInt64Array::from(self.view.option_targets())
+    }
+
+    /// Raw `Fx16_16` positions, three integers per row, parallel to `net_ids`.
+    #[func]
+    fn positions(&self) -> PackedInt64Array {
+        PackedInt64Array::from(self.view.positions())
+    }
+
+    /// 1 where the row's position is known, else 0.
+    #[func]
+    fn position_known(&self) -> PackedByteArray {
+        PackedByteArray::from(self.view.position_known())
+    }
+
+    /// 1 where the row is moving, else 0.
+    #[func]
+    fn moving(&self) -> PackedByteArray {
+        PackedByteArray::from(self.view.moving())
+    }
+
+    /// This revision's move receipts, oldest first.
+    #[func]
+    fn move_receipts(&self) -> Array<VarDictionary> {
+        self.view
+            .move_receipts()
+            .iter()
+            .map(|receipt| dictionary(receipt.entries()))
+            .collect()
     }
 
     /// This revision's events, oldest first, each a dictionary with a `kind`.
