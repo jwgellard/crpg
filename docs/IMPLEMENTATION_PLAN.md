@@ -260,9 +260,12 @@ Windows/MSVC, through the embedded server.
 | T047a | C → I | crpg-server | T045 | Host::legal_intents and Host::replica_id (ADR-0033) |
 | T047c | C → I, S | .github/workflows | T047 | Client CI job (ADR-0033); lands in T047's batch |
 | T048 | C → I | crpg-godot | T047 | Scene sync and proxy lifecycle (§19.2 #12) |
-| T049 | C → I | crpg-godot | T047 | Interpolation buffer (§19.1 #23) |
-| T026 | C → I | crpg-godot | T026p, T037, T049 | Own-movement prediction and reconciliation |
-| T050 | C → I | crpg-godot | T048, T104 | Camera, click-to-move, selection |
+| T049 | C → I | crpg-godot | T047 | Interpolation buffer (§19.1 #23). Re-cut 2026-11-21 (T026c, `tasks/T049.md`): T049a now; T049b (turn-based `Moved` animation) with a turn-based v4 scene |
+| T049a | C → I | crpg-godot | T050a | Smoothing in the core behind `render_positions()`; parallel with T050b |
+| T026 | C → I | crpg-godot | T026p, T037, T049, a remote Godot session | Own-movement prediction and reconciliation. Deferred 2026-11-21 (D77e): nothing to hide in-process; prerequisites in `tasks/T026.md`'s revision |
+| T050 | C → I | crpg-godot | T048, T104 | Camera, click-to-move, selection. Re-cut 2026-11-21 (T026c, `tasks/T050.md`, D77): T050a then T050b; camera control and path preview are a later T050c |
+| T050a | C → I | crpg-godot | T151 | Real-time v4 open, `controlled()`, unsmoothed `render_positions()`, the `campaigns/demo/walk` campaign |
+| T050b | C → I, S | crpg-godot (shell) + `apps/client` | T050a | Three `CrpgSession` members, `Walk.tscn`: pick, select, move, halt; `tests/walk.gd`. H-review |
 | T051 | C → I | crpg-godot | T048, T104, T108 | HUD, combat log, `SimEvent`-driven VFX/audio hooks. Cut-down demo version has no T104/T108 prerequisite (ADR-0033). |
 
 **Player experience and art (added 2026-10-16 with D28j's method).** H-play
@@ -470,3 +473,4 @@ estimates slip.
 - 2026-11-17 (UTC) · opencode-go/muse-spark-1.3-contributor + S71-bookkeeping · Split T025b into T025b-i and T025b-q (quic side depends on the host side) with the D68a `blake3` edge, and added the T154a–d run-loop rows beside T150/T151, so the plan matches the approved contracts and the batch state.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S80-t040-edits · Changed the T040 row's prerequisites to T153, T150c and T154d and appended the T040a–c parts note, so the plan records the D70 approval.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S81-d71-d72-record · Recorded the D71/D72 approvals on the T041 and T100 rows (T041a–e parts and T041d prerequisites; scripted `crpgc play` with `run` kept as a health check, parts T100a/b).
+- 2026-11-21 (UTC) · claude-code/opus-5.5 (architect) + T026c · Re-cut the M5 movement rows into T050a, T050b (S) and T049a for the walk demo and marked T026 deferred, so the plan matches the new contracts and D77.
