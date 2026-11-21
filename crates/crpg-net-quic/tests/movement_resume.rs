@@ -359,3 +359,86 @@ fn r4_a_resumed_movement_connection_keeps_its_lane1_frames() {
         Err(ServerError::Closed(CloseReason::Peer { code: 0 }))
     );
 }
+
+// ---------------------------------------------------------------------------
+// T155b fix round A: the N-4 (3) boundary and the resumed framing
+// ---------------------------------------------------------------------------
+
+/// Guard: the server's next lane-0 frame with its channel, or its error.
+fn server_channel_next(server: &mut QuicServer, conn: ConnectionId) -> (Channel, Vec<u8>) {
+    let start = Instant::now();
+    loop {
+        match server.try_recv_channel(conn) {
+            Ok(Some(next)) => return next,
+            Ok(None) => {}
+            Err(error) => panic!("server closed: {error:?}"),
+        }
+        assert!(start.elapsed() < DEADLINE, "deadline: server channel frame");
+        server.wait(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn r5_the_request_cap_is_inclusive() {
+    // N-4 (3): a request is refused when *longer than* 4,096 bytes; exactly
+    // 4,096 bytes is legal and reaches the server whole.
+    let mut server = bind_movement_resumable_server(ServerLimits::v1());
+    let at_cap = vec![0x5A; 4_096];
+    let pending = connect_movement_resume_async(
+        ClientLimits::v1(),
+        server.local_addr(),
+        SESSION4,
+        at_cap.clone(),
+    );
+    let (conn, request) = next_resume(&mut server);
+    assert_eq!(request.len(), 4_096);
+    assert_eq!(request, at_cap);
+    assert_eq!(server.accept_resume(conn, &ANS), Ok(()));
+    let (client, answer) = pending
+        .join()
+        .expect("client thread")
+        .expect("a 4,096-byte request is accepted");
+    assert_eq!(answer, ANS.to_vec());
+    assert!(client.movement());
+
+    // Control: one byte more is refused before any I/O.
+    let before = server.totals();
+    let over = vec![0x5A; 4_097];
+    assert_eq!(
+        QuicClient::connect_movement_resume(
+            client_config(ClientLimits::v1()),
+            server.local_addr(),
+            SESSION4,
+            &over,
+        )
+        .err(),
+        Some(ConnectError::Handshake)
+    );
+    assert_eq!(server.totals().connections, before.connections);
+    assert!(server.poll_notice().is_none(), "no notice for 4,097 bytes");
+}
+
+#[test]
+fn r6_a_resumed_movement_client_keeps_v2_channels() {
+    let mut server = bind_movement_resumable_server(ServerLimits::v1());
+    let (mut client, conn) = resumed_movement(&mut server);
+    assert_eq!(client.framing(), Framing::V2);
+    // A transfer frame is lane-2 framing: accepted on `V2`, `ChannelUnavailable`
+    // on `V1`.
+    assert_eq!(client.try_send_channel(Channel::Transfer, b"xyz"), Ok(()));
+    assert_eq!(
+        server_channel_next(&mut server, conn),
+        (Channel::Transfer, b"xyz".to_vec())
+    );
+
+    // Control: the hello client on the same endpoint behaves the same way.
+    let (mut hello_client, hello_conn) = hello_movement(&mut server, 1);
+    assert_eq!(
+        hello_client.try_send_channel(Channel::Transfer, b"xyz"),
+        Ok(())
+    );
+    assert_eq!(
+        server_channel_next(&mut server, hello_conn),
+        (Channel::Transfer, b"xyz".to_vec())
+    );
+}
