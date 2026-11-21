@@ -1273,6 +1273,54 @@ Windows has no automated Ctrl-C case; sending a console control event to a
 child needs an FFI call the test crate may not make, so the manual Windows
 check is recorded in the pull request.
 
+## Gate-13 dedicated smoke (T041d)
+
+`tests/dedicated_smoke.rs` is gate 13's dedicated leg (`tasks/T041.md`, B-26 to
+B-32): one test, G1, over the built binary and two real QUIC clients. It lives
+in this crate because Cargo sets `CARGO_BIN_EXE_crpg-server` only for the
+package's own binaries; the embedded leg is `crpg-testkit`'s `desync` D5. It
+runs in the ordinary workspace test job on Windows/MSVC and Linux/GNU; no CI
+job is added. It includes the shared QUIC rig (`tests/support/quic_host_rig.rs`)
+for the fixture host, grants, wire encoders, the v2 `Replica` and its
+`expected_state` oracle.
+
+**What it does.** `setup` writes a fresh directory under `CARGO_TARGET_TMPDIR`:
+the rig's certificate and key as DER, a save of the three-combatant fixture
+host, the sidecar `7`, an invitations file of two entries (credential `0x11`
+controlling `a` and `c`, credential `0x22` controlling `b`, both with the
+rig's full grants) and a configuration with no optional key. `Server::spawn`
+starts the binary with standard output discarded and standard error read by
+one thread into a channel, and checks the start line exactly (incarnation 8,
+the rig's pin, `nav=none ai=off invitations=2`). Two `QuicClient`s connect on
+`/1` with wire version 2, so they speak v2 deltas with no transfers and no
+movement lane; the binary serves no `/3` endpoint, so movement over the
+dedicated server is not smoked here (D71a, T041e). The epoch's first half is
+8 and its second half is the peer handle (1, 2).
+
+**What it proves.** (1) Player 2 ends the turn of `a`, which it does not
+control: the binary logs `reject t=... admission peer=2 seq=1 code=17
+cached=false` and player 2 gets receipt `Rejected(NotAuthorized)`. (2) The
+players fight: each acts once per new turn of one of its own actors with the
+strike that always succeeds for 3 and ends the turn, so the six strikes are
+a to b, b to a, c to b, a to b, b to a, c to b, read back from both replicas'
+`ActionResolved` events. (3) Both replicas end with health `{1: (4, 10,
+false), 2: (0, 10, true), 3: (3, 3, false)}`, equal to each other and to
+`expected_state` of an independent mirror (`HistoryWorld` given the same six
+actions); the control is that the mirror after five strikes differs. (4)
+`quit` ends with exit 0 and the last line `stop reason=quit saved=<path>`, the
+save loads at incarnation 9, every line is the start line, a reject line or
+the stop line, and no line holds either credential's hex.
+
+**Readings.** The reject line's `t` is the loop's time in milliseconds
+(T040-E2), so the test checks a decimal number below 30,000, not a multiple of
+50. The certificate and key are DER; PEM is `server_binary`'s. An intent the
+server answers `StaleTick` (a stalled machine) is re-sent with the next seq and
+the receipt's `processed_tick`, at most three times a turn, and each re-send
+adds exactly one `code=15` reject line that the log check expects; any other
+refusal panics `refused`. The binary paces by the wall clock, so every wait is
+a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
+(`Drop` on `Server`) kills and reaps the child on every failure path.
+
 ## Authorities and consumers
 
 - Contract: [T022 appendix](../../tasks/T022.md) and
@@ -1335,3 +1383,4 @@ check is recorded in the pull request.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Extended the run-loop section with the dedicated hosting (`QuicHosting`'s five stages, `flush` as `pump`'s phases 4–7 with `pump` running 1–3 then the same body, the three untraced pass-throughs, and a loaded save running through the `Restore` unpause) and updated Scope, so the doc describes the QUIC hosting the loop now has.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Added "Rejections and the intake observer (T040a)" (`QuicPumpReport::rejections` as the single definition of a rejected client message, its B-1 order, why an undecodable frame is an admission rejection and an `Ingest` rejection is a rate-limited frame, and the `QuicHosting` intake observer), so the dedicated binary's log has one library-defined source.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Added "The dedicated binary (T040b)" (the OS-adapter shell, the configuration, invitations, AI and PEM/DER files, the automatic incarnation sidecar, the start-up order, the rejection log, the one `finish` stop path with its Windows and signal limits, and the exit codes) and dropped the binary wiring, certificate loading, invitation format, operator configuration and incarnation source from the "not here" list, so the doc describes the program the crate now ships.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T041d · Added "Gate-13 dedicated smoke (T041d)" (what G1 does over the real binary and two QUIC clients, what it proves, and the readings: DER files, `t` as loop time, the StaleTick re-send and its code-15 lines), so the doc describes the smoke the crate now has.
