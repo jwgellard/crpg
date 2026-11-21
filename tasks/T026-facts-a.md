@@ -92,6 +92,19 @@
 
 ## Movement host
 
+- `QuicServer::bind_movement` (`crates/crpg-net-quic/src/server.rs:248`) and `bind_movement_resumable` (`crates/crpg-net-quic/src/server.rs:255`) — movement endpoints.
+- `crpg-server::main.rs` uses `QuicServer::bind_movement_resumable` (`crates/crpg-server/src/main.rs:753`) when `movement` is true.
+- `Host::bind_v4_peer` (`crates/crpg-server/src/host.rs:1377`) — binds a v4 (movement-capable) session.
+- `Host::set_position_withheld` (`crates/crpg-server/src/host.rs:1433`) — publishes position withdrawal/anchor to one session.
+- `Host::bind_nav_mesh` (`crates/crpg-server/src/host.rs:4580`), `bind_area_bounds` (`crates/crpg-server/src/host.rs:4618`), `nav_revision` (`crates/crpg-server/src/host.rs:4632`), `place` (`crates/crpg-server/src/host.rs:4643`), `move_to` (`crates/crpg-server/src/host.rs:4663`), `halt` (`crates/crpg-server/src/host.rs:4684`), `host_move` (`crates/crpg-server/src/host.rs:4708`) — movement host operations.
+- `Host::take_samples` (`crates/crpg-server/src/host.rs:3676`) — returns lane-1 sample datagrams; `POLICY_SAMPLE_REFRESH_TICKS` (`crates/crpg-server/src/host.rs:131`) = 20.
+- `Host::ingest_move` (`crates/crpg-server/src/host.rs:3715`) and `take_move_receipts` (`crates/crpg-server/src/host.rs:3893`) — lane-1 admission and receipts.
+- `QuicHost::register_v4_invitation` (`crates/crpg-server/src/quic.rs:2530`) and `advance` (`crates/crpg-server/src/quic.rs:2721`) — `/3` route.
+- `QuicHost::start_resumable` path binds a nav mesh (`crates/crpg-server/src/quic.rs:3848`) — dedicated server binds M10 mesh.
+- Embedded single-player host built in `crates/crpg-godot/src/core/mod.rs:440` via `Host::from_history` with `ProtocolSelection::V2` (`crates/crpg-server/src/host.rs:986`), `bind_area_bounds` (`crates/crpg-godot/src/core/mod.rs:451`), `bind_v4_peer` (`crates/crpg-godot/src/core/mod.rs:454`), `bind_peer` for NPC (`crates/crpg-godot/src/core/mod.rs:466`); no `bind_nav_mesh` call in `crates/crpg-godot` (grep: none found). `LocalHost::new` (`crates/crpg-server/src/run.rs:348`) wraps it.
+- `HostConfig` / `ProtocolSelection` (`crates/crpg-server/src/host.rs:147` / `:175`) — only V1/V2 in crpg-server; v4 peer binding runs on a V2 host.
+- 256-entry answer cache referenced in `crates/crpg-server/src/host_v4.rs:154` (lane ledger retirement path).
+
 ## Movement rules and nav
 
 ## Tests to copy
