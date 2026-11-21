@@ -42,6 +42,14 @@
 
 ## Rules that bind it
 
+- `crates/crpg-godot/AGENTS.md` invariants: core is Godot-free with `#![forbid(unsafe_code)]` in `core/mod.rs` (`crates/crpg-godot/AGENTS.md:12-15`); only `shell.rs` carries the one hand-written `unsafe` (`crates/crpg-godot/AGENTS.md:56-60`); `godot` is optional behind `engine` (off by default) and pinned `=0.5.5` (`crates/crpg-godot/AGENTS.md:59-60`); engine gates never run under `cargo test` (`crates/crpg-godot/AGENTS.md:90`); `crpg-godot` is outside `determinism.py` (`docs/adr/0033-godot-bridge.md:371`).
+- Threading/frame loop: bridge never ticks, pumps or drives lane 1 (`crates/crpg-godot/AGENTS.md:69-73`); `poll` never waits on the loop thread, only `close` and a fence `call` do (`crates/crpg-godot/AGENTS.md:74-78`); one thread, no spawn (`docs/adr/0033-godot-bridge.md:111-115`); `shell.rs` reads `Instant` and passes elapsed ms to `poll` (`docs/adr/0033-godot-bridge.md:117-126`); per-frame flow is `Main.gd _process` → `session.poll()` → authority step → client step → view (`docs/adr/0033-godot-bridge.md:128-157`).
+- ADR-0033 FFI surface: two `RefCounted` classes `CrpgSession` and `CrpgView` with the member table (`docs/adr/0033-godot-bridge.md:251-287`); no signals (`docs/adr/0033-godot-bridge.md:257-258`).
+- ADR-0033 embedded host: `Host::from_history` with `ProtocolSelection::V2`, `incarnation: 1`, bind snapshot peer for player and plain peer for NPC (`docs/adr/0033-godot-bridge.md:67-94`).
+- ADR-0033 error mapping: closed code table 0-55 with fatal exactly 50-55 (`docs/adr/0033-godot-bridge.md:316-349`).
+- ALLOWED row for `crpg-godot`: `"crpg-godot": (None, set())` (`tools/lint/deps.py:71`); `GODOT_CRATE = "crpg-godot"` (`tools/lint/deps.py:75`).
+- `docs/IMPLEMENTATION_PLAN.md` §1.4 lists "the GDExtension boundary in `crpg-godot`" among serialized items (`docs/IMPLEMENTATION_PLAN.md:95`); packages marked **S** in §3 are in that set (`docs/IMPLEMENTATION_PLAN.md:98`); T047 is the only crpg-godot task marked S (`docs/IMPLEMENTATION_PLAN.md:259`). The boundary surfaces are `crates/crpg-godot/src/shell.rs` (the `#[gdextension] unsafe impl`, `crates/crpg-godot/src/shell.rs:25-26`), `crates/crpg-godot/src/lib.rs` (`#![allow(unsafe_code)]` at `crates/crpg-godot/src/lib.rs:1`), and `apps/client/crpg.gdextension` (`entry_symbol = "gdext_rust_init"`, `apps/client/crpg.gdextension:2`).
+
 ## Player UX research
 
 ## CI and run
