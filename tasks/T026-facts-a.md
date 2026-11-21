@@ -134,6 +134,14 @@
 
 ## Open follow-ups
 
+- `| — | superseded by T155 (D76) | — | (crpg-server, crpg-net) resume for protocol v4 (movement) sessions: ...` (`tasks/BACKLOG.md:121`)
+- `| T026p | complete (T026p1–T026p5), ...` (`tasks/BACKLOG.md:123`)
+- `| T026 | blocked | — | crpg-godot external movement prediction; T026p + host movement adapter + E012 |` (`tasks/BACKLOG.md:124`)
+- `| — | superseded by T155 (D76) | — | (crpg-net-quic / crpg-server) a dedicated movement (/3) endpoint: ...` (`tasks/BACKLOG.md:138`)
+- `| — | proposed | — | (crpg-server) make "movement": true the dedicated server default once terminal play and the scripted test clients speak /3 (D76c)` (`tasks/BACKLOG.md:146`)
+- `| — | proposed | — | (crpg-net) announce the nav revision to clients (T037 Reading 4), before T026` (`tasks/BACKLOG.md:370`)
+- `| Interpolation buffer and own-movement prediction | crpg-godot | T026p, movement spec (D24) | 5 |` (`tasks/BACKLOG.md:452`)
+
 ## Agent log
 
 - 2026-11-21 (UTC) · opencode-go/beam-free + T026 facts A · Fact sheet A gathering protocol, host and rules-side movement facts for Godot client movement.
