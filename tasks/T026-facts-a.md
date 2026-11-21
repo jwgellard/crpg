@@ -124,6 +124,14 @@
 
 ## Tests to copy
 
+- `dedicated_server_two_clients_move_to_identical_positions` (`crates/crpg-server/tests/dedicated_smoke.rs:1238`) — two clients connect, walk movers, one unauthorized intrusion rejected, samples bring both replicas to identical end positions, clean exit and save.
+- Scripted headless clients in `crates/crpg-testkit/tests/support/headless.rs` (movement helpers around `:682` / `:856` / `:893`) and `crates/crpg-testkit/tests/host_movement.rs` (`:37` imports) — drive a host through movement.
+- `crates/crpg-net/tests/v4_movement.rs` (first test `move_intent_literals` at `:242`) — lane-1 codec literals, refusals, identity, constants.
+- `crates/crpg-net/tests/v4_wire.rs` and `v4_wire_contract.rs` — v4 lane-0 codec and version gate.
+- `crates/crpg-net/tests/v4_positions.rs` — position filter and sampling.
+- `crates/crpg-net/tests/v4_pool.rs` — v4 receiver gate transliteration.
+- `crates/crpg-net/tests/v4_replica.rs` — v4 replica and `MoveOutbox`.
+
 ## Open follow-ups
 
 ## Agent log
