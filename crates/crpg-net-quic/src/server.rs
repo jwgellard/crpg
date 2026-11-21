@@ -249,6 +249,13 @@ impl QuicServer {
         Self::bind_setup(config, &[Framing::V2], false, true)
     }
 
+    /// As `bind_movement`, and a `crpg-lane0/3` connection may open with a
+    /// resume request, exactly as on `bind_resumable` (T155 Reading 5).
+    /// Drive it with `poll_notice`.
+    pub fn bind_movement_resumable(config: ServerConfig) -> Result<QuicServer, BindError> {
+        Self::bind_setup(config, &[Framing::V2], true, true)
+    }
+
     /// The shared constructor: the framings to offer in order, the
     /// `resumable` flag and the `movement` flag.
     fn bind_setup(
@@ -453,6 +460,7 @@ impl QuicServer {
         record.phase = Phase::Accepted;
         record.answer = Some(Answer::Resume(answer.to_vec()));
         record.reader_active = true;
+        record.lane1_reader_active = record.movement;
         record.wake.control.notify_one();
         Ok(())
     }

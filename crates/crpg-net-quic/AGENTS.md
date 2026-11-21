@@ -48,6 +48,10 @@ Since [T150b](../../tasks/T150.md) the crate also re-exports:
 `connect_movement`, `movement`, `try_send_lane1`, `try_recv_lane1`,
 `try_recv_datagram` and `lane1_stats`.
 
+Since [T155b](../../tasks/T155.md), `QuicServer` gains
+`bind_movement_resumable` and `QuicClient` gains `connect_movement_resume`
+(no new re-export).
+
 The submodules are private. Changing a public item, a wire byte, a cap, a
 close code, an ALPN or a `Display` text (`<VariantName> at quic/<area>`)
 needs an ADR. A wire change also needs a new ALPN.
@@ -139,8 +143,11 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - Never log, `Display` or put a credential in a close reason. Its `Debug` is
   `Credential(<redacted>)`, and `crpg-net-quic` emits no logs.
 - Never enable DATAGRAM frames or more streams without a new ALPN.
-- Only `bind_movement` offers `/3`; never add `/3` to another endpoint's
-  ALPN list.
+- Only the two movement endpoints (`bind_movement`, `bind_movement_resumable`)
+  offer `/3`; never add `/3` to another endpoint's ALPN list.
+- `bind_movement` must never take a resume opening; only
+  `bind_movement_resumable` does. `accept_resume` must claim the lane-1 reader
+  on a movement connection, as `accept` does.
 - Never add a `Framing` variant without the `crpg-server` part that matches
   it.
 - Lane 1 has its own queues: its order is independent of lane 0's.
@@ -208,3 +215,4 @@ Run on native Windows/MSVC (CI) and genuine Linux/GNU.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added the two teardown test commands, the no-flush-deadline-endpoint-wait/yield trap and corrected the tokio pin to =1.53.3, so a later close change keeps the reserve and the exit yield that make CONNECTION_CLOSE go out.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T098h · Noted the lib suite now also runs H1–H5 and added the trap that only `FlushClose::flush_close` builds a `Flush` request and the guard / `Stop.deadline` stay on `overall`, so a future close site cannot pick the wrong deadline (D44c (a)).
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4-pro + T150b · Added the `/3` public surface (`bind_movement`, `connect_movement`, lane-1 and datagram calls, `Lane1Stats`), the `movement` suite in the DoD block, the `try_send_datagram` outside-the-lock sentence in invariant 2, the five movement traps, and amended invariants 5 and 6 for the per-connection lane-1 queues and lane 1's independence from lane 0, so the crate's rules match the movement endpoint's new stream and datagram mapping.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155b · Added the resumable movement endpoint to the public surface, widened the `/3` ALPN trap to both movement endpoints and added the traps that `bind_movement` takes no resume opening and `accept_resume` claims lane 1, so a later change keeps the two endpoints and the close rule apart.

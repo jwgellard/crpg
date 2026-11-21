@@ -371,6 +371,98 @@ impl QuicClient {
         }
     }
 
+    /// A `crpg-lane0/3` connection opened with `request`: TLS offering
+    /// exactly `/3`, then `[0x91][len24]` + `request` as the opening, the
+    /// answer read and checked for form only, then the lane-1 stream opened.
+    /// One timer covers all of it. Returns the client and the answer
+    /// payload; [`welcome`](Self::welcome) then returns `session`. Before any
+    /// I/O: limits invalid → `Config`; `session` not version 4 → `Handshake`;
+    /// `request` empty or above 4,096 bytes → `Handshake`; no socket is bound.
+    pub fn connect_movement_resume(
+        config: ClientConfig,
+        server: SocketAddr,
+        session: Welcome,
+        request: &[u8],
+    ) -> Result<(QuicClient, Vec<u8>), ConnectError> {
+        let limits = config.limits;
+        limits.validate().map_err(ConnectError::Config)?;
+        session
+            .encode_for(true)
+            .map_err(|_| ConnectError::Handshake)?;
+        if request.is_empty() || request.len() > MAX_RESUME_FRAME_BYTES {
+            return Err(ConnectError::Handshake);
+        }
+        let request_frame = framed_channel(Channel::Resume, request, MAX_RESUME_FRAME_BYTES)
+            .map_err(|_| ConnectError::Handshake)?;
+        let mismatch = Arc::new(AtomicBool::new(false));
+        let quinn_config = tls::client_movement_config(config.pin, mismatch.clone(), &limits)
+            .ok_or(ConnectError::Handshake)?;
+        let socket = UdpSocket::bind(config.bind).map_err(|e| ConnectError::Io(e.kind()))?;
+        let local_addr = socket
+            .local_addr()
+            .map_err(|e| ConnectError::Io(e.kind()))?;
+        let inbound = QueueCaps {
+            per_peer_frames: limits.inbound_frames,
+            per_peer_bytes: limits.inbound_bytes,
+            host_frames: limits.inbound_frames,
+            host_bytes: limits.inbound_bytes,
+        };
+        let outbound = QueueCaps {
+            per_peer_frames: limits.outbound_frames,
+            per_peer_bytes: limits.outbound_bytes,
+            host_frames: limits.outbound_frames,
+            host_bytes: limits.outbound_bytes,
+        };
+        let shared = Arc::new(Shared::new(State::new(inbound, outbound, false)));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let thread_shared = shared.clone();
+        let attempt = Attempt {
+            config: quinn_config,
+            server,
+            kind: Kind::Resume {
+                request_frame,
+                welcome: session,
+            },
+            framing: Framing::V2,
+            movement: true,
+            mismatch,
+            limits,
+        };
+        let thread = spawn_attempt(thread_shared, socket, attempt, ready_tx)?;
+        match ready_rx.recv() {
+            Ok(Ok(Connected {
+                welcome,
+                resume_answer,
+            })) => match resume_answer {
+                Some(answer) => Ok((
+                    QuicClient {
+                        shared,
+                        thread: Some(thread),
+                        local_addr,
+                        welcome,
+                        limits,
+                        framing: Framing::V2,
+                        movement: true,
+                    },
+                    answer,
+                )),
+                // A resume attempt always reads an answer (S§4.6).
+                None => {
+                    let _ = thread.join();
+                    Err(ConnectError::Runtime)
+                }
+            },
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(ConnectError::Runtime)
+            }
+        }
+    }
+
     /// The framing this client asked for and negotiated.
     pub fn framing(&self) -> Framing {
         self.framing
@@ -1027,11 +1119,23 @@ async fn handshake(
             let len = parse_answer_len(header).ok_or_else(|| invalid_welcome(&connection))?;
             let mut body = vec![0u8; len];
             read_welcome_part(&connection, &mut recv, &mut body).await?;
+            // T155 N-4 (7): on `/3` lane 1 opens after the answer, as after
+            // a welcome, inside the same timer.
+            let lane1 = if movement {
+                Some(
+                    connection
+                        .open_bi()
+                        .await
+                        .map_err(|error| lost_error(&error))?,
+                )
+            } else {
+                None
+            };
             Ok(Handshaken {
                 connection,
                 send,
                 recv,
-                lane1: None,
+                lane1,
                 welcome,
                 resume_answer: Some(body),
                 framing,

@@ -237,6 +237,27 @@ discards the queued lane-1 frames. `/3` hellos and welcomes carry wire
 version 4 only (Reading 10); the public `Hello`/`Welcome` `encode`/`decode`
 keep the `/1`/`/2` rule.
 
+### The resumable movement endpoint (T155b)
+
+`QuicServer::bind_movement_resumable` is `bind_movement` with the resume
+opening on: the same ALPN (`[crpg-lane0/3]`), transport parameters and
+datagram floor. The opening reader is the `/2` one, which already takes
+`resumable` and `movement` separately: a first header byte `0x91` is a resume
+request, queued as `ServerNotice::Resume`; anything else is a hello decoded
+version 4 only. `bind_movement` still parses a `0x91` opening as a hello and
+closes it (T155 Reading 5); no new ALPN, close code or constant exists.
+
+`QuicClient::connect_movement_resume(config, server, session, request)` is
+`connect_resume` on `/3`: TLS offering `/3` alone, the `[0x91][len24]`
+request, the answer checked for form only, then the lane-1 stream opened, all
+under the one `connect_timeout_ms`. It returns `(client, answer)` with
+`movement() == true`, `framing() == V2` and `welcome() == session`; `session`
+must be version 4 and `request` 1..=4,096 bytes, checked before any socket is
+bound. `accept_resume` on a movement connection claims the lane-1 reader as
+`accept` does, so a close is not published while lane-1 frames may still be
+read (Reading 6). Lane 1 carries no resume progress: the client resends its
+unanswered intents after an accepted resume (T155 Reading 2).
+
 ## Handshake
 
 The handshake follows E§5 / ADR-0025.
@@ -291,3 +312,4 @@ stop draining).
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4.1-flash + T098g · Added `teardown.rs` to the module flow, footnoted the Close flush row and added the close-budget bound (flush at `B − R`, endpoint at `B`, one exit yield), so the doc states the reserve every `Flush` close now keeps for CONNECTION_CLOSE.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T098h · Named `FlushClose::flush_close` as the single constructor of a `Flush` close's reserve'd request and its `overall` deadline, so the doc records that no call site builds its own request (D44c (a)).
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4-pro + T150b · Added the movement endpoint: the `/3` stream/datagram mapping, the lane-1 queue and datagram bounds, the connect-time datagram floor with quinn's recorded receive-buffer property, the per-lane close and record-lifetime rules, replaced the T026p planned row with a pointer to it, and amended the fixed-parameters line's "no DATAGRAM extension" to "none on `/1`/`/2`, downstream-only on `/3`", so the doc states what `bind_movement`/`connect_movement` build and keep separate from `/1`/`/2`.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155b · Added the resumable movement endpoint (`bind_movement_resumable`, `connect_movement_resume`, the lane-1 claim in `accept_resume`) under the movement endpoint, so the doc states what T155b builds and that `bind_movement` still refuses a resume opening.
