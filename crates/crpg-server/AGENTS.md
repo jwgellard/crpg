@@ -526,6 +526,12 @@ git diff --check
   reading-only before `resolve` moves the fence, so a refusal (`Denied`,
   `Busy`) moves neither the fence nor a deadline and the ticket bytes never
   reach `Debug`, an error, a report or a checkpoint.
+- **A grace or a resume un-admits a v4 session's unanswered lane-1 intents
+  (T155a).** `begin_grace` and the `resume_peer` commit call `reset_lane1`
+  (slots, untaken receipts and samples dropped, egress freed, `next_seq` back
+  to `processed_seq + 1`); the client resends. Never decide a graced
+  session's slots (it holds no egress), never skip the reset on a live
+  resume, and never reset in a refused resume.
 
 - **The loop never reads pause (T154a, Reading 4).** `HostLoop` and
   `LocalHost` never call `paused()`: intake, the AI hook and deliver run on
@@ -611,3 +617,4 @@ git diff --check
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Recorded the dedicated hosting's surface (`QuicHosting`, `QuicAiHook`, and `QuicHost::{flush, drive_ai, pause, unpause}`, with `flush` as `pump`'s phases 4–7), so the crate contract names the stages the dedicated loop now runs.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Recorded the rejection and intake-observer surface and the trap that `rejections()` is the only definition of a rejected client message, so the dedicated binary logs the library's reading rather than its own.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Recorded the dedicated binary's surface, amended invariant 7 for the OS adapter with its fence kept, noted the `ctrlc` and `rustls-pki-types` edges and the `server_binary` gate, and added the traps (no clock in the binary, the sidecar before the load, `finish` exits holding the lock, the Windows console-close limit, and PEM decoded from its header), so the crate contract matches the program the crate now ships.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Added the trap that a grace or a resume un-admits a v4 session's unanswered lane-1 intents, so no one decides a graced session's slots or skips the reset.

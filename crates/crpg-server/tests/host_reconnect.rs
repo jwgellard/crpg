@@ -1396,16 +1396,13 @@ fn not_resumable_and_precedence() {
     // A snapshot session without a ticket: grace is NotResumable.
     let bare = rig.bind_snapshot(control(&[]), full_grants());
     assert_eq!(rig.host.begin_grace(bare, 0), Err(HostError::NotResumable));
-    // A v4 session: ticket is NotResumable.
+    // A v4 session takes a ticket (T155a).
     let mut rig_v4 = Rig::new(V2);
     let v4 = rig_v4
         .host
         .bind_v4_peer(control(&[a()]), full_grants(), facts_v3(), r1(), 0)
         .expect("v4 binds");
-    assert_eq!(
-        rig_v4.host.issue_resume_ticket(v4, proof_p()),
-        Err(HostError::NotResumable)
-    );
+    assert!(rig_v4.host.issue_resume_ticket(v4, proof_p()).is_ok());
     // begin_grace on an unbound handle -> UnknownPeer.
     let retired = rig.bind(control(&[]), full_grants());
     rig.host.unbind_peer(retired);

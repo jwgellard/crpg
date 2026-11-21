@@ -882,16 +882,17 @@ is 30_000 injected milliseconds. Exact contract:
 - **Ticket (`issue_resume_ticket`).** Stores the proof on a live resumable
   session and returns its ticket bytes. Precedence: `Closed`, then
   `UnknownPeer` for no live session (a graced handle included), then
-  `NotResumable` for a `bind_peer` session or a v4 session. Only
-  snapshot sessions (`bind_snapshot_peer`, `bind_v3_peer`) with no v4
-  state are ever resumable.
+  `NotResumable` for a `bind_peer` session. Every snapshot session
+  (`bind_snapshot_peer`, `bind_v3_peer`, `bind_v4_peer`) is resumable
+  (T155a: a v4 session resumes through the v3 path it already has).
 - **Grace (`begin_grace`, `grace_deadline`).** Moves a live resumable
   session with a stored proof into the grace map with
   `deadline_ms = now_ms.saturating_add(POLICY_RECONNECT_GRACE_MS)` and
   returns the deadline. Precedence: `Closed`, `TimeRegression`, then the
-  sweep, `UnknownPeer`, `NotResumable` (non-snapshot, v4, or no proof).
+  sweep, `UnknownPeer`, `NotResumable` (non-snapshot, or no proof).
   Commit purges the peer's staged commands, discards its delivery log as
-  `stage_snapshot`'s commit does, and moves nothing else.
+  `stage_snapshot`'s commit does, un-admits a v4 session's lane 1 (the
+  lane-1 reset below) and moves nothing else.
   `grace_deadline` is `Some(deadline)` while held, `None` otherwise
   (`None` on a closed host).
 - **Resume (`resume_peer`).** Decides one `ResumeRequest` by epoch, live
@@ -905,7 +906,22 @@ is 30_000 injected milliseconds. Exact contract:
   stages the resume snapshot (`SnapshotCause::Resume`, cancel reason
   `Superseded`) and returns `Accepted { peer, accepted }` with the epoch,
   the granted fence and lane-0 progress (`finalized_through` is the last
-  new sequence). A refusal moves neither fence nor deadline.
+  new sequence; lane 1 has no entry, the client resends its pending
+  intents). A refusal moves neither fence nor deadline.
+- **Lane-1 reset (T155a).** For a v4 session, `begin_grace` and the
+  `resume_peer` commit (live or graced, after the move back to live and
+  before staging) call `reset_lane1`: it drops the session's admitted
+  lane-1 slots, its released-but-untaken receipts and its queued samples,
+  frees their egress, and moves the lane's next sequence back to the first
+  dropped slot, so `next_seq == processed_seq + 1` afterwards. The lane-1
+  cache, `processed_seq`, the move bucket, the position view and the
+  withheld list are untouched, and no refusal calls it. A dropped slot never
+  had an effect (decisions happen in `advance`), so a resent intent is
+  admitted as new and receipted once, and an already-answered one is a
+  cached duplicate with its original receipt. While graced, the session is
+  unbound for `ingest_move` (`Unauthenticated`) and `UnknownPeer` for the
+  receipt, sample and withheld calls; the resume answer carries lane-0
+  progress only.
 - **Fence (`check_frame`).** Confirms one frame's connection tag against
   the session's current fence: `Closed`, then `UnknownPeer` for no live
   session (a graced handle included), then `SessionFenced` on mismatch.
@@ -1384,3 +1400,4 @@ a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Added "Rejections and the intake observer (T040a)" (`QuicPumpReport::rejections` as the single definition of a rejected client message, its B-1 order, why an undecodable frame is an admission rejection and an `Ingest` rejection is a rate-limited frame, and the `QuicHosting` intake observer), so the dedicated binary's log has one library-defined source.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Added "The dedicated binary (T040b)" (the OS-adapter shell, the configuration, invitations, AI and PEM/DER files, the automatic incarnation sidecar, the start-up order, the rejection log, the one `finish` stop path with its Windows and signal limits, and the exit codes) and dropped the binary wiring, certificate loading, invitation format, operator configuration and incarnation source from the "not here" list, so the doc describes the program the crate now ships.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T041d · Added "Gate-13 dedicated smoke (T041d)" (what G1 does over the real binary and two QUIC clients, what it proves, and the readings: DER files, `t` as loop time, the StaleTick re-send and its code-15 lines), so the doc describes the smoke the crate now has.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Made v4 (movement) sessions resumable and documented the lane-1 reset at grace and resume in "Reconnect grace (T025b)", so the doc matches `resumable_kind` and `reset_lane1`.
