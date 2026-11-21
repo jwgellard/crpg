@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CRPG M6 authoring prototype (T102)</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; font-size:13px; background:#1e1e2e; color:#e6e6f0; }
+  #app { display:grid; grid-template-rows: 32px 1fr 140px; height:100vh; }
+  #menubar { display:flex; align-items:center; gap:4px; padding:4px 8px; background:#2a2a3e; border-bottom:1px solid #444; }
+  .menu-btn { background:#3a3a52; color:#e6e6f0; border:1px solid #555; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px; }
+  .menu-btn.play { background:#2e7d32; }
+  .menu-btn.stop { background:#c62828; }
+  #main { display:grid; grid-template-columns: 260px 1fr 280px 220px; overflow:hidden; }
+  #explorer, #center, #right, #flowspanel { padding:8px; overflow:auto; border-right:1px solid #444; }
+  #flowspanel { border-right:none; }
+  .panel-title { font-weight:600; margin-bottom:6px; color:#9cdcfe; }
+  .tree-node { padding:2px 4px; cursor:pointer; border-radius:3px; }
+  .tree-node:hover { background:#33334d; }
+  .tree-node.selected { background:#4a4a6a; }
+  .tree-children { margin-left:14px; }
+  .tree-row { display:flex; align-items:center; gap:4px; }
+  .short { color:#aaa; font-size:11px; margin-left:4px; }
+  .newbtn { font-size:10px; padding:1px 6px; margin-left:6px; background:#3a3a52; border:1px solid #555; color:#e6e6f0; border-radius:3px; cursor:pointer; }
+  #tabs { display:flex; gap:4px; padding:4px 0; border-bottom:1px solid #444; flex-wrap:wrap; }
+  .tab { padding:4px 10px; background:#3a3a52; border:1px solid #555; border-radius:4px 4px 0 0; cursor:pointer; font-size:12px; }
+  .tab.active { background:#1e1e2e; border-bottom-color:#1e1e2e; }
+  #docarea { padding:8px; }
+  .field { display:flex; gap:8px; margin:4px 0; }
+  .field label { width:120px; color:#9cdcfe; }
+  .field input { flex:1; background:#2a2a3e; border:1px solid #555; color:#e6e6f0; padding:2px 4px; }
+  .section { margin-top:10px; }
+  .section h4 { margin:4px 0; color:#c586c0; }
+  #bottom { border-top:1px solid #444; padding:8px; overflow:auto; background:#252536; }
+  .prob { padding:3px 0; border-bottom:1px solid #333; }
+  .prob .fix { margin-left:8px; background:#3a3a52; border:1px solid #555; color:#e6e6f0; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:11px; }
+  .playview { padding:12px; background:#0f0f1a; border:1px solid #444; border-radius:6px; }
+  #walkbanner { position:fixed; top:0; left:0; right:0; background:#ffca28; color:#1a1a1a; padding:8px 12px; display:none; z-index:1000; font-weight:600; }
+  #walkbanner .btns { float:right; display:flex; gap:6px; }
+  #walkbanner button { background:#1a1a1a; color:#ffca28; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; }
+  .wt-highlight { outline:3px solid #ffca28 !important; box-shadow:0 0 8px #ffca28; }
+  .flowitem { padding:4px; cursor:pointer; border-radius:3px; }
+  .flowitem:hover { background:#33334d; }
+  .flowitem.active { background:#4a4a6a; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:none; align-items:center; justify-content:center; z-index:900; }
+  .modal .box { background:#2a2a3e; padding:16px; border-radius:8px; max-width:400px; width:90%; }
+  .modal .box button { margin-top:8px; }
+  .dropdown { position:absolute; background:#2a2a3e; border:1px solid #555; padding:4px; border-radius:4px; z-index:500; display:none; }
+  .dropdown .item { padding:4px 10px; cursor:pointer; }
+  .dropdown .item:hover { background:#3a3a52; }
+</style>
+</head>
+<body>
+<div id="walkbanner"></div>
+<div id="app">
+  <div id="menubar">
+    <button class="menu-btn" id="menu-campaign" data-wt="menu-campaign">Campaign ▾</button>
+    <button class="menu-btn" id="menu-edit" data-wt="menu-edit">Edit ▾</button>
+    <button class="menu-btn" id="menu-world" data-wt="menu-world">World ▾</button>
+    <button class="menu-btn" id="menu-rules" data-wt="menu-rules">Rules ▾</button>
+    <button class="menu-btn" id="menu-test" data-wt="menu-test">Test ▾</button>
+    <button class="menu-btn" id="menu-package" data-wt="menu-package">Package ▾</button>
+    <button class="menu-btn play" id="btn-play" data-wt="play-button">▶ Play</button>
+    <button class="menu-btn stop" id="btn-stop" data-wt="stop-button">⏹</button>
+    <button class="menu-btn" id="btn-flows" data-wt="flows-toggle">Flows</button>
+  </div>
+  <div id="main">
+    <div id="explorer"><div class="panel-title">CAMPAIGN</div><div id="explorer-tree"></div></div>
+    <div id="center">
+      <div id="tabs"></div>
+      <div id="docarea"></div>
+    </div>
+    <div id="right">
+      <div class="panel-title">PROPERTIES</div><div id="properties"></div>
+      <div class="section"><h4>REFERENCES</h4><div id="references"></div></div>
+    </div>
+    <div id="flowspanel">
+      <div class="panel-title">Flows</div>
+      <div id="flowlist"></div>
+    </div>
+  </div>
+  <div id="bottom">
+    <div class="panel-title">PROBLEMS</div>
+    <div id="problems"></div>
+  </div>
+</div>
+
+<!-- dropdowns -->
+<div id="dd-campaign" class="dropdown">
+  <div class="item" data-wt="menu-campaign-new" data-action="new-campaign">New campaign…</div>
+  <div class="item" data-wt="menu-campaign-applyplan" data-action="apply-plan">Apply plan…</div>
+</div>
+<div id="dd-world" class="dropdown">
+  <div class="item" data-wt="menu-world-newarea" data-action="new-area">New area</div>
+</div>
+<div id="dd-rules" class="dropdown">
+  <div class="item" data-wt="menu-rules-newfromtemplate" data-action="new-rules-from-template">New rules from template…</div>
+  <div class="item" data-wt="menu-rules-change" data-action="change-rules">Change for this campaign…</div>
+</div>
+
+<div id="modal" class="modal"><div class="box" id="modalbox"></div></div>
+
+<script>
+// ---------- State ----------
+function baseEmpty(){
+  return {campaign:false,campaignName:'',ruleset:'',explorer:[],tabs:[],activeTab:null,
+    selected:null,selectedObject:null,problems:[],playMode:false,playView:'',
+    terrainBaked:false,walkableOverlay:false,dialogueText:false,rulesOverride:false,
+    importedAsset:false,planApplied:false,assets:[]};
+}
+function campaignExplorer(opts){
+  opts=opts||{};
+  var creatures = opts.creatures||[{id:'creature:hero',label:'Hero',short:'hero'}];
+  var items = opts.items||[];
+  var props = opts.props||[{id:'prop:tree',label:'Tree',short:'tree'}];
+  var dialogue = opts.dialogue||[];
+  var quests = opts.quests||[];
+  var fights = opts.fights||[];
+  var events = opts.events||[];
+  var factions = opts.factions||[];
+  var assets = opts.assets||[];
+  return [
+    {id:'g-worlds',label:'Worlds',expanded:true,children:[
+      {id:'world:main',label:'World',short:'world',expanded:true,children:[
+        {id:'area:start',label:'Start',short:'start',newAction:'new-area'}
+      ],newAction:'new-world'}
+    ]},
+    {id:'g-creatures',label:'Creatures',expanded:true,children:creatures,newAction:'new-creature'},
+    {id:'g-items',label:'Items',expanded:true,children:items,newAction:'new-item'},
+    {id:'g-props',label:'Props',expanded:true,children:props},
+    {id:'g-dialogue',label:'Dialogue',expanded:true,children:dialogue,newAction:'new-dialogue'},
+    {id:'g-quests',label:'Quests',expanded:true,children:quests,newAction:'new-quest'},
+    {id:'g-fights',label:'Fights',expanded:true,children:fights,newAction:'new-fight'},
+    {id:'g-events',label:'Events',expanded:true,children:events,newAction:'new-event'},
+    {id:'g-factions',label:'Factions',expanded:true,children:factions,newAction:'new-faction'},
+    {id:'g-rules',label:'Rules',expanded:true,children:[
+      {id:'ruleset:minimal-d6',label:'minimal-d6',short:'minimal-d6',expanded:true,children:[
+        {id:'rule:strike',label:'Strike',short:'strike'}
+      ],newAction:'new-rules-from-template'}
+    ]},
+    {id:'g-assets',label:'Assets',expanded:true,children:assets,newAction:'import-asset'},
+    {id:'g-text',label:'Text',expanded:true,children:[{id:'text:en',label:'en',short:'en'}]},
+  ];
+}
+function baseCampaign(overrides){
+  var v = baseEmpty();
+  v.campaign=true; v.campaignName='My Campaign'; v.ruleset='minimal-d6';
+  v.explorer=campaignExplorer();
+  v.tabs=['area:start']; v.activeTab='area:start'; v.selected='area:start';
+  v.selectedObject={name:'Start',short:'start',fields:[{label:'Name',value:'Start'},{label:'Terrain',value:'flat'}],refs:{uses:[],usedBy:['Hero (placement)']}};
+  v.problems=[];
+  if(overrides) Object.assign(v,overrides);
+  return v;
+}
+
+// ---------- Screens (full states) ----------
+const SCREENS = {};
+SCREENS['empty'] = baseEmpty();
+SCREENS['campaign-created'] = baseCampaign();
+SCREENS['area-newtab'] = baseCampaign({tabs:['area:start','area:new'],activeTab:'area:new',selected:'area:new',
+  selectedObject:{name:'New area',short:'new-area',fields:[{label:'Name',value:'New area'},{label:'Terrain',value:'flat'}],refs:{uses:[],usedBy:[]}},
+  explorer:campaignExplorer({})});
+// add area node
+SCREENS['area-newtab'].explorer[0].children[0].children.push({id:'area:new',label:'New area',short:'new-area',newAction:'new-area'});
+
+SCREENS['area-withprops'] = baseCampaign({terrainBaked:false,walkableOverlay:false,
+  tabs:['area:start'],activeTab:'area:start',selected:'area:start',
+  selectedObject:{name:'Start',short:'start',fields:[{label:'Name',value:'Start'},{label:'Terrain',value:'flat'},{label:'Placements',value:'Tree, Hero'}],refs:{uses:['Tree','Hero'],usedBy:[]}},
+  explorer:campaignExplorer({props:[{id:'prop:tree',label:'Tree',short:'tree'},{id:'prop:rock',label:'Rock',short:'rock'}]})});
+
+SCREENS['creatures-created'] = baseCampaign({
+  explorer:campaignExplorer({creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  selected:'creature:goblin', activeTab:'creature:goblin', tabs:['creature:goblin'],
+  selectedObject:{name:'Goblin',short:'goblin',fields:[{label:'Might',value:'4'},{label:'Health',value:'6'},{label:'Rules',value:'minimal-d6 (campaign)'}],refs:{uses:[],usedBy:[]}}});
+
+SCREENS['creature-stats'] = baseCampaign({
+  explorer:campaignExplorer({creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  selected:'creature:goblin', activeTab:'creature:goblin', tabs:['creature:goblin'],
+  selectedObject:{name:'Goblin',short:'goblin',fields:[{label:'Might',value:'4'},{label:'Health',value:'6'},{label:'Strike damage',value:'2d6'},{label:'Roll table',value:'2d6'}],refs:{uses:['minimal-d6'],usedBy:[]}}});
+
+SCREENS['dialogue-new'] = baseCampaign({
+  explorer:campaignExplorer({dialogue:[{id:'dialogue:elder',label:'Elder talk',short:'elder-talk'}],creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  tabs:['dialogue:elder-talk'],activeTab:'dialogue:elder-talk',selected:'dialogue:elder-talk',
+  selectedObject:{name:'Elder talk',short:'elder-talk',fields:[{label:'Speaker',value:'Elder'},{label:'Nodes',value:'entry, choice, end'}],refs:{uses:['Elder'],usedBy:[]}},
+  dialogueText:false});
+
+SCREENS['dialogue-texttoggle'] = baseCampaign({
+  explorer:campaignExplorer({dialogue:[{id:'dialogue:elder',label:'Elder talk',short:'elder-talk'}],creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  tabs:['dialogue:elder-talk'],activeTab:'dialogue:elder-talk',selected:'dialogue:elder-talk',
+  selectedObject:{name:'Elder talk',short:'elder-talk',fields:[{label:'View',value:'indented text'},{label:'entry: Elder: "Hello"',value:''},{label:'  choice: "Help?" -> quest Main',value:''},{label:'  end',value:''}],refs:{uses:[],usedBy:[]}},
+  dialogueText:true});
+
+SCREENS['quest-new'] = baseCampaign({
+  explorer:campaignExplorer({quests:[{id:'quest:main',label:'Main',short:'main'}],creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  tabs:['quest:main'],activeTab:'quest:main',selected:'quest:main',
+  selectedObject:{name:'Main',short:'main',fields:[{label:'States',value:'Started, Completed'},{label:'Entry',value:'Started'},{label:'Completed when',value:'Goblin dies'}],refs:{uses:['Goblin'],usedBy:[]}}});
+
+SCREENS['event-page'] = baseCampaign({
+  explorer:campaignExplorer({events:[{id:'event:goblin-death',label:'Goblin dies',short:'goblin-death'}],quests:[{id:'quest:main',label:'Main',short:'main'}],creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  tabs:['event:goblin-death'],activeTab:'event:goblin-death',selected:'event:goblin-death',
+  selectedObject:{name:'Goblin dies',short:'goblin-death',fields:[{label:'When',value:'Goblin dies'},{label:'If',value:'(none)'},{label:'Do',value:'set quest Main to Completed'}],refs:{uses:['Goblin','Main'],usedBy:[]}}});
+
+SCREENS['play-start'] = baseCampaign({playMode:true,playView:'Play view — area Start. Player start: Hero. Problems banner: (none).'});
+SCREENS['play-navigate'] = baseCampaign({playMode:true,walkableOverlay:true,playView:'Play view — area Start. Walkable overlay ON. Click ground to move Hero.'});
+SCREENS['play-talk'] = baseCampaign({playMode:true,playView:'Play view — talking to Elder. Choice: "Help?" -> starts quest Main. Journal: Main: Started.'});
+SCREENS['play-fight'] = baseCampaign({playMode:true,playView:'Play view — fight: Hero vs Goblin. Combat log: Hero rolls 2d6… Goblin dies.'});
+SCREENS['play-questcomplete'] = baseCampaign({playMode:true,playView:'Play view — journal: Main: Completed (Goblin died).'});
+SCREENS['play-save'] = baseCampaign({playMode:true,playView:'Play view — saved game state. Stop, then Play → Load restores quest state and positions.'});
+SCREENS['play-two-clients'] = baseCampaign({playMode:false,playView:'',problems:[],selectedObject:{name:'Server',short:'server',fields:[{label:'Mode',value:'two clients connected'},{label:'Status',value:'both show same world'}],refs:{uses:[],usedBy:[]}}});
+
+SCREENS['terrain-baked'] = baseCampaign({terrainBaked:true,walkableOverlay:true,
+  selectedObject:{name:'Start',short:'start',fields:[{label:'Terrain',value:'baked'},{label:'Walkable overlay',value:'ON'}],refs:{uses:[],usedBy:[]}}});
+
+SCREENS['references-area'] = baseCampaign({
+  explorer:campaignExplorer({creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  selected:'area:start',activeTab:'area:start',tabs:['area:start'],
+  selectedObject:{name:'Start',short:'start',fields:[{label:'Name',value:'Start'}],refs:{uses:['Hero (placement)','Elder (placement)','Goblin (placement)'],usedBy:[]}}});
+
+SCREENS['rules-new'] = baseCampaign({rulesOverride:false,
+  explorer:campaignExplorer({}),
+  tabs:['ruleset:new-rules'],activeTab:'ruleset:new-rules',selected:'ruleset:new-rules',
+  selectedObject:{name:'New rules',short:'new-rules',fields:[{label:'Origin',value:'minimal-d6'},{label:'Stats',value:'might, health (+new stat)'},{label:'Roll table',value:'edited row'},{label:'Strike damage',value:'edited'}],refs:{uses:[],usedBy:[]}}});
+
+SCREENS['rules-override'] = baseCampaign({rulesOverride:true,
+  selected:'ruleset:minimal-d6',activeTab:'ruleset:minimal-d6',tabs:['ruleset:minimal-d6'],
+  selectedObject:{name:'minimal-d6',short:'minimal-d6',fields:[{label:'Override',value:'stored for this campaign'},{label:'Template files',value:'unchanged'}],refs:{uses:[],usedBy:[]}}});
+
+SCREENS['asset-import'] = baseCampaign({importedAsset:true,
+  explorer:campaignExplorer({assets:[{id:'asset:goblin-model',label:'goblin.glb',short:'goblin-model'}],creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  tabs:['creature:goblin'],activeTab:'creature:goblin',selected:'creature:goblin',
+  selectedObject:{name:'Goblin',short:'goblin',fields:[{label:'Appearance',value:'goblin-model (model)'},{label:'Might',value:'4'}],refs:{uses:['goblin-model'],usedBy:[]}},
+  problems:[]});
+
+SCREENS['asset-import-check'] = baseCampaign({
+  explorer:campaignExplorer({assets:[],creatures:[{id:'creature:hero',label:'Hero',short:'hero'},{id:'creature:elder',label:'Elder',short:'elder'},{id:'creature:goblin',label:'Goblin',short:'goblin'}]}),
+  tabs:['asset:import'],activeTab:'asset:import',selected:'g-assets',
+  selectedObject:{name:'Import asset',short:'import',fields:[{label:'File',value:'goblin.glb'},{label:'Class',value:'Model'},{label:'Checks',value:'glTF 2.0 OK; rig conforms'}],refs:{uses:[],usedBy:[]}},
+  problems:[]});
+
+SCREENS['plan-applied'] = baseCampaign({planApplied:true,
+  problems:[],
+  selectedObject:{name:'Campaign',short:'campaign',fields:[{label:'Plan applied',value:'3 changed objects'},{label:'Undo',value:'reverts all'}],refs:{uses:[],usedBy:[]}}});
+
+// ---------- View state ----------
+var view = JSON.parse(JSON.stringify(SCREENS['empty']));
+var walkthrough = null; // {flowId, stepIndex}
+
+// ---------- Render ----------
+function el(id){return document.getElementById(id);}
+function renderExplorer(){
+  var root=el('explorer-tree'); root.innerHTML='';
+  function node(n,depth){
+    var div=document.createElement('div');
+    div.className='tree-node'+(view.selected===n.id?' selected':'');
+    div.setAttribute('data-wt', n.id);
+    var row=document.createElement('div'); row.className='tree-row';
+    var label=document.createElement('span'); label.textContent=n.label; row.appendChild(label);
+    if(n.short){var s=document.createElement('span'); s.className='short'; s.textContent=n.short; row.appendChild(s);}
+    if(n.newAction){var b=document.createElement('button'); b.className='newbtn'; b.textContent='New…'; b.setAttribute('data-action',n.newAction); b.setAttribute('data-wt','new-'+n.newAction); row.appendChild(b);}
+    div.appendChild(row);
+    div.addEventListener('click',function(e){
+      if(e.target && e.target.getAttribute && e.target.getAttribute('data-action')) return;
+      view.selected=n.id; renderAll();
+      if(walkthrough) maybeAdvance(n.id);
+    });
+    root.appendChild(div);
+    if(n.children && n.expanded){
+      var c=document.createElement('div'); c.className='tree-children';
+      // move children rendering into c
+      var holder=root; 
+      // render children into a temp then append
+      var prev=root;
+      // We'll just recurse appending to root then indent via margin? Use nested container.
+    }
+    if(n.children && n.expanded){
+      var container=document.createElement('div'); container.style.marginLeft='14px';
+      // render children recursively into container
+      n.children.forEach(function(ch){ renderNodeInto(ch,container); });
+      root.appendChild(container);
+    }
+  }
+  function renderNodeInto(n,container){
+    var div=document.createElement('div');
+    div.className='tree-node'+(view.selected===n.id?' selected':'');
+    div.setAttribute('data-wt', n.id);
+    var row=document.createElement('div'); row.className='tree-row';
+    var label=document.createElement('span'); label.textContent=n.label; row.appendChild(label);
+    if(n.short){var s=document.createElement('span'); s.className='short'; s.textContent=n.short; row.appendChild(s);}
+    if(n.newAction){var b=document.createElement('button'); b.className='newbtn'; b.textContent='New…'; b.setAttribute('data-action',n.newAction); b.setAttribute('data-wt','new-'+n.newAction); row.appendChild(b);}
+    div.appendChild(row);
+    div.addEventListener('click',function(e){
+      if(e.target && e.target.getAttribute && e.target.getAttribute('data-action')) return;
+      view.selected=n.id; renderAll();
+      if(walkthrough) maybeAdvance(n.id);
+    });
+    container.appendChild(div);
+    if(n.children && n.expanded){
+      var sub=document.createElement('div'); sub.style.marginLeft='14px';
+      n.children.forEach(function(ch){ renderNodeInto(ch,sub); });
+      container.appendChild(sub);
+    }
+  }
+  view.explorer.forEach(function(n){ node(n,0); });
+}
+function renderTabs(){
+  var root=el('tabs'); root.innerHTML='';
+  (view.tabs||[]).forEach(function(t){
+    var lbl=t.split(':').pop().replace(/-/g,' ');
+    lbl=lbl.charAt(0).toUpperCase()+lbl.slice(1);
+    var d=document.createElement('div'); d.className='tab'+(view.activeTab===t?' active':''); d.textContent=lbl; d.setAttribute('data-wt',t);
+    d.addEventListener('click',function(){ view.activeTab=t; renderAll(); if(walkthrough) maybeAdvance(t); });
+    root.appendChild(d);
+  });
+}
+function renderDoc(){
+  var root=el('docarea'); root.innerHTML='';
+  if(view.playMode){
+    var pv=document.createElement('div'); pv.className='playview'; pv.textContent=view.playView; pv.setAttribute('data-wt','play-view'); root.appendChild(pv);
+    return;
+  }
+  if(!view.campaign){
+    root.innerHTML='<p>No campaign open. Use Campaign ▸ New campaign…</p>'; return;
+  }
+  var so=view.selectedObject;
+  if(so){
+    var h=document.createElement('h3'); h.textContent=so.name+'  '; var sh=document.createElement('span'); sh.className='short'; sh.textContent=so.short; h.appendChild(sh); root.appendChild(h);
+    (so.fields||[]).forEach(function(f){
+      var row=document.createElement('div'); row.className='field';
+      var lab=document.createElement('label'); lab.textContent=f.label;
+      var inp=document.createElement('input'); inp.value=f.value; inp.readOnly=true;
+      row.appendChild(lab); row.appendChild(inp); root.appendChild(row);
+    });
+  } else {
+    root.innerHTML='<p>Select an object.</p>';
+  }
+}
+function renderRight(){
+  var p=el('properties'); p.innerHTML='';
+  var so=view.selectedObject;
+  if(so){
+    (so.fields||[]).forEach(function(f){
+      var row=document.createElement('div'); row.className='field';
+      var lab=document.createElement('label'); lab.textContent=f.label;
+      var inp=document.createElement('input'); inp.value=f.value;
+      row.appendChild(lab); row.appendChild(inp); p.appendChild(row);
+    });
+  }
+  var r=el('references'); r.innerHTML='';
+  var so2=view.selectedObject;
+  if(so2 && so2.refs){
+    var u=document.createElement('div'); u.innerHTML='<b>Uses</b>: '+(so2.refs.uses||[]).join(', '); r.appendChild(u);
+    var b=document.createElement('div'); b.innerHTML='<b>Used by</b>: '+(so2.refs.usedBy||[]).join(', '); r.appendChild(b);
+  }
+}
+function renderProblems(){
+  var root=el('problems'); root.innerHTML='';
+  (view.problems||[]).forEach(function(pr){
+    var div=document.createElement('div'); div.className='prob';
+    div.textContent=pr.severity+' — '+pr.object+' — '+pr.field+' — '+pr.message;
+    if(pr.fix){var b=document.createElement('button'); b.className='fix'; b.textContent='Fix'; b.setAttribute('data-wt','fix-'+pr.code); b.addEventListener('click',function(){ if(walkthrough) maybeAdvance('fix'); }); div.appendChild(b);}
+    root.appendChild(div);
+  });
+  if((view.problems||[]).length===0) root.innerHTML='<em>Problems empty</em>';
+}
+function renderAll(){
+  renderExplorer(); renderTabs(); renderDoc(); renderRight(); renderProblems();
+  applyHighlight();
+}
+
+// ---------- Actions ----------
+function doAction(action){
+  switch(action){
+    case 'new-campaign':
+      view = JSON.parse(JSON.stringify(SCREENS['campaign-created']));
+      break;
+    case 'new-area':
+      view = JSON.parse(JSON.stringify(SCREENS['area-newtab']));
+      break;
+    case 'new-creature':
+      // add creature placeholder handled in flow screen
+      view = JSON.parse(JSON.stringify(SCREENS['creatures-created']));
+      break;
+    case 'new-dialogue':
+      view = JSON.parse(JSON.stringify(SCREENS['dialogue-new']));
+      break;
+    case 'new-quest':
+      view = JSON.parse(JSON.stringify(SCREENS['quest-new']));
+      break;
+    case 'new-fight':
+      view = JSON.parse(JSON.stringify(SCREENS['play-fight']));
+      break;
+    case 'new-event':
+      view = JSON.parse(JSON.stringify(SCREENS['event-page']));
+      break;
+    case 'new-rules-from-template':
+      view = JSON.parse(JSON.stringify(SCREENS['rules-new']));
+      break;
+    case 'change-rules':
+      view = JSON.parse(JSON.stringify(SCREENS['rules-override']));
+      break;
+    case 'import-asset':
+      view = JSON.parse(JSON.stringify(SCREENS['asset-import-check']));
+      break;
+    case 'apply-plan':
+      view = JSON.parse(JSON.stringify(SCREENS['plan-applied']));
+      break;
+    case 'bake-nav':
+      view = JSON.parse(JSON.stringify(SCREENS['terrain-baked']));
+      break;
+  }
+  renderAll();
+}
+
+// ---------- Walkthrough ----------
+const FLOWS = [
+ {id:'F1',title:'New campaign',check:'Problems empty; ▶ Play starts at once.',
+  steps:[
+    {text:'Campaign ▸ New… → pick starter-d6, type a name.', screen:'empty', target:'menu-campaign'},
+    {text:'Click "New campaign…" in the Campaign menu.', screen:'empty', target:'menu-campaign-new'},
+    {text:'Campaign created: explorer shows World ▸ Start, Hero, Rules.', screen:'campaign-created', target:'play-button'}
+  ]},
+ {id:'F2',title:'§17.2-1 Area, terrain, props',check:'placements listed under the area; Problems empty.',
+  steps:[
+    {text:'Worlds ▸ World ▸ New area → name → the area tab opens.', screen:'campaign-created', target:'new-new-area'},
+    {text:'New area tab opens.', screen:'area-newtab', target:'menu-world'},
+    {text:'Terrain tool → flat or raise/lower; bake navigation.', screen:'area-newtab', target:'new-area-bake'},
+    {text:'Place tool → drag props from the asset browser.', screen:'area-withprops', target:'play-button'}
+  ]},
+ {id:'F3',title:'§17.2-2 Player start, NPC, hostile',check:'References on the area lists three placements.',
+  steps:[
+    {text:'Move player start by drag, or right-click → Make player start.', screen:'area-withprops', target:'area:start'},
+    {text:'Creatures ▸ New creature ×2 ("Elder", "Goblin").', screen:'area-withprops', target:'new-new-creature'},
+    {text:'Drag each into the area (place).', screen:'creatures-created', target:'area:start'},
+    {text:'References on the area lists three placements.', screen:'references-area', target:'play-button'}
+  ]},
+ {id:'F4',title:'§17.2-3 Creatures use minimal-d6',check:'crpgc explain creature:goblin shows the same values.',
+  steps:[
+    {text:'Creature tab shows the campaign rules\' stat block in decimals; edit Might.', screen:'creatures-created', target:'creature:goblin'},
+    {text:'set /stats/might.', screen:'creature-stats', target:'play-button'}
+  ]},
+ {id:'F5',title:'§17.2-4 Dialogue with a quest-starting choice',check:'Walk this conversation reaches all three nodes; none greyed.',
+  steps:[
+    {text:'Dialogue ▸ New dialogue (speaker Elder).', screen:'creatures-created', target:'new-new-dialogue'},
+    {text:'Add a choice and a line (create dialogue-choice, dialogue-line, connect).', screen:'dialogue-new', target:'play-button'},
+    {text:'On the choice, Actions ▸ Start quest Main.', screen:'dialogue-new', target:'play-button'},
+    {text:'Text toggle shows the indented form and back without change.', screen:'dialogue-texttoggle', target:'play-button'}
+  ]},
+ {id:'F6',title:'§17.2-5 Quest, completes on enemy death',check:'reachability shows Completed reachable.',
+  steps:[
+    {text:'Quests ▸ New quest (Started, Completed).', screen:'creatures-created', target:'new-new-quest'},
+    {text:'On Completed, "Completes when…" → Goblin dies (on page).', screen:'quest-new', target:'new-new-event'},
+    {text:'Event page: When Goblin dies → set quest Main to Completed.', screen:'event-page', target:'play-button'}
+  ]},
+ {id:'F7',title:'§17.2-6 Press Play',check:'playtest log shows the session; Stop returns to editing with the document unchanged.',
+  steps:[
+    {text:'▶ Play → in-process server and client in the document area.', screen:'quest-new', target:'play-button'},
+    {text:'Play view shown; Stop returns to editing.', screen:'play-start', target:'stop-button'}
+  ]},
+ {id:'F8',title:'§17.2-7 Click-to-move',check:'the overlay shows the walkable region; the character walks there.',
+  steps:[
+    {text:'Area tab → Bake navigation, walkable overlay on one key.', screen:'area-withprops', target:'new-area-bake'},
+    {text:'Play → click the ground.', screen:'play-navigate', target:'stop-button'}
+  ]},
+ {id:'F9',title:'§17.2-8 Talk, quest starts',check:'debugger quest watch.',
+  steps:[
+    {text:'Play → click the Elder → choose.', screen:'play-start', target:'play-button'},
+    {text:'Journal shows Main: Started.', screen:'play-talk', target:'stop-button'}
+  ]},
+ {id:'F10',title:'§17.2-9 Fight',check:'combat log with rolls; Goblin dies.',
+  steps:[
+    {text:'Fights ▸ New fight with Hero and Goblin (or approach mode).', screen:'creatures-created', target:'new-new-fight'},
+    {text:'Play → attack.', screen:'play-fight', target:'stop-button'}
+  ]},
+ {id:'F11',title:'§17.2-10 Quest completes',check:'journal shows Completed.',
+  steps:[
+    {text:'Continues F10: the F6 page fires.', screen:'play-fight', target:'play-button'},
+    {text:'Journal shows Completed.', screen:'play-questcomplete', target:'stop-button'}
+  ]},
+ {id:'F12',title:'§17.2-11 Save, quit, load',check:'debugger shows the same quest state and positions.',
+  steps:[
+    {text:'Play → Save.', screen:'play-questcomplete', target:'play-button'},
+    {text:'Stop → Play → Load.', screen:'play-save', target:'stop-button'}
+  ]},
+ {id:'F13',title:'§17.2-12 Separate server, two clients',check:'both clients show the same world.',
+  steps:[
+    {text:'Save and run crpg-server with campaign; two clients from CLI.', screen:'play-save', target:'play-button'},
+    {text:'Both clients show the same world.', screen:'play-two-clients', target:'play-button'}
+  ]},
+ {id:'F14',title:'New rules from a template',check:'validate clean; encounter dry-run or crpgc play runs a fight with the new rules.',
+  steps:[
+    {text:'Rules ▸ New rules from template… → minimal-d6 → name.', screen:'campaign-created', target:'menu-rules-newfromtemplate'},
+    {text:'Rules tab shows the copy; add a stat, edit a roll table row, change Strike\'s damage.', screen:'rules-new', target:'play-button'},
+    {text:'Fights using it: pick the new rules.', screen:'rules-new', target:'play-button'}
+  ]},
+ {id:'F15',title:'Change rules for this campaign',check:'the template\'s own files are unchanged.',
+  steps:[
+    {text:'Rules ▸ minimal-d6 ▸ Change for this campaign… → edit.', screen:'campaign-created', target:'menu-rules-change'},
+    {text:'Stored as an override.', screen:'rules-override', target:'play-button'}
+  ]},
+ {id:'F16',title:'Import a model and use it',check:'asset appears in Assets; assets.lock and campaign.lock agree (validate clean).',
+  steps:[
+    {text:'Assets ▸ Import… → pick a .glb → class Model.', screen:'campaign-created', target:'new-import-asset'},
+    {text:'Checks pass or show problems.', screen:'asset-import-check', target:'play-button'},
+    {text:'Goblin\'s Appearance picker lists it (import, set /appearance).', screen:'asset-import', target:'play-button'}
+  ]},
+ {id:'F17',title:'An agent\'s plan in the open editor',check:'Undo reverts all of it.',
+  steps:[
+    {text:'Campaign ▸ Apply plan… → review.', screen:'campaign-created', target:'menu-campaign-applyplan'},
+    {text:'Apply → Undo reverts all of it.', screen:'plan-applied', target:'play-button'}
+  ]}
+];
+
+// map some target tokens to data-wt values present in DOM
+// We'll assign data-wt to new buttons: 'new-new-area' etc via newAction button data-wt = 'new-'+action. For new-area action button data-wt='new-new-area'? Wait newAction='new-area', button data-wt='new-new-area'. In F2 step1 target 'new-new-area' (I wrote 'new-new-area'? I wrote 'new-new-area' no I wrote 'new-new-area'? Let's check: target:'new-new-area'. yes). Good.
+// For creature new button data-wt 'new-new-creature'. F3 uses 'new-new-creature'. Good.
+// bake nav: no button; I'll add data-wt to... none. Let's adjust targets to existing: use 'area:start' or 'play-button'. Already some.
+
+function startFlow(id){
+  var f=FLOWS.find(function(x){return x.id===id;});
+  if(!f) return;
+  walkthrough={flowId:id,stepIndex:0};
+  applyStep();
+}
+function currentFlow(){ return walkthrough? FLOWS.find(function(x){return x.id===walkthrough.flowId;}):null; }
+function applyStep(){
+  var f=currentFlow(); if(!f) return;
+  var step=f.steps[walkthrough.stepIndex];
+  view = JSON.parse(JSON.stringify(SCREENS[step.screen]));
+  renderAll();
+  showBanner(step.text + '  ('+f.id+' step '+(walkthrough.stepIndex+1)+'/'+f.steps.length+')');
+  applyHighlight();
+}
+function showBanner(text){
+  var b=el('walkbanner'); b.style.display='block';
+  b.innerHTML = text + ' <div class="btns"><button id="wt-back">Back</button><button id="wt-next">Next</button><button id="wt-restart">Restart</button><button id="wt-close">Close</button></div>';
+  el('wt-back').addEventListener('click',backStep);
+  el('wt-next').addEventListener('click',nextStep);
+  el('wt-restart').addEventListener('click',restartFlow);
+  el('wt-close').addEventListener('click',closeWalk);
+}
+function backStep(){
+  if(!walkthrough) return;
+  var f=currentFlow();
+  if(walkthrough.stepIndex>0){ walkthrough.stepIndex--; applyStep(); }
+}
+function nextStep(){
+  if(!walkthrough) return;
+  var f=currentFlow();
+  if(walkthrough.stepIndex < f.steps.length-1){ walkthrough.stepIndex++; applyStep(); }
+  else if(walkthrough.stepIndex === f.steps.length-1){ walkthrough.stepIndex = f.steps.length; showBanner('Check: '+f.check); }
+}
+function restartFlow(){
+  if(!walkthrough) return;
+  walkthrough.stepIndex=0; applyStep();
+}
+function closeWalk(){
+  walkthrough=null; el('walkbanner').style.display='none'; renderAll();
+}
+function maybeAdvance(clickedToken){
+  if(!walkthrough) return;
+  var f=currentFlow();
+  var step=f.steps[walkthrough.stepIndex];
+  if(clickedToken===step.target){
+    if(walkthrough.stepIndex < f.steps.length-1){
+      walkthrough.stepIndex++;
+      applyStep();
+    } else {
+      // last step done -> show Check
+      showBanner('Check: '+f.check);
+      walkthrough.stepIndex = f.steps.length; // done
+    }
+  }
+}
+function applyHighlight(){
+  // clear
+  document.querySelectorAll('.wt-highlight').forEach(function(e){e.classList.remove('wt-highlight');});
+  if(!walkthrough) return;
+  var f=currentFlow();
+  if(!f || walkthrough.stepIndex>=f.steps.length) return;
+  var step=f.steps[walkthrough.stepIndex];
+  var token=step.target;
+  document.querySelectorAll('[data-wt="'+token+'"]').forEach(function(e){e.classList.add('wt-highlight');});
+}
+
+// ---------- Event wiring ----------
+document.addEventListener('click',function(e){
+  var t=e.target;
+  // dropdown toggles
+  if(t && t.id==='menu-campaign'){ if(walkthrough) maybeAdvance('menu-campaign'); toggleDd('dd-campaign',t); return;}
+  if(t && t.id==='menu-world'){ if(walkthrough) maybeAdvance('menu-world'); toggleDd('dd-world',t); return;}
+  if(t && t.id==='menu-rules'){ if(walkthrough) maybeAdvance('menu-rules'); toggleDd('dd-rules',t); return;}
+  // menu items
+  if(t && t.getAttribute && t.getAttribute('data-action')){
+    var a=t.getAttribute('data-action');
+    // walkthrough advance for target
+    if(walkthrough){ maybeAdvance(t.getAttribute('data-wt')); }
+    doAction(a);
+    closeAllDd();
+    return;
+  }
+  // new buttons
+  if(t && t.classList && t.classList.contains('newbtn')){
+    var a2=t.getAttribute('data-action');
+    if(walkthrough){ maybeAdvance(t.getAttribute('data-wt')); }
+    doAction(a2);
+    return;
+  }
+  // play/stop
+  if(t && t.id==='btn-play'){
+    if(walkthrough){ maybeAdvance('play-button'); }
+    view.playMode=true;
+    if(!view.playView) view.playView='Play view — area Start.';
+    renderAll();
+    return;
+  }
+  if(t && t.id==='btn-stop'){
+    if(walkthrough){ maybeAdvance('stop-button'); }
+    view.playMode=false; renderAll();
+    return;
+  }
+  // flows toggle (no-op, panel always visible)
+  if(t && t.id==='btn-flows'){ return; }
+  // explorer node clicks handled in render; but walkthrough advance for node target
+  // generic: if clicked element has data-wt, try advance
+  var wt = t && t.getAttribute && t.getAttribute('data-wt');
+  if(wt && walkthrough){ maybeAdvance(wt); }
+  closeAllDd();
+},true);
+
+function toggleDd(id,anchor){
+  closeAllDd();
+  var d=el(id); d.style.display='block';
+  var r=anchor.getBoundingClientRect();
+  d.style.left=r.left+'px'; d.style.top=(r.bottom+2)+'px';
+}
+function closeAllDd(){ ['dd-campaign','dd-world','dd-rules'].forEach(function(i){ el(i).style.display='none';}); }
+
+// flows list
+function renderFlows(){
+  var root=el('flowlist'); root.innerHTML='';
+  FLOWS.forEach(function(f){
+    var d=document.createElement('div'); d.className='flowitem'+(walkthrough&&walkthrough.flowId===f.id?' active':'');
+    d.textContent=f.id+' '+f.title;
+    d.addEventListener('click',function(){ startFlow(f.id); });
+    root.appendChild(d);
+  });
+}
+
+// init
+renderFlows();
+view = JSON.parse(JSON.stringify(SCREENS['empty']));
+renderAll();
+</script>
+</body>
+</html>

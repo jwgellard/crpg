@@ -1,0 +1,45 @@
+# T102 — clickable prototype of the M6 editor flows
+
+## How to open
+Open `docs/research/T102/prototype/index.html` in any browser (double-click / "Open with"). It is a single self-contained file: inline CSS and JavaScript, no external script, font, image or network request. Works opened from disk (`file://`).
+
+The left `CAMPAIGN` explorer, centre tabbed document area, right `PROPERTIES`/`REFERENCES`, bottom `PROBLEMS`, menu strip and `▶ Play`/`⏹` match §I. The far-right `Flows` panel lists F1–F17. Click a flow to start a guided walkthrough: the banner shows the current step in §V words, the element to click is highlighted (gold outline); clicking it advances. `Back`, `Restart` and `Close` are in the banner. After the last step the banner shows the flow's `Check` line from §F.
+
+State is fake (no engine): "New campaign" adds explorer items, Play shows a text mock of the game view.
+
+## Flow → screens and clicks
+
+| Flow | Screens used | Clicks |
+|---|---|---|
+| F1 New campaign | empty → campaign-created | Campaign ▸ New campaign…, ▶ Play |
+| F2 §17.2-1 Area, terrain, props | campaign-created → area-newtab → area-withprops | Worlds▸World▸New area (New…), Terrain/bake, place props |
+| F3 §17.2-2 Player start, NPC, hostile | area-withprops → creatures-created → references-area | move/make player start, Creatures▸New creature ×2, drag into area, References |
+| F4 §17.2-3 Creatures use minimal-d6 | creatures-created → creature-stats | creature row, edit Might |
+| F5 §17.2-4 Dialogue with quest-starting choice | creatures-created → dialogue-new → dialogue-texttoggle | Dialogue▸New dialogue, add choice/line, connect, Actions▸Start quest, text toggle |
+| F6 §17.2-5 Quest, completes on enemy death | creatures-created → quest-new → event-page | Quests▸New quest, "Completes when…", on page |
+| F7 §17.2-6 Press Play | quest-new → play-start | ▶ Play, ⏹ |
+| F8 §17.2-7 Click-to-move | area-withprops → play-navigate | bake navigation, ▶ Play, click ground |
+| F9 §17.2-8 Talk, quest starts | play-start → play-talk | click Elder, choose |
+| F10 §17.2-9 Fight | creatures-created → play-fight | Fights▸New fight, ▶ Play, attack |
+| F11 §17.2-10 Quest completes | play-fight → play-questcomplete | (continues F10) |
+| F12 §17.2-11 Save, quit, load | play-questcomplete → play-save | Save, Stop, Play, Load |
+| F13 §17.2-12 Separate server, two clients | play-save → play-two-clients | run crpg-server + two clients |
+| F14 New rules from a template | campaign-created → rules-new | Rules▸New rules from template…, edit stat/roll table/Strike |
+| F15 Change rules for this campaign | campaign-created → rules-override | Rules▸minimal-d6▸Change for this campaign… |
+| F16 Import a model and use it | campaign-created → asset-import-check → asset-import | Assets▸Import…, checks, Goblin▸Appearance |
+| F17 An agent's plan in the open editor | campaign-created → plan-applied | Campaign▸Apply plan…, Apply, Undo |
+
+## Ambiguities found (findings for T101)
+
+1. §F F2 names "Terrain tool (T063)" and "Place tool" but §I's menu strip (I1) has no Terrain/Place menu; only World. The prototype treats terrain bake and place as actions reachable from the area tab / explorer, not a top-level menu. T101 should decide where these tools live (menu vs. toolbar) and whether "Bake navigation" (F8) is a separate command or part of the terrain tool.
+2. §F F3 says "right-click another placement → Make player start" but I1's menu strip lists no context-menu surface; the prototype exposes it as a row action. Whether right-click context menus exist is unspecified.
+3. §I I1's menu strip has `Campaign ▾ Edit ▾ World ▾ Rules ▾ Test ▾ Package ▾ ▶ Play ⏹` but §F uses "Worlds ▸ World ▸ New area", "Creatures ▸ New creature", "Dialogue ▸ New dialogue", etc. (explorer-group "New…" per I2), and also "Campaign ▸ New…", "Rules ▸ New rules from template…", "Assets ▸ Import…". The prototype keeps both: explorer groups carry "New…" (I2) and the menus carry the campaign/rules/asset actions. T101 should confirm no duplicate "New area" in both World menu and explorer.
+4. §F F10 allows a fight "that starts on approach (T108's mode rules)"; the prototype only models an explicit Fights ▸ New fight. The approach-trigger mode is not represented.
+5. §F F12 is the game's save during Play, not the editor's file save; the prototype labels it as play-state save/load only, with no editor save affordance, matching the ADR's rejection of "§17.2-11 as an editor save".
+6. §F F13 is not an M6 editor feature (Phase 10 multiplayer); the prototype shows a text mock only, per the brief.
+7. §V V1 forbids ULIDs/paths/etc. in the GUI; the prototype shows short names only. Explorer rows show display text then short name (I2). Whether the short name is editable inline vs. in Properties is not specified (V2 says "editable"); prototype shows it as text.
+8. §I I6 says Problems renders after every committed operation; the prototype shows a static empty/problems list per screen rather than recomputing, since there is no engine.
+
+## Agent log
+- 2026-11-21 (UTC) · opencode-go/beam-free + T102 · Built the single-file clickable prototype (index.html) covering F1–F17 with a data-driven screen/flow renderer, plus this README; findings above recorded for T101.<|end|><|start|>write to=assistant<|channel|>analysis<|message|>Now run acceptance commands. First determinism and unittest.<|end|><|start|><|start|>assistant to=shell<|channel|>analysis <|constrain|>xml<|message|><rfl:parameter name="command">
+cd "C:/CRPG/dev/crpg-slots/slot-3" && python tools/lint/determinism.py && echo "DETERM OK" && python -m unittest discover -s tools/lint -p "test_*.py" 2>&1 | tail -20
