@@ -28,6 +28,18 @@
 
 ## Scripts and scenes
 
+- `apps/client/scenes/Main.tscn` declares `Main` (`Node3D` with `Main.gd`), `Camera3D`, `Sun` (`DirectionalLight3D`), `Environment` (`WorldEnvironment`), `Ground` (`MeshInstance3D`), `Proxies` (`Node3D` with `SceneSync.gd`) and `Hud` (`CanvasLayer` with `CombatHud.gd`) (`apps/client/scenes/Main.tscn:17-36`).
+- `Main.gd` owns `session`, `seen`, `view`, `open_code`, `stop_code` (`apps/client/scripts/Main.gd:7-11`); `_ready` instantiates `CrpgSession` and calls `open(_campaign_dir(), "", "", OPEN_SEED)` with `OPEN_SEED := 1` (`apps/client/scripts/Main.gd:5,13-25`); `_process` calls `session.poll()` once, treats code 30 as a notice, sets `stop_code` on other non-zero, and on a revision change calls `Proxies.sync(view)` and `Hud.sync(view)` (`apps/client/scripts/Main.gd:26-44`); `choose(index)` calls `session.submit_option(seen, index)` (`apps/client/scripts/Main.gd:45-49`); `_exit_tree` calls `session.close()` (`apps/client/scripts/Main.gd:50-53`).
+- `SceneSync.gd` holds `_proxies: Dictionary` and `_side_order: Array[String]` (`apps/client/scripts/SceneSync.gd:14-15`); `plan(ids)` returns `{"despawn", "spawn", "refresh"}` ascending lists (`apps/client/scripts/SceneSync.gd:17-37`); `sync(view)` frees despawns with `remove_child` then `queue_free`, spawns, then rewrites position, mesh, name, dead tint and `move_child(proxy, i)` (`apps/client/scripts/SceneSync.gd:39-67`); `clear()` frees all and clears `_side_order` (`apps/client/scripts/SceneSync.gd:68-72`); `proxy_count()` counts `proxy_` children (`apps/client/scripts/SceneSync.gd:73-78`); `_make_proxy` creates a `Node3D` with a `Mesh` `MeshInstance3D` and a billboarded `Label` `Label3D` at `y = 1.2` (`apps/client/scripts/SceneSync.gd:80-97`).
+- `CombatHud.gd` builds its named node tree in `_init` (`apps/client/scripts/CombatHud.gd:24-59`) with `main = get_parent()` in `_ready` (`apps/client/scripts/CombatHud.gd:60-61`); `sync(view)` writes round/turn/health/options/waiting/log/end (`apps/client/scripts/CombatHud.gd:63-75`); `show_error`/`show_notice`/`clear` are defined at `apps/client/scripts/CombatHud.gd:76-95`.
+- Input handling: none in the client today; `docs/architecture/crpg-godot.md:259-260` states "No input. Camera control and picking are T050 and deliberately absent; T049 owns positions."
+- `load.gd` (`apps/client/tests/load.gd`): exits 0 pass, 2 class missing, 3 first failed check (`apps/client/tests/load.gd:3-5`); control with missing campaign exits 3 (`apps/client/tests/load.gd:5`).
+- `scene_sync.gd` runner (`apps/client/tests/scene_sync.gd`): exits 0 on `"PASS"`, 6 on any other result, 7 on deferred-free check failure, 3 on script load failure (`apps/client/tests/scene_sync.gd:4-6`).
+- `scene_sync_cases.gd` holds S1-S13 and S15-S19 (T048/T048b/T048c) and S14 is checked two frames later by the runner (`apps/client/tests/scene_sync.gd:2`, `apps/client/tests/scene_sync.gd:37-48`).
+- `hud.gd` runner (`apps/client/tests/hud.gd`): exits 0 on `"PASS"`, 6 on any other result, 3 on load failure (`apps/client/tests/hud.gd:2-4`); `hud_cases.gd` holds H1-H19.
+- `smoke.gd` (`apps/client/tests/smoke.gd`): runs scene-sync then HUD cases first, exits 6/7 on their failure, then plays `combat_basic` choosing option 0, exits 0 when ended with `proxy_count() == net_ids().size() == 2`, 5 on proxy-count mismatch, 3 on open/poll/choose failure, 2 on missing class, 4 after 120 s (`apps/client/tests/smoke.gd:4-8,68-94`).
+- `movement.gd` (`apps/client/tests/movement.gd`): exits 0 pass, 2 class missing, 3 unexpected code, 4 timeout, 5 MOVE edit/copy failure, 6 value check failure (`apps/client/tests/movement.gd:9-10`); runs M1-M7 (`apps/client/tests/movement.gd:123-141`).
+
 ## Rules that bind it
 
 ## Player UX research
