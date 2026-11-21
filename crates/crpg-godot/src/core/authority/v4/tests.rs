@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crpg_net::protocol_v3::PauseRights;
 use crpg_net::transport::Transport;
@@ -264,6 +265,27 @@ where
     F: FnOnce(&mut HostLoop<LocalHost>) -> R + Send + 'static,
 {
     call_result(core, f).expect("runner alive")
+}
+
+/// Polls until the runner's end is reported (T151-E3), then returns its code.
+///
+/// The end is asynchronous: the loop thread drops its pending task before it
+/// returns, so `poll` cannot promise a fixed count. The manual clock stays
+/// where the caller left it; only wall time passes, so every poll before the
+/// first non-zero one is `Ok` and the end arrives once the thread has exited.
+fn poll_until_end(core: &mut BridgeCore) -> BridgeCode {
+    let started = Instant::now();
+    loop {
+        let code = core.poll(100);
+        if code != BridgeCode::Ok {
+            return code;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "server_side_endings_fence: no poll reported the runner's end within 5 s"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Runs one between-cycles rendezvous and two polls (B-B4, T154 R-3).
@@ -830,12 +852,7 @@ fn server_side_endings_fence() {
         call(&core, |l| l.hosting_mut().host_mut().shutdown());
         clock.set(100);
         assert!(call_result(&core, |_| ()).is_err());
-        let first = core.poll(100);
-        assert!(
-            matches!(first, BridgeCode::Ok | BridgeCode::HostClosed),
-            "the first poll sees the end asynchronously"
-        );
-        assert_eq!(core.poll(100), BridgeCode::HostClosed);
+        assert_eq!(poll_until_end(&mut core), BridgeCode::HostClosed);
         assert_eq!(core.last_error(), "HOST_CLOSED: Closed at host/admission");
         assert!(core.runner().is_none());
         assert_eq!(core.poll(100), BridgeCode::HostClosed);
@@ -849,13 +866,11 @@ fn server_side_endings_fence() {
         assert_eq!(settle(&mut core, &clock, 0).0, BridgeCode::Ok);
         assert_eq!(settle(&mut core, &clock, 50).0, BridgeCode::Ok);
         assert!(call_result(&core, |_| panic!("boom")).is_err());
-        let mut code = core.poll(100);
-        if code != BridgeCode::Panicked {
-            code = core.poll(100);
-        }
-        assert_eq!(code, BridgeCode::Panicked);
+        clock.set(100);
+        assert_eq!(poll_until_end(&mut core), BridgeCode::Panicked);
         assert_eq!(core.last_error(), "PANICKED: server loop panicked");
         assert!(core.runner().is_none());
+        assert_eq!(core.poll(100), BridgeCode::Panicked);
     }
 
     // Control: nothing done -> the session stays open.
