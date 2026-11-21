@@ -29,7 +29,11 @@ T040b's binary surface (no item of `main.rs` is public; `tasks/T040.md`
 "Interface" is the exact contract): `crpg-server --config <path>`, `--help`,
 `--version`; one JSON configuration (`listen`, `certificate`, `private_key`,
 `invitations`, `save`, `campaign_id`, `campaign_version`, and optional `area`,
-`ai`, `log_file`), an invitations file and an AI file; the `<save>.incarnation`
+`ai`, `log_file`, and T155d's `movement`: with it `true` the endpoint is
+`bind_movement_resumable`, every invitation entry carries `facts` and `rights`
+and goes through `register_v4_invitation`, and the start line ends
+` movement=on`; without it the binary is byte-for-byte T040b's), an
+invitations file and an AI file; the `<save>.incarnation`
 sidecar; the log lines `crpg-server: start ...`, `reject t=...`, `stop
 reason=quit|signal saved=...` and `error {stage}: ...`; and the exit codes 0
 (clean), 2 (usage) and 1 (everything else). Changing a key, a line's text or a
@@ -627,3 +631,4 @@ git diff --check
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Recorded the dedicated binary's surface, amended invariant 7 for the OS adapter with its fence kept, noted the `ctrlc` and `rustls-pki-types` edges and the `server_binary` gate, and added the traps (no clock in the binary, the sidecar before the load, `finish` exits holding the lock, the Windows console-close limit, and PEM decoded from its header), so the crate contract matches the program the crate now ships.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Added the trap that a grace or a resume un-admits a v4 session's unanswered lane-1 intents, so no one decides a graced session's slots or skips the reset.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Recorded `Rejection::Move` and the `/3` resume route in the surface, and named `bind_movement_resumable` in the `start` trap, so the crate contract matches the adapter.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155d · Recorded the `movement` key, the v4 invitation keys and the start-line suffix in the binary's surface, so a change to them is known to be a contract change for T155e's smoke and every operator.

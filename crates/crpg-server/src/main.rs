@@ -26,11 +26,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crpg_ai::{SideId, Sides};
 use crpg_core::{EntityId, Fx16_16, Ulid};
+use crpg_net::facts_v3::{EncounterGrants, HostGrants};
+use crpg_net::protocol_v3::PauseRights;
 use crpg_net_quic::{Credential, QuicServer, ServerConfig, ServerIdentity, ServerLimits};
 use crpg_server::host::{
-    ControlGrant, DisclosureGrants, EntityDisclosure, HostError, MVP_AI_BUDGET,
+    ControlGrant, DisclosureGrants, EntityDisclosure, EntityFactGrant, FactGrants, HostError,
+    MVP_AI_BUDGET,
 };
-use crpg_server::quic::{Invitation, QuicHost, MAX_INVITATIONS};
+use crpg_server::quic::{Invitation, QuicHost, V4Invitation, MAX_INVITATIONS};
 use crpg_server::run::{HostLoop, QuicAiHook, QuicHosting};
 use crpg_server::runner::{self, RunnerHandle, SystemClock};
 use crpg_server::save::{load_host_file, save_host_file, SaveIdentity};
@@ -160,6 +163,9 @@ struct Config {
     ai: Option<PathBuf>,
     /// The log file, if lines are to be kept.
     log_file: Option<PathBuf>,
+    /// Serve the movement wire (protocol v4) instead of the combat wire
+    /// (T155d); absent or `null` is `false`.
+    movement: Option<bool>,
 }
 
 /// The area's bounds in whole world units.
@@ -182,6 +188,74 @@ struct InvitationEntry {
     control: Vec<EntityId>,
     /// What the principal may learn.
     grants: GrantsEntry,
+    /// The v4 fact grants (a movement world only, T155d).
+    facts: Option<FactsEntry>,
+    /// The principal's own pause rights (a movement world only, T155d).
+    rights: Option<RightsEntry>,
+}
+
+/// `FactGrants`, key for key (T155d).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FactsEntry {
+    /// Per-entity fact disclosure.
+    entities: Vec<EntityFactEntry>,
+    /// What may be learned of the encounter.
+    encounter: EncounterEntry,
+    /// What may be learned of the host's pause and timer.
+    host: HostGrantsEntry,
+}
+
+/// `EntityFactGrant`, key for key (T155d).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntityFactEntry {
+    /// The whole entity id.
+    entity: EntityId,
+    /// Pools may be disclosed.
+    pools: bool,
+    /// Attached effects may be disclosed.
+    effects: bool,
+    /// Stat values may be disclosed.
+    stats: bool,
+    /// Record tags may be disclosed.
+    tags: bool,
+}
+
+/// `EncounterGrants`, key for key (T155d).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EncounterEntry {
+    /// The time mode may be disclosed.
+    mode: bool,
+    /// The pending mode may be disclosed.
+    pending_mode: bool,
+    /// The round clock may be disclosed.
+    clock: bool,
+    /// The timeline may be disclosed.
+    timeline: bool,
+}
+
+/// `HostGrants`, key for key (T155d).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostGrantsEntry {
+    /// The pause reason may be disclosed.
+    pause_reason: bool,
+    /// The auto-pause toggles may be disclosed.
+    auto_pause: bool,
+    /// The turn timer may be disclosed.
+    turn_timer: bool,
+}
+
+/// `PauseRights`, key for key (T155d).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RightsEntry {
+    /// The principal may pause.
+    pause: bool,
+    /// The principal may unpause.
+    unpause: bool,
 }
 
 /// `DisclosureGrants`, key for key.
@@ -279,6 +353,52 @@ impl From<GrantsEntry> for DisclosureGrants {
             turn_state: g.turn_state,
         }
     }
+}
+
+impl From<FactsEntry> for FactGrants {
+    fn from(f: FactsEntry) -> Self {
+        FactGrants {
+            entities: f
+                .entities
+                .into_iter()
+                .map(|e| EntityFactGrant {
+                    entity: e.entity,
+                    pools: e.pools,
+                    effects: e.effects,
+                    stats: e.stats,
+                    tags: e.tags,
+                })
+                .collect(),
+            encounter: EncounterGrants {
+                mode: f.encounter.mode,
+                pending_mode: f.encounter.pending_mode,
+                clock: f.encounter.clock,
+                timeline: f.encounter.timeline,
+            },
+            host: HostGrants {
+                pause_reason: f.host.pause_reason,
+                auto_pause: f.host.auto_pause,
+                turn_timer: f.host.turn_timer,
+            },
+        }
+    }
+}
+
+impl From<RightsEntry> for PauseRights {
+    fn from(r: RightsEntry) -> Self {
+        PauseRights {
+            pause: r.pause,
+            unpause: r.unpause,
+        }
+    }
+}
+
+/// One validated invitation, of the kind the world's wire takes (T155d).
+enum Entry {
+    /// A combat-wire (`/1`, `/2`) invitation.
+    Combat(Invitation),
+    /// A movement-wire (`/3`, v4) invitation.
+    Movement(V4Invitation),
 }
 
 /// `path` joined to `base` when relative (an absolute `path` stays as it is).
@@ -501,6 +621,10 @@ fn serve(config_path: &Path, log: &Log) -> Result<Shared, Failure> {
             return Err(fail("config")("area value out of range"));
         }
     }
+    let movement = config.movement == Some(true);
+    if movement && config.area.is_none() {
+        return Err(fail("config")("movement needs area"));
+    }
     let base = config_path.parent().unwrap_or_else(|| Path::new(""));
     let save = resolve(base, &config.save);
 
@@ -550,12 +674,33 @@ fn serve(config_path: &Path, log: &Log) -> Result<Shared, Failure> {
             .ok_or_else(|| {
                 fail("invitations")(format!("entry {i}: credential is not 64 lowercase hex"))
             })?;
-        invitations.push(Invitation {
-            credential,
-            control: ControlGrant {
-                actors: entry.control,
-            },
-            grants: entry.grants.into(),
+        let control = ControlGrant {
+            actors: entry.control,
+        };
+        let grants = entry.grants.into();
+        invitations.push(match (movement, entry.facts, entry.rights) {
+            (true, Some(facts), Some(rights)) => Entry::Movement(V4Invitation {
+                credential,
+                control,
+                grants,
+                facts: facts.into(),
+                rights: rights.into(),
+            }),
+            (true, _, _) => {
+                return Err(fail("invitations")(format!(
+                    "entry {i}: movement needs facts and rights"
+                )));
+            }
+            (false, None, None) => Entry::Combat(Invitation {
+                credential,
+                control,
+                grants,
+            }),
+            (false, _, _) => {
+                return Err(fail("invitations")(format!(
+                    "entry {i}: facts and rights need movement"
+                )));
+            }
         });
     }
 
@@ -599,11 +744,16 @@ fn serve(config_path: &Path, log: &Log) -> Result<Shared, Failure> {
 
     // 10. bind.
     let pin = identity_key.pin().to_hex();
-    let server = QuicServer::bind_resumable(ServerConfig {
+    let server_config = ServerConfig {
         bind: config.listen,
         identity: identity_key,
         limits: ServerLimits::v1(),
-    })
+    };
+    let server = if movement {
+        QuicServer::bind_movement_resumable(server_config)
+    } else {
+        QuicServer::bind_resumable(server_config)
+    }
     .map_err(fail("bind"))?;
 
     // 11. start.
@@ -613,8 +763,11 @@ fn serve(config_path: &Path, log: &Log) -> Result<Shared, Failure> {
     // 12. register.
     let count = invitations.len();
     for (i, invitation) in invitations.into_iter().enumerate() {
-        quic.register_invitation(invitation)
-            .map_err(|e| fail("register")(format!("entry {i}: {e}")))?;
+        match invitation {
+            Entry::Combat(invitation) => quic.register_invitation(invitation).map(|_| ()),
+            Entry::Movement(invitation) => quic.register_v4_invitation(invitation).map(|_| ()),
+        }
+        .map_err(|e| fail("register")(format!("entry {i}: {e}")))?;
     }
 
     // 13. hosting, hook and observer.
@@ -664,9 +817,10 @@ fn serve(config_path: &Path, log: &Log) -> Result<Shared, Failure> {
 
     // 16. the start line.
     log.line(&format!(
-        "crpg-server: start listen={addr} incarnation={incarnation} pin={pin} nav={} ai={} invitations={count}",
+        "crpg-server: start listen={addr} incarnation={incarnation} pin={pin} nav={} ai={} invitations={count}{}",
         if nav { "bound" } else { "none" },
         if ai_on { "on" } else { "off" },
+        if movement { " movement=on" } else { "" },
     ));
     Ok(shared)
 }

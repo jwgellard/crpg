@@ -1239,7 +1239,9 @@ Required: `listen` (socket address), `certificate`, `private_key`,
 `invitations`, `save`, `campaign_id`, `campaign_version`. Optional: `area`
 (`{ "min": [x, y, z], "max": [x, y, z] }` in whole world units,
 `-32768..=32767`, bound with `Host::bind_area_bounds` before the world is
-unpaused), `ai` (a file of `sides` and `controlled`, driven once per loop
+unpaused), `movement` (T155d: `true` serves the movement wire, below; absent,
+`null` or `false` is T040b's combat wire; `true` without `area` is
+`crpg-server: error config: movement needs area`), `ai` (a file of `sides` and `controlled`, driven once per loop
 cycle through `QuicHost::drive_ai`), `log_file` (appended, created if absent,
 its parent directory is not created). A relative path resolves against the
 configuration file's own directory. The certificate and key files are PEM
@@ -1248,7 +1250,16 @@ by a leading `-----BEGIN` after any ASCII whitespace; PKCS#1 and SEC1 PEM keys
 are refused ("no items found"). The invitations file is a JSON array of 1 to
 `MAX_INVITATIONS` entries, each with `credential` (64 lowercase hex digits),
 `control` and `grants`, every key required, mapping field for field onto
-`Invitation`. Credentials are parsed and registered, never printed.
+`Invitation`. Credentials are parsed and registered, never printed. In a
+movement world (T155d) an entry also carries `facts` (`entities`, each with
+`entity`, `pools`, `effects`, `stats`, `tags`; `encounter` with `mode`,
+`pending_mode`, `clock`, `timeline`; `host` with `pause_reason`, `auto_pause`,
+`turn_timer`) and `rights` (`pause`, `unpause`), every key required, mapping
+onto `V4Invitation`'s `FactGrants` and `PauseRights`; the entry is registered
+with `register_v4_invitation`. Outside a movement world `facts` and `rights`
+are refused (`entry {i}: facts and rights need movement`), and inside one
+they are required (`entry {i}: movement needs facts and rights`); both are
+stage-`invitations` errors, so nothing is spent.
 
 **The incarnation** is automatic. The loader needs one above every one ever
 used for the authority, so the binary keeps `<save>.incarnation` (decimal and a
@@ -1263,8 +1274,12 @@ and exit 1; nothing after it runs): `config`, `log`, `certificate`,
 `register`, `spawn`, `signals`. Every file is read and validated before the
 incarnation is spent; the mesh is bound before the unpause (a restored host
 is unbound and `Restore`-paused); the endpoint is `bind_resumable` with
-`start_resumable`. The last line of start-up is
+`start_resumable`, or, with `movement` on (T155d), `bind_movement_resumable`
+(`/3` only, so a `/2` hello is a handshake failure and a movement hello to a
+combat server is too; one `QuicHost` serves one wire per world, ADR-0026). The
+last line of start-up is
 `crpg-server: start listen=... incarnation=N pin=<64 hex> nav=bound|none ai=on|off invitations=K`,
+followed by ` movement=on` in a movement world and by nothing otherwise,
 written after the signal handler is set. `pin` is the certificate pin clients
 hold.
 
@@ -1306,7 +1321,11 @@ nothing, since the handler's thread is busy in the first. A forced kill
 `rustls-pki-types` (PEM decoding through `pem::PemObject`; already locked
 through the QUIC stack). No workspace edge is added.
 
-**Tests.** `tests/server_binary.rs` drives the built binary black box
+**Tests.** `tests/server_binary_movement.rs` (T155d) drives the movement
+switch over the same black-box rig: the configuration and invitation refusals,
+the start-line suffix, a `/3` hello that gets its resume ticket while a `/2`
+hello is refused, the combat endpoint unchanged, and a refused lane-1 intent
+that is one `reject` line. `tests/server_binary.rs` drives the built binary black box
 (`CARGO_BIN_EXE_crpg-server`): help and version, usage errors, configuration
 and invitation refusals that spend nothing, the sidecar, the served, logged and
 saved-on-`quit` run, end of input, the area and AI files, a registration
@@ -1428,3 +1447,4 @@ a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T041d · Added "Gate-13 dedicated smoke (T041d)" (what G1 does over the real binary and two QUIC clients, what it proves, and the readings: DER files, `t` as loop time, the StaleTick re-send and its code-15 lines), so the doc describes the smoke the crate now has.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Made v4 (movement) sessions resumable and documented the lane-1 reset at grace and resume in "Reconnect grace (T025b)", so the doc matches `resumable_kind` and `reset_lane1`.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Documented the `/3` resume route (the movement flag, the lane-1 fence check, the retired lane-1 frame count) and replaced "Lane-1 traces are not read" with the `Rejection::Move` merge, so the doc matches the adapter now.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155d · Extended "The dedicated binary (T040b)" with the `movement` key, the `facts` and `rights` invitation keys, the `bind_movement_resumable` bind and the ` movement=on` start-line suffix, so the doc matches the binary T155d ships.
