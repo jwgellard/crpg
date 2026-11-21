@@ -1145,6 +1145,36 @@ save made on the other target (ADR-0012); and the spec §8 breadth "every
 fixture campaign", which needs a host built from campaign data and comes
 with T040/T041.
 
+## Rejections and the intake observer (T040a)
+
+`QuicPumpReport::rejections()` is the one place a rejected client message is
+defined (`tasks/T040.md` Reading 5, B-1); a consumer such as the dedicated
+binary's log never classifies for itself. It reads the report only, in this
+order: every `hellos` entry refused (`Rejection::Hello`), every `resumes`
+entry refused (`Rejection::Resume`), then `calls` in trace order, each giving
+at most one of: an `Ingest` refused with a code other than `QueueFull`
+(`Rejection::Ingest`; a `QueueFull` frame is held and retried, not rejected),
+an `IngestTransfer` refused (`Transfer`), a `CheckFrame` that failed
+(`Frame`), or, for a `Pump` summary, every result with status `Rejected` that
+is not the retained head (`Admission`). Lane-1 traces are not read: the
+resumable endpoint carries no lane 1.
+
+Two reachable paths are easy to confuse. `Host::ingest` decides byte-level
+admission only (rate, size, queue room) and never decodes, so an undecodable
+frame such as `[0xFF]` is `Staged` and surfaces later as an `Admission`
+rejection (`UnsupportedVersion`); an `Ingest` rejection over a real connection
+is a `RateLimited` frame (the client transport refuses an oversized one before
+`ingest`, and the server closes the connection). `Display` is B-2's one line
+per rejection, without a trailing newline.
+
+`QuicHosting` holds an optional `IntakeObserver`
+(`Box<dyn FnMut(u64, &QuicPumpReport) + Send>`, set by
+`set_intake_observer`). `Hosting::intake` pumps once and, when an observer is
+set, calls it exactly once with the intake's `now_ms` and that report, before
+the AI stage; a failed `pump` calls nothing, and the observer changes no host
+or adapter state. Tests: `tests/run_intake_observer.rs` (T1, T3a, T3b, T4,
+T5) and `quic.rs` `mod tests` (T2).
+
 ## Authorities and consumers
 
 - Contract: [T022 appendix](../../tasks/T022.md) and
@@ -1205,3 +1235,4 @@ with T040/T041.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added "The MVP AI driver (T153)" (the `drive_ai` host operation, one turn-based step per call with a cross-call 16-decision cap, real-time decisions for every live controlled combatant rotated by the world tick, caller-supplied `Sides` and controlled set, the host's own mesh or `None`, refusals as steps with `Closed` the only `Err`, pause ignored, route parity pinned by a compile-time tag check and a unit test, and the never-saved `ai_turn` that a restore restarts) and the `crpg-ai` edge to the diagram and edge paragraph, so the doc describes the AI driver the host now runs.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Added "QUIC v4 sessions (T150c)" (the `/3` route's v4 invitations, hello precedence, lane-1 drain and delivery, retire and fence, shutdown flush, the side trace and its `at`, and the untraced `advance`), so the doc describes the movement route the adapter now serves beside `/1` and `/2`.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Extended the run-loop section with the dedicated hosting (`QuicHosting`'s five stages, `flush` as `pump`'s phases 4–7 with `pump` running 1–3 then the same body, the three untraced pass-throughs, and a loaded save running through the `Restore` unpause) and updated Scope, so the doc describes the QUIC hosting the loop now has.
+- 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Added "Rejections and the intake observer (T040a)" (`QuicPumpReport::rejections` as the single definition of a rejected client message, its B-1 order, why an undecodable frame is an admission rejection and an `Ingest` rejection is a rate-limited frame, and the `QuicHosting` intake observer), so the dedicated binary's log has one library-defined source.

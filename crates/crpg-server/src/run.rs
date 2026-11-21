@@ -24,7 +24,7 @@ use crate::host::{
     AdvanceReport, Host, HostError, IngestDisposition, MoveAdmission, PeerHandle,
     TransferDisposition, TransferRefusal,
 };
-use crate::quic::{QuicHost, QuicHostError, MAX_DRAIN_PER_CONNECTION};
+use crate::quic::{QuicHost, QuicHostError, QuicPumpReport, MAX_DRAIN_PER_CONNECTION};
 
 /// The cycle period at the 20 Hz cadence (engine spec §2.4).
 pub const TICK_PERIOD_MS: u64 = 50;
@@ -869,6 +869,9 @@ impl Transport for LocalClient {
 /// and the cycle's `now_ms`.
 pub type QuicAiHook = Box<dyn FnMut(&mut QuicHost, u64) -> Result<(), QuicHostError> + Send>;
 
+/// Sees every successful intake's report (T040a).
+pub type IntakeObserver = Box<dyn FnMut(u64, &QuicPumpReport) + Send>;
+
 /// The dedicated hosting: one [`QuicHost`] and its AI hook. Every stage is
 /// the adapter's: `pump`, the hook, `advance`, `flush` and
 /// `acknowledge_captures` (B-14).
@@ -877,17 +880,28 @@ pub struct QuicHosting {
     quic: QuicHost,
     /// The AI stage's hook, if the embedding set one.
     ai: Option<QuicAiHook>,
+    /// Sees every successful intake's report, if the embedding set one.
+    observer: Option<IntakeObserver>,
 }
 
 impl QuicHosting {
     /// A hosting over `quic` with no hook.
     pub fn new(quic: QuicHost) -> Self {
-        Self { quic, ai: None }
+        Self {
+            quic,
+            ai: None,
+            observer: None,
+        }
     }
 
     /// Sets or clears the AI stage's hook.
     pub fn set_ai(&mut self, hook: Option<QuicAiHook>) {
         self.ai = hook;
+    }
+
+    /// Sets or clears the intake observer.
+    pub fn set_intake_observer(&mut self, observer: Option<IntakeObserver>) {
+        self.observer = observer;
     }
 
     /// The adapter, for trusted reads.
@@ -910,7 +924,11 @@ impl Hosting for QuicHosting {
     type Error = QuicHostError;
 
     fn intake(&mut self, now_ms: u64) -> Result<(), Self::Error> {
-        self.quic.pump(now_ms).map(|_report| ())
+        let report = self.quic.pump(now_ms)?;
+        if let Some(observer) = self.observer.as_mut() {
+            observer(now_ms, &report);
+        }
+        Ok(())
     }
 
     fn drive_ai(&mut self, now_ms: u64) -> Result<(), Self::Error> {
