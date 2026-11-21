@@ -40,3 +40,13 @@ serde_json = { workspace = true }
 # Workspace edge only; blake3 is already in the workspace and the lock at
 # 1.8.7, no package is added.
 blake3 = { workspace = true }
+# T040b (D70a (b), approved by the user 2026-11-19): Ctrl-C, SIGTERM and
+# SIGHUP stop the dedicated server through the same save as `quit`. Exact
+# pin; `termination` adds SIGTERM and SIGHUP on Unix. Locks ctrlc and nix
+# (Unix) and the Apple-only dispatch2, block2, objc2, objc2-encode;
+# windows-sys 0.61.2 is already locked.
+ctrlc = { version = "=3.5.2", features = ["termination"] }
+# T040b (D70b, approved by the user 2026-11-19): PEM certificate and key
+# files through the crate's `pem::PemObject` (default `alloc` feature).
+# Already locked at 1.15.1 through the QUIC stack; no package is added.
+rustls-pki-types = "1.15.1"
