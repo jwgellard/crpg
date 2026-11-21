@@ -19,9 +19,15 @@
    "excluded": false,
    "steps": 9,
    "tools": 12,
-   "crpgc_calls": 0,
+   "crpgc_calls": 4,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "fmt": 1,
+    "new": 1,
+    "play": 1,
+    "schema": 2,
+    "validate": 2
+   },
    "tok": {
     "input": 20,
     "output": 2183,
@@ -75,9 +81,14 @@
    "excluded": false,
    "steps": 13,
    "tools": 25,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 6,
+   "errors": 2,
+   "commands": {
+    "fmt": 1,
+    "new": 1,
+    "play": 1,
+    "validate": 3
+   },
    "tok": {
     "input": 28,
     "output": 2719,
@@ -131,9 +142,15 @@
    "excluded": false,
    "steps": 22,
    "tools": 53,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 9,
+   "errors": 1,
+   "commands": {
+    "fmt": 3,
+    "new": 1,
+    "play": 1,
+    "schema": 1,
+    "validate": 3
+   },
    "tok": {
     "input": 41544,
     "output": 5146,
@@ -187,9 +204,14 @@
    "excluded": false,
    "steps": 20,
    "tools": 44,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 5,
+   "errors": 1,
+   "commands": {
+    "fmt": 1,
+    "new": 1,
+    "play": 1,
+    "validate": 2
+   },
    "tok": {
     "input": 41047,
     "output": 4183,
@@ -243,9 +265,15 @@
    "excluded": false,
    "steps": 18,
    "tools": 30,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 10,
+   "errors": 2,
+   "commands": {
+    "explain": 1,
+    "fmt": 6,
+    "new": 3,
+    "play": 1,
+    "validate": 5
+   },
    "tok": {
     "input": 20895,
     "output": 3288,
@@ -299,9 +327,14 @@
    "excluded": false,
    "steps": 15,
    "tools": 14,
-   "crpgc_calls": 0,
+   "crpgc_calls": 5,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "fmt": 1,
+    "new": 1,
+    "play": 2,
+    "validate": 2
+   },
    "tok": {
     "input": 16622,
     "output": 1742,
@@ -355,9 +388,14 @@
    "excluded": false,
    "steps": 21,
    "tools": 36,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 10,
+   "errors": 1,
+   "commands": {
+    "fmt": 1,
+    "new": 1,
+    "play": 5,
+    "validate": 3
+   },
    "tok": {
     "input": 34152,
     "output": 1927,
@@ -411,9 +449,14 @@
    "excluded": false,
    "steps": 23,
    "tools": 46,
-   "crpgc_calls": 0,
+   "crpgc_calls": 9,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "fmt": 1,
+    "new": 1,
+    "play": 4,
+    "validate": 3
+   },
    "tok": {
     "input": 30748,
     "output": 1988,
@@ -467,9 +510,16 @@
    "excluded": false,
    "steps": 18,
    "tools": 30,
-   "crpgc_calls": 0,
+   "crpgc_calls": 5,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "explain": 2,
+    "fmt": 1,
+    "new": 1,
+    "play": 1,
+    "schema": 3,
+    "validate": 4
+   },
    "tok": {
     "input": 31782,
     "output": 3796,
@@ -523,9 +573,16 @@
    "excluded": false,
    "steps": 15,
    "tools": 16,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 6,
+   "errors": 1,
+   "commands": {
+    "explain": 2,
+    "fmt": 1,
+    "new": 1,
+    "play": 1,
+    "schema": 4,
+    "validate": 2
+   },
    "tok": {
     "input": 25775,
     "output": 2657,
@@ -579,9 +636,14 @@
    "excluded": false,
    "steps": 31,
    "tools": 64,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 23,
+   "errors": 16,
+   "commands": {
+    "explain": 5,
+    "fmt": 3,
+    "play": 3,
+    "validate": 20
+   },
    "tok": {
     "input": 64,
     "output": 11300,
@@ -634,9 +696,15 @@
    "excluded": false,
    "steps": 42,
    "tools": 72,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 26,
+   "errors": 18,
+   "commands": {
+    "explain": 8,
+    "new": 1,
+    "play": 3,
+    "schema": 2,
+    "validate": 20
+   },
    "tok": {
     "input": 86,
     "output": 11926,
@@ -689,9 +757,16 @@
    "excluded": false,
    "steps": 88,
    "tools": 129,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 53,
+   "errors": 7,
+   "commands": {
+    "explain": 34,
+    "fmt": 9,
+    "new": 9,
+    "play": 1,
+    "schema": 5,
+    "validate": 20
+   },
    "tok": {
     "input": 247034,
     "output": 17015,
@@ -742,9 +817,18 @@
    "excluded": false,
    "steps": 97,
    "tools": 140,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 45,
+   "errors": 4,
+   "commands": {
+    "explain": 32,
+    "fmt": 3,
+    "new": 7,
+    "play": 1,
+    "replay": 1,
+    "schema": 1,
+    "validate": 15,
+    "version": 1
+   },
    "tok": {
     "input": 283727,
     "output": 30159,
@@ -797,9 +881,15 @@
    "excluded": false,
    "steps": 67,
    "tools": 74,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 33,
+   "errors": 3,
+   "commands": {
+    "explain": 3,
+    "fmt": 7,
+    "new": 2,
+    "play": 3,
+    "validate": 28
+   },
    "tok": {
     "input": 62857,
     "output": 7691,
@@ -852,9 +942,15 @@
    "excluded": false,
    "steps": 59,
    "tools": 71,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 36,
+   "errors": 2,
+   "commands": {
+    "fmt": 5,
+    "new": 1,
+    "play": 4,
+    "schema": 7,
+    "validate": 28
+   },
    "tok": {
     "input": 84564,
     "output": 11800,
@@ -907,9 +1003,16 @@
    "excluded": false,
    "steps": 111,
    "tools": 138,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 66,
+   "errors": 21,
+   "commands": {
+    "explain": 3,
+    "fmt": 9,
+    "new": 9,
+    "play": 5,
+    "schema": 1,
+    "validate": 60
+   },
    "tok": {
     "input": 192745,
     "output": 19110,
@@ -962,9 +1065,21 @@
    "excluded": false,
    "steps": 93,
    "tools": 112,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 57,
+   "errors": 30,
+   "commands": {
+    "build": 1,
+    "digest": 1,
+    "explain": 10,
+    "fmt": 34,
+    "hash": 1,
+    "lock": 6,
+    "new": 5,
+    "package": 1,
+    "play": 8,
+    "publish": 1,
+    "validate": 19
+   },
    "tok": {
     "input": 144793,
     "output": 11931,
@@ -1017,9 +1132,20 @@
    "excluded": false,
    "steps": 73,
    "tools": 87,
-   "crpgc_calls": 0,
+   "crpgc_calls": 59,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "and": 1,
+    "binary": 1,
+    "commands": 1,
+    "explain": 29,
+    "fmt": 8,
+    "new": 13,
+    "play": 6,
+    "replay": 1,
+    "schema": 4,
+    "validate": 52
+   },
    "tok": {
     "input": 135982,
     "output": 19484,
@@ -1072,9 +1198,18 @@
    "excluded": false,
    "steps": 56,
    "tools": 73,
-   "crpgc_calls": 0,
+   "crpgc_calls": 39,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "fmt": 5,
+    "grep": 8,
+    "ls": 1,
+    "new": 2,
+    "play": 6,
+    "schema": 4,
+    "validate": 28,
+    "xxd": 1
+   },
    "tok": {
     "input": 178659,
     "output": 11218,
@@ -1127,9 +1262,14 @@
    "excluded": false,
    "steps": 33,
    "tools": 63,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 20,
+   "errors": 10,
+   "commands": {
+    "fmt": 6,
+    "new": 4,
+    "play": 1,
+    "validate": 18
+   },
    "tok": {
     "input": 68,
     "output": 11808,
@@ -1183,9 +1323,15 @@
    "excluded": false,
    "steps": 49,
    "tools": 70,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 34,
+   "errors": 2,
+   "commands": {
+    "explain": 7,
+    "fmt": 20,
+    "new": 2,
+    "schema": 1,
+    "validate": 8
+   },
    "tok": {
     "input": 100,
     "output": 17086,
@@ -1243,9 +1389,18 @@
    "excluded": false,
    "steps": 92,
    "tools": 115,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 48,
+   "errors": 5,
+   "commands": {
+    "explain": 14,
+    "fmt": 6,
+    "help": 1,
+    "new": 13,
+    "play": 3,
+    "replay": 1,
+    "schema": 6,
+    "validate": 22
+   },
    "tok": {
     "input": 284420,
     "output": 25583,
@@ -1297,9 +1452,16 @@
    "excluded": false,
    "steps": 57,
    "tools": 100,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 33,
+   "errors": 4,
+   "commands": {
+    "explain": 19,
+    "fmt": 6,
+    "new": 1,
+    "play": 3,
+    "schema": 1,
+    "validate": 16
+   },
    "tok": {
     "input": 83146,
     "output": 12479,
@@ -1354,9 +1516,15 @@
    "excluded": false,
    "steps": 95,
    "tools": 94,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 46,
+   "errors": 16,
+   "commands": {
+    "fmt": 5,
+    "help": 1,
+    "new": 1,
+    "play": 6,
+    "validate": 36
+   },
    "tok": {
     "input": 104671,
     "output": 16369,
@@ -1410,9 +1578,16 @@
    "excluded": false,
    "steps": 116,
    "tools": 128,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 96,
+   "errors": 30,
+   "commands": {
+    "explain": 2,
+    "fmt": 10,
+    "new": 4,
+    "play": 6,
+    "schema": 3,
+    "validate": 83
+   },
    "tok": {
     "input": 177788,
     "output": 25891,
@@ -1466,9 +1641,17 @@
    "excluded": false,
    "steps": 124,
    "tools": 146,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 39,
+   "errors": 5,
+   "commands": {
+    "explain": 11,
+    "fmt": 10,
+    "lock": 5,
+    "new": 5,
+    "play": 8,
+    "schema": 1,
+    "validate": 19
+   },
    "tok": {
     "input": 198641,
     "output": 24062,
@@ -1523,9 +1706,16 @@
    "excluded": false,
    "steps": 169,
    "tools": 191,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 73,
+   "errors": 13,
+   "commands": {
+    "explain": 3,
+    "fmt": 9,
+    "new": 8,
+    "play": 14,
+    "schema": 1,
+    "validate": 54
+   },
    "tok": {
     "input": 549592,
     "output": 41948,
@@ -1579,9 +1769,15 @@
    "excluded": false,
    "steps": 100,
    "tools": 114,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 4,
+   "errors": 1,
+   "commands": {
+    "echo": 1,
+    "new": 2,
+    "play": 1,
+    "schema": 1,
+    "validate": 2
+   },
    "tok": {
     "input": 177203,
     "output": 34833,
@@ -1635,9 +1831,15 @@
    "excluded": false,
    "steps": 119,
    "tools": 140,
-   "crpgc_calls": 0,
+   "crpgc_calls": 7,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "help": 1,
+    "new": 5,
+    "play": 1,
+    "schema": 4,
+    "validate": 2
+   },
    "tok": {
     "input": 248680,
     "output": 49082,
@@ -1697,9 +1899,15 @@
    "excluded": false,
    "steps": 61,
    "tools": 124,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 50,
+   "errors": 37,
+   "commands": {
+    "explain": 11,
+    "fmt": 5,
+    "new": 4,
+    "play": 5,
+    "validate": 35
+   },
    "tok": {
     "input": 124,
     "output": 27417,
@@ -1757,9 +1965,16 @@
    "excluded": false,
    "steps": 48,
    "tools": 58,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 28,
+   "errors": 15,
+   "commands": {
+    "explain": 5,
+    "fmt": 7,
+    "new": 7,
+    "play": 4,
+    "schema": 4,
+    "validate": 19
+   },
    "tok": {
     "input": 98,
     "output": 14214,
@@ -1819,9 +2034,17 @@
    "excluded": false,
    "steps": 128,
    "tools": 168,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 60,
+   "errors": 13,
+   "commands": {
+    "explain": 26,
+    "fmt": 9,
+    "new": 9,
+    "play": 13,
+    "replay": 1,
+    "schema": 1,
+    "validate": 22
+   },
    "tok": {
     "input": 408703,
     "output": 35164,
@@ -1879,9 +2102,16 @@
    "excluded": false,
    "steps": 130,
    "tools": 156,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 64,
+   "errors": 12,
+   "commands": {
+    "explain": 19,
+    "fmt": 13,
+    "new": 8,
+    "play": 11,
+    "schema": 5,
+    "validate": 25
+   },
    "tok": {
     "input": 346686,
     "output": 33251,
@@ -1939,9 +2169,15 @@
    "excluded": false,
    "steps": 79,
    "tools": 115,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 51,
+   "errors": 12,
+   "commands": {
+    "explain": 17,
+    "fmt": 10,
+    "new": 6,
+    "play": 7,
+    "validate": 20
+   },
    "tok": {
     "input": 105361,
     "output": 19187,
@@ -1999,9 +2235,14 @@
    "excluded": false,
    "steps": 73,
    "tools": 72,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 39,
+   "errors": 15,
+   "commands": {
+    "fmt": 24,
+    "new": 6,
+    "play": 12,
+    "validate": 17
+   },
    "tok": {
     "input": 104557,
     "output": 21110,
@@ -2059,9 +2300,15 @@
    "excluded": false,
    "steps": 180,
    "tools": 194,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 100,
+   "errors": 8,
+   "commands": {
+    "explain": 3,
+    "fmt": 13,
+    "new": 4,
+    "play": 20,
+    "validate": 71
+   },
    "tok": {
     "input": 217732,
     "output": 25768,
@@ -2119,9 +2366,15 @@
    "excluded": false,
    "steps": 150,
    "tools": 191,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 112,
+   "errors": 12,
+   "commands": {
+    "explain": 65,
+    "fmt": 9,
+    "new": 10,
+    "play": 21,
+    "validate": 59
+   },
    "tok": {
     "input": 217861,
     "output": 25091,
@@ -2180,9 +2433,17 @@
    "excluded": false,
    "steps": 76,
    "tools": 103,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 48,
+   "errors": 2,
+   "commands": {
+    "explain": 5,
+    "fmt": 12,
+    "new": 9,
+    "play": 11,
+    "replay": 1,
+    "schema": 2,
+    "validate": 27
+   },
    "tok": {
     "input": 175401,
     "output": 22486,
@@ -2240,9 +2501,16 @@
    "excluded": false,
    "steps": 98,
    "tools": 143,
-   "crpgc_calls": 0,
+   "crpgc_calls": 48,
    "errors": 0,
-   "commands": {},
+   "commands": {
+    "explain": 4,
+    "fmt": 13,
+    "new": 10,
+    "play": 8,
+    "schema": 4,
+    "validate": 41
+   },
    "tok": {
     "input": 174199,
     "output": 33213,
@@ -2300,9 +2568,15 @@
    "excluded": false,
    "steps": 36,
    "tools": 66,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 25,
+   "errors": 18,
+   "commands": {
+    "explain": 2,
+    "fmt": 14,
+    "new": 1,
+    "play": 2,
+    "validate": 13
+   },
    "tok": {
     "input": 74,
     "output": 11292,
@@ -2355,9 +2629,15 @@
    "excluded": false,
    "steps": 54,
    "tools": 82,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 40,
+   "errors": 27,
+   "commands": {
+    "explain": 10,
+    "fmt": 5,
+    "new": 1,
+    "play": 3,
+    "validate": 31
+   },
    "tok": {
     "input": 110,
     "output": 16469,
@@ -2410,9 +2690,17 @@
    "excluded": false,
    "steps": 79,
    "tools": 109,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 30,
+   "errors": 3,
+   "commands": {
+    "explain": 12,
+    "fmt": 8,
+    "new": 5,
+    "play": 2,
+    "replay": 1,
+    "schema": 4,
+    "validate": 13
+   },
    "tok": {
     "input": 250287,
     "output": 22087,
@@ -2469,9 +2757,16 @@
    "excluded": false,
    "steps": 79,
    "tools": 114,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 27,
+   "errors": 3,
+   "commands": {
+    "explain": 5,
+    "fmt": 7,
+    "new": 5,
+    "play": 3,
+    "schema": 2,
+    "validate": 13
+   },
    "tok": {
     "input": 205018,
     "output": 15062,
@@ -2524,9 +2819,16 @@
    "excluded": false,
    "steps": 46,
    "tools": 62,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 29,
+   "errors": 1,
+   "commands": {
+    "explain": 7,
+    "fmt": 5,
+    "new": 3,
+    "play": 4,
+    "schema": 2,
+    "validate": 20
+   },
    "tok": {
     "input": 85125,
     "output": 10212,
@@ -2579,9 +2881,15 @@
    "excluded": false,
    "steps": 38,
    "tools": 58,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 24,
+   "errors": 10,
+   "commands": {
+    "fmt": 6,
+    "new": 1,
+    "play": 3,
+    "schema": 1,
+    "validate": 18
+   },
    "tok": {
     "input": 55576,
     "output": 7456,
@@ -2634,9 +2942,15 @@
    "excluded": false,
    "steps": 83,
    "tools": 108,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 55,
+   "errors": 14,
+   "commands": {
+    "explain": 38,
+    "fmt": 8,
+    "new": 1,
+    "play": 4,
+    "validate": 19
+   },
    "tok": {
     "input": 159113,
     "output": 11992,
@@ -2689,9 +3003,15 @@
    "excluded": false,
    "steps": 89,
    "tools": 113,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 62,
+   "errors": 3,
+   "commands": {
+    "explain": 5,
+    "fmt": 5,
+    "new": 4,
+    "play": 6,
+    "validate": 52
+   },
    "tok": {
     "input": 154887,
     "output": 15003,
@@ -2744,9 +3064,16 @@
    "excluded": false,
    "steps": 62,
    "tools": 80,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 43,
+   "errors": 6,
+   "commands": {
+    "explain": 5,
+    "fmt": 10,
+    "new": 9,
+    "play": 8,
+    "schema": 4,
+    "validate": 36
+   },
    "tok": {
     "input": 127737,
     "output": 14953,
@@ -2799,9 +3126,16 @@
    "excluded": false,
    "steps": 76,
    "tools": 90,
-   "crpgc_calls": 0,
-   "errors": 0,
-   "commands": {},
+   "crpgc_calls": 61,
+   "errors": 2,
+   "commands": {
+    "explain": 1,
+    "fmt": 5,
+    "new": 3,
+    "play": 4,
+    "schema": 2,
+    "validate": 58
+   },
    "tok": {
     "input": 139132,
     "output": 20644,
@@ -2855,7 +3189,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 11.0,
-   "errors_mean": 0.0,
+   "errors_mean": 1.0,
    "secs_mean": 25.9,
    "cost_total": 0.0
   },
@@ -2869,7 +3203,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 21.0,
-   "errors_mean": 0.0,
+   "errors_mean": 1.0,
    "secs_mean": 137.4,
    "cost_total": 0.0
   },
@@ -2883,7 +3217,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 16.5,
-   "errors_mean": 0.0,
+   "errors_mean": 1.0,
    "secs_mean": 68.4,
    "cost_total": 0.0
   },
@@ -2897,7 +3231,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 22.0,
-   "errors_mean": 0.0,
+   "errors_mean": 0.5,
    "secs_mean": 141.1,
    "cost_total": 0.0
   },
@@ -2911,7 +3245,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 16.5,
-   "errors_mean": 0.0,
+   "errors_mean": 0.5,
    "secs_mean": 44.7,
    "cost_total": 0.0
   },
@@ -2925,7 +3259,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 36.5,
-   "errors_mean": 0.0,
+   "errors_mean": 17.0,
    "secs_mean": 182.8,
    "cost_total": 0.0
   },
@@ -2939,7 +3273,7 @@
    "playable": 1,
    "finished": 1,
    "steps_mean": 92.5,
-   "errors_mean": 0.0,
+   "errors_mean": 5.5,
    "secs_mean": 1804.6,
    "cost_total": 0.0
   },
@@ -2953,7 +3287,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 63.0,
-   "errors_mean": 0.0,
+   "errors_mean": 2.5,
    "secs_mean": 445.1,
    "cost_total": 0.0
   },
@@ -2967,7 +3301,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 102.0,
-   "errors_mean": 0.0,
+   "errors_mean": 25.5,
    "secs_mean": 1064.4,
    "cost_total": 0.0
   },
@@ -2995,7 +3329,7 @@
    "playable": 1,
    "finished": 1,
    "steps_mean": 41.0,
-   "errors_mean": 0.0,
+   "errors_mean": 6.0,
    "secs_mean": 215.8,
    "cost_total": 0.0
   },
@@ -3009,7 +3343,7 @@
    "playable": 1,
    "finished": 1,
    "steps_mean": 74.5,
-   "errors_mean": 0.0,
+   "errors_mean": 4.5,
    "secs_mean": 1806.4,
    "cost_total": 0.0
   },
@@ -3023,7 +3357,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 105.5,
-   "errors_mean": 0.0,
+   "errors_mean": 23.0,
    "secs_mean": 1510.1,
    "cost_total": 0.0
   },
@@ -3037,7 +3371,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 146.5,
-   "errors_mean": 0.0,
+   "errors_mean": 9.0,
    "secs_mean": 1861.5,
    "cost_total": 0.0
   },
@@ -3051,7 +3385,7 @@
    "playable": 1,
    "finished": 1,
    "steps_mean": 109.5,
-   "errors_mean": 0.0,
+   "errors_mean": 0.5,
    "secs_mean": 1738.5,
    "cost_total": 0.0
   },
@@ -3065,7 +3399,7 @@
    "playable": 2,
    "finished": 1,
    "steps_mean": 54.5,
-   "errors_mean": 0.0,
+   "errors_mean": 26.0,
    "secs_mean": 311.6,
    "cost_total": 0.0
   },
@@ -3079,7 +3413,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 129.0,
-   "errors_mean": 0.0,
+   "errors_mean": 12.5,
    "secs_mean": 2761.2,
    "cost_total": 0.0
   },
@@ -3093,7 +3427,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 76.0,
-   "errors_mean": 0.0,
+   "errors_mean": 13.5,
    "secs_mean": 593.8,
    "cost_total": 0.0
   },
@@ -3107,7 +3441,7 @@
    "playable": 2,
    "finished": 0,
    "steps_mean": 165.0,
-   "errors_mean": 0.0,
+   "errors_mean": 10.0,
    "secs_mean": 1389.5,
    "cost_total": 0.0
   },
@@ -3121,7 +3455,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 87.0,
-   "errors_mean": 0.0,
+   "errors_mean": 1.0,
    "secs_mean": 597.1,
    "cost_total": 0.0
   },
@@ -3135,7 +3469,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 45.0,
-   "errors_mean": 0.0,
+   "errors_mean": 22.5,
    "secs_mean": 214.8,
    "cost_total": 0.0
   },
@@ -3149,7 +3483,7 @@
    "playable": 1,
    "finished": 1,
    "steps_mean": 79.0,
-   "errors_mean": 0.0,
+   "errors_mean": 3.0,
    "secs_mean": 1481.8,
    "cost_total": 0.0
   },
@@ -3163,7 +3497,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 42.0,
-   "errors_mean": 0.0,
+   "errors_mean": 5.5,
    "secs_mean": 272.2,
    "cost_total": 0.0
   },
@@ -3177,7 +3511,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 86.0,
-   "errors_mean": 0.0,
+   "errors_mean": 8.5,
    "secs_mean": 879.5,
    "cost_total": 0.0
   },
@@ -3191,7 +3525,7 @@
    "playable": 2,
    "finished": 2,
    "steps_mean": 69.0,
-   "errors_mean": 0.0,
+   "errors_mean": 4.0,
    "secs_mean": 460.7,
    "cost_total": 0.0
   }
