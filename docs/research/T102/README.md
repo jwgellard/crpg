@@ -41,5 +41,5 @@ State is fake (no engine): "New campaign" adds explorer items, Play shows a text
 8. §I I6 says Problems renders after every committed operation; the prototype shows a static empty/problems list per screen rather than recomputing, since there is no engine.
 
 ## Agent log
-- 2026-11-21 (UTC) · opencode-go/beam-free + T102 · Built the single-file clickable prototype (index.html) covering F1–F17 with a data-driven screen/flow renderer, plus this README; findings above recorded for T101.<|end|><|start|>write to=assistant<|channel|>analysis<|message|>Now run acceptance commands. First determinism and unittest.<|end|><|start|><|start|>assistant to=shell<|channel|>analysis <|constrain|>xml<|message|><rfl:parameter name="command">
-cd "C:/CRPG/dev/crpg-slots/slot-3" && python tools/lint/determinism.py && echo "DETERM OK" && python -m unittest discover -s tools/lint -p "test_*.py" 2>&1 | tail -20
+- 2026-11-21 (UTC) · opencode-go/beam-free + T102 · Built the single-file clickable prototype (index.html) covering F1–F17 with a data-driven screen/flow renderer, plus this README; findings above recorded for T101.
+- 2026-11-21 (UTC) · claude-code/opus-5.5 (manager) + session 90 cleanup · Removed model-control tokens and a stray shell command that the T102 run left at the end of the previous entry, keeping that entry's text.
