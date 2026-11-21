@@ -101,6 +101,9 @@ use crate::host_v4::{
 };
 use crate::nav::{area_mesh, plan_route, HostNav, RouteRefusal};
 
+mod ai;
+pub use ai::{AiBudget, AiReport, AiStep, MVP_AI_BUDGET};
+
 // ---------------------------------------------------------------------------
 // Constants (§2).
 // ---------------------------------------------------------------------------
@@ -962,6 +965,9 @@ pub struct Host {
     /// The bound navigation mesh (T037a); `None` before a binding and after a
     /// restore (Reading 3).
     nav: Option<HostNav>,
+    /// The AI driver's turn-based decision count (T153 Reading 5); host
+    /// state, never checkpointed.
+    ai_turn: Option<ai::AiTurn>,
     /// The host-wide lane-1 admission order (T037d Reading 13): the next slot
     /// to admit takes it and it never repeats.
     next_move_order: u64,
@@ -1015,6 +1021,7 @@ impl Host {
             timer: None,
             timer_epoch: 0,
             nav: None,
+            ai_turn: None,
             next_move_order: 0,
         }
     }
@@ -5937,7 +5944,7 @@ fn queue_samples(
 
 /// A fact-grant vector within its bound, sorted by entity, with no entity
 /// twice (C-1, C-4).
-fn normalize_fact_grants(facts: FactGrants) -> Result<FactGrants, HostError> {
+pub(crate) fn normalize_fact_grants(facts: FactGrants) -> Result<FactGrants, HostError> {
     if facts.entities.len() > MAX_GRANT_IDENTITIES {
         return Err(HostError::InvalidGrants);
     }

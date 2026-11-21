@@ -1,0 +1,16 @@
+{
+ "name": "campaign-medium",
+ "kind": "campaign",
+ "starter": null,
+ "minimum": {
+  "creature": 3,
+  "ability": 2,
+  "outcome-table": 2,
+  "effect": 1,
+  "ruleset": 1,
+  "encounter": 1
+ },
+ "ruleset_slug": null,
+ "min_combatants": 3,
+ "timeout_s": 2400
+}

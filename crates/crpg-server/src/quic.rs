@@ -30,21 +30,24 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use crpg_core::EntityId;
 use crpg_net::codec_resume;
 use crpg_net::protocol::{ReceiptStatus, RejectionCode, POLICY_INGRESS_FRAMES_PER_PEER};
 use crpg_net::protocol_resume::{
     ConnectionFence, ResumeDown, ResumeProof, ResumeRejection, ResumeResult,
 };
+use crpg_net::protocol_v3::{PauseRights, RejectionCode as CodeV3};
 use crpg_net_quic::{
     Channel, ChannelSendError, CloseCode, CloseMode, CloseReason, ConnectionId, ConnectionStats,
     Credential, Framing, QueueTotals, QuicServer, SendError, ServerError, ServerEvent,
-    ServerNotice, ShutdownReport, Welcome,
+    ServerNotice, ShutdownReport, Welcome, MOVEMENT_WIRE_VERSION,
 };
 
 use crate::checkpoint::CheckpointError;
 use crate::host::{
-    is_narrowing, normalize_control, normalize_grants, AdmissionResult, ControlGrant, DeliveryKind,
-    DisclosureGrants, GrantUpdate, Host, HostError, IngestDisposition, PeerHandle, PumpSummary,
+    is_narrowing, normalize_control, normalize_fact_grants, normalize_grants, AdmissionResult,
+    AdvanceReport, AiBudget, AiReport, ControlGrant, DeliveryKind, DisclosureGrants, FactGrants,
+    GrantUpdate, Host, HostError, IngestDisposition, MoveAdmission, PeerHandle, PumpSummary,
     ResumeAnswer, TransferDisposition, TransferRefusal,
 };
 
@@ -63,6 +66,12 @@ pub const MAX_DRAIN_PER_CONNECTION: usize = POLICY_INGRESS_FRAMES_PER_PEER;
 /// Injected-time budget for a connection whose transport queue refuses
 /// delivery before it is fenced as a slow consumer.
 pub const STALL_TIMEOUT_MS: u64 = 10_000;
+
+// The transport's lane-1 outbound frame cap must hold one host take of
+// receipts (T037's `POLICY_EGRESS_FRAMES_PER_PEER`, Reading 12 of T150).
+const _: () = assert!(
+    crpg_net_quic::LANE1_OUTBOUND_FRAMES >= crpg_net::protocol::POLICY_EGRESS_FRAMES_PER_PEER
+);
 
 /// Never reused within one `QuicHost`; starts at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,18 +96,39 @@ pub struct Invitation {
     pub grants: DisclosureGrants,
 }
 
+/// An operator-provisioned v4 principal (Reading 11): an [`Invitation`]'s
+/// fields plus what `Host::bind_v4_peer` needs. `Debug` shows the
+/// credential only as `Credential(<redacted>)`.
+#[derive(Debug, Clone)]
+pub struct V4Invitation {
+    /// Exactly [`INVITATION_CREDENTIAL_BYTES`] bytes of operator secret.
+    pub credential: Credential,
+    /// The actors this principal may act as.
+    pub control: ControlGrant,
+    /// What this principal may learn.
+    pub grants: DisclosureGrants,
+    /// The v3/v4 fact grants.
+    pub facts: FactGrants,
+    /// The principal's own pause rights.
+    pub rights: PauseRights,
+}
+
 // ---------------------------------------------------------------------------
 // Reports (B§3.3).
 // ---------------------------------------------------------------------------
 
 /// What one `pump` did, in call order. Bounded per pump: at most
-/// `max_connections` hello decisions and closes, and at most
+/// `max_connections` hello decisions and closes, at most
 /// `MAX_PEERS × MAX_DRAIN_PER_CONNECTION` ingest calls plus one held retry
-/// per peer.
+/// per peer, plus at most `MAX_DRAIN_PER_CONNECTION` lane-1 ingests and one
+/// held lane-1 retry per movement binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuicPumpReport {
     /// Every host call this pump made, in order: the equivalence trace.
     pub calls: Vec<HostCall>,
+    /// Every lane-1 host call this pump made, in order, with its place in
+    /// `calls` (T150c Reading 13).
+    pub lane1: Vec<Lane1Trace>,
     /// One per `HelloReceived` polled.
     pub hellos: Vec<HelloDecision>,
     /// Bindings fenced by this pump.
@@ -115,6 +145,17 @@ pub struct QuicPumpReport {
     pub frames_discarded: usize,
     /// Bound connections holding a refused frame when the pump ended.
     pub held: usize,
+    /// Receipts accepted by `try_send_lane1` this pump.
+    pub lane1_sent: usize,
+    /// Samples accepted by `try_send_datagram` this pump.
+    pub datagrams_sent: usize,
+    /// Lane-1 frames dropped after a terminal `ingest_move` refusal.
+    pub lane1_refused: usize,
+    /// Lane-1 frames, receipts and samples discarded for retiring, fenced
+    /// or closed connections.
+    pub lane1_discarded: usize,
+    /// Bound connections holding a refused lane-1 frame when the pump ended.
+    pub lane1_held: usize,
     /// One per `ServerNotice::Resume` polled, in poll order.
     pub resumes: Vec<ResumeReport>,
 }
@@ -123,6 +164,7 @@ impl QuicPumpReport {
     fn new() -> Self {
         Self {
             calls: Vec::new(),
+            lane1: Vec::new(),
             hellos: Vec::new(),
             fences: Vec::new(),
             transport_closes: Vec::new(),
@@ -130,6 +172,11 @@ impl QuicPumpReport {
             frames_refused: 0,
             frames_discarded: 0,
             held: 0,
+            lane1_sent: 0,
+            datagrams_sent: 0,
+            lane1_refused: 0,
+            lane1_discarded: 0,
+            lane1_held: 0,
             resumes: Vec::new(),
         }
     }
@@ -247,6 +294,59 @@ pub enum HostCall {
         /// What `resume_peer` decided.
         result: Result<ResumeAnswer, HostError>,
     },
+}
+
+/// One lane-1 host call (T150c), with what it returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lane1Call {
+    /// `Host::bind_v4_peer` for a `crpg-lane0/3` hello presenting
+    /// `invitation`.
+    BindV4Peer {
+        /// The connection the hello arrived on.
+        conn: ConnectionId,
+        /// The matched invitation.
+        invitation: InvitationId,
+        /// What `bind_v4_peer` returned.
+        result: Result<PeerHandle, HostError>,
+    },
+    /// `Host::ingest_move`. `frame` is the 1-based ordinal of the frame on
+    /// the connection's lane-1 stream; a held frame's retries repeat it.
+    IngestMove {
+        /// The connection the frame came from.
+        conn: ConnectionId,
+        /// Its binding.
+        peer: PeerHandle,
+        /// The frame's ordinal on the connection's lane-1 stream.
+        frame: u64,
+        /// The frame's length in bytes.
+        len: usize,
+        /// What `ingest_move` returned.
+        result: MoveAdmission,
+    },
+    /// `Host::take_move_receipts`. `Ok(n)`: it returned `n` receipts.
+    TakeMoveReceipts {
+        /// The binding.
+        peer: PeerHandle,
+        /// The receipt count, or the error.
+        result: Result<usize, HostError>,
+    },
+    /// `Host::take_samples`. `Ok(n)`: it returned `n` datagrams.
+    TakeSamples {
+        /// The binding.
+        peer: PeerHandle,
+        /// The datagram count, or the error.
+        result: Result<usize, HostError>,
+    },
+}
+
+/// A lane-1 call and its place in the pump's call order (Reading 13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lane1Trace {
+    /// `calls.len()` when the call was made: it came after `calls[at - 1]`
+    /// and before `calls[at]`; equal `at`s keep list order.
+    pub at: usize,
+    /// The call.
+    pub call: Lane1Call,
 }
 
 /// The decision made for one `HelloReceived`.
@@ -371,6 +471,8 @@ pub struct QuicHostShutdown {
     /// Host delivery entries the transport could not take before shutdown,
     /// both channels counted.
     pub undelivered_frames: usize,
+    /// Lane-1 receipts the transport could not take before shutdown.
+    pub undelivered_receipts: usize,
     /// `Some` when requested: `save_checkpoint` taken after the host fence
     /// and before the transport closes.
     pub checkpoint: Option<Result<Vec<u8>, CheckpointError>>,
@@ -452,6 +554,9 @@ struct InvitationRecord {
     live: Option<ConnectionId>,
     /// A session held through its grace (T025b-q), keyed by its handle.
     graced: Option<PeerHandle>,
+    /// The fact grants and pause rights a `crpg-lane0/3` binding needs;
+    /// `None` from `register_invitation` (Reading 11).
+    v4: Option<(FactGrants, PauseRights)>,
 }
 
 /// A bound connection.
@@ -461,19 +566,28 @@ struct Bound {
     invitation: InvitationId,
     /// The negotiated framing, fixed for the connection's life.
     framing: Framing,
+    /// Whether the connection negotiated `crpg-lane0/3`.
+    movement: bool,
     /// The connection's fence tag (T025b-q): `FIRST` for a hello binding,
     /// the granted fence for a resume binding.
     fence: ConnectionFence,
     /// The ordinal of the last frame taken with `try_recv_channel`, over
     /// every channel.
     frames: u64,
+    /// The ordinal of the last fresh frame taken with `try_recv_lane1`.
+    lane1_frames: u64,
     /// One lane-0 frame refused with `QueueFull`, retried before any later
     /// frame.
     held: Option<Vec<u8>>,
+    /// One lane-1 frame refused with `QueueFull`, retried before any later
+    /// lane-1 frame.
+    held_lane1: Option<Vec<u8>>,
     stalled_since: Option<u64>,
     transport_closed: Option<CloseReason>,
     /// `try_recv` reported the end of the inbound stream.
     drained: bool,
+    /// `try_recv_lane1` reported the end of the lane-1 stream.
+    lane1_drained: bool,
     /// The connection's `Closed` event has been polled.
     event_seen: bool,
 }
@@ -482,6 +596,8 @@ struct Bound {
 /// and discarded so the transport can forget its record.
 struct Retiring {
     event_seen: bool,
+    /// `try_recv_lane1` reported an error for this retiring entry.
+    lane1_gone: bool,
 }
 
 enum Conn {
@@ -559,10 +675,11 @@ impl QuicHost {
     /// `TimeRegression` (`now_ms` below the host's last accepted time).
     /// On failure, both are returned unchanged.
     ///
-    /// The server must come from `QuicServer::bind` or `QuicServer::bind_dual`,
-    /// never `QuicServer::bind_resumable`: the adapter polls only
-    /// `poll_event`, which stops for good at a resume notice, and no public
-    /// call tells a resumable server apart. T025b lifts this precondition.
+    /// The server must come from `QuicServer::bind`, `QuicServer::bind_dual`
+    /// or `QuicServer::bind_movement`, never `QuicServer::bind_resumable`:
+    /// the adapter polls only `poll_event`, which stops for good at a resume
+    /// notice, and no public call tells a resumable server apart. T025b lifts
+    /// this precondition.
     pub fn start(
         host: Host,
         server: QuicServer,
@@ -638,7 +755,9 @@ impl QuicHost {
         }
         self.last_now_ms = now_ms;
         let mut report = QuicPumpReport::new();
-        let result = self.run_phases(now_ms, &mut report);
+        let result = self
+            .run_phases(now_ms, &mut report)
+            .and_then(|()| self.flush_phases(now_ms, &mut report));
         match result {
             Ok(()) => Ok(report),
             Err(error) => {
@@ -648,6 +767,31 @@ impl QuicHost {
         }
     }
 
+    /// Phases 4–7 of [`pump`](Self::pump) alone (T154d, B-15): reconcile,
+    /// deliver, retire closed peers and report, without polling the
+    /// transport, draining a connection or admitting. Errors: `Poisoned`;
+    /// `TimeRegression` below the adapter's last accepted `now_ms` (nothing
+    /// changes); otherwise the phases run and a host error poisons as in
+    /// `pump`.
+    pub fn flush(&mut self, now_ms: u64) -> Result<QuicPumpReport, QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        if now_ms < self.last_now_ms {
+            return Err(QuicHostError::TimeRegression);
+        }
+        self.last_now_ms = now_ms;
+        let mut report = QuicPumpReport::new();
+        match self.flush_phases(now_ms, &mut report) {
+            Ok(()) => Ok(report),
+            Err(error) => {
+                self.poisoned = true;
+                Err(QuicHostError::Host(error))
+            }
+        }
+    }
+
+    /// `pump`'s phases 1–3: events and notices, drain, admit.
     fn run_phases(&mut self, now_ms: u64, report: &mut QuicPumpReport) -> Result<(), HostError> {
         // 1. Events and notices.
         if self.resumable {
@@ -668,7 +812,13 @@ impl QuicHost {
         let ids: Vec<ConnectionId> = self.conns.keys().copied().collect();
         for conn in ids {
             match self.conns.get(&conn) {
-                Some(Conn::Bound(_)) => self.drain_bound(conn, now_ms, report)?,
+                Some(Conn::Bound(_)) => {
+                    self.drain_bound(conn, now_ms, report)?;
+                    // C-3: lane 1 drains after lane 0, on the same connection.
+                    if self.bound(conn).is_some_and(|bound| bound.movement) {
+                        self.drain_lane1(conn, now_ms, report)?;
+                    }
+                }
                 Some(Conn::Retiring(_)) => self.drain_retiring(conn, report),
                 None => {}
             }
@@ -676,6 +826,12 @@ impl QuicHost {
         // 3. Admit.
         let summary = self.host.pump(now_ms)?;
         report.calls.push(HostCall::Pump { summary });
+        Ok(())
+    }
+
+    /// `pump`'s phases 4–7: reconcile, deliver, retire closed peers, report.
+    /// Shared body with [`flush`](Self::flush).
+    fn flush_phases(&mut self, now_ms: u64, report: &mut QuicPumpReport) -> Result<(), HostError> {
         // 4. Reconcile.
         for conn in self.bound_ids() {
             let Some((peer, epoch)) = self.bound(conn).map(|bound| (bound.peer, bound.epoch))
@@ -706,13 +862,22 @@ impl QuicHost {
         // 5. Deliver.
         for conn in self.bound_ids() {
             self.deliver(conn, now_ms, report)?;
+            // C-4/C-5: lane-1 receipts and samples, after lane 0's delivery.
+            if self.bound(conn).is_some_and(|bound| bound.movement) {
+                self.deliver_lane1(conn, report)?;
+            }
         }
         // 6. Retire closed peers.
         for conn in self.bound_ids() {
             let Some(bound) = self.bound(conn) else {
                 continue;
             };
+            let lane1_pending =
+                bound.movement && (!bound.lane1_drained || bound.held_lane1.is_some());
             if bound.transport_closed.is_none() || !bound.drained || bound.held.is_some() {
+                continue;
+            }
+            if lane1_pending {
                 continue;
             }
             let (peer, invitation, event_seen, framing, reason) = (
@@ -756,8 +921,13 @@ impl QuicHost {
             if event_seen {
                 self.conns.remove(&conn);
             } else {
-                self.conns
-                    .insert(conn, Conn::Retiring(Retiring { event_seen: false }));
+                self.conns.insert(
+                    conn,
+                    Conn::Retiring(Retiring {
+                        event_seen: false,
+                        lane1_gone: false,
+                    }),
+                );
             }
         }
         // 7. Report.
@@ -765,6 +935,11 @@ impl QuicHost {
             .conns
             .values()
             .filter(|entry| matches!(entry, Conn::Bound(bound) if bound.held.is_some()))
+            .count();
+        report.lane1_held = self
+            .conns
+            .values()
+            .filter(|entry| matches!(entry, Conn::Bound(bound) if bound.held_lane1.is_some()))
             .count();
         Ok(())
     }
@@ -869,12 +1044,16 @@ impl QuicHost {
                     epoch: accepted.epoch,
                     invitation,
                     framing: Framing::V2,
+                    movement: false,
                     fence: accepted.granted,
                     frames: 0,
+                    lane1_frames: 0,
                     held: None,
+                    held_lane1: None,
                     stalled_since: None,
                     transport_closed: None,
                     drained: false,
+                    lane1_drained: false,
                     event_seen: false,
                 };
                 match self.server.accept_resume(conn, &answer) {
@@ -961,9 +1140,40 @@ impl QuicHost {
             refuse(&mut self.server, report, CloseCode::AuthRefused);
             return Ok(());
         };
-        // 2. Version.
-        if wire_version != self.host.protocol().as_u8() {
+        // 2. The connection's mapping (T150c C-2): a `crpg-lane0/3`
+        // connection is only visible until its `Closed` is polled.
+        let movement = match self.server.movement(conn) {
+            Ok(movement) => movement,
+            Err(_) => {
+                report.hellos.push(HelloDecision {
+                    conn,
+                    outcome: HelloOutcome::Lost {
+                        reason: CloseReason::EndpointFailed,
+                    },
+                });
+                return Ok(());
+            }
+        };
+        // 3. Version: `/3` carries wire version 4, `/1` and `/2` as today.
+        let version_ok = if movement {
+            wire_version == MOVEMENT_WIRE_VERSION
+        } else {
+            wire_version == self.host.protocol().as_u8()
+        };
+        if !version_ok {
             refuse(&mut self.server, report, CloseCode::VersionRefused);
+            return Ok(());
+        }
+        // 4. A movement hello needs a v4 invitation (Reading 11): no
+        // supersession and no bind for one registered without facts.
+        if movement
+            && self
+                .invitations
+                .get(&invitation)
+                .and_then(|record| record.v4.as_ref())
+                .is_none()
+        {
+            refuse(&mut self.server, report, CloseCode::AuthRefused);
             return Ok(());
         }
         // N-8: a new hello for a graced invitation ends the grace first.
@@ -978,7 +1188,7 @@ impl QuicHost {
                 record.graced = None;
             }
         }
-        // 3. Supersession: the newest connection wins (B§16 Q3).
+        // 5. Supersession: the newest connection wins (B§16 Q3).
         let live = self
             .invitations
             .get(&invitation)
@@ -986,47 +1196,76 @@ impl QuicHost {
         if let Some(old) = live {
             self.fence(old, FenceCause::Superseded, Some(report));
         }
-        // 4. Bind, by the connection's negotiated framing. The record stays
+        // 6. Bind, by the connection's negotiated framing. The record stays
         // visible until its `Closed` is polled, so `framing` cannot fail; if
         // it ever does, the hello is lost with no bind call.
-        let framing = match self.server.framing(conn) {
-            Ok(framing) => framing,
-            Err(_) => {
-                report.hellos.push(HelloDecision {
-                    conn,
-                    outcome: HelloOutcome::Lost {
-                        reason: CloseReason::EndpointFailed,
-                    },
-                });
-                return Ok(());
+        let framing = if movement {
+            // A `/3` connection's lane stream is `/2`'s (T150 Reading 2).
+            Framing::V2
+        } else {
+            match self.server.framing(conn) {
+                Ok(framing) => framing,
+                Err(_) => {
+                    report.hellos.push(HelloDecision {
+                        conn,
+                        outcome: HelloOutcome::Lost {
+                            reason: CloseReason::EndpointFailed,
+                        },
+                    });
+                    return Ok(());
+                }
             }
         };
         let record = self
             .invitations
             .get(&invitation)
             .ok_or(HostError::Invariant("matched invitation vanished"))?;
-        let result = match framing {
-            Framing::V2 => {
-                self.host
-                    .bind_snapshot_peer(record.control.clone(), record.grants.clone(), now_ms)
-            }
-            Framing::V1 => {
-                self.host
-                    .bind_peer(record.control.clone(), record.grants.clone(), now_ms)
-            }
+        let result = if movement {
+            let (facts, rights) = record.v4.clone().ok_or(HostError::Invariant(
+                "a movement hello matched a v3 invitation",
+            ))?;
+            let result = self.host.bind_v4_peer(
+                record.control.clone(),
+                record.grants.clone(),
+                facts,
+                rights,
+                now_ms,
+            );
+            report.lane1.push(Lane1Trace {
+                at: report.calls.len(),
+                call: Lane1Call::BindV4Peer {
+                    conn,
+                    invitation,
+                    result: result.clone(),
+                },
+            });
+            result
+        } else {
+            let result = match framing {
+                Framing::V2 => self.host.bind_snapshot_peer(
+                    record.control.clone(),
+                    record.grants.clone(),
+                    now_ms,
+                ),
+                Framing::V1 => {
+                    self.host
+                        .bind_peer(record.control.clone(), record.grants.clone(), now_ms)
+                }
+            };
+            report.calls.push(match framing {
+                Framing::V2 => HostCall::BindSnapshotPeer {
+                    conn,
+                    invitation,
+                    result: result.clone(),
+                },
+                Framing::V1 => HostCall::BindPeer {
+                    conn,
+                    invitation,
+                    result: result.clone(),
+                },
+            });
+            result
         };
-        report.calls.push(match framing {
-            Framing::V2 => HostCall::BindSnapshotPeer {
-                conn,
-                invitation,
-                result: result.clone(),
-            },
-            Framing::V1 => HostCall::BindPeer {
-                conn,
-                invitation,
-                result: result.clone(),
-            },
-        });
         let peer = match result {
             Ok(peer) => peer,
             Err(HostError::ServerBusy | HostError::QueueFull | HostError::CounterExhausted) => {
@@ -1042,13 +1281,17 @@ impl QuicHost {
                 return Err(error);
             }
         };
-        // 5. Welcome.
+        // 7. Welcome.
         let epoch = self.host.epoch(peer)?;
         let welcome = Welcome {
-            wire_version: self.host.protocol().as_u8(),
+            wire_version: if movement {
+                MOVEMENT_WIRE_VERSION
+            } else {
+                self.host.protocol().as_u8()
+            },
             epoch,
         };
-        // 6. Result.
+        // 8. Result.
         match self.server.accept(conn, welcome) {
             Ok(()) => {
                 self.conns.insert(
@@ -1058,12 +1301,16 @@ impl QuicHost {
                         epoch,
                         invitation,
                         framing,
+                        movement,
                         fence: ConnectionFence::FIRST,
                         frames: 0,
+                        lane1_frames: 0,
                         held: None,
+                        held_lane1: None,
                         stalled_since: None,
                         transport_closed: None,
                         drained: false,
+                        lane1_drained: false,
                         event_seen: false,
                     }),
                 );
@@ -1261,6 +1508,126 @@ impl QuicHost {
         Ok(())
     }
 
+    /// C-3: the held lane-1 retry, then up to `MAX_DRAIN_PER_CONNECTION`
+    /// fresh lane-1 frames, after the connection's lane-0 drain.
+    fn drain_lane1(
+        &mut self,
+        conn: ConnectionId,
+        now_ms: u64,
+        report: &mut QuicPumpReport,
+    ) -> Result<(), HostError> {
+        // 1. Held retry.
+        let held = self
+            .bound_mut(conn)
+            .and_then(|bound| bound.held_lane1.take());
+        if let Some(frame) = held {
+            match self.ingest_move_one(conn, &frame, now_ms, report)? {
+                Disposition::Continue => {}
+                Disposition::Hold => {
+                    if let Some(bound) = self.bound_mut(conn) {
+                        bound.held_lane1 = Some(frame);
+                    }
+                    return Ok(());
+                }
+                Disposition::Stop => return Ok(()),
+            }
+        }
+        // 2. Fresh frames.
+        for _ in 0..MAX_DRAIN_PER_CONNECTION {
+            match self.server.try_recv_lane1(conn) {
+                Ok(Some(frame)) => {
+                    if let Some(bound) = self.bound_mut(conn) {
+                        bound.lane1_frames += 1;
+                    }
+                    match self.ingest_move_one(conn, &frame, now_ms, report)? {
+                        Disposition::Continue => {}
+                        Disposition::Hold => {
+                            if let Some(bound) = self.bound_mut(conn) {
+                                bound.held_lane1 = Some(frame);
+                            }
+                            return Ok(());
+                        }
+                        Disposition::Stop => return Ok(()),
+                    }
+                }
+                Ok(None) => return Ok(()),
+                Err(ServerError::Closed(reason)) => {
+                    if let Some(bound) = self.bound_mut(conn) {
+                        bound.transport_closed.get_or_insert(reason);
+                        bound.lane1_drained = true;
+                    }
+                    return Ok(());
+                }
+                Err(ServerError::UnknownConnection) => {
+                    if let Some(bound) = self.bound_mut(conn) {
+                        bound
+                            .transport_closed
+                            .get_or_insert(CloseReason::EndpointFailed);
+                        bound.lane1_drained = true;
+                    }
+                    return Ok(());
+                }
+                Err(
+                    ServerError::NotAccepted
+                    | ServerError::NotPending
+                    | ServerError::InvalidWelcome,
+                ) => {
+                    self.fence(conn, FenceCause::EpochClosed, Some(report));
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One traced `ingest_move` and its C-3 disposition.
+    fn ingest_move_one(
+        &mut self,
+        conn: ConnectionId,
+        frame: &[u8],
+        now_ms: u64,
+        report: &mut QuicPumpReport,
+    ) -> Result<Disposition, HostError> {
+        let Some((peer, ordinal)) = self
+            .bound(conn)
+            .map(|bound| (bound.peer, bound.lane1_frames))
+        else {
+            return Ok(Disposition::Stop);
+        };
+        let result = self.host.ingest_move(peer, frame, now_ms)?;
+        report.lane1.push(Lane1Trace {
+            at: report.calls.len(),
+            call: Lane1Call::IngestMove {
+                conn,
+                peer,
+                frame: ordinal,
+                len: frame.len(),
+                result,
+            },
+        });
+        Ok(match result {
+            MoveAdmission::Admitted { .. }
+            | MoveAdmission::Rejected { .. }
+            | MoveAdmission::Duplicate { .. } => Disposition::Continue,
+            MoveAdmission::Refused {
+                code: CodeV3::QueueFull,
+                ..
+            } => Disposition::Hold,
+            MoveAdmission::Refused {
+                code: CodeV3::Unauthenticated,
+                ..
+            } => {
+                report.lane1_refused += 1;
+                self.fence(conn, FenceCause::EpochClosed, Some(report));
+                Disposition::Stop
+            }
+            MoveAdmission::Refused { .. } => {
+                report.lane1_refused += 1;
+                Disposition::Continue
+            }
+        })
+    }
+
     /// One traced `ingest` and its B§6 step-3 disposition.
     fn ingest_one(
         &mut self,
@@ -1336,24 +1703,51 @@ impl QuicHost {
     }
 
     /// B§5 phase 2 for a retiring connection: drain and discard every frame,
-    /// whatever its channel.
+    /// whatever its channel and lane (C-6).
     fn drain_retiring(&mut self, conn: ConnectionId, report: &mut QuicPumpReport) {
-        let mut gone = false;
+        let mut lane0_gone = false;
         for _ in 0..MAX_DRAIN_PER_CONNECTION {
             match self.server.try_recv_channel(conn) {
                 Ok(Some(_)) => report.frames_discarded += 1,
                 Ok(None) => break,
                 Err(_) => {
-                    gone = true;
+                    lane0_gone = true;
                     break;
                 }
             }
         }
+        let mut lane1_gone = matches!(
+            self.conns.get(&conn),
+            Some(Conn::Retiring(Retiring {
+                lane1_gone: true,
+                ..
+            }))
+        );
+        if !lane1_gone {
+            for _ in 0..MAX_DRAIN_PER_CONNECTION {
+                match self.server.try_recv_lane1(conn) {
+                    Ok(Some(_)) => report.lane1_discarded += 1,
+                    Ok(None) => break,
+                    Err(_) => {
+                        lane1_gone = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if lane1_gone {
+            if let Some(Conn::Retiring(retiring)) = self.conns.get_mut(&conn) {
+                retiring.lane1_gone = true;
+            }
+        }
         let seen = matches!(
             self.conns.get(&conn),
-            Some(Conn::Retiring(Retiring { event_seen: true }))
+            Some(Conn::Retiring(Retiring {
+                event_seen: true,
+                ..
+            }))
         );
-        if gone && seen {
+        if lane0_gone && lane1_gone && seen {
             self.conns.remove(&conn);
         }
     }
@@ -1493,6 +1887,132 @@ impl QuicHost {
         }
     }
 
+    /// C-4/C-5: lane-1 receipts and samples for one still-bound movement
+    /// connection, after its lane-0 delivery.
+    fn deliver_lane1(
+        &mut self,
+        conn: ConnectionId,
+        report: &mut QuicPumpReport,
+    ) -> Result<(), HostError> {
+        let Some(peer) = self.bound(conn).map(|bound| bound.peer) else {
+            return Ok(());
+        };
+        let departed = self
+            .bound(conn)
+            .is_some_and(|bound| bound.transport_closed.is_some());
+        // (1) Receipts, only when the transport's lane-1 queue is empty
+        // (Reading 12): one full take then fits the outbound cap.
+        let take_receipts = departed
+            || self
+                .server
+                .lane1_stats(conn)
+                .is_ok_and(|stats| stats.outbound_frames == 0);
+        if take_receipts {
+            let taken = self.host.take_move_receipts(peer);
+            report.lane1.push(Lane1Trace {
+                at: report.calls.len(),
+                call: Lane1Call::TakeMoveReceipts {
+                    peer,
+                    result: taken.as_ref().map(Vec::len).map_err(Clone::clone),
+                },
+            });
+            let receipts = match taken {
+                Ok(receipts) => receipts,
+                Err(error) if poisons(&error) => return Err(error),
+                Err(_) => {
+                    self.fence(conn, FenceCause::EpochClosed, Some(report));
+                    return Ok(());
+                }
+            };
+            if departed {
+                report.lane1_discarded += receipts.len();
+            } else {
+                let mut refused = false;
+                for receipt in &receipts {
+                    if refused {
+                        report.lane1_discarded += 1;
+                        continue;
+                    }
+                    match self.server.try_send_lane1(conn, receipt) {
+                        Ok(()) => report.lane1_sent += 1,
+                        Err(ChannelSendError::Send(SendError::Closed(reason))) => {
+                            if let Some(bound) = self.bound_mut(conn) {
+                                bound.transport_closed.get_or_insert(reason);
+                            }
+                            refused = true;
+                            report.lane1_discarded += 1;
+                        }
+                        Err(ChannelSendError::Send(SendError::UnknownConnection)) => {
+                            if let Some(bound) = self.bound_mut(conn) {
+                                bound
+                                    .transport_closed
+                                    .get_or_insert(CloseReason::EndpointFailed);
+                            }
+                            refused = true;
+                            report.lane1_discarded += 1;
+                        }
+                        Err(_) => {
+                            self.fence(conn, FenceCause::EpochClosed, Some(report));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        // (2) Samples, every pump (Reading 15): never held, never retried.
+        let Some(peer) = self.bound(conn).map(|bound| bound.peer) else {
+            return Ok(());
+        };
+        let taken = self.host.take_samples(peer);
+        report.lane1.push(Lane1Trace {
+            at: report.calls.len(),
+            call: Lane1Call::TakeSamples {
+                peer,
+                result: taken.as_ref().map(Vec::len).map_err(Clone::clone),
+            },
+        });
+        let samples = match taken {
+            Ok(samples) => samples,
+            Err(error) if poisons(&error) => return Err(error),
+            Err(_) => {
+                self.fence(conn, FenceCause::EpochClosed, Some(report));
+                return Ok(());
+            }
+        };
+        let discard = departed
+            || self
+                .bound(conn)
+                .is_some_and(|bound| bound.transport_closed.is_some());
+        if discard {
+            report.lane1_discarded += samples.len();
+            return Ok(());
+        }
+        for sample in &samples {
+            match self.server.try_send_datagram(conn, sample) {
+                Ok(()) => report.datagrams_sent += 1,
+                Err(ChannelSendError::Send(SendError::Closed(reason))) => {
+                    if let Some(bound) = self.bound_mut(conn) {
+                        bound.transport_closed.get_or_insert(reason);
+                    }
+                    report.lane1_discarded += 1;
+                }
+                Err(ChannelSendError::Send(SendError::UnknownConnection)) => {
+                    if let Some(bound) = self.bound_mut(conn) {
+                        bound
+                            .transport_closed
+                            .get_or_insert(CloseReason::EndpointFailed);
+                    }
+                    report.lane1_discarded += 1;
+                }
+                Err(_) => {
+                    self.fence(conn, FenceCause::EpochClosed, Some(report));
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// B§7.1: unbind (unless the host already did), close with
     /// `SessionFenced` in `Discard` mode, discard a held frame, clear the
     /// invitation's live binding, retire the entry and record the fence.
@@ -1521,6 +2041,7 @@ impl QuicHost {
             conn,
             Conn::Retiring(Retiring {
                 event_seen: bound.event_seen,
+                lane1_gone: false,
             }),
         );
         let fence = Fence {
@@ -1531,6 +2052,10 @@ impl QuicHost {
         if let Some(report) = report {
             if bound.held.is_some() {
                 report.frames_discarded += 1;
+            }
+            // C-7: a held lane-1 frame is discarded too.
+            if bound.held_lane1.is_some() {
+                report.lane1_discarded += 1;
             }
             report.fences.push(fence);
         }
@@ -1566,6 +2091,7 @@ impl QuicHost {
             conn,
             Conn::Retiring(Retiring {
                 event_seen: bound.event_seen,
+                lane1_gone: false,
             }),
         );
         let fence = Fence {
@@ -1659,6 +2185,53 @@ impl QuicHost {
                 grants,
                 live: None,
                 graced: None,
+                v4: None,
+            },
+        );
+        Ok(id)
+    }
+
+    /// As [`register_invitation`](Self::register_invitation), storing the
+    /// fact grants and pause rights a `crpg-lane0/3` binding needs
+    /// (Reading 11). Precedence: `Poisoned` → `InvitationLimit` →
+    /// `InvalidCredential` (length ≠ 32) → `Host(InvalidControl)` →
+    /// `Host(InvalidGrants)` (the disclosure grants, then the fact grants) →
+    /// `DuplicateCredential`.
+    pub fn register_v4_invitation(
+        &mut self,
+        invitation: V4Invitation,
+    ) -> Result<InvitationId, QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        if self.invitations.len() >= MAX_INVITATIONS {
+            return Err(QuicHostError::InvitationLimit);
+        }
+        if invitation.credential.as_bytes().len() != INVITATION_CREDENTIAL_BYTES {
+            return Err(QuicHostError::InvalidCredential);
+        }
+        let actors = normalize_control(invitation.control).map_err(QuicHostError::Host)?;
+        let grants = normalize_grants(invitation.grants).map_err(QuicHostError::Host)?;
+        let facts = normalize_fact_grants(invitation.facts).map_err(QuicHostError::Host)?;
+        let duplicate = self
+            .invitations
+            .values()
+            .map(|record| invitation.credential.ct_eq(record.credential.as_bytes()))
+            .fold(false, |acc, flag| acc | flag);
+        if duplicate {
+            return Err(QuicHostError::DuplicateCredential);
+        }
+        let id = InvitationId(self.next_invitation);
+        self.next_invitation += 1;
+        self.invitations.insert(
+            id,
+            InvitationRecord {
+                credential: invitation.credential,
+                control: ControlGrant { actors },
+                grants,
+                live: None,
+                graced: None,
+                v4: Some((facts, invitation.rights)),
             },
         );
         Ok(id)
@@ -1810,6 +2383,65 @@ impl QuicHost {
         self.host.tick().map_err(|error| self.host_error(error))
     }
 
+    /// Trusted pass-through: one `Host::advance` (Reading 16). Precedence:
+    /// `Poisoned` → `TimeRegression` (below the adapter's last `now_ms`;
+    /// nothing changes) → the adapter records `now_ms` → the host call, an
+    /// error through [`host_error`](Self::host_error) (an `Invariant`
+    /// poisons). Never traced.
+    pub fn advance(&mut self, now_ms: u64) -> Result<AdvanceReport, QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        if now_ms < self.last_now_ms {
+            return Err(QuicHostError::TimeRegression);
+        }
+        self.last_now_ms = now_ms;
+        self.host
+            .advance(now_ms)
+            .map_err(|error| self.host_error(error))
+    }
+
+    /// Trusted pass-through: `Host::drive_ai` (T153). `Poisoned` first, then
+    /// the host call, an error through [`host_error`](Self::host_error) (an
+    /// `Invariant` poisons). Never traced.
+    pub fn drive_ai(
+        &mut self,
+        sides: &crpg_ai::Sides,
+        actors: &[EntityId],
+        budget: AiBudget,
+    ) -> Result<AiReport, QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        self.host
+            .drive_ai(sides, actors, budget)
+            .map_err(|error| self.host_error(error))
+    }
+
+    /// Trusted pass-through: `Host::pause`. `Poisoned` first, then the host
+    /// call (which records `now_ms` and refuses a regression), an error
+    /// through [`host_error`](Self::host_error).
+    pub fn pause(&mut self, now_ms: u64) -> Result<(), QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        self.host
+            .pause(now_ms)
+            .map_err(|error| self.host_error(error))
+    }
+
+    /// Trusted pass-through: `Host::unpause`. `Poisoned` first, then the host
+    /// call (which records `now_ms` and refuses a regression), an error
+    /// through [`host_error`](Self::host_error).
+    pub fn unpause(&mut self, now_ms: u64) -> Result<(), QuicHostError> {
+        if self.poisoned {
+            return Err(QuicHostError::Poisoned);
+        }
+        self.host
+            .unpause(now_ms)
+            .map_err(|error| self.host_error(error))
+    }
+
     /// Trusted pass-through: `Host::acknowledge_captures`.
     pub fn acknowledge_captures(&mut self, through: u64) -> Result<(), QuicHostError> {
         if self.poisoned {
@@ -1911,6 +2543,31 @@ impl QuicHost {
                 let _ = host.acknowledge_delivery(bound.peer, last_accepted);
             }
         }
+        // 2b. Flush released lane-1 receipts to every open movement
+        // transport (C-8); no sample is taken.
+        let mut undelivered_receipts = 0usize;
+        for (conn, entry) in &conns {
+            let Conn::Bound(bound) = entry else {
+                continue;
+            };
+            if !bound.movement || bound.transport_closed.is_some() {
+                continue;
+            }
+            let Ok(receipts) = host.take_move_receipts(bound.peer) else {
+                continue;
+            };
+            let mut refused = false;
+            for receipt in &receipts {
+                if refused {
+                    undelivered_receipts += 1;
+                    continue;
+                }
+                if server.try_send_lane1(*conn, receipt).is_err() {
+                    refused = true;
+                    undelivered_receipts += 1;
+                }
+            }
+        }
         // 3. Count what could not be sent (both kinds).
         let undelivered_frames = conns
             .values()
@@ -1938,6 +2595,7 @@ impl QuicHost {
             refused,
             held_discarded,
             undelivered_frames,
+            undelivered_receipts,
             checkpoint,
             transport,
         }

@@ -254,6 +254,7 @@ name = "crpg-server"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crpg-ai",
  "crpg-core",
  "crpg-nav",
  "crpg-net",

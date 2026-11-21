@@ -259,6 +259,55 @@ bridge, and the scene decides no rule (ADR-0033 §14).
 - **No input.** Camera control and picking are T050 and deliberately absent;
   T049 owns positions.
 
+## Protocol v4 sessions (T151)
+
+T151 adds a protocol v4 session beside the frozen v2 one, so a Godot
+client can see positions and `Moved`, move a combatant in turn-based
+play (`DeclareMove`, lane 0) and send real-time moves (`MoveTo`/`Halt`,
+lane 1) with their receipts, all through the embedded authority.
+T151a is the engine-neutral v4 client half below; T151b wires the v4
+session and `BridgeCore` onto T154's run loop; T151c is the
+GDExtension surface. v2 keeps every byte and behaviour.
+
+- **v2 is frozen.** `open` and the v2 `Client` are untouched; a v2 view
+  fills the position columns with zeros and `move_receipts` empty. All
+  v4 work goes in `core/client_v4.rs` and `core/authority/v4.rs`.
+- **First-byte routing.** One FIFO per direction carries all three
+  lane families: `0x82` frames go to the `ReassemblyPoolV4`'s transfer
+  offer, `0xA1` to the lane-1 down decoder, anything else (an empty
+  frame included) to the pool's delta offer. `link.rs` is unchanged.
+- **The v4 client half (`core/client_v4.rs`).** `ClientV4` holds the
+  pool (one receiver, `AwaitSnapshot`; `Live` under `live_for_test`),
+  the `ReplicaWorldV4`, the lane-0 intent state (`pending`,
+  `next_seq` from `SEQ_FIRST`) and the lane-1 `MoveOutbox`. It answers
+  each `Published` transfer with a `Published` up reply, applies every
+  pooled update in FIFO order, and rebuilds the view at most once per
+  step exactly as the v2 client does, plus the columns below. A bad
+  frame is fatal (`52`/`53`) and never skipped. `declare_move` takes
+  the current options' actor and the destination; `move_to`/`halt`
+  mint one outbox intent and restore the outbox when the link is full.
+- **View columns.** `positions()` (three raw `Fx16_16` integers per
+  row, `0, 0, 0` where undisclosed), `position_known()`, `moving()`
+  (from the replica's disclosed position: set by an anchor, removed
+  by a `None` position, replaced only by a strictly newer sample) and
+  `move_receipts()` (one row per admitted lane-1 receipt, oldest
+  first). `Moved` is an event of kind `moved`, only for a live row.
+- **The v4 session on the run loop (`core/authority/v4.rs`,
+  `core/mod.rs`).** T151b wires the client half onto T154's loop: a v4
+  session's server runs on `crpg_server::run` over `LocalHost`, driven
+  by `crpg_server::runner` on its own thread; the bridge never ticks,
+  pumps or drives lane 1. `open_v4` binds the mesh from the encounter's
+  area (`encounter_bounds`), binds the player with `bind_v4_peer` (the
+  NPC stays a v2 `bind_peer`), wraps the host in `LocalHost`, installs
+  today's NPC driver as the loop's AI hook (`NpcHook`, Reading 20), and
+  spawns the runner. `poll` steps `ClientV4` over the `LocalClient` and
+  reads the player's legal options between cycles (`read_options`
+  through `RunnerHandle::submit`) without ever blocking the frame; the
+  bridge holds the client half, the runner owns the host. `declare_move`,
+  `move_to` and `halt` are the move entry points.
+- **Later parts.** The shell gains `open_v4`, `declare_move`, `move_to`,
+  `halt` and four view getters (T151c).
+
 ## Decisions and traps
 
 Governed by ADR-0033 and ADR-0012. The core holds no float,
@@ -317,3 +366,5 @@ Agent log:
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Documented that the scene-sync cases report success with an explicit `"PASS"` token, since a runtime error in a `-> String` GDScript function returns `""` rather than `null` and must not read as a pass.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Replaced the CombatHud bullet with the `_init`-built named tree, the HUD texts, the 200-line log buffer and gate and the end block, and added `hud_cases.gd`, `hud.gd` and smoke's exit 7 and H20.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Amended the SceneSync bullet for the mesh-only lift (D44b) and per-side surface palette, and extended the scene-sync cases bullet to S15–S18, so the client-side layout matches the approved T048b contract.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Added the Protocol v4 sessions section for the v4 client half: the frozen v2, first-byte routing, `ClientV4`'s pool/replica/outbox shape, the position columns and their later parts, so T151b wires a documented baseline rather than re-deriving it.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Replaced the "Later parts" bullet with the v4-session-on-the-run-loop description: `encounter_bounds`, the NPC driver as `NpcHook` on the loop's AI stage, legal options read between cycles through `RunnerHandle::submit`, and the three move entry points, leaving only the shell (T151c) as later.

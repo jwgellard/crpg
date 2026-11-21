@@ -33,14 +33,14 @@ fn fixture_root() -> PathBuf {
 fn live(core: &BridgeCore) -> Option<&Live> {
     match &core.state {
         State::Open(live) => Some(live),
-        State::Closed | State::Fenced(_) => None,
+        State::OpenV4(_) | State::Closed | State::Fenced(_) => None,
     }
 }
 
 fn live_mut(core: &mut BridgeCore) -> Option<&mut Live> {
     match &mut core.state {
         State::Open(live) => Some(live),
-        State::Closed | State::Fenced(_) => None,
+        State::OpenV4(_) | State::Closed | State::Fenced(_) => None,
     }
 }
 

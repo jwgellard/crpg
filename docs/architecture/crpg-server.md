@@ -31,9 +31,10 @@ configuration (T040); reconnect, resume and the 30 s grace (T025a/T025b);
 production interest facts
 (T027a–c supply values for these grant shapes); save slot/autosave policy,
 the save directory and the incarnation source (T040); OS service
-integration; listen-server mixed mode; and the GM endpoint. The run loop and
-the in-memory local hosting exist since T154a, but nothing reads a clock or
-starts a thread yet (T154b) and the QUIC hosting of the same loop is T154d.
+integration; listen-server mixed mode; and the GM endpoint. The run loop and the in-memory local hosting exist since T154a, the
+background runner and its clock since T154b, and the QUIC hosting of the same
+loop since T154d; the binary still refuses to run until the dedicated product
+(T040) wires it.
 
 ## Where it sits
 
@@ -42,6 +43,7 @@ crpg-core     ─┐
 crpg-sim      ─┤
 crpg-net      ─┼─> crpg-server (lib) ─> crpg-server (bin, thin)
 crpg-nav      ─┤     + serde/serde_json (checkpoint JSON)
+crpg-ai       ─┤
 crpg-net-quic ─┤
 crpg-persist  ─┘
 ```
@@ -50,9 +52,10 @@ Edges are D20's: normal path dependencies on `crpg-core`, `crpg-sim` and
 `crpg-net` plus workspace `serde`/`serde_json`, and T039's path edge to
 `crpg-persist` (approved in [T039](../../tasks/T039.md) §8/Decisions; its
 `zstd` tree was already locked through T038), T023b's path edge to
-`crpg-net-quic` (ADR-0024, T023 R12), and T037a's path edge to `crpg-nav`
+`crpg-net-quic` (ADR-0024, T023 R12), T037a's path edge to `crpg-nav`
 (ADR-0036 H1–H5, approved at T037 Question 1 (a)) for the mesh, its bake,
-queries and paths. That edge brings the transport's
+queries and paths, and T153's path edge to `crpg-ai` (D65f) for the MVP
+decision. That edge brings the transport's
 quinn/rustls/tokio tree in transitively, but `crpg-server` names none of
 those crates and has no direct edge to them. Nothing else. The host
 consumes T020's public `HistoryWorld` (`perform_action`, `read_after`,
@@ -667,6 +670,81 @@ after a `/2` welcome, the fence tags and the grace. `ConnectionId`s never
 enter host state: the host sees only `PeerHandle`s minted in bind order, so
 the same calls replayed in memory give the same handles and epochs.
 
+## QUIC v4 sessions (T150c)
+
+The adapter serves `QuicServer::bind_movement` endpoints — `crpg-lane0/3`,
+wire version 4, lane 1 plus downstream datagram samples (T150b) — beside the
+`/1` and `/2` routes it already served, without changing either. A movement
+connection's lane stream is `Framing::V2`, so every lane-0 path keeps its
+current shape; `QuicServer::movement(conn)` — not the framing — says whether
+lane 1 exists. `QuicHost::start` accepts such a server as it accepts `bind`
+and `bind_dual`.
+
+- **Invitations.** `register_v4_invitation(V4Invitation)` stores the fact
+  grants and pause rights `Host::bind_v4_peer` needs beside the control and
+  disclosure grants; the record's private `v4` slot is `None` from
+  `register_invitation`. Its precedence is `Poisoned` → `InvitationLimit` →
+  `InvalidCredential` (length ≠ 32) → `Host(InvalidControl)` →
+  `Host(InvalidGrants)` (disclosure grants by `normalize_grants`, then fact
+  grants by `normalize_fact_grants`) → `DuplicateCredential`; both kinds
+  share the cap, the id sequence and the duplicate check, and revocation,
+  grant/control updates and `invitation_binding` work on both.
+- **Hello precedence (C-2).** Credential match (`AuthRefused`) → the
+  connection's movement flag (`Lost { EndpointFailed }` on an error) →
+  version (a movement connection needs `MOVEMENT_WIRE_VERSION` 4; others
+  keep `host.protocol()`) → a movement connection whose matched record has
+  `v4: None` is `AuthRefused`, with no supersession and no bind →
+  supersession as today → bind: a movement connection calls `bind_v4_peer`
+  and traces `Lane1Call::BindV4Peer` in `lane1`, never in `calls`, while
+  other connections trace `HostCall::BindPeer`/`BindSnapshotPeer` as before
+  → the welcome carries version 4 on a movement connection → `accept` and
+  the `Bound` entry record `movement`.
+- **Lane-1 drain (C-3, phase 2).** After the unchanged `drain_bound`, a
+  still-bound movement connection retries one held frame and then takes at
+  most `MAX_DRAIN_PER_CONNECTION` frames with `try_recv_lane1`, each traced
+  as `Lane1Call::IngestMove { conn, peer, frame, len, result }` with
+  `frame` the 1-based stream ordinal (a held retry repeats it). `Admitted`,
+  `Rejected` and `Duplicate` continue; `Refused { QueueFull }` holds the
+  frame and stops that connection's lane-1 drain; `Refused {
+  Unauthenticated }` counts `lane1_refused` and fences `EpochClosed`; any
+  other refusal counts and continues. `Ok(None)` stops; `Closed` and
+  `UnknownConnection` record the transport close (first wins) and mark
+  `lane1_drained`; `NotAccepted`/`NotPending`/`InvalidWelcome` fence. The
+  two lanes never gate each other, and a host error returns from the pump
+  and poisons.
+- **Lane-1 delivery (C-4/C-5, phase 5).** After the unchanged `deliver`, a
+  movement binding whose transport is open takes receipts only when
+  `lane1_stats(conn).outbound_frames == 0` (one take then fits the 128-frame
+  transport cap), traces `TakeMoveReceipts`, and sends each in order with
+  `try_send_lane1` (`lane1_sent`); a closed/unknown send records the close
+  (first wins) and this and later receipts count `lane1_discarded`. Samples
+  are taken every pump, traced as `TakeSamples` and sent once with
+  `try_send_datagram` (`datagrams_sent`) — never held, never retried. A
+  departed peer's receipts and samples are taken (both traced), discarded
+  and counted, so they never hold host egress.
+- **Retire and fence (C-6/C-7).** A movement binding retires only when its
+  transport is closed, lane 0 is drained, `lane1_drained` holds and neither
+  hold is set; `drain_retiring` also drains and discards lane-1 frames
+  (`lane1_discarded`), and the record leaves once both lanes report an error
+  and its `Closed` was polled. A fence discards a held lane-1 frame too.
+  On `/1` and `/2` `try_recv_lane1` reports `Ok(None)` then the lane-0
+  error, so retirement is exactly today's.
+- **`shutdown` (C-8).** After the lane-0 flush, each open movement binding's
+  released receipts are taken once and sent until the first error;
+  `undelivered_receipts` counts the rest. No sample is taken.
+- **The side trace (Reading 13).** `QuicPumpReport.lane1` holds
+  `Lane1Trace { at, call }`; `at` is `calls.len()` when the call was made,
+  so a replay interleaves both lists exactly (equal `at`s keep list order),
+  and the existing `calls` replay stays exhaustive. The report adds
+  `lane1_sent`, `datagrams_sent`, `lane1_refused`, `lane1_discarded` and
+  `lane1_held` (bound connections holding a refused lane-1 frame at the end
+  of the pump).
+- **`advance` (C-9).** `QuicHost::advance(now_ms)` is an untraced
+  pass-through to `Host::advance`: `Poisoned` → `TimeRegression` (below the
+  adapter's last accepted `now_ms`; nothing changes) → record the time →
+  the host call, whose error goes through `host_error` (an `Invariant`
+  poisons). Lane-1 intents are decided only there.
+
 ## Identity and delivery shape
 
 A session epoch is `incarnation` (LE) followed by the never-reused handle
@@ -971,8 +1049,85 @@ the QUIC hosting (`QuicHosting`) is T154d's. Exact contract:
   the pending closure (`RunnerGone`); a thread panic reports
   `RunnerPanicked`. Exact contract:
   [T154](../../tasks/T154.md).
+- **The dedicated hosting (T154d, B-14–B-17).** `QuicHosting` is the same
+  five stages over one `QuicHost`: `intake` is `pump` (report discarded),
+  `drive_ai` the optional `QuicAiHook`, `advance` the adapter's own,
+  `deliver` is `flush`, and `retire_captures` acknowledges through
+  `host().last_capture()`. `QuicHost::flush(now)` is `pump`'s phases 4–7
+  alone — `Poisoned`, then `TimeRegression` (below the adapter's last
+  `now_ms`; nothing changes), then record `now_ms`, then reconcile, deliver,
+  retire closed peers and report — and `pump` runs its phases 1–3 and then
+  the same body, so every existing `host_quic*` byte and call is unchanged.
+  `drive_ai`, `pause` and `unpause` are untraced trusted pass-throughs:
+  `Poisoned` first, then the host call, an error through `host_error` (an
+  `Invariant` poisons), which is how a loaded host takes its `Restore`
+  unpause. A single-player save therefore runs on the dedicated loop with no
+  conversion (Reading 11): the load is `Restore`-paused with no mesh and no
+  hook, the first cycles deliver and report `ticked: false`, and the
+  operator's `unpause` resumes the same authority the embedded loop had.
+  Reading 13's wiring is `runner::spawn(HostLoop::new(QuicHosting::new(quic),
+  now), SystemClock::starting_at(now))`, with `now` the host's load or start
+  time; a clock below it ends the runner with `TimeRegression` on its first
+  step.
 
-## Gate 10 (save/load equivalence)
+## The MVP AI driver (T153)
+
+`Host::drive_ai(sides, actors, budget)` is the trusted host operation the
+embedding's AI hook calls between ticks (Reading 1): it runs
+`crpg_ai::decide` for the caller's AI-controlled combatants and turns each
+`Decision` into the host's own step — a turn-based move by `host_move`, a
+real-time move by `move_to`, an action by `host_action`, or `halt` — within an
+`AiBudget`, reporting what it did in an `AiReport` of `AiStep`s. The caller of
+the hook is T154's cycle: intake and `pump`, the AI hook, `advance`, deliver
+(`run.rs` already names `drive_ai` as its hook stage).
+
+- **One step per call in turn-based play (Readings 2, 5).** A turn-based call
+  decides for the active head only, at most once, so the embedding paces the
+  steps (the server never does). The turn cap (`AiBudget::decisions_per_turn`,
+  16 in `MVP_AI_BUDGET`) counts decisions across calls in a private, never-saved
+  `ai_turn { round, head, decisions }`; once the count reaches the budget the
+  call runs `host_action(EndTurn { head })` instead of deciding (an `EndTurn`
+  the head may always submit). A move keeps the turn and costs a pool unit; a
+  struck ability may keep or end it.
+- **Real time decides every live controlled combatant (Readings 6, 7).** The
+  candidates are the controlled set (ascending, deduplicated) filtered to live
+  combatants under `awaiting_orders`' own fight gate (a clock, two or more
+  alive, `elapsed < RT_CLOCK_MAX`), not only the "due with no order" ones.
+  At most `AiBudget::actors_per_drive` (8) are decided per call; more rotate by
+  `server_tick() % n` so every candidate is reached within a few ticks with no
+  stored cursor.
+- **The controlled set and `Sides` cross per call (Reading 3); the mesh is the
+  host's (Reading 4).** The host stores neither the controller list nor
+  `Sides`: the caller passes both, and the host holds no AI policy (T141a's
+  rule). `decide` gets `Some(&mesh)` exactly when the host holds a `HostNav`,
+  else `None`, so a restored host (no mesh until rebound) gets the no-move
+  fallbacks.
+- **Refusals and `decide` errors are steps; `Closed` is the only `Err`
+  (Readings 9, 10).** `Act(a)` → `host_action(&a)`; `Move` → `host_move`
+  (turn-based) or `move_to` (real time); `Halt` → `halt`; `Hold` → nothing. An
+  operation's `Ok` gives `Applied`, its `Err` a `Refused` (unchanged, `CaptureFull`
+  the reachable one), a `decide` `Err` an `Undecided` (unchanged); no retry, no
+  forced `EndTurn` after a refusal. Every effect goes through those four
+  operations, so it is recorded and published exactly as they are.
+- **Pause does not stop the driver (Reading 13; D65g); route parity is a unit
+  test and a compile-time tag check (Reading 12).** `crpg_ai::host_route`
+  equals `nav::plan_route` (`AI_ROUTE_TAG == HOST_ROUTE_TAG == RouteTag(0)`),
+  pinned at compile time and by the `host_route_equals_plan_route` unit test.
+- **State and determinism (D-11).** The only new state is `ai_turn`, `None`
+  from `new`, `from_history` and `load_checkpoint` and never saved, so a
+  restore mid-turn restarts the count. Two hosts with equal authority, mesh and
+  call history give equal reports and hashes; the driver reads no clock or RNG
+  beyond the operations it calls.
+
+The D-items are: D-1 `Closed` first; D-2 no fight → empty; D-3 the controlled
+set and mesh; D-4 the turn-based gate (no head or an uncontrolled head →
+empty); D-5 the turn-based step; D-6 the real-time step; D-7 the mapping; D-8
+errors are steps, never retries; D-9 pause is ignored; D-10 authority (every
+step's actor is in the controlled set and every applied `Act` is in
+`legal_actions`); D-11 state and determinism; D-12 route parity; D-13 a host
+that never calls `drive_ai` is byte-identical to today.
+
+
 
 Spec §15.4 step 10 is active as **file-backed host save/load continuation
 equivalence** (`tests/host_save.rs`, run by the existing
@@ -1047,3 +1202,6 @@ with T040/T041.
 - 2026-11-18 (UTC) · opencode-go/deepseek-v4-pro + T025b-q · Extended the reconnect-grace section with the resumable-adapter route (`start_resumable`, the ticket after the `/2` welcome, fence tags, the resume answer, grace on a silent loss, what ends a grace, and the keyed-BLAKE3 proof), and updated the connection-to-binding map and the `bind_resumable` sentence to the as-built `graced`/`fence` fields and `poll_notice` polling, so the doc describes the QUIC side the crate now has.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154b · Extended the run-loop section with the background runner (the injected `Clock`, `SystemClock::starting_at`, the `crpg-server-loop` step/closure/wait thread, the `RunnerHandle` rendezvous and stop, the step-error and panic exits, and the join-and-respawn), so the doc describes the thread and clock the crate now owns.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T154c · Extended the run-loop section with lane 1 on the local link (the `0xA1` intake arms and the hold queue, the receipt backlog that never drops, the samples that do, and the v1–v3 no-lane-1 mark), so the doc describes the receipts and samples the loop now delivers.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added "The MVP AI driver (T153)" (the `drive_ai` host operation, one turn-based step per call with a cross-call 16-decision cap, real-time decisions for every live controlled combatant rotated by the world tick, caller-supplied `Sides` and controlled set, the host's own mesh or `None`, refusals as steps with `Closed` the only `Err`, pause ignored, route parity pinned by a compile-time tag check and a unit test, and the never-saved `ai_turn` that a restore restarts) and the `crpg-ai` edge to the diagram and edge paragraph, so the doc describes the AI driver the host now runs.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Added "QUIC v4 sessions (T150c)" (the `/3` route's v4 invitations, hello precedence, lane-1 drain and delivery, retire and fence, shutdown flush, the side trace and its `at`, and the untraced `advance`), so the doc describes the movement route the adapter now serves beside `/1` and `/2`.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Extended the run-loop section with the dedicated hosting (`QuicHosting`'s five stages, `flush` as `pump`'s phases 4–7 with `pump` running 1–3 then the same body, the three untraced pass-throughs, and a loaded save running through the `Restore` unpause) and updated Scope, so the doc describes the QUIC hosting the loop now has.

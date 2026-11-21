@@ -225,6 +225,84 @@ test) and `crpg-nav` (the mesh the host routes on), approved in D62;
 `ALLOWED` already permits testkit -> anything but `crpg-godot`. No `src/`
 change, no public export, and no golden.
 
+## Headless clients and the desync suite (T041, tests-only)
+
+The M4 exit-criteria proofs (scripted headless clients, the 5,000-tick
+loss/jitter desync, two clients with identical visible state, the
+host-level malicious table, and the gate-13 embedded smoke) live entirely
+in `tests/`, included per suite with
+`#[path = "support/headless.rs"] mod headless;`. `tests/support/headless.rs`
+is the shared rig (T041a): the `combat_basic` `Content` loader and
+`moved_ruleset` copied from `host_movement.rs`, a `start` that wraps a
+`HistoryWorld` in `Host::from_history` and binds the area bounds, the two
+`Grants` profiles, and a QUIC-shaped simulated network — `Channel`s whose
+`Faults::SPEC` (3 % loss, 2-cycle latency, 0–4 jitter, 4-cycle rto, 1 %
+duplication) delay reliable frames and drop/duplicate/reorder datagrams,
+with every draw from `DeterministicRng` so a run is a pure function of
+`(seed, name, calls)`. A `HeadlessClient` speaks protocol v4 exactly as the
+Godot bridge will (`0x82` snapshots through `ReassemblyPoolV4`, a
+`ReplicaWorldV4`, lane-0 intents, a lane-1 `MoveOutbox`, samples) and runs a
+`Script` that reads only its own replica. The `Arena` drives the real
+`HostLoop<LocalHost>`; the simulated network sits on the client side of the
+link, so the client never acknowledges on the host's behalf. The desync
+oracle is a twin session bound right after each faulted client with
+identical grants, plus an independent `Mirror` — a clone of the started
+`HistoryWorld` driven with the same sim calls — so `authority_hash` must
+equal the mirror's `history_hash` and `canon` must agree across twins.
+`canon`/`world_view` leave out the ticks and event sequences that
+legitimately differ per session. `tests/headless_harness.rs` is the H1–H8
+suite proving the network, the arena, the scripts, the settle/resume cycle
+and the comparison. T041b adds `tests/desync.rs`. D1
+(`five_thousand_ticks_under_loss_and_jitter`) runs L1 — two patrolling
+players and an observer that intrudes every 250 cycles, each with a
+faultless twin — as five blocks of 1,000 `Faults::SPEC` steps, asserting
+`authority() == mirror_hash()` after every 100th step and the full
+settle/checkpoint before resuming. As built, the run's counts are A 135 and
+B 136 applied `DeclareMove`s, 19 intrusions (all `NotAuthorized`), 83
+reliable losses, and 46 lost plus 19 duplicated datagrams; D1 takes about
+2.6 s in the debug test profile. D2 (`seeded_runs_repeat`) pins the
+authority hashes, `sent` frames and receipt cycles of two 1,000-step runs
+against `NET_SEED` and requires `NET_SEED + 1` to change A's receipt
+cycles. D3 (`a_frame_lost_for_good_is_caught`) drops one down-0 frame for
+good and requires A to diverge from its twin while B, O and the authority
+stay converged. D4 (`lane_one_walks_under_loss`) walks both players on lane
+1 in real time under `Faults::SPEC` and pins the receipts to exactly `1..=k`,
+all `Accepted`, with `k >= 20`. D5 (`two_clients_move_fight_and_agree`) is
+the gate-13 embedded leg: both clients move once, strike to one death, and
+agree with each other and with the mirror's combatant health. The extra
+case `walk_waits_while_moving` pins B-11's moving gate directly — a sample
+at the previous destination that is still moving must not send the next leg
+— because the harness suite's `outbox.pending()` check cannot see a leg
+whose clean receipt clears in the same step. T041c adds
+`tests/host_malicious.rs` and the `crpg-net.md` index cells. It runs `Host`
+directly (Reading 12), because `LocalHost` discards the pump summary and a
+decode failure or an ingress refusal sends no receipt, so the clean
+rejection is visible only in `IngestDisposition` and `AdmissionResult`. The
+rig is B-21's: `start(TurnBased, None)` with `A` (hero, `Full`), `B` (goblin,
+`Full`) and `P` (goblin; the hero present with health only, no
+`action_target`) bound in that order through `bind_v4_peer`, each then
+published with T037e's `bind_client` steps; the goblin (initiative 9) holds
+the first turn and every session maps the hero to `n(1)` and the goblin to
+`n(2)`. Each case builds a fresh rig, asserts the exact `AdmissionResult` or
+`IngestDisposition`, that `state` (authority hash and `executions`) is
+unchanged, that the session is still bound (M9 aside), and carries a control
+that flips one input and is applied. The index: M1 unowned actor
+(`NotAuthorized`); M2 illegal times (`FutureTick` at `tick + 1`, `StaleTick`
+at `tick − 201`, applied at `tick − 200` after `idle(210)`); M3 out of turn
+(`IllegalAction`, `last_combat_error`'s `OutOfTurn { actor: hero, active:
+Some(goblin) }`); M4 out-of-interest targets (`NotAuthorized` for an unknown
+`n(99)` and for `P`'s ungranted `action_target`); M5 a 100-frame flood (the
+80-frame burst staged, 20 ingress `RateLimited`, the pump's 80
+`UnsupportedVersion`, recovered at 12 s); M6 oversize and truncated frames
+(`FrameTooLarge` with nothing staged, then `Malformed`, then the whole seq 1
+applied); M7 identical replay (cached `Applied`, no new execution); M8 a seq
+gap (`SeqGap`, so seq 1 is still applied) and 257 `FutureTick` seqs that
+evict seq 1 (its bytes then `StaleSeq`) while seq 2 stays a cached
+`FutureTick`; M9 a conflicting seq 1 (`SeqConflict`, the epoch fenced to
+`UnknownPeer`); M10 the non-canonical retry (a non-minimal seq varint, the
+lowercase `k` ability alias and the `O`/`0` alias each decode to the first
+frame and are cache hits). No source, fixture, manifest or golden changes.
+
 ## What consumers inherit
 
 - **Comparable sequences.** Same interleaving everywhere means a hash at
@@ -258,3 +336,6 @@ change, no public export, and no golden.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T037e · Recorded the authored-movement suite and its three tests-only host edges (`crpg-server`, `crpg-net`, `crpg-nav`), so the crate doc names what `host_movement.rs` proves and why no normal edge moved. No source, fixture, or golden changed.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b · Recorded the tests-only MVP AI decision suite: the private fixture's provenance and typed edits, the G1-G22 shape with its controls, and the two dev-only edges, so the crate doc names the suite's owner and its boundary.
 - 2026-11-15 (UTC) · opencode-go/deepseek-v4.1-flash + T056b fix round 1 · Added G23-G34 and the fixture edits they need (`reversed_abilities`, `step_cost`, `extra_cost`, `place_c`, a member registered without movement) to pin the mutant review's ordered rules exactly, so the suite fails on each named bug rather than passing by coincidence.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T041a · Recorded the tests-only headless-client rig (`tests/support/headless.rs`): the `combat_basic` start, the QUIC-shaped simulated network, the v4 `HeadlessClient`, the `Arena` over `HostLoop<LocalHost>`, the twin-session and independent-mirror oracles, and the H1–H8 harness suite; no source, fixture, manifest or golden changed.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041b · Recorded the as-built D1 counts (135/136 applied moves, 19 intrusions, 83 reliable losses, 46 lost and 19 duplicated datagrams, about 2.6 s), the D2–D5 shape, and the extra `walk_waits_while_moving` case that pins B-11's moving gate; no source, fixture, manifest or golden changed.
+- 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T041c · Recorded the host-level malicious table (`tests/host_malicious.rs`, M1–M10) and its B-21 rig on `Host` directly, so the M-table index and the exact dispositions each case pins are named in one place; no source, fixture, manifest or golden changed.

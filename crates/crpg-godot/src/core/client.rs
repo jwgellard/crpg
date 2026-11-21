@@ -42,6 +42,10 @@ pub struct SessionView {
     option_targets: Vec<i64>,
     events: Vec<ViewEvent>,
     receipts: Vec<ViewReceipt>,
+    positions: Vec<i64>,
+    position_known: Vec<u8>,
+    moving: Vec<u8>,
+    move_receipts: Vec<ViewMoveReceipt>,
 }
 
 impl SessionView {
@@ -124,6 +128,78 @@ impl SessionView {
     pub fn receipts(&self) -> &[ViewReceipt] {
         &self.receipts
     }
+
+    /// Three raw `Fx16_16` integers `[x, y, z]` per row, in `net_ids()` order;
+    /// `0, 0, 0` where `position_known` is 0.
+    pub fn positions(&self) -> &[i64] {
+        &self.positions
+    }
+
+    /// `1` where the row's position is disclosed, else `0`.
+    pub fn position_known(&self) -> &[u8] {
+        &self.position_known
+    }
+
+    /// `1` where the disclosed position has a route, else `0`.
+    pub fn moving(&self) -> &[u8] {
+        &self.moving
+    }
+
+    /// The lane-1 receipts collected by the step that produced this revision, oldest first.
+    pub fn move_receipts(&self) -> &[ViewMoveReceipt] {
+        &self.move_receipts
+    }
+
+    /// Assembles one view revision from its columns.
+    ///
+    /// The v4 client half's build; the v2 half fills the position columns
+    /// with zeros in its own literal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn assemble(
+        revision: i64,
+        net_ids: Vec<i64>,
+        names: Vec<String>,
+        sides: Vec<String>,
+        placements: Vec<String>,
+        health: Vec<i64>,
+        max_health: Vec<i64>,
+        health_known: Vec<u8>,
+        dead: Vec<u8>,
+        active: i64,
+        round: i64,
+        ended: bool,
+        option_labels: Vec<String>,
+        option_targets: Vec<i64>,
+        events: Vec<ViewEvent>,
+        receipts: Vec<ViewReceipt>,
+        positions: Vec<i64>,
+        position_known: Vec<u8>,
+        moving: Vec<u8>,
+        move_receipts: Vec<ViewMoveReceipt>,
+    ) -> Self {
+        Self {
+            revision,
+            net_ids,
+            names,
+            sides,
+            placements,
+            health,
+            max_health,
+            health_known,
+            dead,
+            active,
+            round,
+            ended,
+            option_labels,
+            option_targets,
+            events,
+            receipts,
+            positions,
+            position_known,
+            moving,
+            move_receipts,
+        }
+    }
 }
 
 /// One player-visible event, oldest first inside a view.
@@ -163,6 +239,13 @@ pub enum ViewEvent {
         /// Closing combat round.
         round: i64,
     },
+    /// A turn-based move along a route.
+    Moved {
+        /// The replica id that moved.
+        entity: i64,
+        /// Raw x, y, z per point, in order.
+        points: Vec<i64>,
+    },
 }
 
 impl ViewEvent {
@@ -199,6 +282,11 @@ impl ViewEvent {
                 ("encounter", ViewValue::Text(encounter.as_str())),
                 ("round", ViewValue::Int(*round)),
             ],
+            Self::Moved { entity, points } => vec![
+                ("kind", ViewValue::Text("moved")),
+                ("entity", ViewValue::Int(*entity)),
+                ("points", ViewValue::Ints(points.as_slice())),
+            ],
         }
     }
 }
@@ -225,6 +313,37 @@ impl ViewReceipt {
     }
 }
 
+/// One lane-1 receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewMoveReceipt {
+    /// The receipted intent's `seq`.
+    pub seq: i64,
+    /// The intent's actor replica id.
+    pub actor: i64,
+    /// `"accepted"`, `"superseded"` or `"rejected"`.
+    pub outcome: &'static str,
+    /// The `RejectionCode` number for `"rejected"`, else 0.
+    pub code: i64,
+    /// The server tick the intent was processed at.
+    pub processed_tick: i64,
+    /// `Accepted`'s `start_tick`, else 0.
+    pub start_tick: i64,
+}
+
+impl ViewMoveReceipt {
+    /// `seq`, `actor`, `outcome`, `code`, `processed_tick`, `start_tick`, in that order.
+    pub fn entries(&self) -> Vec<(&'static str, ViewValue<'_>)> {
+        vec![
+            ("seq", ViewValue::Int(self.seq)),
+            ("actor", ViewValue::Int(self.actor)),
+            ("outcome", ViewValue::Text(self.outcome)),
+            ("code", ViewValue::Int(self.code)),
+            ("processed_tick", ViewValue::Int(self.processed_tick)),
+            ("start_tick", ViewValue::Int(self.start_tick)),
+        ]
+    }
+}
+
 /// One typed value in an [`entries`](ViewEvent::entries) list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewValue<'a> {
@@ -234,6 +353,8 @@ pub enum ViewValue<'a> {
     Text(&'a str),
     /// A boolean.
     Bool(bool),
+    /// Borrowed integers.
+    Ints(&'a [i64]),
 }
 
 /// One option the authority offered the player.
@@ -440,6 +561,7 @@ impl Client {
             .unwrap_or(0);
         let (option_labels, option_targets) = self.labels(options);
 
+        let rows = net_ids.len();
         let unchanged = net_ids == self.view.net_ids
             && names == self.view.names
             && sides == self.view.sides
@@ -475,6 +597,10 @@ impl Client {
             option_targets,
             events,
             receipts,
+            positions: vec![0; 3 * rows],
+            position_known: vec![0; rows],
+            moving: vec![0; rows],
+            move_receipts: Vec::new(),
         });
         self.options = options.to_vec();
         Ok(())
@@ -533,41 +659,48 @@ impl Client {
 
     /// Builds the host-ordered labels and targets for `options`.
     fn labels(&self, options: &[Offered]) -> (Vec<String>, Vec<i64>) {
-        let mut labels = Vec::with_capacity(options.len());
-        let mut targets = Vec::with_capacity(options.len());
-        for offered in options {
-            match offered.body {
-                IntentBody::EndTurn => {
-                    labels.push("End turn".to_string());
-                    targets.push(0);
-                }
-                IntentBody::DeclareAction { ability, target } => {
-                    let name = self
-                        .table
-                        .abilities
-                        .get(&ability)
-                        .cloned()
-                        .unwrap_or_else(|| ability.to_string());
-                    let label = match self.table.rows.get(&target) {
-                        Some(row) => format!("{name} -> {}", row.name),
-                        None => name,
-                    };
-                    labels.push(label);
-                    targets.push(wide(target.get()));
-                }
-            }
-        }
-        (labels, targets)
+        option_labels(&self.table, options)
     }
 }
 
+/// Builds the host-ordered labels and targets for `options`.
+pub(super) fn option_labels(
+    table: &PresentationTable,
+    options: &[Offered],
+) -> (Vec<String>, Vec<i64>) {
+    let mut labels = Vec::with_capacity(options.len());
+    let mut targets = Vec::with_capacity(options.len());
+    for offered in options {
+        match offered.body {
+            IntentBody::EndTurn => {
+                labels.push("End turn".to_string());
+                targets.push(0);
+            }
+            IntentBody::DeclareAction { ability, target } => {
+                let name = table
+                    .abilities
+                    .get(&ability)
+                    .cloned()
+                    .unwrap_or_else(|| ability.to_string());
+                let label = match table.rows.get(&target) {
+                    Some(row) => format!("{name} -> {}", row.name),
+                    None => name,
+                };
+                labels.push(label);
+                targets.push(wide(target.get()));
+            }
+        }
+    }
+    (labels, targets)
+}
+
 /// Widens an unsigned wire value without panicking.
-fn wide(value: u64) -> i64 {
+pub(super) fn wide(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 /// Builds a fault with a static summary.
-fn fault(code: BridgeCode, detail: &str) -> Fault {
+pub(super) fn fault(code: BridgeCode, detail: &str) -> Fault {
     Fault {
         code,
         detail: detail.to_string(),

@@ -1,0 +1,19 @@
+# Authoring task
+
+You are building game content for a CRPG engine. Work only inside this directory.
+
+## What to build
+
+Build a new campaign named `ember-hollow` from nothing, in `campaign/`. It has one world and one area with the slug `start`. Its rule system is your own, named `plain-d6`: three attributes (might, guile, resolve) and a health stat; a creature has one action each turn. It has two creatures, a hero and a goblin, each placed in the area. It has one ability, `strike`, that costs one action. A strike rolls two six-sided dice against the attacker's might and succeeds when the roll is no higher than the might; a success deals 2 damage and a failure deals none. It has one encounter, `first-blood`, in which the hero and the goblin fight. The fight must start with two combatants.
+
+## What you have
+
+{{TOOLS}}
+
+## Rules of the exercise
+
+- Use only `crpgc` and the files in `schemas/`. Do not look for other documentation and do not read anything outside this directory.
+- Put the finished campaign in the `campaign/` directory here. Every document is a JSON file.
+- Check your work with `crpgc validate campaign --json` and keep going until it exits 0.
+- Then check that it plays: give `crpgc play --campaign campaign` its choices on standard input, one number per line.
+- When you are finished, reply with the single word DONE. If you cannot finish, reply with the word STUCK and one sentence saying why.

@@ -175,6 +175,15 @@ VERDICT: ready-for-pr | fix | reject
 - Cutting usage: keep 150k/200k; never compact earlier. Mid-wave at 150k you may `/compact` with focus on the handover and runs in flight (trial, two sessions, compared by `/usage`); wave ends still hand over. Start-up read is one short manager brief (A0-10). Fewer turns: dispatch, wait for the summary, act on the exit code; no hand-fixing, no exploratory reads. Bookkeeping goes to OpenCode `crpg-grunt`, not the Claude `bookkeeper`. Start a Claude subagent only when the work is Claude-only and cannot wait.
 - Design in parallel: a fact pack and two blind drafts by OpenCode models of different labs on doc slots, then one `architect` pass that adjudicates, then the user. Claude still writes every final A, C and S-set text (§3.2). Drafts run on the cheap O1 models; Kimi K3 and Gemini 4 Argon take only short reviews, one at a time (they were most of the spend that hit the Go 5-hour cap on 2026-10-16).
 - How to hand over: prefer a quiet point with no worker running; name every run still going with slot, branch and log path (collect via `oc.py stats` and logs); update the handover, commit, and stop.
+- Say it plainly (the user, 2026-11-19). Once the handover is committed, end that message with this block, on its own lines, so the user can see at a glance that clearing is safe:
+
+  ```text
+  ✅ READY FOR A NEW SESSION — handover committed (<short hash> on <branch>).
+  You can /clear now and type "start working".
+  Still running: <slot · package · branch>, or "nothing".
+  ```
+
+  Until the handover is committed, never write "ready"; if the user asks to clear before then, say "⛔ NOT READY: <what is left>" and finish that first. Repeat the ready block after every later handover update in the same session.
 - No manager hierarchy: sessions relay; managers do not nest. The layer between manager and workers is scripts.
 - Lessons: `docs/agents/LESSONS.md` one line per lesson with ID, evidence, promotion. Recall: `tools/agents/recall.py <words>`; the brief quotes what it finds. Repeat incidents: count at the gate; target zero.
 - Each milestone gate report holds: what merged with route/model/attempts; exit criteria met or not with evidence; Claude usage and OpenCode usage; planned vs actual routing; repeat incidents and lessons; model/effort/tool versions; next wave plan; questions.
@@ -225,3 +234,4 @@ VERDICT: ready-for-pr | fix | reject
 - 2026-10-25 (UTC) · claude-code/opus-5.5 (manager) + D38 · Recorded in §3.5 the user's D38 narrowing of Beam to new-file work, with its reports never counted as evidence.
 - 2026-11-01 (UTC) · opencode-go/muse-spark-1.3-contributor + S28-bookkeeping · Recorded in §3.5 the session 28 routing note: MiMo-V2.6-Pro demoted from implement (hang 3/3), and DeepSeek V4.1 Flash first-attempt passes on T025a2, T145 and T146.
 - 2026-11-16 (UTC) · claude-code/opus-5.5 (manager) + user: free quota first · Put the free Zen models in the routing table's first column, ahead of paid Go, because the table listed them only for when Go ran out and sessions had been routing every run to paid Go.
+- 2026-11-19 (UTC) · claude-code/opus-5.5 (manager) + user: say a new session is ready · Added the fixed READY / NOT READY block every manager prints once its handover is committed, because the user had to ask whether clearing was safe.

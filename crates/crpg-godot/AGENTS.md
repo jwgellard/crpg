@@ -13,9 +13,12 @@ integration tests; T047b landed `src/shell.rs` and `apps/client`.
    `shell.rs`; `src/core/mod.rs` begins with `#![forbid(unsafe_code)]`. The
    crate root keeps `#![allow(unsafe_code)]` only for the shell's macro
    expansion, plus `#![warn(missing_docs)]`.
-2. **One authority, one in-memory link.** The client half only reads bytes
-   delivered by `LocalLink` and sends encoded intents back. It never touches a
-   `World`, host state or another peer.
+2. **One authority per session, one in-memory link.** A v2 session's
+   authority is today's bridge-driven `Authority`; a v4 session's is
+   `crpg_server::run`'s `HostLoop` over `LocalHost`, driven by
+   `crpg_server::runner`. The client half only reads bytes delivered by
+   `LocalLink` (v2) or `LocalClient` (v4) and sends encoded intents back.
+   It never touches a `World`, host state or another peer.
 3. **`std::`, never `core::`.** The `core` module shadows the `core` crate at
    the crate root; a bare `core::` path is a bug.
 4. **A bad frame is fatal, never skipped.** Decode failure is 52, replica
@@ -31,8 +34,9 @@ integration tests; T047b landed `src/shell.rs` and `apps/client`.
    step's events and receipts, oldest first.
 7. **`Died` is a notice.** It never sets the `dead` column; only a health fact
    does. `encounter_ended` latches `ended`.
-8. **No float, `HashMap`/`HashSet`, `Instant` or `SystemTime` in the core.**
-   Time is an injected `u64` millisecond value. Maps are `BTreeMap`.
+8. **No float, `HashMap`/`HashSet`, `Instant` or `SystemTime` in the core**
+   (the runner's `SystemClock` excepted). Time is an injected `u64`
+   millisecond value. Maps are `BTreeMap`.
 9. **Error codes are the closed ADR-0033 §11 table.** Fatal is exactly 50–55.
    Diagnostics go in `Fault::detail`; `last_error` prefixes the code name and
    is never control flow.
@@ -58,6 +62,19 @@ integration tests; T047b landed `src/shell.rs` and `apps/client`.
     indexing, `unwrap`/`expect` or arithmetic on GDScript values; its only
     arithmetic is the saturating millisecond conversion. `shell.rs` imports
     `crate::core::{..}` items, never the bare name `core`.
+16. **v2 is frozen: v4 work goes in `client_v4.rs` and `authority/v4.rs`.**
+    The v2 session, its client and every existing test keep their bytes;
+    the v4 client half (`ClientV4`, the position columns, `Moved` and
+    move receipts) never shares a code path with them.
+17. **The bridge never ticks, pumps or drives lane 1.** A v4 session's
+    server is `crpg_server::run`'s `HostLoop` on `crpg_server::runner`;
+    the bridge calls no `advance`, `pump`, `ingest*`, `take_*` or
+    `acknowledge_*` on the v4 host. `authority/v4.rs` and `mod.rs` name no
+    such call, no `thread::spawn`, `Instant` or `SystemTime` (B-B9).
+18. **`poll` never waits on the loop thread; only `close` and a fence `call`
+    it.** A v4 `poll` reads legal options between cycles by `submit`ting one
+    `read_options` closure and adopting its reply on a later poll, so a
+    frame never blocks on the loop thread (Reading 19).
 
 ## Definition of done for any change
 
@@ -163,6 +180,10 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
 - **A `-> String` function that hits a runtime error returns `""`.** Runners and
   cases therefore compare against an explicit sentinel (`"PASS"`, `"ok"`) and
   fail on anything else, including `""` and `null`; `hud.gd` exits 6 on that.
+- **No ruleset under `campaigns/fixtures` may declare `movement`.** The
+  `absent_movement_is_unchanged` suite pins that every fixture is movement-free;
+  build the MOVE variant at test time by inserting the movement field into
+  `minimal-d6.json` (as `authority/v4/tests.rs` does), never check it in.
 
 Agent log:
 
@@ -174,3 +195,5 @@ Agent log:
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048-fix · Corrected the runtime-error trap: a Godot 4.7.2 probe showed a `-> String` function that crashes returns `""`, not `null`, so the scene-sync cases now report success with an explicit `"PASS"` token and the runners fail on anything else.
 - 2026-11-07 (UTC) · claude-code/sonnet-5.5 + T051 · Added the `hud.gd` engine gate and four GDScript traps (`_ready` vs `_initialize`, `find_child` ownership, `append_text`, the `""` sentinel) found while building the HUD cases.
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Added the side-colour/dead-tint override trap and the mesh-only lift rule, so future work keeps the surface override out of `material_override` and the proxy node at `y = 0`.
+- 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Froze v2 for the v4 work: new protocol v4 code goes in `client_v4.rs` and `authority/v4.rs`, so the v4 client half lands without touching the v2 session or its tests.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Added the run-loop invariants (the bridge never ticks, pumps or drives lane 1; `poll` never waits on the loop thread) and amended invariants 2 and 8 for the per-session authority and the runner's `SystemClock`, plus the MOVE fixture trap, so T151c extends the v4 session rather than re-deriving it.

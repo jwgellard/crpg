@@ -37,6 +37,7 @@ use crate::combat::{
     int_definitions, AbilityDefense, CombatState, Combatant, EffectTarget, EncounterMode,
     TransitionFacts, COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_TAG, RT_CLOCK_MAX,
 };
+use crate::continuation::{ContinuationError, OpenDialogue, QuestProgress, ScriptContinuation};
 use crate::creature::CreatureState;
 use crate::event::SimEvent;
 use crate::movement::{load_failure, Mover, NavRevision};
@@ -112,6 +113,16 @@ pub struct World {
     /// until the host binds one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nav: Option<NavRevision>,
+    /// Running graphs paused in `Wait` (T052). Skipped when empty; a
+    /// compatibility shape, not a hash exclusion.
+    #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
+    continuations: ComponentStore<ScriptContinuation>,
+    /// Open dialogues by participant (T052). Skipped when empty.
+    #[serde(default, skip_serializing_if = "ComponentStore::is_empty")]
+    dialogues: ComponentStore<OpenDialogue>,
+    /// Quest states, strictly ascending by quest (T052). Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quests: Vec<QuestProgress>,
 }
 
 /// Reports whether an interner holds no strings in either namespace.
@@ -145,6 +156,12 @@ struct WorldRepr {
     movers: ComponentStore<Mover>,
     #[serde(default)]
     nav: Option<NavRevision>,
+    #[serde(default = "ComponentStore::new")]
+    continuations: ComponentStore<ScriptContinuation>,
+    #[serde(default = "ComponentStore::new")]
+    dialogues: ComponentStore<OpenDialogue>,
+    #[serde(default)]
+    quests: Vec<QuestProgress>,
 }
 
 impl<'de> Deserialize<'de> for World {
@@ -914,6 +931,30 @@ impl<'de> Deserialize<'de> for World {
                 }
             }
         }
+        // T052 L1-L3: the script, dialogue and quest state is coherent.
+        for (id, _) in repr.continuations.iter() {
+            if !repr.entities.contains(id) {
+                return Err(serde::de::Error::custom(format!(
+                    "dangling continuation for non-live {id:?}"
+                )));
+            }
+        }
+        for (id, _) in repr.dialogues.iter() {
+            if !repr.entities.contains(id) {
+                return Err(serde::de::Error::custom(format!(
+                    "dangling dialogue for non-live {id:?}"
+                )));
+            }
+        }
+        if repr
+            .quests
+            .windows(2)
+            .any(|pair| pair[0].quest >= pair[1].quest)
+        {
+            return Err(serde::de::Error::custom(
+                "quest progress breaks ascending order",
+            ));
+        }
         Ok(Self {
             entities: repr.entities,
             transforms: repr.transforms,
@@ -928,6 +969,9 @@ impl<'de> Deserialize<'de> for World {
             creatures: repr.creatures,
             movers: repr.movers,
             nav: repr.nav,
+            continuations: repr.continuations,
+            dialogues: repr.dialogues,
+            quests: repr.quests,
         })
     }
 }
@@ -952,6 +996,9 @@ impl World {
             creatures: ComponentStore::new(),
             movers: ComponentStore::new(),
             nav: None,
+            continuations: ComponentStore::new(),
+            dialogues: ComponentStore::new(),
+            quests: Vec::new(),
         }
     }
 
@@ -1038,6 +1085,8 @@ impl World {
         }
         self.transforms.remove(id);
         self.creatures.remove(id);
+        self.continuations.remove(id);
+        self.dialogues.remove(id);
         self.movers.remove(id);
         let (_, facts) = self.remove_combatant_tracked(id);
         self.events
@@ -1233,6 +1282,143 @@ impl World {
     /// [`bind_nav`](Self::bind_nav) is the one way in.
     pub(crate) fn set_nav(&mut self, revision: NavRevision) {
         self.nav = Some(revision);
+    }
+
+    /// The continuation store, read-only (T052).
+    pub fn continuations(&self) -> &ComponentStore<ScriptContinuation> {
+        &self.continuations
+    }
+
+    /// Mutably, the continuation store. Crate-visible only: the wait
+    /// countdown is the one writer of `remaining`; public writes are the
+    /// validating operations below.
+    pub(crate) fn continuations_mut(&mut self) -> &mut ComponentStore<ScriptContinuation> {
+        &mut self.continuations
+    }
+
+    /// The open-dialogue store, read-only (T052).
+    pub fn dialogues(&self) -> &ComponentStore<OpenDialogue> {
+        &self.dialogues
+    }
+
+    /// Quest states, strictly ascending by quest (T052).
+    pub fn quests(&self) -> &[QuestProgress] {
+        &self.quests
+    }
+
+    /// One quest's state, if set.
+    pub fn quest_state(&self, quest: Ulid) -> Option<Ulid> {
+        self.quests
+            .binary_search_by_key(&quest, |entry| entry.quest)
+            .ok()
+            .map(|index| self.quests[index].state)
+    }
+
+    /// Holders with `remaining == 0`, in ascending [`EntityId`] (not store
+    /// order: a reused index makes the two differ).
+    pub fn due_continuations(&self) -> Vec<EntityId> {
+        let mut due: Vec<EntityId> = self
+            .continuations
+            .iter()
+            .filter(|(_, record)| record.remaining == 0)
+            .map(|(entity, _)| entity)
+            .collect();
+        due.sort();
+        due
+    }
+
+    /// Mints an entity holding `c` and enqueues one `Spawned` (via
+    /// [`spawn`](Self::spawn)). The entity holds no other component.
+    pub fn spawn_continuation(&mut self, c: ScriptContinuation) -> EntityId {
+        let id = self.spawn(EntityMeta {});
+        self.continuations.insert(id, c);
+        id
+    }
+
+    /// Replaces a holder's record, returning the old one. A non-holder is
+    /// `NotContinuation` and the world is unchanged; nothing is enqueued.
+    pub fn set_continuation(
+        &mut self,
+        entity: EntityId,
+        c: ScriptContinuation,
+    ) -> Result<ScriptContinuation, ContinuationError> {
+        match self.continuations.get_mut(entity) {
+            Some(record) => Ok(std::mem::replace(record, c)),
+            None => Err(ContinuationError::NotContinuation { entity }),
+        }
+    }
+
+    /// Opens `d` for a live participant with none open. Not live is
+    /// `NotLive`, one already open is `DialogueOpen`; nothing is enqueued.
+    pub fn open_dialogue(
+        &mut self,
+        participant: EntityId,
+        d: OpenDialogue,
+    ) -> Result<(), ContinuationError> {
+        if !self.contains(participant) {
+            return Err(ContinuationError::NotLive {
+                entity: participant,
+            });
+        }
+        if self.dialogues.contains(participant) {
+            return Err(ContinuationError::DialogueOpen {
+                entity: participant,
+            });
+        }
+        self.dialogues.insert(participant, d);
+        Ok(())
+    }
+
+    /// Moves an open dialogue to `node`, returning the old node. None open is
+    /// `NoDialogue`.
+    pub fn set_dialogue_node(
+        &mut self,
+        participant: EntityId,
+        node: Ulid,
+    ) -> Result<Ulid, ContinuationError> {
+        match self.dialogues.get_mut(participant) {
+            Some(open) => Ok(std::mem::replace(&mut open.node, node)),
+            None => Err(ContinuationError::NoDialogue {
+                entity: participant,
+            }),
+        }
+    }
+
+    /// Closes the participant's dialogue, returning it. None open is
+    /// `NoDialogue`.
+    pub fn close_dialogue(
+        &mut self,
+        participant: EntityId,
+    ) -> Result<OpenDialogue, ContinuationError> {
+        self.dialogues
+            .remove(participant)
+            .ok_or(ContinuationError::NoDialogue {
+                entity: participant,
+            })
+    }
+
+    /// Sets a quest's state, keeping the ascending order; returns the
+    /// previous state. Liveness is not involved and nothing is enqueued.
+    pub fn set_quest_state(&mut self, quest: Ulid, state: Ulid) -> Option<Ulid> {
+        match self
+            .quests
+            .binary_search_by_key(&quest, |entry| entry.quest)
+        {
+            Ok(index) => Some(std::mem::replace(&mut self.quests[index].state, state)),
+            Err(index) => {
+                self.quests.insert(index, QuestProgress { quest, state });
+                None
+            }
+        }
+    }
+
+    /// Removes a quest's entry, returning its state.
+    pub fn remove_quest(&mut self, quest: Ulid) -> Option<Ulid> {
+        let index = self
+            .quests
+            .binary_search_by_key(&quest, |entry| entry.quest)
+            .ok()?;
+        Some(self.quests.remove(index).state)
     }
 
     /// Encounter-level state, or `None` when no encounter is active.

@@ -1,0 +1,19 @@
+# Authoring task
+
+You are building game content for a CRPG engine. Work only inside this directory.
+
+## What to build
+
+The directory `campaign/` already holds a small valid campaign: a hero and a goblin fight in one encounter. Add a third creature, a wolf with the slug `wolf`. It has the same four attributes and the same health stat as the other two, with less health than the hero. Place it in the starting area and add it to the existing encounter. The campaign must stay valid, and the fight must start with three combatants.
+
+## What you have
+
+{{TOOLS}}
+
+## Rules of the exercise
+
+- Use only `crpgc` and the files in `schemas/`. Do not look for other documentation and do not read anything outside this directory.
+- Put the finished campaign in the `campaign/` directory here. Every document is a JSON file.
+- Check your work with `crpgc validate campaign --json` and keep going until it exits 0.
+- Then check that it plays: give `crpgc play --campaign campaign` its choices on standard input, one number per line.
+- When you are finished, reply with the single word DONE. If you cannot finish, reply with the word STUCK and one sentence saying why.

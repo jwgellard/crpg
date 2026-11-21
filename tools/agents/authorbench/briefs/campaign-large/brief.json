@@ -1,0 +1,21 @@
+{
+ "name": "campaign-large",
+ "kind": "campaign",
+ "starter": null,
+ "minimum": {
+  "creature": 4,
+  "ability": 2,
+  "outcome-table": 2,
+  "effect": 1,
+  "ruleset": 1,
+  "encounter": 2,
+  "area": 2,
+  "item": 1,
+  "faction": 1,
+  "dialogue": 1,
+  "quest": 1
+ },
+ "ruleset_slug": null,
+ "min_combatants": 2,
+ "timeout_s": 3600
+}

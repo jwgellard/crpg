@@ -4,8 +4,9 @@
 //! `HostLoop` owns one cycle order — intake, AI stage, advance, deliver,
 //! retire captures — on a fixed grid, driven by an injected `now_ms`. A
 //! `Hosting` supplies the five stages: `LocalHost` (one `Host` plus in-memory
-//! local links) here, the QUIC hosting later. A late step runs one cycle and
-//! skips the rest, so game time slows under overload and never bursts.
+//! local links) and `QuicHosting` (one `QuicHost`, T154d). A late step runs
+//! one cycle and skips the rest, so game time slows under overload and never
+//! bursts.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -23,7 +24,7 @@ use crate::host::{
     AdvanceReport, Host, HostError, IngestDisposition, MoveAdmission, PeerHandle,
     TransferDisposition, TransferRefusal,
 };
-use crate::quic::MAX_DRAIN_PER_CONNECTION;
+use crate::quic::{QuicHost, QuicHostError, MAX_DRAIN_PER_CONNECTION};
 
 /// The cycle period at the 20 Hz cadence (engine spec §2.4).
 pub const TICK_PERIOD_MS: u64 = 50;
@@ -857,6 +858,79 @@ impl Transport for LocalClient {
                 None
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The dedicated hosting (T154d).
+// ---------------------------------------------------------------------------
+
+/// The AI stage of a [`QuicHosting`]: the embedding's hook, given the adapter
+/// and the cycle's `now_ms`.
+pub type QuicAiHook = Box<dyn FnMut(&mut QuicHost, u64) -> Result<(), QuicHostError> + Send>;
+
+/// The dedicated hosting: one [`QuicHost`] and its AI hook. Every stage is
+/// the adapter's: `pump`, the hook, `advance`, `flush` and
+/// `acknowledge_captures` (B-14).
+pub struct QuicHosting {
+    /// The adapter every stage drives.
+    quic: QuicHost,
+    /// The AI stage's hook, if the embedding set one.
+    ai: Option<QuicAiHook>,
+}
+
+impl QuicHosting {
+    /// A hosting over `quic` with no hook.
+    pub fn new(quic: QuicHost) -> Self {
+        Self { quic, ai: None }
+    }
+
+    /// Sets or clears the AI stage's hook.
+    pub fn set_ai(&mut self, hook: Option<QuicAiHook>) {
+        self.ai = hook;
+    }
+
+    /// The adapter, for trusted reads.
+    pub fn quic(&self) -> &QuicHost {
+        &self.quic
+    }
+
+    /// The adapter, for trusted operator calls between cycles.
+    pub fn quic_mut(&mut self) -> &mut QuicHost {
+        &mut self.quic
+    }
+
+    /// Takes the adapter back out; the hook is dropped.
+    pub fn into_quic(self) -> QuicHost {
+        self.quic
+    }
+}
+
+impl Hosting for QuicHosting {
+    type Error = QuicHostError;
+
+    fn intake(&mut self, now_ms: u64) -> Result<(), Self::Error> {
+        self.quic.pump(now_ms).map(|_report| ())
+    }
+
+    fn drive_ai(&mut self, now_ms: u64) -> Result<(), Self::Error> {
+        match self.ai.as_mut() {
+            Some(hook) => hook(&mut self.quic, now_ms),
+            None => Ok(()),
+        }
+    }
+
+    fn advance(&mut self, now_ms: u64) -> Result<AdvanceReport, Self::Error> {
+        self.quic.advance(now_ms)
+    }
+
+    fn deliver(&mut self, now_ms: u64) -> Result<(), Self::Error> {
+        self.quic.flush(now_ms).map(|_report| ())
+    }
+
+    fn retire_captures(&mut self) -> Result<(), Self::Error> {
+        self.quic
+            .acknowledge_captures(self.quic.host().last_capture())
     }
 }
 

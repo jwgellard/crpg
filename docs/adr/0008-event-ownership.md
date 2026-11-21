@@ -81,6 +81,27 @@ substrate grows beyond the generic container, that growth is its own task.
   for an agent-executed decision; a trait still leaves the queue logic to be
   written per crate instead of once.
 
+## Note 2026-11-19 — T052 additions to the crpg-sim public API
+
+T052 (approved D69) adds to `crpg-sim`'s public API the continuation, dialogue
+and quest stores in `World`: the types `ScriptContinuation`, `OpenDialogue`,
+`QuestProgress` and `ContinuationError`, and the operations
+`World::continuations`, `World::dialogues`, `World::quests`,
+`World::quest_state`, `World::due_continuations`,
+`World::spawn_continuation`, `World::set_continuation`,
+`World::open_dialogue`, `World::set_dialogue_node`,
+`World::close_dialogue`, `World::set_quest_state` and
+`World::remove_quest` (`tasks/T052.md` §Interface).
+The same section gives `HistoryError::Script`, the `HistoryWorld` operations
+`spawn_continuation`, `set_continuation`, `open_dialogue`,
+`set_dialogue_node`, `close_dialogue`, `set_quest_state` and `remove_quest`,
+and `AreaError::ScriptState` (`preflight` refuses an entity that holds a
+continuation or an open dialogue). Ownership of the events is unchanged: the
+substrate stays in `crpg-core`, the `SimEvent` vocabulary and the live queue
+stay in `crpg-sim`, and of the new operations only `spawn_continuation`
+journals one event, `Spawned`. No new traits, no handler, no routing.
+
 ## Agent log
 
 - 2026-09-05 (UTC) · opencode/muse-spark + E001 decision · Recorded the A′ split decided with the maintainer: generic substrate in core, SimEvent in sim, IR types in data, hooks in rules.
+- 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + S79-d69-record · Appended the dated note that T052 (approved D69) adds the continuation, dialogue and quest stores and their operations to the `crpg-sim` public API, with event ownership unchanged.

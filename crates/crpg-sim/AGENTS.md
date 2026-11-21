@@ -50,7 +50,13 @@ version 2 variants) and `HistoryWorld::{start_encounter_with_members,
 join_encounter, leave_encounter}`. The T143 action preview adds
 `preview_action`, `ActionPreview`, `OutcomeOdds`, `PreviewCount`,
 `PreviewError`, `PreviewPart`, `PreviewRules`, `PreviewScope` and
-`MAX_PREVIEW_COST` (re-exported from `crpg-data`).
+`MAX_PREVIEW_COST` (re-exported from `crpg-data`). The T052 script-state surface adds
+`ScriptContinuation`, `OpenDialogue`, `QuestProgress`, `ContinuationError`,
+`World::{continuations, dialogues, quests, quest_state, due_continuations,
+spawn_continuation, set_continuation, open_dialogue, set_dialogue_node,
+close_dialogue, set_quest_state, remove_quest}`, the same seven mutating
+operations on `HistoryWorld`, `HistoryError::Script` and
+`AreaError::ScriptState`.
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -606,7 +612,7 @@ reintroduce a refusal list: a new shape gets execution or a precise error.
 ## Movement stage 4 (T036b, ADR-0036)
 
 - Public additions: `tick_with_movement(world) -> Vec<MovementFact>`, `HistoryWorld::tick_with_movement() -> Result<Vec<MovementFact>, HistoryError>`, `MovementFact::{Arrived, Cancelled}`, `CancelReason::Dead`. `tick` delegates and discards the facts. `movement_system`, `stop` and `TickFacts.moves` are crate-private.
-- Tick order: `run_systems` is now `encounter_clock_system`, `timeline_system`, then `movement_system` (stage 4). Serial territory as before: reordering or adding a stage is a reviewed behaviour change.
+- Tick order: `run_systems` is now `encounter_clock_system`, `wait_system` (T052), `timeline_system`, then `movement_system` (stage 4). Serial territory as before: reordering or adding a stage is a reviewed behaviour change.
 - Invariant: stage 4 reads only `Fx16_16` positions and writes the `f32` mirror; it never reads a `Transform`, and it touches no pool, order, timeline, RNG or event. The facts are not history events and the journal does not change.
 - Trap: stage 4 visits movers in ascending `EntityId`, not store order; a reused index makes the two differ. Facts must come out in that order too.
 - Trap: leftover budget carries across vertices but is discarded at arrival; a budget that lands exactly on a vertex continues with `along == 0` on the next segment.
@@ -648,6 +654,22 @@ Design: [`docs/architecture/crpg-sim.md`](../../docs/architecture/crpg-sim.md), 
 - Trap: rows are the table's outcomes in table order (bands, then `Override` outcomes), zero counts included and each charged; an outcome with a damage entry but no row is never evaluated. `natural` counts draws where a natural-face rule matched, and the opposing roll never reaches `evaluate` with a face. The preview takes `&World`: no interner write (the `TargetStat` world intern of `resolve_use` is not repeated), no RNG draw.
 - Tests: `tests/preview.rs` (T1-T14 and the seed sweeps G1-G7, which compare the preview with `perform_action` draw for draw).
 
+## Script, dialogue and quest state (T052)
+
+Design: [`docs/architecture/crpg-sim.md`](../../docs/architecture/crpg-sim.md), "Script, dialogue and quest state (T052)"; contract: [`tasks/T052.md`](../../tasks/T052.md); the ADR-0008 dated note of 2026-11-19 records the public additions.
+
+- Public additions (`continuation.rs`, re-exported at the crate root): `ScriptContinuation { graph, node, remaining }`, `OpenDialogue { dialogue, node }`, `QuestProgress { quest, state }`, `ContinuationError`; the `World` fields `continuations`, `dialogues` and `quests` (the last three, each skipped when empty) with read-only getters and seven operations; the same seven on `HistoryWorld`; `HistoryError::Script`; `AreaError::ScriptState`. `wait_system` and `World::continuations_mut` are crate-private.
+- Stage order: `run_systems` is the encounter clock, the wait countdown, the timeline, movement. The countdown reads and writes only its own store, so it is position-independent; it sits after the clock to keep the stage comments in spec §10 order.
+- Invariant: every operation validates before it mutates and enqueues nothing except `spawn_continuation`, which is `spawn` plus a store insert (one `Spawned`). Through `HistoryWorld` only that one journals; the other six commit zero events and never change `version()`.
+- Invariant: the load checks L1-L3 run after every existing check, so no existing input changes its error. A new field joins `WorldRepr` and `despawn_tracked`, and a new per-entity record joins the transfer preflight or fails transfer.
+- Trap: the sim never resumes or removes a continuation. A record at `remaining == 0` stays until its owner (`crpg-script`, later) rewrites it with `set_continuation` or despawns the holder; do not make `wait_system` remove or report one.
+- Trap: a dialogue is keyed by its participant, not by the NPC. Two participants may hold dialogues at once; the speaker is named by each authored line and is not stored.
+- Trap: quests are not entities. They live in a `Vec` strictly ascending by quest, `despawn` never touches them, and `set_quest_state` needs no live entity. Keep the order with `binary_search`, never push.
+- Trap: `due_continuations` returns ascending `EntityId`, not store order; a reused index makes the two differ (`ComponentStore::iter` is insertion-ordered).
+- Trap: the sim holds no campaign. Whether a graph, node, dialogue or quest id names authored content is not checked here; do not add a `crpg-data` lookup.
+- Trap: `ScriptContinuation` carries the resume point only. A later task that needs frames, locals or a subject adds them as last fields with absence defaults; no save version changes (D69a).
+- Tests: `tests/continuation.rs` (the implementer suite; `continuation_contract.rs` is the two-keys writer's). No golden is added.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate contract for the skeleton: API list, eight invariants, and traps for liveness, iteration order, E006-A/E014/E015 boundaries and the tick getter.
@@ -686,3 +708,4 @@ Design: [`docs/architecture/crpg-sim.md`](../../docs/architecture/crpg-sim.md), 
 - 2026-11-10 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T149b · Added the ability-range section: the new public items, the last-admission-stage invariant, the legacy-form invariant and the X3 and missing-mover traps.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143b · Added the action-preview section with its public addition and the traps (costs are a contract, never enumerate tuples, natural tag and zero entries, the two scoped dead-code allows), so a later change to a counting algorithm keeps its cost formula.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143c · Extended the action-preview section and the public-API sentence with `preview_action`, the planning scope and the limit, amended invariant 12 for `admit`, and added invariant 15 (the preview is execution counted), so a change to resolution's draws extends the preview and its sweep.
+- 2026-11-20 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T052 · Added the script-state public additions, the stage order with the wait countdown, and the traps (the sim never resumes or removes a continuation, a dialogue is keyed by its participant, quests are not entities), so a later change to `World` or `tick` keeps them.
