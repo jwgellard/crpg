@@ -66,6 +66,13 @@ failure mode without the network or the real OpenCode:
                                    grunt run and leaves other roles alone.
                      provider-fail three tool-call steps, then a top-level
                                    provider.internal error event, no text, exit 0.
+                     service-fault two step_finish lines, then a top-level
+                                   error event reading "Failed to execute
+                                   statement", exit 1: a started run the
+                                   OpenCode service cut off (T100-E2).
+                     boom          the same started log, but ending in a
+                                   plain model error event (message "boom"),
+                                   exit 1: the control for service-fault.
                      rc1           exit 1 with no output at all.
                      spawn-child   start a heartbeating child, then sleep.
                      error-log     append a matching level=ERROR line to
@@ -189,6 +196,19 @@ def emit_tool_error_run() -> None:
                    "tokens": {"input": 400, "output": 100, "reasoning": 10,
                               "cache": {"read": 300, "write": 0}},
                    "cost": 0.02}})
+
+
+def emit_started_then(last_line: dict) -> None:
+    """A started run (two finished steps) whose last line is `last_line`."""
+    for index in range(2):
+        emit({"type": "step_start", "timestamp": 1 + index,
+              "part": {"type": "step-start", "sessionID": "ses_fake"}})
+        emit({"type": "step_finish", "timestamp": 1 + index,
+              "part": {"type": "step-finish", "reason": "tool-calls",
+                       "tokens": {"input": 100, "output": 10, "reasoning": 0,
+                                  "cache": {"read": 0, "write": 0}},
+                       "cost": 0.0}})
+    emit(last_line)
 
 
 def counter_was_zero(name: str) -> bool:
@@ -495,6 +515,20 @@ def main() -> int:
                         "message": "upstream service failed"}})
         # Exit 0, as in the T098 incident: the exit code did not flag it.
         return 0
+
+    if has_token(tokens, "service-fault"):
+        # A run that started, then was cut off by the OpenCode service: the
+        # log ends in its own error, not the model's (T100-E2).
+        emit_started_then({"type": "error", "timestamp": 9,
+                           "error": {"name": "UnknownError",
+                                     "data": {"message": "Failed to execute statement"}}})
+        return 1
+
+    if has_token(tokens, "boom"):
+        # The control: the same started log ending in a plain model error.
+        emit_started_then({"type": "error", "timestamp": 9,
+                           "error": {"message": "boom"}})
+        return 1
 
     if has_token(tokens, "rc1"):
         return 1

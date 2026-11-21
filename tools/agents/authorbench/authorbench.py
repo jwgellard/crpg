@@ -360,7 +360,8 @@ def cmd_score(scratch: str, args: argparse.Namespace) -> int:
         log_path = results_dir / meta["log"]
         log = scoring.read_log(log_path)
         err = scoring.scrub_text(log["err"], roots)
-        excluded = meta["rc"] != 0 and log["steps"] == 0
+        excluded = ((meta["rc"] != 0 and log["steps"] == 0)
+                    or scoring.ends_in_service_fault(log_path))
         row = {
             "brief": name,
             "model": meta["model"],

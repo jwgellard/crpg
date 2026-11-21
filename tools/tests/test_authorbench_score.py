@@ -65,6 +65,23 @@ def make_campaign(root, marker=None, combatants=None, docs=()):
     return root
 
 
+def sc2_lines():
+    """SC2's 11 events: a started run with three finished steps."""
+    return [
+        {"type": "step_start", "part": {}},
+        {"type": "tool_use", "part": {"tool": "read", "state": {"status": "completed", "input": {"path": "brief.md"}}}},
+        {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "crpgc schema creature"}, "metadata": {"exit": 0}}}},
+        {"type": "step_finish", "part": {"tokens": {"input": 100, "output": 20, "reasoning": 5, "cache": {"read": 50}}, "cost": 0.01}},
+        {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "crpgc validate campaign --json"}, "metadata": {"exit": 1}}}},
+        {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "ls campaign"}, "metadata": {"exit": 0}}}},
+        {"type": "step_finish", "part": {"tokens": {"input": 200, "output": 30, "reasoning": 0, "cache": {"read": 150}}, "cost": 0.02}},
+        {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "error", "input": {"command": "crpgc play --campaign campaign"}}}},
+        {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "crpgc validate campaign --json && crpgc fmt campaign"}, "metadata": {"exit": 0}}}},
+        {"type": "step_finish", "part": {"tokens": {"input": 10, "output": 1, "reasoning": 0, "cache": {"read": 0}}, "cost": 0.005}},
+        {"type": "text", "part": {"text": "DONE"}},
+    ]
+
+
 class AuthorbenchScoreCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="authorbench-score "))
@@ -132,19 +149,7 @@ class AuthorbenchScoreCase(unittest.TestCase):
 
     # SC2
     def test_sc2_read_log(self):
-        lines = [
-            {"type": "step_start", "part": {}},
-            {"type": "tool_use", "part": {"tool": "read", "state": {"status": "completed", "input": {"path": "brief.md"}}}},
-            {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "crpgc schema creature"}, "metadata": {"exit": 0}}}},
-            {"type": "step_finish", "part": {"tokens": {"input": 100, "output": 20, "reasoning": 5, "cache": {"read": 50}}, "cost": 0.01}},
-            {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "crpgc validate campaign --json"}, "metadata": {"exit": 1}}}},
-            {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "ls campaign"}, "metadata": {"exit": 0}}}},
-            {"type": "step_finish", "part": {"tokens": {"input": 200, "output": 30, "reasoning": 0, "cache": {"read": 150}}, "cost": 0.02}},
-            {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "error", "input": {"command": "crpgc play --campaign campaign"}}}},
-            {"type": "tool_use", "part": {"tool": "bash", "state": {"status": "completed", "input": {"command": "crpgc validate campaign --json && crpgc fmt campaign"}, "metadata": {"exit": 0}}}},
-            {"type": "step_finish", "part": {"tokens": {"input": 10, "output": 1, "reasoning": 0, "cache": {"read": 0}}, "cost": 0.005}},
-            {"type": "text", "part": {"text": "DONE"}},
-        ]
+        lines = sc2_lines()
         log = self.tmp / "log.jsonl"
 
         def write(text):
@@ -518,13 +523,28 @@ class AuthorbenchScoreCase(unittest.TestCase):
             {"brief": "campaign-small", "model": "m1", "rc": "TIMEOUT", "steps": 5, "errors": 1,
              "secs": 30.0, "cost": 0, "valid": False, "complete": False, "playable": False,
              "play": {"finished": False}},
+            # T100-E2: rc 0 with steps, but excluded by the row's own flag; it
+            # must not count in n or any mean.
+            {"brief": "campaign-small", "model": "m1", "rc": 0, "steps": 4, "errors": 9,
+             "secs": 99.0, "cost": 0, "excluded": True,
+             "valid": False, "complete": False, "playable": False,
+             "play": {"finished": False}},
         ]
         cells = scoring.aggregate(rows, ["campaign-small"])
         self.assertEqual(cells, [{
-            "brief": "campaign-small", "model": "m1", "n": 3, "excluded": 1,
+            "brief": "campaign-small", "model": "m1", "n": 3, "excluded": 2,
             "valid": 2, "complete": 1, "playable": 1, "finished": 1,
             "steps_mean": 11.7, "errors_mean": 2.3, "secs_mean": 20.0, "cost_total": 0.6,
         }])
+
+        # control: the same row with excluded False is counted in n and the
+        # means, so the flag alone decides, not rc and steps.
+        counted = copy.deepcopy(rows)
+        counted[-1]["excluded"] = False
+        cells_counted = scoring.aggregate(counted, ["campaign-small"])
+        self.assertEqual(cells_counted[0]["n"], 4)
+        self.assertEqual(cells_counted[0]["excluded"], 1)
+        self.assertEqual(cells_counted[0]["steps_mean"], round((10 + 20 + 5 + 4) / 4, 1))
 
         # a model with only an excluded row
         cells2 = scoring.aggregate([{"brief": "campaign-small", "model": "m1", "rc": 1, "steps": 0, "cost": 0.3}],
@@ -597,6 +617,56 @@ class AuthorbenchScoreCase(unittest.TestCase):
         )
         self.assertEqual(scoring.scrub_text("unchanged", [""]), "unchanged")
         self.assertEqual(scoring.scrub_text("/a/b/c", ["/a", "/a/b"]), "<path>/c")
+
+    # SC11 (T100-E2)
+    def test_sc11_service_fault_excludes(self):
+        log = self.tmp / "fault.jsonl"
+        base = "\n".join(json.dumps(line) for line in sc2_lines()) + "\n"
+
+        def check(tag, last, expected):
+            log.write_text(base + last + "\n", encoding="utf-8")
+            self.assertIs(scoring.ends_in_service_fault(log), expected, tag)
+
+        # the four fault shapes
+        check("failed statement",
+              json.dumps({"type": "error",
+                          "error": {"name": "UnknownError",
+                                    "data": {"message": "Failed to execute statement"}}}),
+              True)
+        check("nested 500",
+              json.dumps({"type": "error",
+                          "error": {"name": "APIError",
+                                    "data": {"message": "x", "statusCode": 500}}}),
+              True)
+        check("top-level 503",
+              json.dumps({"type": "error", "error": {"statusCode": 503}}),
+              True)
+        check("non-json", "Error: Failed to execute statement", True)
+
+        # read_log's return value does not change: the same log still reads as
+        # SC2's started run with three steps.
+        log.write_text(base + "Error: Failed to execute statement\n", encoding="utf-8")
+        self.assertEqual(scoring.read_log(log)["steps"], 3)
+
+        # controls
+        log.write_text(base, encoding="utf-8")
+        self.assertIs(scoring.ends_in_service_fault(log), False)
+        check("429", json.dumps({"type": "error",
+                                 "error": {"data": {"message": "x", "statusCode": 429}}}), False)
+        check("bool", json.dumps({"type": "error", "error": {"statusCode": True}}), False)
+        check("boom", json.dumps({"type": "error", "error": {"message": "boom"}}), False)
+        # a later line means the run did not end in the fault
+        log.write_text(base
+                       + json.dumps({"type": "error",
+                                     "error": {"data": {"message": "Failed to execute statement"}}}) + "\n"
+                       + json.dumps({"type": "text", "part": {"text": "x"}}) + "\n",
+                       encoding="utf-8")
+        self.assertIs(scoring.ends_in_service_fault(log), False)
+        # a missing file and an empty log are not faults
+        self.assertIs(scoring.ends_in_service_fault(self.tmp / "missing.jsonl"), False)
+        empty = self.tmp / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+        self.assertIs(scoring.ends_in_service_fault(empty), False)
 
 
 if __name__ == "__main__":

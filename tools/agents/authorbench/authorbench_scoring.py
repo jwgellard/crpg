@@ -225,6 +225,46 @@ def read_log(path: Path) -> dict:
     }
 
 
+def ends_in_service_fault(path: Path) -> bool:
+    """True when the log's last non-empty line is the OpenCode service's fault.
+
+    T100-E2: a run the service cut off is excluded like a run that never
+    reached the model, rather than counted against the model. Only the last
+    non-empty line is read, because a run that kept working after a transient
+    error did not end in one.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+    lines = [line for line in _lines(text) if line.strip()]
+    if not lines:
+        return False
+
+    last = lines[-1]
+    try:
+        event = json.loads(last)
+    except ValueError:
+        return "Failed to execute statement" in last
+    if not isinstance(event, dict) or event.get("type") != "error":
+        return False
+
+    error = event.get("error")
+    if "Failed to execute statement" in json.dumps(error):
+        return True
+    if not isinstance(error, dict):
+        return False
+
+    def is_5xx(value):
+        return _is_int(value) and 500 <= value <= 599
+
+    data = error.get("data")
+    if isinstance(data, dict) and is_5xx(data.get("statusCode")):
+        return True
+    return is_5xx(error.get("statusCode"))
+
+
 def crpgc_prefix(path: str) -> list[str]:
     if path.endswith(".py"):
         return [sys.executable, path]
@@ -469,7 +509,9 @@ def aggregate(rows: list[dict], brief_order: list[str]) -> list[dict]:
         excluded = 0
         non_excluded = []
         for row in group:
-            if row.get("rc") != 0 and row.get("steps", 0) == 0:
+            # B-8 (T100-E2): a run that never reached the model, or one cut
+            # off by the service, is excluded and left out of every count.
+            if (row.get("rc") != 0 and row.get("steps", 0) == 0) or row.get("excluded") is True:
                 excluded += 1
             else:
                 non_excluded.append(row)

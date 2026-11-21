@@ -473,6 +473,39 @@ class AuthorbenchCase(unittest.TestCase):
         self.assertEqual(r3.returncode, 2)
         self.assertIn("score: no runs in empty", r3.stderr)
 
+        # T100-E2: a run that started (two steps) and was cut off by the
+        # OpenCode service is excluded like one that never started; the same
+        # log ending in a plain model error is not excluded. Two models in
+        # one design prove the summary's excluded count includes the fault.
+        self.run_ab("run", str(self.scratch), "--models", "fault/m1",
+                    "--briefs", "campaign-extend", "--design", "fault",
+                    env=self.env(FAKE_OC_MODE="service-fault"))
+        self.run_ab("run", str(self.scratch), "--models", "boom/m1",
+                    "--briefs", "campaign-extend", "--design", "fault",
+                    env=self.env(FAKE_OC_MODE="boom"))
+        r4 = self.run_ab("score", str(self.scratch), "--out", "fault")
+        self.assertEqual(r4.returncode, 0, r4.stderr)
+        self.assertEqual(r4.stdout.splitlines()[0],
+                         "SCORED fault: 2 runs, 1 valid, 0 playable, 1 excluded (smoke ok)")
+        fault_log = self.scratch / "fault" / "logs" / "campaign-extend__fault_m1.jsonl"
+        self.assertIn("Failed to execute statement", fault_log.read_text(encoding="utf-8"))
+        scores4 = json.loads((self.scratch / "fault" / "scores.json").read_text(encoding="utf-8"))
+        by_model = {row["model"]: row for row in scores4["rows"]}
+        fault_row = by_model["fault/m1"]
+        self.assertTrue(fault_row["excluded"])
+        self.assertEqual(fault_row["rc"], 1)
+        self.assertEqual(fault_row["steps"], 2)
+        self.assertFalse(fault_row["campaign_present"])
+        boom_row = by_model["boom/m1"]
+        self.assertFalse(boom_row["excluded"])
+        self.assertEqual(boom_row["rc"], 1)
+        self.assertEqual(boom_row["steps"], 2)
+        cells4 = {cell["model"]: cell for cell in scores4["cells"]}
+        self.assertEqual(cells4["fault/m1"]["n"], 0)
+        self.assertEqual(cells4["fault/m1"]["excluded"], 1)
+        self.assertEqual(cells4["boom/m1"]["n"], 1)
+        self.assertEqual(cells4["boom/m1"]["excluded"], 0)
+
     # CL8
     def test_cl8_run_retries_locked_database(self):
         self.run_ab("setup", str(self.scratch))
