@@ -59,6 +59,37 @@
 
 ## Lane-1 wire today
 
+- `movement_v4::MOVEMENT_VERSION` (`crates/crpg-net/src/movement_v4.rs:32`) = `0xA1`, first byte of every lane-1 message.
+- `movement_v4::LANE_MOVEMENT` (`crates/crpg-net/src/movement_v4.rs:34`) = 1.
+- `movement_v4::MAX_MOVE_DOWN_BYTES` (`crates/crpg-net/src/movement_v4.rs:50`) = 1,024, largest lane-1 downstream message.
+- `movement_v4::MAX_SAMPLE_ENTRIES` (`crates/crpg-net/src/movement_v4.rs:57`) = 38.
+- `movement_v4::POLICY_MOVE_INTENTS_PER_SEC` / `_BURST` / `_IN_FLIGHT` (`crates/crpg-net/src/movement_v4.rs:67`) = 20 / 40 / 8 (policy, never wire).
+- `movement_v4::MoveBody` (`crates/crpg-net/src/movement_v4.rs:76`) — `MoveTo { destination: Point }` or `Halt`.
+- `movement_v4::MoveIntent` (`crates/crpg-net/src/movement_v4.rs:89`) — `epoch`, `seq`, `actor`, `body`; lane implied.
+- `movement_v4::MoveOutcome` (`crates/crpg-net/src/movement_v4.rs:102`) — `Accepted { start_tick }`, `Superseded`, `Rejected(RejectionCode)`.
+- `movement_v4::MoveReceipt` (`crates/crpg-net/src/movement_v4.rs:116`) — `epoch`, `seq`, `actor`, `processed_tick`, `outcome`.
+- `movement_v4::SampleEntry` (`crates/crpg-net/src/movement_v4.rs:131`) — `entity`, `point`, `moving`.
+- `movement_v4::MoveSample` (`crates/crpg-net/src/movement_v4.rs:143`) — `server_tick`, `processed_seq`, `entries`.
+- `movement_v4::MoveDown` (`crates/crpg-net/src/movement_v4.rs:154`) — `Receipt(MoveReceipt)` or `Sample(MoveSample)`.
+- `movement_v4::encode_intent` (`crates/crpg-net/src/movement_v4.rs:207`) and `decode_intent` (`crates/crpg-net/src/movement_v4.rs:228`) — lane-1 intent codec.
+- `movement_v4::encode_down` (`crates/crpg-net/src/movement_v4.rs:273`) and `decode_down` (`crates/crpg-net/src/movement_v4.rs:318`) — lane-1 downstream codec.
+- `movement_v4::check_sample` (`crates/crpg-net/src/movement_v4.rs:432`) and `sample_datagrams` (`crates/crpg-net/src/movement_v4.rs:447`) — sample validation and chunking.
+- `protocol_v4::PROTOCOL_VERSION` (`crates/crpg-net/src/protocol_v4.rs:27`) = 4.
+- `protocol_v4::INTENT_TAG_DECLARE_MOVE` (`crates/crpg-net/src/protocol_v4.rs:30`) = 6 (lane-0 turn-based move).
+- `protocol_v4::DELTA_TAG_MOVED` (`crates/crpg-net/src/protocol_v4.rs:32`) = 21 and `DELTA_TAG_POSITION` (`crates/crpg-net/src/protocol_v4.rs:34`) = 22.
+- `protocol_v4::COORD_LIMIT_RAW` (`crates/crpg-net/src/protocol_v4.rs:38`) = 2^29 and `MAX_MOVED_POINTS` (`crates/crpg-net/src/protocol_v4.rs:41`) = 64.
+- `protocol_v4::Point` (`crates/crpg-net/src/protocol_v4.rs:45`) — bounded `[i32; 3]`.
+- `protocol_v4::PositionFact` (`crates/crpg-net/src/protocol_v4.rs:67`) — disclosed position plus moving flag.
+- `protocol_v4::DeltaOp::Moved` (`crates/crpg-net/src/protocol_v4.rs:160`) and `DeltaOp::Position` (`crates/crpg-net/src/protocol_v4.rs:168`).
+- `codec_v4::encode_intent` / `decode_intent` (`crates/crpg-net/src/codec_v4.rs:181` / `:223`) and `encode_delta` / `decode_delta` (`crates/crpg-net/src/codec_v4.rs:402` / `:428`).
+- `codec_v4::frame_spans` (`crates/crpg-net/src/codec_v4.rs:375`) — v4 page splitting.
+- `positions_v4::PositionRow` (`crates/crpg-net/src/positions_v4.rs:36`), `PositionView` (`crates/crpg-net/src/positions_v4.rs:54`), `project_page_v4` (`crates/crpg-net/src/positions_v4.rs:116`), `project_samples` (`crates/crpg-net/src/positions_v4.rs:199`), `project_snapshot_v4` (`crates/crpg-net/src/positions_v4.rs:252`).
+- `projection_v4::EventCandidate::Moved` (`crates/crpg-net/src/projection_v4.rs:18`) and `project_events` (`crates/crpg-net/src/projection_v4.rs:41`).
+- `pool_v4::ReassemblyPoolV4` (`crates/crpg-net/src/pool_v4.rs:102`), reusing `PublicationV3` and `ReceiverStatusV3` (`crates/crpg-net/src/pool_v4.rs:28`).
+- `replica_v4::ReplicaWorldV4` (`crates/crpg-net/src/replica_v4.rs:55`), `PositionState` (`crates/crpg-net/src/replica_v4.rs:32`), `SampleClock` (`crates/crpg-net/src/replica_v4.rs:43`), `apply_delta` / `apply_snapshot` / `apply_sample` (methods of `ReplicaWorldV4`).
+- `outbox_v4::MoveOutbox` (`crates/crpg-net/src/outbox_v4.rs:54`) and `OutboxError` (`crates/crpg-net/src/outbox_v4.rs:17`).
+- `crpg-net` lane-0 `IntentFrame` carries `observed_tick` (`crates/crpg-net/src/protocol_v4.rs:78`); lane-1 `MoveIntent` has no `observed_tick`.
+
 ## Movement host
 
 ## Movement rules and nav
