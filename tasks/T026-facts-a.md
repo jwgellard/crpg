@@ -112,11 +112,11 @@
 - `crpg-sim` exports movement items (`crates/crpg-sim/src/lib.rs:58` / `:61`).
 - `crpg-sim::movement::to_f32` (`crates/crpg-sim/src/movement.rs:391`) — f32 mirror only; `Transform` is f32 (`crates/crpg-sim/src/transform.rs:28`).
 - `crpg-sim::movement::TickFacts`/movement system: `tick_with_movement` documented in `crates/crpg-sim/AGENTS.md` (Movement stage 4 section); stage 4 walks routes by speed.
-- `crpg-nav` exports `find_path`/`NavPath` (`crates/crpg-nav/src/path.rs:203`), `nearest_on_mesh` (`crates/crpg-nav/src/query.rs:92`), `NavMesh` (`crates/crpg-nav/src/mesh.rs:36`), `snap`/`measure` come from sim (`crates/crpg-sim/src/movement.rs` re-exports in `lib.rs:58`).
+- `crpg-nav` exports `find_path`/`NavPath` (`crates/crpg-nav/src/path.rs:203`), `nearest_on_mesh` (`crates/crpg-nav/src/query.rs:92`), `NavMesh` (`crates/crpg-nav/src/mesh.rs:36`); `snap`/`measure` come from sim (`crates/crpg-sim/src/lib.rs:58`).
 - `crpg-server::nav::plan_route` (`crates/crpg-server/src/nav.rs:102`) — `nav: Option<&HostNav>`, `world: &World`, `actor: EntityId`, `destination: [Fx16_16; 3]`, `tag: RouteTag`; checks bound mesh, actor presence, mover, then `nearest_on_mesh(snap(measure, destination))` and `find_path`.
 - `crpg-sim` has no dependency on `crpg-nav` (ALLOWED: `crpg-sim` = `{"crpg-core", "crpg-data", "crpg-rules"}`); `crpg-nav` = `{"crpg-core"}`.
 - ALLOWED rows quoted:
-  - `"crpg-godot": (None, set())` (`tools/lint/deps.py:71`) — may depend on any workspace crate; currently depends on `crpg-net`, `crpg-server`, `crpg-sim` (`crates/crpg-godot/Cargo.toml:16-18`), not `crpg-nav`.
+  - `"crpg-godot": (None, set())` (`tools/lint/deps.py:71`) — may depend on any workspace crate; currently depends on `crpg-net`, `crpg-server`, `crpg-sim` (`crates/crpg-godot/Cargo.toml:16`), not `crpg-nav`.
   - `"crpg-net": ({"crpg-core", "crpg-data", "crpg-sim"}, set())` (`tools/lint/deps.py:54`) — may depend on `crpg-sim`, not `crpg-nav`.
   - `"crpg-sim": ({"crpg-core", "crpg-data", "crpg-rules"}, set())` (`tools/lint/deps.py:50`) — no `crpg-nav`.
   - `"crpg-nav": ({"crpg-core"}, set())` (`tools/lint/deps.py:51`) — only `crpg-core`.
