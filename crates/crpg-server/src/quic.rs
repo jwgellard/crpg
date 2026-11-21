@@ -3239,4 +3239,207 @@ mod tests {
             }
         ));
     }
+
+    /// Fix round A (T040a B-1, B-2): one hand-built report holding every
+    /// rejection source; `rejections()` lists them in B-1's order (hellos,
+    /// resumes, then calls) with the right connection, peer and code in each,
+    /// and each `Display` is B-2's text. Connection ids come from real refused
+    /// hellos (`ConnectionId` has no public constructor); peers from a host
+    /// whose first six handles were unbound, so no peer number equals a
+    /// connection number and a swap of the two shows.
+    #[test]
+    fn fx_a1_rejections_list_every_source_in_order() {
+        let (mut qh, mut now) = adapter();
+        let addr = qh.local_addr();
+        let mut conns = Vec::new();
+        for _ in 0..5 {
+            let hello = crpg_net_quic::Hello {
+                wire_version: 2,
+                credential: Credential::new(vec![0xB2; 32]).expect("32-byte credential"),
+            };
+            let pending = std::thread::spawn(move || {
+                QuicClient::connect_framed(client_config(), addr, &hello, Framing::V2)
+            });
+            let report = pump_until(&mut qh, &mut now, "hello decided", |report| {
+                !report.hellos.is_empty()
+            });
+            assert_eq!(report.hellos.len(), 1, "{:?}", report.hellos);
+            assert_eq!(
+                report.hellos[0].outcome,
+                HelloOutcome::Refused {
+                    code: CloseCode::AuthRefused
+                }
+            );
+            conns.push(report.hellos[0].conn);
+            assert!(
+                pending.join().expect("client thread").is_err(),
+                "the unknown credential is refused"
+            );
+        }
+        for (i, a) in conns.iter().enumerate() {
+            assert!(a.get() < 7, "connection ids stay below the peer numbers");
+            assert!(
+                conns[i + 1..].iter().all(|b| a != b),
+                "distinct connections"
+            );
+        }
+
+        let mut host = Host::from_history(
+            fixture(),
+            HostConfig {
+                protocol: ProtocolSelection::V1,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let bind = |host: &mut Host| {
+            host.bind_peer(
+                ControlGrant { actors: vec![] },
+                DisclosureGrants::default(),
+                NOW,
+            )
+            .expect("binds")
+        };
+        let early: Vec<PeerHandle> = (0..6).map(|_| bind(&mut host)).collect();
+        for peer in early {
+            host.unbind_peer(peer);
+        }
+        let (p7, p8, p9) = (bind(&mut host), bind(&mut host), bind(&mut host));
+        assert_eq!((p7.get(), p8.get(), p9.get()), (7, 8, 9));
+
+        let mut report = QuicPumpReport::new();
+        report.hellos.push(HelloDecision {
+            conn: conns[0],
+            outcome: HelloOutcome::Refused {
+                code: CloseCode::AuthRefused,
+            },
+        });
+        report.resumes.push(ResumeReport {
+            conn: conns[1],
+            outcome: ResumeOutcome::Lost {
+                reason: CloseReason::Transport,
+            },
+        });
+        report.resumes.push(ResumeReport {
+            conn: conns[2],
+            outcome: ResumeOutcome::Refused {
+                code: CloseCode::ServerBusy,
+            },
+        });
+        report.calls.push(HostCall::Ingest {
+            conn: conns[4],
+            peer: p7,
+            frame: 11,
+            len: 13,
+            result: IngestDisposition::Refused {
+                status: ReceiptStatus::Rejected(RejectionCode::Malformed),
+            },
+        });
+        report.calls.push(HostCall::IngestTransfer {
+            conn: conns[3],
+            peer: p8,
+            frame: 5,
+            len: 9,
+            result: TransferDisposition::Published,
+        });
+        report.calls.push(HostCall::IngestTransfer {
+            conn: conns[3],
+            peer: p8,
+            frame: 6,
+            len: 21,
+            result: TransferDisposition::Refused(TransferRefusal::RateLimited),
+        });
+        report.calls.push(HostCall::CheckFrame {
+            conn: conns[4],
+            peer: p9,
+            fence: ConnectionFence::FIRST,
+            result: Ok(()),
+        });
+        report.calls.push(HostCall::CheckFrame {
+            conn: conns[1],
+            peer: p8,
+            fence: ConnectionFence::FIRST,
+            result: Err(HostError::UnknownPeer),
+        });
+        report.calls.push(HostCall::Pump {
+            summary: PumpSummary {
+                admitted: 0,
+                applied: 0,
+                rejected: 1,
+                backpressured: 0,
+                dropped_replies: 0,
+                results: vec![AdmissionResult {
+                    peer: p9,
+                    seq: Some(3),
+                    status: ReceiptStatus::Rejected(RejectionCode::IllegalAction),
+                    cached: false,
+                    retained_in_ingress: false,
+                }],
+            },
+        });
+
+        let found = report.rejections();
+        assert_eq!(
+            found,
+            vec![
+                Rejection::Hello {
+                    conn: conns[0],
+                    code: CloseCode::AuthRefused
+                },
+                Rejection::Resume {
+                    conn: conns[2],
+                    code: CloseCode::ServerBusy
+                },
+                Rejection::Ingest {
+                    conn: conns[4],
+                    peer: p7,
+                    frame: 11,
+                    len: 13,
+                    code: RejectionCode::Malformed
+                },
+                Rejection::Transfer {
+                    conn: conns[3],
+                    peer: p8,
+                    frame: 6,
+                    len: 21,
+                    refusal: TransferRefusal::RateLimited
+                },
+                Rejection::Frame {
+                    conn: conns[1],
+                    peer: p8,
+                    error: HostError::UnknownPeer
+                },
+                Rejection::Admission {
+                    peer: p9,
+                    seq: Some(3),
+                    code: RejectionCode::IllegalAction,
+                    cached: false
+                },
+            ]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            format!("hello conn={} code=5", conns[0].get())
+        );
+        assert_eq!(
+            found[1].to_string(),
+            format!("resume conn={} code=7", conns[2].get())
+        );
+        assert_eq!(
+            found[3].to_string(),
+            format!(
+                "transfer conn={} peer=8 frame=6 len=21 refusal=RateLimited",
+                conns[3].get()
+            )
+        );
+        assert_eq!(
+            found[4].to_string(),
+            format!(
+                "frame conn={} peer=8 error={}",
+                conns[1].get(),
+                HostError::UnknownPeer
+            )
+        );
+    }
 }

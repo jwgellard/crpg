@@ -558,3 +558,56 @@ fn observer_sees_every_intake_once() {
         "the observer changes no authority state"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fix round A (M30).
+// ---------------------------------------------------------------------------
+
+/// Fix round A (B-3, M30): the observer is called only for a pump that
+/// succeeded. The host's accepted time is ahead of the step (the set-up of
+/// `fa_6_intake_error_is_the_loop_error`, copied), so the intake pump fails and
+/// its error is the step's; the observer's record stays empty. The control, a
+/// successful intake in the same test, records one entry.
+#[test]
+fn fx_a2_a_failed_pump_calls_no_observer() {
+    let record: Arc<Mutex<Vec<(u64, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let observer = |record: &Arc<Mutex<Vec<(u64, usize)>>>| -> IntakeObserver {
+        let sink = Arc::clone(record);
+        Box::new(move |now_ms, report| {
+            sink.lock()
+                .expect("not poisoned")
+                .push((now_ms, report.hellos.len()));
+        })
+    };
+
+    let (mut qh, _clock) = start_resumable_x();
+    qh.pause(1_000)
+        .expect("moves the host's time ahead of the step");
+    let mut hosting = QuicHosting::new(qh);
+    hosting.set_intake_observer(Some(observer(&record)));
+    let mut host_loop = HostLoop::new(hosting, 0);
+    assert!(
+        matches!(
+            host_loop.step(100),
+            Err(crpg_server::run::LoopError::Hosting(_))
+        ),
+        "the intake pump's failure is the step's error"
+    );
+    assert!(
+        record.lock().expect("not poisoned").is_empty(),
+        "a failed pump calls no observer: {:?}",
+        record.lock().expect("not poisoned")
+    );
+
+    // Control: a successful intake in the same test records one entry.
+    let (qh, _clock) = start_resumable_x();
+    let mut hosting = QuicHosting::new(qh);
+    hosting.set_intake_observer(Some(observer(&record)));
+    let mut host_loop = HostLoop::new(hosting, 1_000);
+    host_loop.step(1_000).expect("steps");
+    assert_eq!(
+        *record.lock().expect("not poisoned"),
+        vec![(1_000, 0)],
+        "a successful intake is observed once"
+    );
+}
