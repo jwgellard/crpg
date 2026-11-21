@@ -86,5 +86,58 @@ non-zero move_to destination, `halt(-1) == 3`, halt vs move_to told apart,
 a `moving == 1` observation, two receipts in one view). C02 needs either a
 long-running case or an accepted gap with a note.
 
+## Fix round A
+
+`apps/client/tests/movement.gd` gains M6 and M7 (M1-M5 unchanged); `shell.rs`
+and `core/` are untouched. Re-run of the nine survivors (`run.log`,
+`results.jsonl` updated): **6 killed, 3 accepted gaps.** The unmutated tree
+passes `movement.gd` (twice) and `smoke.gd`.
+
+- **M6** (fresh session, the turn pool unspent): `declare_move(rev, 32768, 0,
+  16384)` then the `moved` event's points are `[0,0,0, 32768,0,16384]` and the
+  positions tail is `[32768,0,16384]`. Reasoned from T037 K2
+  (`tasks/T037.md:1300-1306`): straight route from the start, destination
+  within one step (length 36,636 < 65,536).
+- **M7**: `move_to(2, 536870913, 0, 0) == 3` (`COORD_LIMIT_RAW + 1`, B-B8 (1),
+  `tasks/T151.md:670-676`, B11 `:923`), `halt(-1) == 3`, `halt(0) == 3` (B-B8
+  (1)); then `move_to(2, ..)` and `halt(2)` back to back: one view whose
+  `move_receipts()` are `[{seq 1, actor 2, "superseded", code 0, start_tick 0},
+  {seq 2, actor 2, "rejected", code 22, start_tick 0}]` (T037 D-6/D-7
+  `tasks/T037.md:770-781`, D-3 release in seq order `:743-752`, A4 `:778-780`
+  for "superseded"/0/0, B-C2 oldest first).
+
+| id | result | by |
+|----|--------|----|
+| C02 | **accepted gap** | see below |
+| C06 | killed (6) | M6 points `[0,0,0,16384,0,32768]` |
+| C09 | killed (3) | M7 `move_to(x out of range) == 3` (halt ignores the coordinates) |
+| C10 | killed (3) | M7 `move_to(x out of range) == 3` (the constant 0 is in range) |
+| C11 | **accepted gap** | see below |
+| C12 | killed (3) | M7 `halt(-1) == 3` |
+| C13 | killed (3) | M7 `halt(-1) == 3` |
+| C17 | **accepted gap** | see below |
+| C19 | killed (6) | M7 receipt order (mutant gives seq 2 first) |
+
+Accepted gaps (no engine-gate case with a contract-stated value):
+- **C02** (`opened_at` not set): the edit leaves `now_ms` at 0, which only the
+  client pool's timers read (`client_v4.rs:94-142`). Reaching one needs a stalled
+  transfer and a long wait, and the contract states no value for it; a sleep to
+  reach a timer was ruled out by the brief. K32 and the unit suite cannot see the
+  shell either.
+- **C11** (`halt` calls `core.move_to(actor,0,0,0)`): the engine gate runs a
+  turn-based encounter (`core/mod.rs:584` `start_encounter`, never `_in_mode`),
+  where every `MoveTo` and `Halt` of a combatant is `Rejected(WrongMode)` 22
+  (T037 D-7 (1), `:777`) or `NotAuthorized` 17 for a non-controlled actor;
+  admission does not look at the body (D-2, `:719-741`). The two intents yield
+  identical receipts and returns, and `halt`'s only argument check (`actor`) is
+  the same as `move_to`'s. A real-time encounter (T037e K3) cannot be started
+  from data through the shell.
+- **C17** (`moving` all zeros): `moving` is `1` only for a real-time sample
+  (T037e K3, tick 1 `true`, `tasks/T037.md:1308-1313`); a turn-based encounter,
+  the only kind the shell starts, always reports `[0,0]` (B4, `tasks/T151.md:864`),
+  and `moving`'s element copy is the same code as `position_known`'s (C16 is
+  killed). The host side of `moving == 1` is T037e K3's.
+
 ## Agent log
 - 2026-11-21 (UTC) · claude-code/Sonnet 5.5 (reviewer) + T151c mutant run · Ran 20 single-point mutants of shell.rs against movement.gd through the engine gates: 11 killed, 9 survived, all nine real test gaps.
+- 2026-11-21 (UTC) · claude-code/Sonnet 5.5 (implementer) + T151c fix round A · Added M6/M7 to movement.gd, killing six of the nine survivors, and recorded C02, C11 and C17 as accepted gaps with reasons.

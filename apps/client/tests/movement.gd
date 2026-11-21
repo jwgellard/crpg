@@ -1,5 +1,6 @@
 extends SceneTree
-# M1-M5 (T151c): the v4 movement surface of CrpgSession and CrpgView, headless.
+# M1-M5 (T151c), M6-M7 (fix round A): the v4 movement surface of CrpgSession and
+# CrpgView, headless.
 # It copies combat_basic (BASIC) to user://t151_move/ and inserts the T037e
 # movement rules into the copy's minimal-d6 ruleset (MOVE), because no ruleset
 # under campaigns/fixtures may declare movement. Every case then drives one
@@ -131,6 +132,10 @@ func _run() -> void:
 	_case_m5(basic_dir)
 	if _done:
 		return
+	if not await _case_m6(move_dir):
+		return
+	if not await _case_m7(move_dir):
+		return
 	print("movement.gd OK")
 	_done = true
 	quit(0)
@@ -233,3 +238,91 @@ func _case_m5(basic_dir: String) -> void:
 	_want("M5 position_known", v.position_known() == PackedByteArray([0, 0]), str(v.position_known()))
 	_want_code("M5 move_to on v2", s.move_to(2, 0, 0, 0), 3, s)
 	s.close()
+
+func _has_two_move_receipts(view) -> bool:
+	return view.move_receipts().size() >= 2
+
+# M6 (fix round A): a turn-based move to an asymmetric destination (x != z), so
+# an x/z swap in declare_move shows. A fresh session, because M2's move spent the
+# turn pool (T037 K2: one step of 65,536 pays a route of 46,341, cost 1).
+# Reasoned from T037 K2 (tasks/T037.md:1300-1306): the route is straight, from
+# the start (0,0,0) to the destination, and the destination is within one step
+# (length 36,636 < 65,536), so the moved event ends at the destination.
+func _case_m6(move_dir: String) -> bool:
+	var s = ClassDB.instantiate("CrpgSession")
+	_want_code("M6 open_v4", s.open_v4(move_dir, "", "Goblin", 1), 0, s)
+	if _done:
+		return false
+	if not await _poll_until("M6 revision >= 1", s, _revision_one):
+		return false
+	if not await _poll_until("M6 options", s, _has_options):
+		return false
+	var rev: int = s.view().revision()
+	_want_code("M6 declare_move(rev)", s.declare_move(rev, 32768, 0, 16384), 0, s)
+	if _done:
+		return false
+	var moved := {"points": null}
+	var saw_moved := func(view) -> bool:
+		for event in view.events():
+			if event["kind"] == "moved":
+				moved["points"] = event["points"]
+				moved["entity"] = event["entity"]
+				moved["positions"] = view.positions()
+				return true
+		return false
+	if not await _poll_until("M6 moved event", s, saw_moved):
+		return false
+	_want("M6 entity", moved["entity"] == 2, str(moved["entity"]))
+	var points: PackedInt64Array = moved["points"]
+	_want("M6 points", points == PackedInt64Array([0, 0, 0, 32768, 0, 16384]), str(points))
+	var tail: PackedInt64Array = moved["positions"]
+	_want("M6 positions tail", tail.size() == 6 and tail.slice(3) == PackedInt64Array([32768, 0, 16384]), str(tail))
+	s.close()
+	return not _done
+
+# M7 (fix round A): the lane-1 entry points' argument rules and receipt order.
+# - move_to with x = COORD_LIMIT_RAW + 1 = 536870913 is 3 on any session, and halt
+#   of a non-positive actor is 3 (B-B8 (1), T151.md:670-676; B11, :921-923). A
+#   refused call consumes no seq (B-A9, :572-576).
+# - Two lane-1 intents of one actor sent before any cycle fall in one decision
+#   window: the earlier is Superseded, the last is decided (T037 D-6, D-7,
+#   tasks/T037.md:770-781), here Rejected(WrongMode) 22 as in M3 (turn-based).
+#   Receipts are released in seq order (D-3, :743-752) and the view lists them
+#   oldest first (B-C2, T151.md:700-702); A4 (:778-780) pins "superseded" with
+#   code 0 and start_tick 0.
+func _case_m7(move_dir: String) -> bool:
+	var s = ClassDB.instantiate("CrpgSession")
+	_want_code("M7 open_v4", s.open_v4(move_dir, "", "Goblin", 1), 0, s)
+	if _done:
+		return false
+	if not await _poll_until("M7 revision >= 1", s, _revision_one):
+		return false
+	_want_code("M7 move_to(x out of range)", s.move_to(2, 536870913, 0, 0), 3, s)
+	_want_code("M7 halt(-1)", s.halt(-1), 3, s)
+	_want_code("M7 halt(0)", s.halt(0), 3, s)
+	if _done:
+		return false
+	_want_code("M7 move_to(2)", s.move_to(2, 32768, 0, 16384), 0, s)
+	_want_code("M7 halt(2)", s.halt(2), 0, s)
+	if _done:
+		return false
+	if not await _poll_until("M7 two receipts", s, _has_two_move_receipts):
+		return false
+	var receipts: Array = s.view().move_receipts()
+	_want("M7 receipt count", receipts.size() == 2, str(receipts))
+	if _done:
+		return false
+	var first: Dictionary = receipts[0]
+	_want("M7 first seq", first["seq"] == 1, str(receipts))
+	_want("M7 first actor", first["actor"] == 2, str(receipts))
+	_want("M7 first outcome", first["outcome"] == "superseded", str(receipts))
+	_want("M7 first code", first["code"] == 0, str(receipts))
+	_want("M7 first start_tick", first["start_tick"] == 0, str(receipts))
+	var second: Dictionary = receipts[1]
+	_want("M7 second seq", second["seq"] == 2, str(receipts))
+	_want("M7 second actor", second["actor"] == 2, str(receipts))
+	_want("M7 second outcome", second["outcome"] == "rejected", str(receipts))
+	_want("M7 second code", second["code"] == 22, str(receipts))
+	_want("M7 second start_tick", second["start_tick"] == 0, str(receipts))
+	s.close()
+	return not _done
