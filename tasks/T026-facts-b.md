@@ -52,6 +52,14 @@
 
 ## Player UX research
 
+- Click-to-move: none found in `docs/research/T104/` or `docs/research/T107/`.
+- Movement feedback: none found in `docs/research/T104/` or `docs/research/T107/`.
+- Path preview: none found in `docs/research/T104/` or `docs/research/T107/`.
+- Selection: none found in `docs/research/T104/` or `docs/research/T107/`.
+- Camera: `docs/research/T104/R16-deep.md:15-18` recommends a free-floating camera (isometric to third-person) plus tactical zoom; `docs/research/T104/R16-deep.md:54` lists Baldur's Gate 3 "Free-floating; isometric to third-person"; `docs/research/T104/R16-deep.md:62` lists XCOM 2 "Top-down".
+- Targeting preview (adjacent): `docs/research/T104/R16-deep.md:52` comparison-table header includes "Targeting preview"; `docs/research/T104/R16-deep.md:54` "Hit-chance % before attack"; `docs/research/T104/R16-deep.md:62` "Shot success % and health loss shown".
+- `docs/research/T107/R18-deep.md` contains no matches for click, camera, selection, path preview or movement feedback.
+
 ## CI and run
 
 ## Agent log
