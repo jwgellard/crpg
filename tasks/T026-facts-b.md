@@ -16,6 +16,16 @@
 
 ## Positions in the client today
 
+- `CrpgView::positions` (`crates/crpg-godot/src/shell.rs:231-235`), `position_known` (`crates/crpg-godot/src/shell.rs:237-241`) and `moving` (`crates/crpg-godot/src/shell.rs:243-247`) expose position data to GDScript.
+- `SessionView` carries `positions: Vec<i64>` and `position_known: Vec<u8>` (`crates/crpg-godot/src/core/client.rs:45-46`), with accessors `positions()` (`crates/crpg-godot/src/core/client.rs:133-135`) and `position_known()` (`crates/crpg-godot/src/core/client.rs:138-140`).
+- `ClientV4::rebuild` fills `positions`, `position_known`, `moving` from `self.replica.position(entity.net_id)` (`crates/crpg-godot/src/core/client_v4.rs:452-468`).
+- v2 `Client` zeroes the position columns: `positions: vec![0; 3 * rows]`, `position_known: vec![0; rows]` (`crates/crpg-godot/src/core/client.rs:600-601`).
+- `ReplicaWorldV4` stores disclosed positions in `positions: BTreeMap<NetId, PositionState>` (`crates/crpg-net/src/replica_v4.rs:57`); `PositionState` has `tick`, `point: Point`, `moving` (`crates/crpg-net/src/replica_v4.rs:32-39`); `position()` returns `Option<&PositionState>` (`crates/crpg-net/src/replica_v4.rs:77-79`); apply_op handles `DeltaOp::Position` and `EntityLeave`/`Despawned` removes the key (`crates/crpg-net/src/replica_v4.rs:175-213`).
+- `SceneSync.sync` sets `proxy.position = Vector3(3.0 * float(side_index), 0.0, 1.5 * float(rank))` (`apps/client/scripts/SceneSync.gd:61`).
+- `SceneSync._make_proxy` sets `label.position = Vector3(0.0, 1.2, 0.0)` (`apps/client/scripts/SceneSync.gd:89`).
+- `SceneSync._set_mesh` sets `mesh_instance.position.y = mesh_height / 2.0` (`apps/client/scripts/SceneSync.gd:122`).
+- `Main.tscn` has `Camera3D` transform `Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 6, 9)` (`apps/client/scenes/Main.tscn:20-21`) and `Sun` transform `Transform3D(0.707107, 0.5, -0.5, 0, 0.707107, 0.707107, 0.707107, -0.5, 0.5, 0, 5, 0)` (`apps/client/scenes/Main.tscn:23-24`).
+
 ## Scripts and scenes
 
 ## Rules that bind it
