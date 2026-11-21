@@ -666,6 +666,31 @@ fn serves_logs_and_saves_on_quit() {
         server.next_line(),
         "crpg-server: console: unknown command who"
     );
+    // Leading padding is trimmed the same as trailing (B-15).
+    server.send("  padded\n\t padded2 \r\n");
+    assert_eq!(
+        server.next_line(),
+        "crpg-server: console: unknown command padded"
+    );
+    assert_eq!(
+        server.next_line(),
+        "crpg-server: console: unknown command padded2"
+    );
+    // `quit` is matched whole: neither `quit now` nor `quitx` stops the
+    // server (B-15); the later `quit` does.
+    server.send("quit now\nquitx\n");
+    assert_eq!(
+        server.next_line(),
+        "crpg-server: console: unknown command quit now"
+    );
+    assert_eq!(
+        server.next_line(),
+        "crpg-server: console: unknown command quitx"
+    );
+    assert!(
+        server.child.try_wait().expect("try_wait").is_none(),
+        "only an exact `quit` stops the server"
+    );
 
     server.send("quit\n");
     let status = server.wait();
@@ -985,4 +1010,271 @@ fn pem_and_der() {
     // passes stage 3 and fails at `bind`, with the incarnation spent.
     let line = refuses_files("s11_der_zero", &[0x00], rig::SERVER_A_KEY, "8\n");
     assert!(line.starts_with("crpg-server: error bind: "), "{line}");
+}
+// ---------------------------------------------------------------------------
+// Fix round A: boundaries, stage words and log sinks the first suite left
+// to the mutant run (B-11 stages 1-4, B-13, B-16.3).
+// ---------------------------------------------------------------------------
+
+/// Spawns the server over `s` (no standard input) and reads its start line.
+fn start_with(s: &Setup) -> (Server, Start) {
+    let mut server = Server::spawn(&s.config_path(), false);
+    let start = server.start();
+    (server, start)
+}
+
+/// B-11.1: `-32768` and `32767` are inside the area range, so the range check
+/// of stage 1 passes them and the failure is the later `area` stage's (the
+/// fixture's movers sit at the origin, off a far-away mesh: `NavBake`, with
+/// the incarnation spent); `32768` and `-32769` are outside, a stage-1 failure
+/// that spends nothing. Control: the S3 cases (`40000`, `-32769`).
+#[test]
+fn area_range_boundaries() {
+    for (name, min, max) in [
+        ("area_hi", [32751, 0, 32751], [32767, 0, 32767]),
+        ("area_lo", [-32768, 0, -32768], [-32752, 0, -32752]),
+    ] {
+        let s = Setup::new(name);
+        let mut config = s.config();
+        config["area"] = json!({"min": min, "max": max});
+        s.write_config(&config);
+        let result = s.run_to_exit();
+        let line = assert_one_error(&result);
+        assert!(
+            line.starts_with("crpg-server: error area: NavBake"),
+            "{name}: {line}"
+        );
+        assert_eq!(
+            s.sidecar(),
+            "8
+",
+            "{name}"
+        );
+    }
+    for (name, min, max) in [
+        ("area_over_max", [0, 0, 0], [32768, 0, 0]),
+        ("area_under_min", [-32769, 0, 0], [0, 0, 0]),
+    ] {
+        let s = Setup::new(name);
+        let mut config = s.config();
+        config["area"] = json!({"min": min, "max": max});
+        s.write_config(&config);
+        let result = s.run_to_exit();
+        assert_eq!(
+            assert_one_error(&result),
+            "crpg-server: error config: area value out of range",
+            "{name}"
+        );
+        assert_eq!(s.sidecar(), "7\n", "{name}");
+    }
+}
+
+/// B-11.4: exactly `MAX_INVITATIONS` (64) invitations start and the start
+/// line counts them; two read `invitations=2`. Control: S3 refuses 65.
+#[test]
+fn invitation_counts_in_the_start_line() {
+    for count in [2u8, 64] {
+        let s = Setup::new(&format!("count_{count}"));
+        let entries: Vec<Value> = (1..=count)
+            .map(|i| invitation_entry(&hex(&[i; 32])))
+            .collect();
+        s.write_json("invitations.json", &Value::Array(entries));
+        let (mut server, start) = start_with(&s);
+        assert_eq!(
+            start.line,
+            start_line(start.port, 8, "none", "off")
+                .replace("invitations=1", &format!("invitations={count}")),
+            "{count}"
+        );
+        server.kill();
+    }
+}
+
+/// B-11.2: a log file that cannot be opened is a stage-`log` failure with the
+/// sidecar unspent. Control: S6's new log file opens.
+#[test]
+fn unopenable_log_file_is_a_log_error() {
+    let s = Setup::new("log_dir");
+    std::fs::create_dir(s.path("logdir")).expect("a directory where the log file goes");
+    let mut config = s.config();
+    config["log_file"] = json!("logdir");
+    s.write_config(&config);
+    let result = s.run_to_exit();
+    let line = assert_one_error(&result);
+    assert!(line.starts_with("crpg-server: error log: "), "{line}");
+    assert_eq!(s.sidecar(), "7\n");
+}
+
+/// B-11.3: a certificate or key file that cannot be read gives the stage-3
+/// line `{what} file: {io error}`, with the sidecar unspent. Control: S3's
+/// unmodified set-up reaches the start line.
+#[test]
+fn missing_certificate_and_key_files() {
+    for (name, file, what) in [
+        ("cert_missing", "server.cert.der", "certificate"),
+        ("key_missing", "server.key.pk8.der", "private_key"),
+    ] {
+        let s = Setup::new(name);
+        std::fs::remove_file(s.path(file)).expect("removes the file");
+        let result = s.run_to_exit();
+        let line = assert_one_error(&result);
+        let detail = line
+            .strip_prefix(&format!("crpg-server: error certificate: {what} file: "))
+            .unwrap_or_else(|| panic!("{name}: {line}"));
+        assert!(!detail.is_empty(), "{name}: the I/O error follows");
+        assert_eq!(s.sidecar(), "7\n", "{name}");
+    }
+}
+
+/// Every log line of a start-up failure reaches the log file once it is open
+/// (B-11 stage 2 on). Control: a failure at stage 1, before the file is
+/// opened, creates no log file.
+#[test]
+fn startup_failure_line_is_in_the_log_file() {
+    let s = Setup::new("log_failure");
+    std::fs::write(
+        s.path("server.cert.der"),
+        pem("PRIVATE KEY", rig::SERVER_A_KEY),
+    )
+    .expect("a key where the certificate should be");
+    let mut config = s.config();
+    config["log_file"] = json!("fail.log");
+    s.write_config(&config);
+    let result = s.run_to_exit();
+    let line = assert_one_error(&result).to_owned();
+    assert_eq!(
+        line,
+        "crpg-server: error certificate: certificate file: no items found"
+    );
+    assert_eq!(
+        std::fs::read_to_string(s.path("fail.log")).expect("the log file exists"),
+        format!("{line}\n")
+    );
+
+    let s = Setup::new("log_failure_early");
+    let mut config = s.config();
+    config["log_file"] = json!("early.log");
+    config["area"] = json!({"min": [40000, 0, 0], "max": [64, 0, 64]});
+    s.write_config(&config);
+    let result = s.run_to_exit();
+    assert_one_error(&result);
+    assert!(
+        !s.path("early.log").exists(),
+        "stage 1 fails before the log file is opened"
+    );
+}
+
+/// The reject line's `{t}` and the text after it.
+fn reject_parts(line: &str) -> (u64, &str) {
+    let rest = line
+        .strip_prefix("crpg-server: reject t=")
+        .unwrap_or_else(|| panic!("expected a reject line, got {line:?}"));
+    let (t, text) = rest.split_once(' ').expect("a time and a rejection");
+    (t.parse().expect("t is a number"), text)
+}
+
+/// B-13: every rejection of a report is a line of its own, and `t` is the
+/// loop's time, not a constant. Two refused hellos in two cycles give
+/// increasing `t`; a burst of undecodable frames gives exactly one line per
+/// frame however the pumps split them (a logger that keeps one line per
+/// report loses some of the burst). Control: nothing else is logged for the
+/// burst, and S5's accepted `X` adds no line.
+#[test]
+fn every_rejection_is_a_line_with_the_loop_time() {
+    const BURST: usize = 12;
+    let s = Setup::new("reject_lines");
+    let (mut server, start) = start_with(&s);
+
+    let mut times = Vec::new();
+    for _ in 0..2 {
+        assert!(matches!(
+            hello(start.port, &y()),
+            Err(ConnectError::Refused { code: 5 })
+        ));
+        let line = server.next_line();
+        let (t, text) = reject_parts(&line);
+        assert!(text.starts_with("hello conn="), "{line}");
+        times.push(t);
+    }
+    assert!(times[0] > 0, "t is the loop time, not 0: {times:?}");
+    assert!(
+        times[1] > times[0],
+        "a later cycle has a later t: {times:?}"
+    );
+    server.kill();
+
+    // The burst, over a fresh server whose standard input is open.
+    let s = Setup::new("reject_burst");
+    let mut server = Server::spawn(&s.config_path(), true);
+    let start = server.start();
+    let mut client = hello(start.port, &x()).expect("X is accepted");
+    for _ in 0..BURST {
+        client.try_send(&[0xFF]).expect("client send");
+    }
+    for n in 0..BURST {
+        let line = server.next_line();
+        let (t, text) = reject_parts(&line);
+        assert!(t > 0, "{line}");
+        assert!(
+            text.starts_with("admission peer=") && text.ends_with(" seq=- code=3 cached=false"),
+            "rejection {n}: {line}"
+        );
+    }
+    server.send("status\n");
+    assert_eq!(
+        server.next_line(),
+        "crpg-server: console: unknown command status"
+    );
+}
+
+/// B-11.9: the server unpauses the restored host before serving, so its loop
+/// ticks the world. Control: the saved world before the run is at the
+/// fixture's tick.
+#[test]
+fn served_world_ticks() {
+    let s = Setup::new("ticks");
+    let before = load_host_file(&s.path("world.save"), &id(), 8, 0)
+        .expect("the set-up save loads")
+        .host
+        .server_tick();
+    assert_eq!(before, rig::new_host(rig::V2).server_tick());
+
+    let mut server = Server::spawn(&s.config_path(), true);
+    let start = server.start();
+    // A decided hello is a finished cycle: its advance step has run.
+    let _client = hello(start.port, &x()).expect("X is accepted");
+    server.send("quit\n");
+    assert_eq!(server.wait().code(), Some(0));
+    let after = load_host_file(&s.path("world.save"), &id(), 9, 0)
+        .expect("the served save loads")
+        .host
+        .server_tick();
+    assert!(
+        after > before,
+        "the served world ticked: {before} -> {after}"
+    );
+    let _ = start;
+}
+
+/// B-16.3: a save that cannot be written is `error save`, exit 1, and no stop
+/// line. The save path is made a directory after the start line, which the
+/// atomic replace cannot rename onto on Windows or Linux (a read-only file
+/// would not stop a rename on Linux). Control: S5's quit saves.
+#[test]
+fn failed_save_exits_one() {
+    let s = Setup::new("save_fails");
+    let mut server = Server::spawn(&s.config_path(), true);
+    let _start = server.start();
+    std::fs::remove_file(s.path("world.save")).expect("removes the save");
+    std::fs::create_dir(s.path("world.save")).expect("a directory where the save goes");
+    server.send("quit\n");
+    let status = server.wait();
+    let lines = server.rest();
+    assert_eq!(status.code(), Some(1), "{lines:?}");
+    let last = lines.last().expect("a last line");
+    assert!(last.starts_with("crpg-server: error save: "), "{lines:?}");
+    assert!(
+        lines.iter().all(|l| !l.starts_with("crpg-server: stop ")),
+        "{lines:?}"
+    );
 }
