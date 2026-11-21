@@ -5165,8 +5165,7 @@ impl Host {
     /// Precedence: [`Closed`](HostError::Closed), then
     /// [`UnknownPeer`](HostError::UnknownPeer) for no live session (a graced
     /// handle included), then [`NotResumable`](HostError::NotResumable) for a
-    /// `bind_peer` session or a v4 session. The proof replaces any earlier
-    /// one. An encode failure is `Invariant("resume ticket failed to encode")`.
+    /// `bind_peer` session. The proof replaces any earlier one. An encode failure is `Invariant("resume ticket failed to encode")`.
     pub fn issue_resume_ticket(
         &mut self,
         peer: PeerHandle,
@@ -5198,10 +5197,11 @@ impl Host {
     /// [`TimeRegression`](HostError::TimeRegression) (nothing changes), then
     /// the recorded `now_ms` and the sweep, then
     /// [`UnknownPeer`](HostError::UnknownPeer) for no live session, then
-    /// [`NotResumable`](HostError::NotResumable) for a non-snapshot or v4
-    /// session or one with no stored proof. Commits by purging the peer's
-    /// staged commands, discarding its delivery log exactly as
-    /// `stage_snapshot`'s commit does, and moving the session to the grace map
+    /// [`NotResumable`](HostError::NotResumable) for a non-snapshot session or
+    /// one with no stored proof. Commits by purging the peer's staged
+    /// commands, discarding its delivery log exactly as `stage_snapshot`'s
+    /// commit does, un-admitting a v4 session's unanswered lane-1 intents
+    /// (`reset_lane1`, T155 H-3), and moving the session to the grace map
     /// with `deadline_ms = now_ms.saturating_add(POLICY_RECONNECT_GRACE_MS)`.
     /// Returns the grace deadline. Nothing else in the session changes.
     pub fn begin_grace(&mut self, peer: PeerHandle, now_ms: u64) -> Result<u64, HostError> {
@@ -5243,6 +5243,7 @@ impl Host {
             session.log.clear();
             session.log_bytes = 0;
             session.delivered = session.next_ordinal - 1;
+            reset_lane1(&mut self.egress_bytes, session);
         }
         let deadline_ms = now_ms.saturating_add(POLICY_RECONNECT_GRACE_MS);
         let session = self.sessions.remove(&peer).expect("checked above");
@@ -5448,6 +5449,12 @@ impl Host {
             let grace = self.graces.remove(&peer).expect("found above");
             self.sessions.insert(peer, grace.session);
         }
+        // H-4: a live or a graced session alike holds no lane-1 slot, receipt
+        // or sample after `Accepted`; the client resends its pending intents.
+        reset_lane1(
+            &mut self.egress_bytes,
+            self.sessions.get_mut(&peer).expect("live above"),
+        );
         let epoch = self.sessions.get(&peer).expect("live above").epoch;
         if snapshot_v3 {
             let stage = {
@@ -5510,9 +5517,10 @@ impl Host {
     }
 
     /// Whether a session kind can ever hold a grace: a live snapshot session
-    /// (`bind_snapshot_peer` or `bind_v3_peer`), and never v4 (Reading 3).
+    /// (`bind_snapshot_peer`, `bind_v3_peer` or `bind_v4_peer`), never a
+    /// `bind_peer` session.
     fn resumable_kind(session: &Session) -> bool {
-        session.snapshot && !session.v3.as_ref().is_some_and(|v3| v3.v4.is_some())
+        session.snapshot
     }
 
     /// G-6 step 7 for a lane-0 snapshot session: `stage_snapshot` steps 1–5
@@ -6202,6 +6210,23 @@ fn lane_of(session: &Session) -> Option<&MoveLane> {
 /// The mutable lane-1 state of a v4 session.
 fn lane_of_mut(session: &mut Session) -> Option<&mut MoveLane> {
     session.v3.as_mut()?.v4.as_mut().map(|v4| &mut v4.lane)
+}
+
+/// Reading 3: drop a v4 session's lane-1 slots, released receipts and queued
+/// samples, free their egress, and move `next_seq` back to the first dropped
+/// slot. A no-op for a session without v4 state.
+fn reset_lane1(egress_bytes: &mut usize, session: &mut Session) {
+    let freed = session.lane1_egress().1;
+    let Some(v4) = session.v3.as_mut().and_then(|v3| v3.v4.as_mut()) else {
+        return;
+    };
+    if let Some(front) = v4.lane.slots.front() {
+        v4.lane.next_seq = front.seq;
+    }
+    v4.lane.slots.clear();
+    v4.lane.receipts.clear();
+    v4.samples.clear();
+    *egress_bytes -= freed;
 }
 
 /// The ids a viewer's mapped entities hold: live after the page, else (when
@@ -12111,5 +12136,206 @@ mod tests {
         assert_eq!(host.executions(), 0);
         assert_eq!(host.last_capture(), 0);
         assert_eq!(host.last_combat_error(), None);
+    }
+
+    // -- T155a: lane-1 reset at grace and resume (U1) ----------------------
+
+    /// A v4 session holding one released untaken receipt (seq 1), one
+    /// admitted slot (seq 2) and a queued sample, with a ticket stored.
+    fn lane1_loaded_host() -> (Host, PeerHandle, [u8; 16]) {
+        use crpg_net::movement_v4::{encode_intent, MoveBody, MoveIntent};
+        let (mut host, peer) = v4_host_with_log(0);
+        let epoch = host.epoch(peer).expect("bound");
+        host.issue_resume_ticket(peer, resume_proof(0xA5))
+            .expect("a v4 session takes a ticket");
+        let halt = |seq: u64| {
+            encode_intent(&MoveIntent {
+                epoch,
+                seq,
+                actor: net(1),
+                body: MoveBody::Halt,
+            })
+            .expect("encodes")
+        };
+        assert_eq!(
+            host.ingest_move(peer, &halt(1), 5),
+            Ok(MoveAdmission::Admitted { seq: 1 })
+        );
+        host.advance(5).expect("advances");
+        assert_eq!(
+            host.ingest_move(peer, &halt(2), 6),
+            Ok(MoveAdmission::Admitted { seq: 2 })
+        );
+        let caps = host.egress_caps;
+        {
+            let session = host.sessions.get_mut(&peer).expect("bound");
+            queue_samples(session, &mut host.egress_bytes, &caps, vec![vec![3u8; 10]]);
+        }
+        let session = host.sessions.get(&peer).expect("bound");
+        let lane = super::lane_of(session).expect("v4");
+        assert_eq!(lane.slots.len(), 1);
+        assert_eq!(lane.receipts.len(), 1);
+        let receipt_len = lane.receipts[0].1.len();
+        assert_eq!(
+            session.lane1_egress(),
+            (3, 60 + receipt_len + 10),
+            "one slot, one receipt, one sample"
+        );
+        (host, peer, epoch)
+    }
+
+    /// U1: a grace and a resume (graced or live) release the lane-1 egress
+    /// exactly once and roll `next_seq` back to the first dropped slot; what
+    /// the cache and `processed_seq` hold is untouched.
+    #[test]
+    fn u1_grace_and_resume_release_lane1_egress() {
+        // Graced.
+        let (mut host, peer, epoch) = lane1_loaded_host();
+        assert_eq!(host.begin_grace(peer, 100), Ok(30_100));
+        assert_eq!(host.egress_bytes, 0, "the grace frees log and lane 1");
+        {
+            let grace = host.graces.get(&peer).expect("held");
+            assert_eq!(grace.session.lane1_egress(), (0, 0));
+            let lane = super::lane_of(&grace.session).expect("v4");
+            assert_eq!(lane.next_seq, 2, "the first dropped slot's seq");
+            assert_eq!(lane.processed_seq, 1);
+            assert_eq!(lane.cache.len(), 1, "the cache survives");
+        }
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            Ok(ResumeAnswer::Accepted { peer: p, .. }) if p == peer
+        ));
+        let graced_end = {
+            let session = host.sessions.get(&peer).expect("live");
+            assert_eq!(session.lane1_egress(), (0, 0));
+            assert_eq!(host.egress_bytes, session.log_bytes);
+            let lane = super::lane_of(session).expect("v4");
+            assert_eq!(lane.next_seq, lane.processed_seq + 1);
+            (host.egress_bytes, lane.next_seq, lane.cache.len())
+        };
+        // A live resume ends the same.
+        let (mut host, peer, epoch) = lane1_loaded_host();
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 200),
+            Ok(ResumeAnswer::Accepted { peer: p, .. }) if p == peer
+        ));
+        let session = host.sessions.get(&peer).expect("live");
+        assert_eq!(session.lane1_egress(), (0, 0));
+        assert_eq!(host.egress_bytes, session.log_bytes);
+        let lane = super::lane_of(session).expect("v4");
+        assert_eq!(lane.next_seq, lane.processed_seq + 1);
+        assert_eq!(
+            (host.egress_bytes, lane.next_seq, lane.cache.len()),
+            graced_end
+        );
+        // A refused resume (wrong proof) resets nothing.
+        let (mut host, peer, epoch) = lane1_loaded_host();
+        let before = host.sessions.get(&peer).expect("live").lane1_egress();
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xB7)), 200),
+            resume_denied(epoch)
+        );
+        assert_eq!(
+            host.sessions.get(&peer).expect("live").lane1_egress(),
+            before
+        );
+    }
+
+    /// What H-2 says a refusal must leave alone: the lane-1 egress, `next_seq`,
+    /// the unanswered slots' seqs, the released receipts, the queued samples,
+    /// `processed_seq`, the cache length and the host's egress counter.
+    #[derive(Debug, PartialEq)]
+    struct Lane1Image {
+        egress: (usize, usize),
+        next_seq: u64,
+        slot_seqs: Vec<u64>,
+        receipts: Vec<(u64, Vec<u8>)>,
+        samples: Vec<Vec<u8>>,
+        processed_seq: u64,
+        cache_len: usize,
+        host_egress: usize,
+    }
+
+    fn lane1_image(host: &Host, peer: PeerHandle) -> Lane1Image {
+        let session = host.sessions.get(&peer).expect("live");
+        let v4 = session
+            .v3
+            .as_ref()
+            .and_then(|v3| v3.v4.as_ref())
+            .expect("v4");
+        Lane1Image {
+            egress: session.lane1_egress(),
+            next_seq: v4.lane.next_seq,
+            slot_seqs: v4.lane.slots.iter().map(|slot| slot.seq).collect(),
+            receipts: v4.lane.receipts.iter().cloned().collect(),
+            samples: v4.samples.iter().cloned().collect(),
+            processed_seq: v4.lane.processed_seq,
+            cache_len: v4.lane.cache.len(),
+            host_egress: host.egress_bytes,
+        }
+    }
+
+    /// The loaded fixture's lane-1 state, from the contract's own words (seq 1
+    /// released and untaken, seq 2 admitted, one 10-byte sample).
+    fn assert_lane1_loaded(host: &Host, peer: PeerHandle) -> Lane1Image {
+        let image = lane1_image(host, peer);
+        assert_eq!(image.slot_seqs, vec![2]);
+        assert_eq!(image.next_seq, 3);
+        assert_eq!(image.receipts.len(), 1);
+        assert_eq!(image.receipts[0].0, 1);
+        assert_eq!(image.samples, vec![vec![3u8; 10]]);
+        assert_eq!(image.processed_seq, 1);
+        assert_eq!(image.cache_len, 1);
+        assert_eq!(image.egress.0, 3);
+        image
+    }
+
+    /// U2 (H-4, M8c): a live resume refused by the fence check
+    /// (`UnknownFence`: fence 2 against a current fence of 1) answers `Denied`
+    /// and leaves the unanswered lane-1 state exactly as it was. Control: the
+    /// state is loaded (an unanswered slot, a receipt, a sample) before the
+    /// refusal, and the same request at fence 1 is accepted and does reset it.
+    #[test]
+    fn u2_a_fence_refused_live_resume_resets_nothing() {
+        let (mut host, peer, epoch) = lane1_loaded_host();
+        let before = assert_lane1_loaded(&host, peer);
+        assert_eq!(
+            host.resume_peer(&resume_request(epoch, 2, resume_proof(0xA5)), 200),
+            resume_denied(epoch)
+        );
+        assert_eq!(lane1_image(&host, peer), before);
+
+        // Control: the accepted resume does reset the same state.
+        assert!(matches!(
+            host.resume_peer(&resume_request(epoch, 1, resume_proof(0xA5)), 300),
+            Ok(ResumeAnswer::Accepted { peer: p, .. }) if p == peer
+        ));
+        let after = lane1_image(&host, peer);
+        assert_eq!(after.egress, (0, 0));
+        assert_eq!(after.next_seq, 2);
+        assert_eq!(after.slot_seqs, Vec::<u64>::new());
+    }
+
+    /// U3 (H-3, M20): `begin_grace` refused as `NotResumable` (a v4 session
+    /// holding lane-1 state and no stored ticket) changes nothing. Control: the
+    /// state is loaded before the refusal, and once a ticket is stored the same
+    /// grace is accepted and does reset it.
+    #[test]
+    fn u3_a_not_resumable_grace_resets_nothing() {
+        let (mut host, peer, _epoch) = lane1_loaded_host();
+        host.sessions.get_mut(&peer).expect("live").proof = None;
+        let before = assert_lane1_loaded(&host, peer);
+        assert_eq!(host.begin_grace(peer, 100), Err(HostError::NotResumable));
+        assert_eq!(lane1_image(&host, peer), before);
+        assert_eq!(host.grace_deadline(peer), None);
+
+        // Control: with a ticket the grace is accepted and resets lane 1.
+        host.issue_resume_ticket(peer, resume_proof(0xA5))
+            .expect("a v4 session takes a ticket");
+        assert_eq!(host.begin_grace(peer, 100), Ok(30_100));
+        let grace = host.graces.get(&peer).expect("held");
+        assert_eq!(grace.session.lane1_egress(), (0, 0));
+        let lane = super::lane_of(&grace.session).expect("v4");
+        assert_eq!(lane.next_seq, 2);
     }
 }
