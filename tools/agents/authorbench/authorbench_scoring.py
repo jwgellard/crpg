@@ -192,7 +192,7 @@ def read_log(path: Path) -> dict:
         elif etype == "tool_use":
             tools += 1
             state = part.get("state")
-            if part.get("tool") == "bash" and isinstance(state, dict):
+            if part.get("tool") in ("bash", "shell") and isinstance(state, dict):
                 inp = state.get("input")
                 command = inp.get("command") if isinstance(inp, dict) else None
                 if isinstance(command, str):
@@ -204,6 +204,10 @@ def read_log(path: Path) -> dict:
                         metadata = state.get("metadata")
                         metadata = metadata if isinstance(metadata, dict) else {}
                         exit_code = metadata.get("exit")
+                        if not _is_int(exit_code):
+                            nested = metadata.get("metadata")
+                            nested = nested if isinstance(nested, dict) else {}
+                            exit_code = nested.get("exit")
                         if state.get("status") == "error":
                             crpgc_failures += 1
                         elif _is_int(exit_code) and exit_code != 0:

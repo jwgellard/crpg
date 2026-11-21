@@ -223,6 +223,41 @@ class AuthorbenchScoreCase(unittest.TestCase):
         self.assertEqual(result["commands"], {"validate": 1})
         self.assertEqual(result["crpgc_failures"], 0)
 
+    # SC2 (T100-E1): the shell tool, with the exit code one level deeper.
+    def test_sc2_shell_tool_nested_exit(self):
+        log = self.tmp / "shell.jsonl"
+
+        def write(part):
+            log.write_text(json.dumps({"type": "tool_use", "part": part}) + "\n",
+                           encoding="utf-8")
+            return scoring.read_log(log)
+
+        def shell_part(nested_exit):
+            return {"tool": "shell", "state": {
+                "status": "completed",
+                "input": {"command": "crpgc validate campaign --json"},
+                "metadata": {"status": "completed", "truncated": False,
+                             "metadata": {"exit": nested_exit}},
+            }}
+
+        result = write(shell_part(1))
+        self.assertEqual(result["tools"], 1)
+        self.assertEqual(result["crpgc_calls"], 1)
+        self.assertEqual(result["crpgc_failures"], 1)
+        self.assertEqual(result["commands"], {"validate": 1})
+
+        # control: the same crpgc call with the nested exit 0 counts one call
+        # and no failure
+        result = write(shell_part(0))
+        self.assertEqual(result["crpgc_calls"], 1)
+        self.assertEqual(result["crpgc_failures"], 0)
+        self.assertEqual(result["commands"], {"validate": 1})
+
+        # control: a nested boolean exit is not an integer, so not a failure
+        result = write(shell_part(True))
+        self.assertEqual(result["crpgc_calls"], 1)
+        self.assertEqual(result["crpgc_failures"], 0)
+
     # SC3
     def test_sc3_call_crpgc_and_prefix(self):
         self.assertEqual(scoring.crpgc_prefix("x.py"), [sys.executable, "x.py"])
