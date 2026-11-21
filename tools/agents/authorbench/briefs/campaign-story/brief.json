@@ -1,0 +1,18 @@
+{
+ "name": "campaign-story",
+ "kind": "campaign",
+ "starter": null,
+ "minimum": {
+  "creature": 3,
+  "ability": 1,
+  "outcome-table": 1,
+  "ruleset": 1,
+  "encounter": 1,
+  "dialogue": 1,
+  "quest": 1,
+  "graph": 1
+ },
+ "ruleset_slug": null,
+ "min_combatants": 2,
+ "timeout_s": 2400
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The command-line half of the authoring benchmark (T100b).
 
-Runs the benchmark: `setup` builds the five brief templates, `run` starts the
+Runs the benchmark: `setup` builds the six brief templates, `run` starts the
 OpenCode workers (through `oc.py`), `score` judges the runs (through
 `authorbench_scoring.py`), `compare` reports one design against another, and
 `all` chains the three. Standard library only; Python 3.11+. No network, no
@@ -32,7 +32,7 @@ import oc  # noqa: E402
 import authorbench_scoring as scoring  # noqa: E402
 
 BRIEF_ORDER = ["campaign-extend", "campaign-small", "campaign-medium",
-               "campaign-large", "ruleset-small"]
+               "campaign-large", "ruleset-small", "campaign-story"]
 PROMPT = "Read brief.md in this directory and do exactly what it says."
 DEFAULT_DESIGN = "baseline"
 

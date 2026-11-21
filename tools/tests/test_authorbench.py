@@ -24,7 +24,7 @@ FAKE = HERE / "fixtures" / "authorbench" / "fake_crpgc.py"
 FAKE_OPENCODE = HERE / "fake_opencode.py"
 
 BRIEF_ORDER = ["campaign-extend", "campaign-small", "campaign-medium",
-               "campaign-large", "ruleset-small"]
+               "campaign-large", "ruleset-small", "campaign-story"]
 
 PROMPT_TEXT = "Read brief.md in this directory and do exactly what it says."
 
@@ -80,6 +80,7 @@ BUILDS = {
     "campaign-medium": "Build a new campaign named `ashen-vale` from nothing, in `campaign/`. It has one world and one area with the slug `start`. Its rule system is your own, named `focus-d6`: three attributes (might, guile, resolve) and a health stat; a creature has one action each turn. It has three creatures, a hero, a goblin and an archer, each placed in the area. It has two abilities. `strike` costs one action, rolls two six-sided dice against the attacker's might, and on a success deals 2 damage. `focus` costs one action, deals no damage, and on a success gives its user an effect named `focusing`. The effect `focusing` lasts two turns and adds 2 to its bearer's might. Each ability has its own outcome table, `strike-table` and `focus-table`. It has one encounter, `skirmish`, in which all three creatures fight. The fight must start with three combatants.\n",
     "campaign-large": "Build a new campaign named `ashen-reach` from nothing, in `campaign/`. It has one world with two areas, `start` and `ridge`. Its rule system is your own, named `focus-d6`: three attributes (might, guile, resolve) and a health stat; a creature has one action each turn. It has four creatures, a hero, a goblin, an archer and a wolf; place the hero, the goblin and the archer in `start` and the wolf in `ridge`. It has two abilities. `strike` costs one action, rolls two six-sided dice against the attacker's might, and on a success deals 2 damage. `focus` costs one action, deals no damage, and on a success gives its user an effect named `focusing`, which lasts two turns and adds 2 to its bearer's might. Each ability has its own outcome table, `strike-table` and `focus-table`. It has two encounters: `skirmish`, in `start`, in which the hero, the goblin and the archer fight, and `ridge-ambush`, in `ridge`, in which the hero and the wolf fight. It has an item, `healing-draught`, and a faction, `vale-folk`, that the hero and the archer belong to. It has a dialogue, `elder-greeting`, of at least three nodes that ends, and a quest, `clear-the-ridge`, with at least two states, the last of them terminal. Either encounter may be the one that starts first; it must start with at least two combatants.\n",
     "ruleset-small": "Define a small rule system and show that it plays. The rule system is named `tiny-d8` (slug `tiny-d8`). It has three attributes (vigor, finesse, wit) and a health stat; a creature has one action each turn. It has one ability, `cut`, that costs one action and rolls one eight-sided die against the attacker's vigor; it succeeds when the roll is no higher than the vigor, a success deals 3 damage and a failure deals none. It has one outcome table of your own, named `d8-under`. Then build the smallest campaign in `campaign/` that uses it: a campaign named `tiny-test`, one world, one area, two creatures (`squire` and `rat`) placed in the area, and one encounter in which they fight. The fight must start with two combatants.\n",
+    "campaign-story": "Build a new campaign named `quiet-ford` from nothing, in `campaign/`. It has one world and one area with the slug `start`. Its rule system is your own, named `plain-d6`: three attributes (might, guile, resolve) and a health stat; a creature has one action each turn. It has three creatures, a hero, a ferryman and a wolf, each placed in the area. It has one ability, `strike`, that costs one action; a strike rolls two six-sided dice against the attacker's might and succeeds when the roll is no higher than the might, a success deals 2 damage and a failure deals none, and the ability has its own outcome table, `strike-table`. It has a dialogue, `ferryman-talk`, in which the ferryman asks the hero for help: the hero's choice \"I will deal with the wolf\" starts the quest `wolf-hunt`, while \"Not today\" ends the talk. The quest `wolf-hunt` has three states: not started, started and completed. It has an event graph: when the wolf dies, if `wolf-hunt` is started, it becomes completed. It has one encounter, `wolf-fight`, in which the hero and the wolf fight. The fight must start with two combatants.\n",
 }
 
 EXPECTED_BRIEFS = {
@@ -99,6 +100,10 @@ EXPECTED_BRIEFS = {
     "ruleset-small": {"kind": "ruleset", "starter": None,
                       "minimum": {"creature": 2, "ability": 1, "outcome-table": 1, "ruleset": 1, "encounter": 1},
                       "ruleset_slug": "tiny-d8", "min_combatants": 2, "timeout_s": 1800},
+    "campaign-story": {"kind": "campaign", "starter": None,
+                       "minimum": {"creature": 3, "ability": 1, "outcome-table": 1, "ruleset": 1,
+                                   "encounter": 1, "dialogue": 1, "quest": 1, "graph": 1},
+                       "ruleset_slug": None, "min_combatants": 2, "timeout_s": 2400},
 }
 
 TOOLS_TEXT = (
@@ -565,6 +570,11 @@ class AuthorbenchCase(unittest.TestCase):
 
     # CL10
     def test_cl10_shipped_briefs_and_data(self):
+        # T100-E3: six briefs, the held-out `campaign-story` last, in the
+        # module and in this test's copy of the order.
+        self.assertEqual(BRIEF_ORDER, ["campaign-extend", "campaign-small", "campaign-medium",
+                                       "campaign-large", "ruleset-small", "campaign-story"])
+        self.assertEqual(authorbench.BRIEF_ORDER, BRIEF_ORDER)
         for name in BRIEF_ORDER:
             brief = scoring.load_brief(AUTHORBENCH_DIR / "briefs" / name)
             self.assertEqual(brief["name"], name)
@@ -578,6 +588,24 @@ class AuthorbenchCase(unittest.TestCase):
             prompt = (AUTHORBENCH_DIR / "briefs" / name / "prompt.txt").read_text(encoding="utf-8")
             self.assertEqual(prompt, HEAD + BUILDS[name] + TAIL)
             self.assertEqual(prompt.count("{{TOOLS}}"), 1)
+        # T100-E3: `campaign-story` is `campaign-small`'s prompt with only its
+        # "What to build" paragraph replaced (line endings normalised, so the
+        # check holds on either platform's checkout).
+        def lf(path):
+            return path.read_bytes().replace(b"\r\n", b"\n")
+        small_path = AUTHORBENCH_DIR / "briefs" / "campaign-small" / "prompt.txt"
+        story_path = AUTHORBENCH_DIR / "briefs" / "campaign-story" / "prompt.txt"
+        self.assertEqual(lf(story_path),
+                         lf(small_path).replace(BUILDS["campaign-small"].encode("utf-8"),
+                                                BUILDS["campaign-story"].encode("utf-8")))
+        self.assertNotEqual(lf(story_path), lf(small_path))
+        # T100-E3: each story kind `campaign-story` counts is the name
+        # `scan_campaign` reads from a document's `schema` id, so a document
+        # that validates counts towards the floor.
+        for kind in ("dialogue", "quest", "graph"):
+            schema_text = (REPO / "schemas" / f"{kind}.schema.json").read_text(encoding="utf-8")
+            ids = set(re.findall(r'"crpg\.([a-z][a-z0-9-]*)/[0-9]+"', schema_text))
+            self.assertIn(kind, ids, kind)
         self.assertEqual((AUTHORBENCH_DIR / "tools-baseline.txt").read_text(encoding="utf-8"), TOOLS_TEXT)
         self.assertEqual((AUTHORBENCH_DIR / "models.txt").read_text(encoding="utf-8"), MODELS_TEXT)
         shipped = ([AUTHORBENCH_DIR / "tools-baseline.txt", AUTHORBENCH_DIR / "models.txt"]
