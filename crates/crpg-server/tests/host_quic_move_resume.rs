@@ -1209,3 +1209,144 @@ fn refused_lane1_frames_are_rejections() {
         format!("move conn={c} peer=1 frame=3 len=1 seq=- code={}", k as u8)
     );
 }
+
+// ---------------------------------------------------------------------------
+// QR3b `a_held_lane1_retry_is_not_fence_checked` (C-3; T155c fix round A).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_held_lane1_retry_is_not_fence_checked() {
+    let (mut qh, mut clock, _) = start_movement_resumable(ServerLimits::v1());
+    let (mut c1, _, _) = connect_movement(&mut qh, &mut clock, &inv().credential);
+    let h1 = c1.peer;
+    c1.read_until("the ticket", |client| !client.entries.is_empty());
+
+    // Ten intents: eight admitted, the ninth QueueFull and held, the tenth
+    // still unread behind it.
+    let frames: Vec<Vec<u8>> = (1..=10).map(|seq| halt_bytes(e(1), seq, 1)).collect();
+    for bytes in &frames {
+        c1.send_lane1(bytes.clone());
+    }
+    settle_lane1(&qh, &mut c1);
+    let now = CLOCK_START + 10;
+    let (reports, _) = pump_ingests(&mut qh, &mut clock, now, 9);
+    assert_eq!(reports.last().expect("a pump").lane1_held, 1);
+
+    // The held retry meets a full queue again: one traced refusal, at call
+    // position 0 (no `CheckFrame` before it), and the frame stays held.
+    let mut all = Vec::new();
+    let index = pump_at(&mut qh, &mut clock, now, &mut all);
+    let retry = &all[index];
+    let retried: Vec<Lane1Trace> = retry
+        .lane1
+        .iter()
+        .filter(|trace| ingest_frame(trace) != 0)
+        .cloned()
+        .collect();
+    assert_eq!(
+        retried,
+        vec![Lane1Trace {
+            at: 0,
+            call: Lane1Call::IngestMove {
+                conn: c1.conn,
+                peer: h1,
+                frame: 9,
+                len: frames[8].len(),
+                result: MoveAdmission::Refused {
+                    seq: Some(9),
+                    code: CodeV3::QueueFull,
+                },
+            },
+        }]
+    );
+    assert!(
+        retry
+            .calls
+            .iter()
+            .all(|call| !matches!(call, HostCall::CheckFrame { .. })),
+        "a held retry is not fence-checked: {:?}",
+        retry.calls
+    );
+    assert_eq!(retry.lane1_held, 1);
+
+    // After a tick the queue has room: the retry is admitted with no
+    // `CheckFrame` before it; only the fresh tenth frame is checked.
+    let mut after = Vec::new();
+    tick_at(&mut qh, &mut clock, now + 10, &mut after);
+    let start = Instant::now();
+    while !after
+        .iter()
+        .any(|report| report.lane1.iter().any(|trace| ingest_frame(trace) == 10))
+    {
+        assert!(start.elapsed() < DEADLINE, "deadline: the tenth frame");
+        qh.wait(Duration::from_millis(5));
+        pump_at(&mut qh, &mut clock, now + 10, &mut after);
+    }
+    let traces: Vec<&Lane1Trace> = after
+        .iter()
+        .flat_map(|report| report.lane1.iter())
+        .filter(|trace| ingest_frame(trace) != 0)
+        .collect();
+    let (tenth, ninth) = traces.split_last().expect("traces");
+    assert_eq!(
+        tenth.call,
+        Lane1Call::IngestMove {
+            conn: c1.conn,
+            peer: h1,
+            frame: 10,
+            len: frames[9].len(),
+            result: MoveAdmission::Admitted { seq: 10 },
+        }
+    );
+    let (admitted, refused) = ninth.split_last().expect("the ninth frame's traces");
+    assert_eq!(
+        admitted.call,
+        Lane1Call::IngestMove {
+            conn: c1.conn,
+            peer: h1,
+            frame: 9,
+            len: frames[8].len(),
+            result: MoveAdmission::Admitted { seq: 9 },
+        }
+    );
+    for trace in refused {
+        assert_eq!(
+            trace.call,
+            Lane1Call::IngestMove {
+                conn: c1.conn,
+                peer: h1,
+                frame: 9,
+                len: frames[8].len(),
+                result: MoveAdmission::Refused {
+                    seq: Some(9),
+                    code: CodeV3::QueueFull,
+                },
+            }
+        );
+    }
+    for trace in ninth {
+        assert_eq!(trace.at, 0, "no CheckFrame before a retry's ingest");
+    }
+    let checks: Vec<&HostCall> = after
+        .iter()
+        .flat_map(|report| report.calls.iter())
+        .filter(|call| matches!(call, HostCall::CheckFrame { .. }))
+        .collect();
+    assert_eq!(
+        checks,
+        vec![&HostCall::CheckFrame {
+            conn: c1.conn,
+            peer: h1,
+            fence: grant(1),
+            result: Ok(()),
+        }]
+    );
+}
+
+/// The frame ordinal of an `IngestMove` trace; 0 for any other.
+fn ingest_frame(trace: &Lane1Trace) -> u64 {
+    match trace.call {
+        Lane1Call::IngestMove { frame, .. } => frame,
+        _ => 0,
+    }
+}
