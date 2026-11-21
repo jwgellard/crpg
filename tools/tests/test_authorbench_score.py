@@ -668,6 +668,40 @@ class AuthorbenchScoreCase(unittest.TestCase):
         empty.write_text("", encoding="utf-8")
         self.assertIs(scoring.ends_in_service_fault(empty), False)
 
+    # SC12 (T100-E4)
+    def test_sc12_go_limit_anywhere_excludes(self):
+        log = self.tmp / "golimit.jsonl"
+        base = [json.dumps(line) for line in sc2_lines()]
+        self.assertEqual(len(base), 11)
+        limit = json.dumps({"type": "error",
+                            "error": {"type": "provider.go-limit", "message": "x", "status": 429}})
+
+        def check(tag, lines, expected):
+            log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self.assertIs(scoring.ends_in_service_fault(log), expected, tag)
+
+        def after_third(line):
+            return base[:3] + [line] + base[3:]
+
+        # the quota error excludes wherever it appears
+        check("after third line", after_third(limit), True)
+        check("last line", base + [limit], True)
+        check("followed by step_start",
+              base + [limit, json.dumps({"type": "step_start", "part": {}})], True)
+
+        # controls
+        check("other provider type",
+              after_third(json.dumps({"type": "error",
+                                      "error": {"type": "provider.other", "status": 429}})),
+              False)
+        check("error is a string",
+              after_third(json.dumps({"type": "error", "error": "provider.go-limit"})), False)
+        check("non-json line", after_third("provider.go-limit"), False)
+        check("non-error event with the type",
+              after_third(json.dumps({"type": "text",
+                                      "error": {"type": "provider.go-limit"}})), False)
+        check("SC2 alone", base, False)
+
 
 if __name__ == "__main__":
     unittest.main()
