@@ -936,3 +936,150 @@ fn v6_v4_graces_expire_and_never_reach_a_checkpoint() {
         acc(ep, eepoch, 2, 0)
     );
 }
+
+// ---------------------------------------------------------------------------
+// V7 and V8: what a grace and a resume leave alone (H-2).
+// ---------------------------------------------------------------------------
+
+/// `P` spends its whole lane-1 burst (`POLICY_MOVE_INTENT_BURST` = 40) at
+/// `now_ms` 10, five rounds of eight halts, each round ticked and its receipts
+/// taken so that the in-flight window never refuses. The 41st intent is then
+/// refused by the rate limit: the bucket really is empty.
+fn deplete_move_bucket(rig: &mut Rig, p: PeerHandle, epoch: [u8; 16]) {
+    for round in 0..5u64 {
+        for k in 1..=8u64 {
+            let seq = round * 8 + k;
+            assert_eq!(
+                rig.ingest_move(p, &halt(epoch, seq, 1), 10),
+                MoveAdmission::Admitted { seq }
+            );
+        }
+        assert_ticked_at(rig, 10);
+        let got = rig.receipts(p);
+        assert_eq!(got.len(), 8);
+        assert_eq!(got[7].seq, round * 8 + 8);
+    }
+    assert_eq!(
+        rig.ingest_move(p, &halt(epoch, 41, 1), 10),
+        MoveAdmission::Refused {
+            seq: Some(41),
+            code: CodeV3::RateLimited,
+        }
+    );
+}
+
+/// V7 (H-2, M14): the move-intent bucket is unchanged by a grace and by a
+/// resume. `P` is depleted, reconnects at the same millisecond, and the next
+/// intent is still refused by the rate limit; one refill interval later (50 ms
+/// at 20 per second is exactly one token) it is admitted, as in the control
+/// that never reconnects. Both the graced and the live resume are covered.
+#[test]
+fn v7_the_move_bucket_is_unchanged_by_grace_and_resume() {
+    // Graced, then resumed.
+    let (mut rig, p, epoch, _client) = ticketed_rig();
+    deplete_move_bucket(&mut rig, p, epoch);
+    assert_eq!(rig.host.begin_grace(p, 10), Ok(30_010));
+    assert_eq!(
+        rig.host.resume_peer(&req(epoch, 1, proof_p()), 10),
+        acc(p, epoch, 2, 0)
+    );
+    assert_eq!(
+        rig.ingest_move(p, &halt(epoch, 41, 1), 10),
+        MoveAdmission::Refused {
+            seq: Some(41),
+            code: CodeV3::RateLimited,
+        }
+    );
+    assert_eq!(
+        rig.ingest_move(p, &halt(epoch, 41, 1), 60),
+        MoveAdmission::Admitted { seq: 41 }
+    );
+
+    // Live resume with no grace.
+    let (mut live, lp, lepoch, _client) = ticketed_rig();
+    deplete_move_bucket(&mut live, lp, lepoch);
+    assert_eq!(
+        live.host.resume_peer(&req(lepoch, 1, proof_p()), 10),
+        acc(lp, lepoch, 2, 0)
+    );
+    assert_eq!(
+        live.ingest_move(lp, &halt(lepoch, 41, 1), 10),
+        MoveAdmission::Refused {
+            seq: Some(41),
+            code: CodeV3::RateLimited,
+        }
+    );
+    assert_eq!(
+        live.ingest_move(lp, &halt(lepoch, 41, 1), 60),
+        MoveAdmission::Admitted { seq: 41 }
+    );
+
+    // Control: no reconnect at all gives the same two answers.
+    let (mut twin, tp, tepoch, _client) = ticketed_rig();
+    deplete_move_bucket(&mut twin, tp, tepoch);
+    assert_eq!(
+        twin.ingest_move(tp, &halt(tepoch, 41, 1), 10),
+        MoveAdmission::Refused {
+            seq: Some(41),
+            code: CodeV3::RateLimited,
+        }
+    );
+    assert_eq!(
+        twin.ingest_move(tp, &halt(tepoch, 41, 1), 60),
+        MoveAdmission::Admitted { seq: 41 }
+    );
+}
+
+/// V8 (H-2, M15): the withheld set is unchanged by a grace and by a resume. `b`
+/// is withheld from `P`, so `P`'s replica holds the positions of `a` and `c`
+/// only; after a grace and a resume (and after a live resume) the resume
+/// snapshot still anchors `a` and `c` alone. Control: the unwithheld session
+/// of the V4 test anchors all three movers.
+#[test]
+fn v8_the_withheld_set_is_unchanged_by_grace_and_resume() {
+    let without_b = vec![
+        (1, pt(65536, 0, 65536), false),
+        (3, pt(65536, 0, 327680), false),
+    ];
+    // Graced, then resumed.
+    let (mut rig, p, epoch, mut cl) = ticketed_rig();
+    rig.host
+        .set_position_withheld(p, vec![b()])
+        .expect("withholds");
+    cl.drain(&mut rig.host, p, 10);
+    assert_positions(&cl, &without_b);
+    assert_eq!(rig.host.begin_grace(p, 20), Ok(30_020));
+    assert_eq!(
+        rig.host.resume_peer(&req(epoch, 1, proof_p()), 30),
+        acc(p, epoch, 2, 0)
+    );
+    cl.pool.rebind_receiver(cl.rid, 30).expect("rebinds");
+    cl.drain(&mut rig.host, p, 30);
+    assert_eq!(cl.last_snapshot, Some(TransferId::new(2).expect("nonzero")));
+    assert_positions(&cl, &without_b);
+
+    // Live resume with no grace.
+    let (mut live, lp, lepoch, mut lcl) = ticketed_rig();
+    live.host
+        .set_position_withheld(lp, vec![b()])
+        .expect("withholds");
+    lcl.drain(&mut live.host, lp, 10);
+    assert_positions(&lcl, &without_b);
+    assert_eq!(
+        live.host.resume_peer(&req(lepoch, 1, proof_p()), 30),
+        acc(lp, lepoch, 2, 0)
+    );
+    lcl.pool.rebind_receiver(lcl.rid, 30).expect("rebinds");
+    lcl.drain(&mut live.host, lp, 30);
+    assert_positions(&lcl, &without_b);
+
+    // Control: with nothing withheld the same resume anchors all three.
+    let (mut twin, tp, tepoch, mut tcl) = ticketed_rig();
+    assert_eq!(
+        twin.host.resume_peer(&req(tepoch, 1, proof_p()), 30),
+        acc(tp, tepoch, 2, 0)
+    );
+    tcl.pool.rebind_receiver(tcl.rid, 30).expect("rebinds");
+    tcl.drain(&mut twin.host, tp, 30);
+    assert_positions(&tcl, &start_points());
+}
