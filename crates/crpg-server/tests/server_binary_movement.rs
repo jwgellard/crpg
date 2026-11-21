@@ -22,8 +22,20 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crpg_core::Ulid;
+use crpg_net::codec_v4;
 use crpg_net::movement_v4::{encode_intent, MoveBody, MoveIntent};
-use crpg_net::protocol::NetId;
+use crpg_net::pool_v4::{
+    GateMode, ReassemblyPoolV4, ReceiverIdV4, ReplicaUpdateV4, TransferLimitsV3,
+};
+use crpg_net::protocol::{NetId, LANE_COMBAT};
+use crpg_net::protocol_transfer::{TransferId, TransferUp};
+use crpg_net::protocol_v3::{
+    DeltaOp as OpV3, PauseReason, PauseRights, ReceiptStatus, RejectionCode,
+};
+use crpg_net::protocol_v4::{DeltaOp, IntentBody, IntentFrame, SessionEpoch};
+use crpg_net::replica_v3::PauseState;
+use crpg_net::replica_v4::ReplicaWorldV4;
+use crpg_net::transfer_v3;
 use crpg_net_quic::{
     Channel, ClientLimits, ConnectError, Framing, Hello, QuicClient, MOVEMENT_WIRE_VERSION,
 };
@@ -576,4 +588,446 @@ fn a_refused_move_is_a_reject_line() {
     server.send("quit\n");
     assert_eq!(server.wait().code(), Some(0));
     assert_no_credential(&server.rest());
+}
+
+// ---------------------------------------------------------------------------
+// Fix round A: the new configuration's refusals and the invitation's mapping.
+// ---------------------------------------------------------------------------
+
+/// `movement_entry(credential_hex)` with `facts` and/or `rights` removed.
+fn entry_without(credential_hex: &str, drop_facts: bool, drop_rights: bool) -> Value {
+    let mut entry = movement_entry(credential_hex);
+    let object = entry.as_object_mut().expect("object");
+    if drop_facts {
+        object.remove("facts");
+    }
+    if drop_rights {
+        object.remove("rights");
+    }
+    entry
+}
+
+/// One refused run of the default (combat) configuration over `invitations`:
+/// exit 1, exactly the one line `expected`, sidecar unchanged.
+fn assert_combat_refused(name: &str, invitations: &Value, expected: &str) {
+    let s = Setup::new(name);
+    s.write_json("invitations.json", invitations);
+    assert_refused(&s, expected);
+}
+
+/// B-M1: `"movement": false` and `"movement": null` are the combat wire
+/// exactly: the combat start line, a `/3` hello refused, and a movement
+/// entry refused as a combat world refuses it.
+#[test]
+fn movement_false_is_the_combat_wire() {
+    for (name, value) in [("sm5_false", json!(false)), ("sm5_null", json!(null))] {
+        // The start line and the endpoint are the default's.
+        let s = Setup::new(name);
+        let mut config = s.config();
+        config["movement"] = value.clone();
+        s.write_config(&config);
+        let mut server = Server::spawn(&s.config_path(), true);
+        let start = server.start();
+        assert_eq!(start.line, start_line(start.port, 8, "none", "off"));
+        assert!(matches!(
+            connect_movement(start.port),
+            Err(ConnectError::Handshake)
+        ));
+        assert!(hello(start.port, &x()).is_ok());
+        drop(server);
+
+        // A movement entry is refused as in a combat world.
+        let s = Setup::new(&format!("{name}_entry"));
+        let mut config = s.config();
+        config["movement"] = value;
+        s.write_config(&config);
+        s.write_json("invitations.json", &json!([movement_entry(&hex(&x()))]));
+        assert_refused(
+            &s,
+            "crpg-server: error invitations: entry 0: facts and rights need movement",
+        );
+    }
+}
+
+/// B-M2: in a combat world an entry with only `rights`, and one with only
+/// `facts`, are each refused, naming their own index (entry 1, after a good
+/// entry 0).
+#[test]
+fn combat_entry_with_one_of_facts_or_rights_is_refused() {
+    let expected = "crpg-server: error invitations: entry 1: facts and rights need movement";
+    let good = invitation_entry(&hex(&x()));
+
+    // Only `rights`.
+    let mut only_rights = invitation_entry(&hex(&y()));
+    only_rights["rights"] = json!({"pause": false, "unpause": false});
+    assert_combat_refused(
+        "sm6_only_rights",
+        &json!([good.clone(), only_rights]),
+        expected,
+    );
+
+    // Only `facts`.
+    let mut only_facts = invitation_entry(&hex(&y()));
+    only_facts["facts"] = entry_without(&hex(&y()), false, true)["facts"].clone();
+    assert_combat_refused("sm6_only_facts", &json!([good, only_facts]), expected);
+}
+
+/// Where in an entry a case adds the unknown key.
+type Place = fn(&mut Value) -> &mut Value;
+
+/// The unknown key every `deny_unknown_fields` case adds.
+const UNKNOWN_KEY: &str = "bogus";
+
+/// Each of the five new invitation types refuses an unknown key inside it:
+/// exit 1, one line, serde's `unknown field` text under the `invitations`
+/// prefix, sidecar unchanged.
+#[test]
+fn unknown_keys_in_the_new_invitation_types_are_refused() {
+    let places: [(&str, Place); 5] = [
+        ("facts", |e| &mut e["facts"]),
+        ("entity", |e| &mut e["facts"]["entities"][0]),
+        ("encounter", |e| &mut e["facts"]["encounter"]),
+        ("host", |e| &mut e["facts"]["host"]),
+        ("rights", |e| &mut e["rights"]),
+    ];
+    for (name, place) in places {
+        let s = Setup::new(&format!("sm7_{name}"));
+        let mut entry = movement_entry(&hex(&x()));
+        place(&mut entry)[UNKNOWN_KEY] = json!(1);
+        s.write_json("invitations.json", &json!([entry]));
+        s.write_config(&movement_config(&s));
+        let result = s.run_to_exit();
+        let line = assert_one_error(&result);
+        assert!(
+            line.starts_with(&format!(
+                "crpg-server: error invitations: unknown field `{UNKNOWN_KEY}`, expected "
+            )),
+            "{name}: {line}"
+        );
+        assert_eq!(s.sidecar(), "7\n");
+    }
+}
+// ---------------------------------------------------------------------------
+// The invitation's mapping, seen by a movement client (M9d-M9g, M10-M11).
+// ---------------------------------------------------------------------------
+
+/// The per-field flags of one movement invitation, in the key order of
+/// `FactsEntry` and `RightsEntry`.
+struct Flags {
+    /// `[pools, effects, stats, tags]` of entities `a`, `b` and `c`.
+    entities: [[bool; 4]; 3],
+    /// `[mode, pending_mode, clock, timeline]`.
+    encounter: [bool; 4],
+    /// `[pause_reason, auto_pause, turn_timer]`.
+    host: [bool; 3],
+    /// `[pause, unpause]`.
+    rights: [bool; 2],
+    /// The indices (0 = `a`) the invitation controls.
+    control: Vec<u32>,
+}
+
+/// A movement entry for `X` carrying exactly `flags`.
+fn flagged_entry(flags: &Flags) -> Value {
+    let entity = |index: u32| json!({"index": index, "generation": 1});
+    let mut entry = movement_entry(&hex(&x()));
+    entry["control"] = json!(flags.control.iter().map(|i| entity(*i)).collect::<Vec<_>>());
+    let rows: Vec<Value> = flags
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            json!({
+                "entity": entity(i as u32),
+                "pools": f[0], "effects": f[1], "stats": f[2], "tags": f[3]
+            })
+        })
+        .collect();
+    let e = flags.encounter;
+    let h = flags.host;
+    entry["facts"] = json!({
+        "entities": rows,
+        "encounter": {"mode": e[0], "pending_mode": e[1], "clock": e[2], "timeline": e[3]},
+        "host": {"pause_reason": h[0], "auto_pause": h[1], "turn_timer": h[2]}
+    });
+    entry["rights"] = json!({"pause": flags.rights[0], "unpause": flags.rights[1]});
+    entry
+}
+
+/// A movement client that keeps a v4 replica of what the server sends and
+/// records every lane-0 receipt (the reading half of
+/// `tests/host_lane1.rs`'s `Client`, over a real connection).
+struct Viewer {
+    client: QuicClient,
+    epoch: [u8; 16],
+    pool: ReassemblyPoolV4,
+    rid: ReceiverIdV4,
+    replica: ReplicaWorldV4,
+    snapshot: Option<TransferId>,
+    receipts: Vec<(u64, ReceiptStatus)>,
+    started: Instant,
+}
+
+impl Viewer {
+    fn connect(port: u16) -> Viewer {
+        let client = connect_movement(port).expect("a movement hello connects");
+        let epoch = client.welcome().epoch;
+        let mut pool = ReassemblyPoolV4::new(TransferLimitsV3::v3()).expect("v3 limits");
+        let rid = pool
+            .add_receiver(epoch, GateMode::AwaitSnapshot)
+            .expect("receiver");
+        Viewer {
+            client,
+            epoch,
+            pool,
+            rid,
+            replica: ReplicaWorldV4::new(SessionEpoch(epoch)),
+            snapshot: None,
+            receipts: Vec::new(),
+            started: Instant::now(),
+        }
+    }
+
+    /// Reads everything available, feeds the gate and applies what it
+    /// releases; publishes the first snapshot.
+    fn pump(&mut self) {
+        let now = self.started.elapsed().as_millis() as u64;
+        loop {
+            match self.client.try_recv_channel() {
+                Ok(Some((Channel::Resume, _))) => {}
+                Ok(Some((Channel::Transfer, bytes))) => {
+                    self.pool
+                        .offer_transfer(self.rid, &bytes, now)
+                        .expect("the gate accepts the transfer frame");
+                }
+                Ok(Some((Channel::Lane0, bytes))) => {
+                    self.pool
+                        .offer_delta(self.rid, &bytes, now)
+                        .expect("the gate accepts the delta frame");
+                }
+                Ok(None) => break,
+                Err(reason) => panic!("the connection closed: {reason:?}"),
+            }
+        }
+        while let Some(update) = self.pool.pop_update(self.rid) {
+            match update {
+                ReplicaUpdateV4::Snapshot(publication) => {
+                    self.snapshot = Some(publication.transfer);
+                    self.replica.apply_snapshot(&publication).expect("applies");
+                    let bytes = transfer_v3::encode_up(&TransferUp::Published {
+                        epoch: self.epoch,
+                        transfer: publication.transfer,
+                    })
+                    .expect("encodes");
+                    self.client
+                        .try_send_channel(Channel::Transfer, &bytes)
+                        .expect("publishes");
+                }
+                ReplicaUpdateV4::Delta(frame) => {
+                    for op in &frame.ops {
+                        if let DeltaOp::V3(OpV3::Receipt { seq, status, .. }) = op {
+                            self.receipts.push((*seq, *status));
+                        }
+                    }
+                    self.replica.apply_delta(&frame).expect("applies");
+                }
+            }
+        }
+    }
+
+    /// Guard: pumps until `cond` holds, panicking `"deadline"` after
+    /// `rig::DEADLINE`.
+    fn until(&mut self, what: &str, cond: impl Fn(&Viewer) -> bool) {
+        let start = Instant::now();
+        loop {
+            self.pump();
+            if cond(self) {
+                return;
+            }
+            assert!(start.elapsed() < rig::DEADLINE, "deadline: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Waits for the first anchored image: a snapshot and the host facts.
+    fn ready(&mut self) {
+        self.until("the first anchored image", |v| {
+            v.snapshot.is_some() && v.replica.v3().host_facts().is_some()
+        });
+    }
+
+    /// Sends one lane-0 intent for the actor `n(actor)`.
+    fn send(&mut self, seq: u64, actor: u64, body: IntentBody) {
+        let bytes = codec_v4::encode_intent(&IntentFrame {
+            epoch: self.epoch,
+            lane: LANE_COMBAT,
+            seq,
+            observed_tick: self.replica.v3().server_tick(),
+            actor: NetId::new(actor).expect("nonzero"),
+            body,
+        })
+        .expect("encodes");
+        self.client
+            .try_send_channel(Channel::Lane0, &bytes)
+            .expect("sends on lane 0");
+    }
+
+    /// Guard: the receipt of `seq`.
+    fn receipt(&mut self, seq: u64) -> ReceiptStatus {
+        self.until("a receipt", |v| v.receipts.iter().any(|(s, _)| *s == seq));
+        self.receipts
+            .iter()
+            .find(|(s, _)| *s == seq)
+            .map(|(_, status)| *status)
+            .expect("the receipt is there")
+    }
+}
+
+/// What the first image must show of `flags`: each family is disclosed
+/// exactly when its flag is true (`facts_v3.rs`: `None` is withheld), the
+/// standing order follows control, and the host facts carry the rights
+/// whatever the grants say.
+fn assert_image_follows(viewer: &Viewer, flags: &Flags) {
+    let replica = viewer.replica.v3();
+    let rows = replica.entities();
+    assert_eq!(rows.len(), 3);
+    for (i, row) in rows.iter().enumerate() {
+        let f = flags.entities[i];
+        let controlled = flags.control.contains(&(i as u32));
+        assert_eq!(row.net_id, NetId::new(i as u64 + 1).expect("nonzero"));
+        assert_eq!(
+            [
+                row.facts.pools.is_some(),
+                row.facts.effects.is_some(),
+                row.facts.stats.is_some(),
+                row.facts.tags.is_some(),
+                row.facts.order.is_some(),
+            ],
+            [f[0], f[1], f[2], f[3], controlled],
+            "entity {i}"
+        );
+    }
+    let encounter = replica.encounter();
+    assert_eq!(
+        [
+            encounter.mode.is_some(),
+            encounter.pending_mode.is_some(),
+            encounter.clock.is_some(),
+            replica.timeline().is_some(),
+        ],
+        flags.encounter
+    );
+    let host = replica.host_facts().expect("host facts");
+    assert_eq!(
+        host.rights,
+        PauseRights {
+            pause: flags.rights[0],
+            unpause: flags.rights[1],
+        }
+    );
+    assert_eq!(host.auto_pause.is_some(), flags.host[1]);
+    assert_eq!(host.turn_timer_ms.is_some(), flags.host[2]);
+}
+
+/// The viewer's pause state as a plain value.
+fn assert_pause(viewer: &Viewer, expected: PauseState) {
+    assert_eq!(viewer.replica.v3().pause(), Some(expected));
+}
+
+/// Runs the binary over `flags` and checks, as the client of the invitation,
+/// the first image, then a `Pause` by actor `n(actor)` and an `Unpause`.
+fn run_flagged(name: &str, flags: &Flags, actor: u64) {
+    let s = Setup::new(name);
+    s.write_json("invitations.json", &json!([flagged_entry(flags)]));
+    s.write_config(&movement_config(&s));
+    let mut server = Server::spawn(&s.config_path(), true);
+    let start = server.start();
+    let mut viewer = Viewer::connect(start.port);
+    viewer.ready();
+    assert_image_follows(&viewer, flags);
+
+    // `Pause` needs the `pause` right; its reason is disclosed exactly when
+    // `host.pause_reason` is (`PauseReason::Player`).
+    let [pause, unpause] = flags.rights;
+    let paused = PauseState::Paused {
+        reason: flags.host[0].then_some(PauseReason::Player),
+    };
+    viewer.send(1, actor, IntentBody::Pause);
+    if pause {
+        assert_eq!(viewer.receipt(1), ReceiptStatus::Applied);
+        viewer.until("the pause", |v| v.replica.v3().pause() == Some(paused));
+        assert_pause(&viewer, paused);
+    } else {
+        assert_eq!(
+            viewer.receipt(1),
+            ReceiptStatus::Rejected(RejectionCode::NoPauseRight)
+        );
+        assert_pause(&viewer, PauseState::Running);
+    }
+
+    // `Unpause` needs the `unpause` right (an unpause of a running host is
+    // applied and changes nothing).
+    viewer.send(2, actor, IntentBody::Unpause);
+    if unpause {
+        assert_eq!(viewer.receipt(2), ReceiptStatus::Applied);
+        viewer.until("the unpause", |v| {
+            v.replica.v3().pause() == Some(PauseState::Running)
+        });
+        assert_pause(&viewer, PauseState::Running);
+    } else {
+        assert_eq!(
+            viewer.receipt(2),
+            ReceiptStatus::Rejected(RejectionCode::NoPauseRight)
+        );
+        // Still as the pause left it.
+        assert_pause(&viewer, if pause { paused } else { PauseState::Running });
+    }
+
+    server.send("quit\n");
+    assert_eq!(server.wait().code(), Some(0));
+    assert_no_credential(&server.rest());
+}
+
+/// B-M4: a movement invitation's `control`, `grants`, `facts` and `rights`
+/// reach the host field for field. Entity flags differ within and across
+/// entities, the encounter flags alternate, the host flags and the rights
+/// differ, and the viewer reads the first image and tries a pause and an
+/// unpause. This run may pause, may not unpause, and controls `a` and `c`.
+#[test]
+fn invitation_mapping_pause_allowed_unpause_denied() {
+    run_flagged(
+        "sm8_pause_only",
+        &Flags {
+            entities: [
+                [true, false, true, false],
+                [false, true, false, true],
+                [true, true, false, false],
+            ],
+            encounter: [true, false, true, false],
+            host: [true, false, false],
+            rights: [true, false],
+            control: vec![0, 2],
+        },
+        1,
+    );
+}
+
+/// B-M4, the other polarity: this run may not pause, may unpause, discloses
+/// the other host flags, and controls `b` alone.
+#[test]
+fn invitation_mapping_pause_denied_unpause_allowed() {
+    run_flagged(
+        "sm8_unpause_only",
+        &Flags {
+            entities: [
+                [false, true, false, true],
+                [true, false, true, false],
+                [false, false, true, true],
+            ],
+            encounter: [false, true, false, true],
+            host: [false, true, false],
+            rights: [false, true],
+            control: vec![1],
+        },
+        2,
+    );
 }
