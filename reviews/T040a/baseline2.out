@@ -1,0 +1,243 @@
+   Compiling crpg-server v0.1.0 (C:\crpg\dev\crpg-slots\slot-2\crates\crpg-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.68s
+     Running unittests src\lib.rs (target\debug\deps\crpg_server-9f03e56e46bc1a16.exe)
+
+running 121 tests
+test capture::tests::host_record_bounds ... ok
+test capture::tests::host_op_names_are_snake_case ... ok
+test capture::tests::outcome_vocabulary_is_exact ... ok
+test checkpoint::tests::errors_display_variant_and_location_only ... ok
+test capture::tests::record_round_trips_in_declaration_order ... ok
+test checkpoint::tests::host_record_shape_rules ... ok
+test host::ai::tests::route_tags_agree ... ok
+test capture::tests::host_record_decode_rejects_missing_unknown_and_duplicate ... ok
+test capture::tests::decode_rejects_missing_unknown_duplicate_and_zero ... ok
+test capture::tests::host_record_round_trips_in_declaration_order ... ok
+test checkpoint::tests::loader_bounds ... ok
+test host::tests::begin_grace_sweeps_expired_graces_before_holding_a_new_one ... ok
+test host::tests::accepted_room_skips_v3_sessions ... ok
+test host::tests::a_failed_record_still_publishes_the_page ... ok
+test host::tests::a_page_puts_enters_before_events_before_state ... ok
+test host::tests::an_overflow_with_a_transfer_in_flight_cancels_it_superseded ... ok
+test host::tests::code_map_and_trusted_projection ... ok
+test host::tests::candidates_follow_the_grant_table ... ok
+test host::tests::b8_staging_counts_every_frame ... ok
+test host::tests::capture_full_displays_and_has_no_source ... ok
+test host::tests::bind_never_blocks_on_egress_and_outbox_is_replaced ... ok
+test host::tests::a_page_over_the_byte_cap_restages ... ok
+test host::tests::codec_map_is_identity ... ok
+test host::tests::a_despawn_page_needs_the_despawn_grant_and_names_the_retired_id ... ok
+test host::tests::constants_reference_the_net_policy ... ok
+test host::tests::errors_display_variant_and_location_only ... ok
+test host::ai::tests::host_route_equals_plan_route ... ok
+test host::tests::a_large_page_is_cut_into_gapless_spans ... ok
+test host::tests::capture_ledger_counts_both_entry_kinds ... ok
+test host::tests::c8_samples_share_egress ... ok
+test host::tests::grace_purges_ingress_counters_and_resume_refills_no_cap ... ok
+test host::tests::discarding_a_log_releases_its_egress_bytes ... ok
+test host::tests::host_read_api_smoke ... ok
+test host::tests::host_egress_tracks_lane1_through_admit_release_take_resend_and_fence ... ok
+test host::tests::host_input_clamps_the_timer_remainder ... ok
+test host::tests::outbox_bound_is_exact ... ok
+test host::tests::not_v3_peer_display_is_pinned ... ok
+test host::tests::command_tail_acknowledges_even_when_the_record_fails ... ok
+test host::tests::ingest_move_per_peer_ingress_bytes_are_inclusive ... ok
+test host::tests::ingest_move_charges_intent_bytes_when_frames_refuse ... ok
+test host::tests::pace_session_counts_lane1_bytes_and_frames_separately ... ok
+test host::tests::lane1_host_byte_cap_binds_admission_and_resend ... ok
+test host::tests::pace_session_counts_lane1_reservations ... ok
+test host::tests::protocol_selection_bytes ... ok
+test host::tests::host_record_reservation_bounds ... ok
+test host::tests::queue_samples_counts_lane1_reservations ... ok
+test host::tests::project_tick_samples_frame_cap_drops_the_sample ... ok
+test host::tests::queue_samples_counts_lane1_bytes_beside_the_log ... ok
+test host::tests::joined_and_left_pages_follow_their_grants ... ok
+test host::tests::pacing_byte_caps_are_inclusive ... ok
+test host::tests::project_tick_samples_after_the_tick_page ... ok
+test host::tests::project_tick_samples_host_cap_serves_the_lower_handle ... ok
+test host::tests::pacing_respects_every_cap_in_order ... ok
+test host::tests::queue_samples_host_cap_boundary ... ok
+test host::tests::refused_tick_keeps_the_old_sample_queue ... ok
+test host::tests::queue_samples_replaces_and_releases ... ok
+test host::tests::release_move_receipts_spends_failure_budget_at_host_time ... ok
+test host::tests::room_for_counts_lane1_bytes ... ok
+test host::tests::session_count_counts_held_graces ... ok
+test host::tests::restage_retires_the_old_log ... ok
+test host::tests::samples_keep_datagram_order ... ok
+test host::tests::shutdown_releases_all_egress ... ok
+test host::tests::snapshot_staging_without_room_changes_nothing ... ok
+test host::tests::resume_plan_refusals_leave_the_lane0_session_untouched ... ok
+test host::tests::snapshot_counter_exhaustion_changes_nothing ... ok
+test host::tests::t037b_fix3a_s01_transfer_sentinel_is_counter_exhausted ... ok
+test host::tests::resume_plan_refusals_leave_the_v3_session_untouched ... ok
+test host::tests::t037b_fix3a_s17_event_seq_sentinel_is_counter_exhausted ... ok
+test host::tests::t037b_fix3b_b07_handle_sentinel_is_counter_exhausted ... ok
+test host::tests::t037b_fix3a_s10_cancel_counts_toward_the_plan ... ok
+test host::tests::t037b_fix3a_s13_ordinal_room_covers_the_whole_plan ... ok
+test host::tests::t037b_fix3b_p22_empty_page_captures_nothing ... ok
+test host::tests::t037b_fix3b_p24_page_event_seq_sentinel_is_counter_exhausted ... ok
+test host::tests::t037b_fix3b_w09_withheld_publishes_to_that_session_alone ... ok
+test host::tests::t037b_gap10_page_order_is_receipt_enters_events_rest ... ok
+test host::tests::stage_room_counts_lane1 ... ok
+test host::tests::t141e_byte_budget_stops_before_the_frame_budget ... ok
+test host::tests::t037b_gap8_moved_carries_the_post_page_id ... ok
+test host::tests::t141e_frame_budget_is_exact_and_closing_is_final ... ok
+test host::tests::t037b_gap9_despawned_page_uses_the_list_and_the_retired_id ... ok
+test host::tests::t141e_in_flight_policy_equals_the_receiver_limits ... ok
+test host::tests::t141e_a_logged_receipt_spends_the_allowance ... ok
+test host::tests::t141e_staging_counts_its_delta_in_the_throttle ... ok
+test host::tests::t037b_fix3b_p12_page_candidates_chunk_at_256 ... ok
+test host::tests::t141e_throttle_spacing_counts_from_the_last_logged_frames ... ok
+test host::tests::t141e_stale_published_keeps_the_throttle ... ok
+test host::tests::take_delivery_paces_the_outbox ... ok
+test host::tests::tail_acknowledges_even_when_the_record_fails ... ok
+test host::tests::t141e_host_frame_budget_boundary ... ok
+test host::tests::timer_epoch_counts_arm_disarm_freeze_and_resume ... ok
+test host::tests::a_failed_restage_fences_one_session_and_the_tick_succeeds ... ok
+test host::tests::timer_expiry_with_a_refused_end_turn_disarms ... ok
+test host::tests::unaffordable_move_is_rejected_with_a_full_accepted_class ... ok
+test host::tests::a_fenced_originator_still_commits ... ok
+test host::tests::v3_sessions_are_not_served_v2_bytes ... ok
+test host_v4::tests::b7_outbox_bound_v4 ... ok
+test host::tests::v3_staging_refuses_the_last_event_seq ... ok
+test host_v4::tests::d10_largest_receipt_fits_the_reservation ... ok
+test host_v4::tests::lane_egress_counts_slots_receipts_and_samples ... ok
+test host::tests::v3_staging_counters_are_checked_before_anything_changes ... ok
+test host::tests::v3_staging_takes_one_event_seq_per_plan ... ok
+test host::tests::t141e_budget_refusal_closes_only_that_session ... ok
+test quic::tests::admissions_filter_and_display ... ok
+test host::tests::t141e_host_byte_budget_at_the_cap_and_one_over ... ok
+test run::lane1_hold_unit_tests::reheld_frame_returns_to_front ... ok
+test host::tests::t141e_only_a_running_tick_sends_the_heartbeat ... ok
+test run::lane1_hold_unit_tests::reheld_frames_are_not_dropped ... ok
+test run::lane1_hold_unit_tests::rehold_updates_held_moves ... ok
+test host::tests::t141e_a_multi_frame_page_counts_every_frame ... ok
+test host::tests::t037b_fix3b_s11_stage_count_needs_every_delta_frame ... ok
+test host::tests::build_host_record_applies_the_production_bounds ... ok
+test checkpoint::tests::host_record_list_count_is_bounded_before_decoding_the_excess ... ok
+test quic::tests::a_fenced_frame_retires_without_unbinding ... ok
+test quic::tests::a_grant_change_clears_the_grace_record ... ok
+test quic::tests::a_frame_for_an_unbound_peer_fences_as_epoch_closed ... ok
+test quic::tests::a_held_frame_is_discarded_when_a_resumed_binding_retires ... ok
+test host::tests::pacing_moves_the_d5_plan_in_order ... ok
+test host::tests::accepted_room_reserves_four_history_events ... ok
+test quic::tests::transport_and_reset_losses_start_a_grace ... ok
+test host::tests::host_action_refused_by_the_history_caps_changes_nothing ... ok
+test host::tests::tick_refused_by_the_history_caps_changes_nothing ... ok
+
+test result: ok. 121 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+
+     Running tests\host_quic.rs (target\debug\deps\host_quic-a2dacae3335b0375.exe)
+
+running 25 tests
+test drop_closes_with_shutdown_code ... ok
+test invitation_registration_validates_and_redacts ... ok
+test admission_binds_invitation_and_hands_off_epoch::v2 ... ok
+test admission_binds_invitation_and_hands_off_epoch::v1 ... ok
+test fencing_closes_with_session_fenced::v1 ... ok
+test fencing_closes_with_session_fenced::v2 ... ok
+test quic_lost_receipt_retry_executes_once::v1 ... ok
+test quic_filtered_replica_converges_per_peer::v2 ... ok
+test quic_lost_receipt_retry_executes_once::v2 ... ok
+test quic_filtered_replica_converges_per_peer::v1 ... ok
+test quic_malicious_frames_rejected_without_mutation::v2 ... ok
+test quic_malicious_frames_rejected_without_mutation::v1 ... ok
+test quic_desync_oracle_fails_on_drop_and_corruption::v2 ... ok
+test quic_desync_oracle_fails_on_drop_and_corruption::v1 ... ok
+test start_and_pump_validate_host_and_clock ... ok
+test terminal_ingest_refusals_dropped_not_held ... ok
+test slow_consumer_fenced_after_stall_timeout ... ok
+test superseding_connection_fences_previous ... ok
+test peer_close_drains_then_unbinds ... ok
+test refusals_map_to_close_codes ... ok
+test graceful_shutdown_orders_refuse_checkpoint_close::v1 ... ok
+test graceful_shutdown_orders_refuse_checkpoint_close::v2 ... ok
+test quic_admitted_schedule_matches_in_memory::v2 ... ok
+test quic_admitted_schedule_matches_in_memory::v1 ... ok
+test ingest_queue_full_holds_frame_and_resumes ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.94s
+
+     Running tests\run_dedicated.rs (target\debug\deps\run_dedicated-da0fd942d0d14e9e.exe)
+
+running 17 tests
+test fa_6_intake_error_is_the_loop_error ... ok
+test fa_4_pause_records_now_ms ... ok
+test fa_8_the_ai_hook_error_is_the_loop_error ... ok
+test fa_9_set_ai_none_clears_the_hook ... ok
+test fa_2_a_refused_flush_changes_nothing ... ok
+test fa_1_flush_records_now_ms ... ok
+test fa_5_unpause_returns_the_host_error ... ok
+test fa_3_drive_ai_passes_the_budget_through ... ok
+test q2_pass_throughs ... ok
+test fa_7_the_ai_hook_runs_once_per_step ... ok
+test q5_captures_are_retired ... ok
+test fa_11_retire_acknowledges_the_last_capture ... ok
+test q4_control_a_clock_at_zero_ends_the_runner ... ok
+test q3_embedded_save_runs_dedicated ... ok
+test fa_10_deliver_sends_the_ticks_delta ... ok
+test q1_flush_delivers_between_pumps ... ok
+test q4_a_client_joins_the_loaded_campaign ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests\run_intake_observer.rs (target\debug\deps\run_intake_observer-18d2dae7c1b256ab.exe)
+
+running 5 tests
+test bad_frame_is_one_admission_rejection ... ok
+test rate_limited_frame_is_one_ingest_rejection ... ok
+test refused_hello_is_one_rejection ... ok
+test observer_sees_every_intake_once ... ok
+test queue_full_is_not_a_rejection ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+     Running tests\run_loop.rs (target\debug\deps\run_loop-e108fc818a0058f1.exe)
+
+running 43 tests
+test cadence_on_the_grid ... ok
+test cycle_order ... ok
+test first_error_stops_the_cycle ... ok
+test missed_slots_are_skipped ... ok
+test missed_slots_sum_and_saturate ... ok
+test attach_precedence ... ok
+test host_time_regression_stops_the_cycle_mid_drain ... ok
+test local_client_errors ... ok
+test empty_frame_on_unbound_peer_routes_to_ingest ... ok
+test drained_then_dropped_link_retires_on_the_next_step ... ok
+test ai_hook_receives_every_cycle_time_and_can_be_cleared ... ok
+test pause_runs_every_stage_and_the_ai_hook ... ok
+test ai_hook_dropped_client_retires_at_deliver ... ok
+test loop_state_is_not_saved ... ok
+test full_down_queue_acknowledges_only_what_was_sent ... ok
+test empty_frame_routes_to_ingest_and_continues ... ok
+test pump_error_with_no_frames_stops_the_cycle ... ok
+test links_end_only_by_retirement ... ok
+test schedule_saturates_on_overflow ... ok
+test reattach_after_unbind_is_unknown_peer ... ok
+test time_regression_changes_nothing ... ok
+test run_rs_source_rule ... ok
+test send_first_after_drop_reports_closed ... ok
+test dropped_client_command_survives_until_deliver ... ok
+test paused_link_still_intakes_delivers_and_retires_captures ... ok
+test intake_processes_peers_in_ascending_handle_order ... ok
+test transfer_frame_carries_the_step_time ... ok
+test transfer_time_regression_surfaces_as_hosting_error ... ok
+test with_period_starts_last_ms_at_the_given_start ... ok
+test transfer_frames_route_to_ingest_transfer ... ok
+test pump_runs_with_no_links_attached ... ok
+test refusals_are_counted_and_dropped ... ok
+test round_trip_equals_direct_calls ... ok
+test two_frames_after_unbind_count_only_the_first ... ok
+test unbound_transfer_frame_retires_before_the_second_frame ... ok
+test v3_transfer_frames_route_to_ingest_transfer ... ok
+test retired_records_are_bounded ... ok
+test retired_records_drop_oldest_beyond_the_cap ... ok
+test transfer_frames_route_by_first_byte_through_ingest_transfer ... ok
+test fresh_hold_stops_the_peer_drain ... ok
+test retired_record_keeps_sent_and_held ... ok
+test held_frame_blocks_its_peer_until_room_returns ... ok
+test queue_full_holds_and_resumes ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
