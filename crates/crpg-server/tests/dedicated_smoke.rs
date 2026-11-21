@@ -598,6 +598,8 @@ fn assert_lines(lines: &[String], stale: u32, saved: &Path) {
 fn dedicated_server_two_clients_fight_to_identical_state() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("t041d-g1");
     setup(&dir);
+    // T041-E2: the quit must write the save, not leave setup's file in place.
+    let setup_save = std::fs::read(dir.join("world.save")).expect("setup save");
     let mut server = Server::spawn(&dir);
 
     // B-28: player 1 first, player 2 after player 1's connect returned.
@@ -624,4 +626,6 @@ fn dedicated_server_two_clients_fight_to_identical_state() {
         "the quit save loads: {:?}",
         loaded.as_ref().err()
     );
+    let quit_save = std::fs::read(&saved).expect("quit save");
+    assert_ne!(quit_save, setup_save, "the quit wrote the save (T041-E2)");
 }
