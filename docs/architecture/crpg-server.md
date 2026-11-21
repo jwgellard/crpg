@@ -709,7 +709,8 @@ and `bind_dual`.
   `UnknownConnection` record the transport close (first wins) and mark
   `lane1_drained`; `NotAccepted`/`NotPending`/`InvalidWelcome` fence. The
   two lanes never gate each other, and a host error returns from the pump
-  and poisons.
+  and poisons. On a resumable adapter each fresh lane-1 frame (not the held
+  retry) is `check_frame`d first (T155c C-3).
 - **Lane-1 delivery (C-4/C-5, phase 5).** After the unchanged `deliver`, a
   movement binding whose transport is open takes receipts only when
   `lane1_stats(conn).outbound_frames == 0` (one take then fits the 128-frame
@@ -939,26 +940,35 @@ wire, with `start` left byte-for-byte unchanged:
 - **Start.** `start_resumable(host, server, now)` has `start`'s precedence
   (`HostClosed` → `HostInUse` → `TimeRegression`), `HostInUse` counting
   graces; `is_resumable()` reports the flag. A resumable adapter polls
-  `poll_notice` and handles `ServerNotice::Resume` in phase 1.
+  `poll_notice` and handles `ServerNotice::Resume` in phase 1. Its server
+  may be a `bind_movement_resumable` one: see "Resume on `/3`" below.
 - **Ticket (N-3).** After a `/2` hello's `accept` succeeds and the binding
   is recorded, the adapter calls `issue_resume_ticket(peer,
   resume_proof(credential, epoch)?)` and sends the bytes on
   `Channel::Resume`: the first frame after the welcome. A `/1` binding gets
-  no ticket, and a `start` adapter sends none.
+  no ticket, and a `start` adapter sends none. A `/3` hello is a `V2`
+  binding too, so it gets one (T155c C-6, after T155a made v4 sessions
+  resumable).
 - **Fence tags (N-4).** A hello binding holds `ConnectionFence::FIRST`, a
   resume binding its `granted`. In phase 2 each fresh frame (not a held
   retry) is `check_frame`d before routing: `SessionFenced` retires the
   connection with cause `Resumed`, `UnknownPeer` fences it `EpochClosed`,
-  and any other error poisons.
+  and any other error poisons. A movement binding's fresh lane-1 frames
+  are checked the same way (T155c C-3, ADR-0032 H2): the same
+  `HostCall::CheckFrame` in `calls`, immediately before the frame's
+  `IngestMove` trace. `SessionFenced` and `UnknownPeer` count
+  `lane1_refused` (not `frames_refused`) and retire or fence as on lane 0.
 - **Resume (N-5).** One `ServerNotice::Resume` is decoded, decided by
   `resume_peer`, and answered: a `Rejected` closes at once with code 5
   (`AuthRefused`, for `Denied`) or 7 (`ServerBusy`); an `Accepted` retires
   a still-bound old connection with `retire_resumed` (no unbind), encodes
   the answer, `accept_resume`s and binds the connection with `fence =
   granted` and `Framing::V2`. The staged snapshot is delivered in phase 5,
-  after the answer.
+  after the answer. A resumed binding's `movement` flag is the transport's
+  (`QuicServer::movement(conn)`, read before `resume_peer`; an error there
+  is `Lost { EndpointFailed }` with no host call, unreachable in practice).
 - **Grace on a silent loss (N-7).** Phase 6 starts a grace only for a
-  closed, drained, unheld `/2` binding whose reason is `IdleTimeout`,
+  closed, drained, unheld `/2` or `/3` binding whose reason is `IdleTimeout`,
   `Transport` or `Reset`: `begin_grace` (traced `BeginGrace`), `Ok` →
   `record.graced = Some(peer)`; `NotResumable` → unbind as today. Every
   other binding unbinds exactly as today. Phase 4 also clears any
@@ -972,6 +982,16 @@ wire, with `start` left byte-for-byte unchanged:
   credential must be exactly 32 bytes); the `blake3` edge is approved by
   D68 Question 1 (b). No proof bytes reach a `HostCall`, report, `Debug` or
   error.
+- **Resume on `/3` (T155c, C-1..C-4).** A `bind_movement_resumable` server
+  takes a resume opening on `crpg-lane0/3`; `start_resumable` over it no
+  longer poisons on the first hello, because the ticket succeeds for v4. The
+  resumed binding is a movement binding, drained, delivered, retired and
+  graced as a hello-bound one. Lane 1 carries no progress on the resume wire
+  (T155 Reading 2): the client resends its pending intents, and the host
+  (T155a) has un-admitted the unanswered ones at grace and at resume.
+  `retire_resumed` counts a held lane-1 frame in `lane1_discarded`, as
+  `fence` does. One adapter owns one server, so a v4 epoch is never resumed
+  over `/2` or the reverse (T155 Reading 7).
 
 ## The run loop (T154)
 
@@ -1170,8 +1190,14 @@ at most one of: an `Ingest` refused with a code other than `QueueFull`
 (`Rejection::Ingest`; a `QueueFull` frame is held and retried, not rejected),
 an `IngestTransfer` refused (`Transfer`), a `CheckFrame` that failed
 (`Frame`), or, for a `Pump` summary, every result with status `Rejected` that
-is not the retained head (`Admission`). Lane-1 traces are not read: the
-resumable endpoint carries no lane 1.
+is not the retained head (`Admission`). The `lane1` traces are merged in by
+position (T155c C-5, `tasks/T155.md` Reading 9): a trace at `at` comes before
+`calls[at]` and one at `calls.len()` comes last, and each gives at most one
+`Rejection::Move` — an `IngestMove` that `Refused` with a code other than
+`QueueFull` (held and retried) or `Rejected` at admission. Intents the
+decision window refuses are not in a pump report and are not rejections here.
+`Move`'s `Display` is `move conn={c} peer={p} frame={f} len={l} seq={s}
+code={k}` (`{s}` the sequence or `-`, `{k}` the v3 code as a number).
 
 Two reachable paths are easy to confuse. `Host::ingest` decides byte-level
 admission only (rate, size, queue room) and never decodes, so an undecodable
@@ -1401,3 +1427,4 @@ a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Added "The dedicated binary (T040b)" (the OS-adapter shell, the configuration, invitations, AI and PEM/DER files, the automatic incarnation sidecar, the start-up order, the rejection log, the one `finish` stop path with its Windows and signal limits, and the exit codes) and dropped the binary wiring, certificate loading, invitation format, operator configuration and incarnation source from the "not here" list, so the doc describes the program the crate now ships.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T041d · Added "Gate-13 dedicated smoke (T041d)" (what G1 does over the real binary and two QUIC clients, what it proves, and the readings: DER files, `t` as loop time, the StaleTick re-send and its code-15 lines), so the doc describes the smoke the crate now has.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Made v4 (movement) sessions resumable and documented the lane-1 reset at grace and resume in "Reconnect grace (T025b)", so the doc matches `resumable_kind` and `reset_lane1`.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Documented the `/3` resume route (the movement flag, the lane-1 fence check, the retired lane-1 frame count) and replaced "Lane-1 traces are not read" with the `Rejection::Move` merge, so the doc matches the adapter now.

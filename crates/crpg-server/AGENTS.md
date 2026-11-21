@@ -97,6 +97,12 @@ B-2 `Display`), `QuicPumpReport::rejections`, `IntakeObserver` and
 field; `Hosting::intake` calls it once per successful pump, with `now_ms` and
 the report, before the AI stage.
 
+T155c's additive `quic` item: `Rejection::Move { conn, peer, frame, len, seq,
+code }`, appended last (so `Rejection` has seven variants); `rejections()`
+merges the `lane1` traces into `calls` by position. No `HostCall`, `Lane1Call`
+or report-field change. A resumable adapter accepts a `/3` resume opening and
+builds the resumed binding as a movement binding.
+
 T154b's `runner` items: `Clock`, `SystemClock` (`new`, `starting_at`,
 `default`), `spawn`, `RunnerHandle` (`submit`, `call`, `stop`,
 `is_finished`, `join`), `RunnerExit`, `RunnerGone` and `RunnerPanicked`.
@@ -395,10 +401,12 @@ git diff --check
   `Transfer` frame at the head of a retired connection reads as `Ok(None)`
   for ever, leaking the record (T024h2).
 - **`QuicHost::start` takes a server from `bind` or `bind_dual`, never
-  `bind_resumable`.** The `start` route still polls only `poll_event`,
+  `bind_resumable` or `bind_movement_resumable`.** The `start` route still
+  polls only `poll_event`,
   which stops for good at a resume notice (T024h2's precondition stands).
   `QuicHost::start_resumable` is the resume route: it accepts a server from
-  any `bind*` (`bind_resumable` included), polls `poll_notice`, and only on
+  any `bind*` (`bind_resumable` and `bind_movement_resumable` included),
+  polls `poll_notice`, and only on
   that adapter do the ticket-after-`/2`-welcome, fence-tag, resume-answer
   and grace paths run; `start` keeps every byte and call it has today, and
   `is_resumable()` reports which route built the adapter (T025b-q).
@@ -618,3 +626,4 @@ git diff --check
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Recorded the rejection and intake-observer surface and the trap that `rejections()` is the only definition of a rejected client message, so the dedicated binary logs the library's reading rather than its own.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Recorded the dedicated binary's surface, amended invariant 7 for the OS adapter with its fence kept, noted the `ctrlc` and `rustls-pki-types` edges and the `server_binary` gate, and added the traps (no clock in the binary, the sidecar before the load, `finish` exits holding the lock, the Windows console-close limit, and PEM decoded from its header), so the crate contract matches the program the crate now ships.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Added the trap that a grace or a resume un-admits a v4 session's unanswered lane-1 intents, so no one decides a graced session's slots or skips the reset.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Recorded `Rejection::Move` and the `/3` resume route in the surface, and named `bind_movement_resumable` in the `start` trap, so the crate contract matches the adapter.

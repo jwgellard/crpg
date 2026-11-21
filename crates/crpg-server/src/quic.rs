@@ -182,8 +182,9 @@ impl QuicPumpReport {
     }
 
     /// Every rejection in this report, in the order of B-1: refused hellos,
-    /// refused resume openings, then the `calls` in order (T040a). This is
-    /// the only place a rejected client message is defined (Reading 5).
+    /// refused resume openings, then the `calls` in order with the lane-1
+    /// traces merged in by position (T040a, T155 C-5). This is the only
+    /// place a rejected client message is defined (Reading 5).
     pub fn rejections(&self) -> Vec<Rejection> {
         let mut out = Vec::new();
         for decision in &self.hellos {
@@ -202,7 +203,12 @@ impl QuicPumpReport {
                 });
             }
         }
-        for call in &self.calls {
+        // T155 C-5: the lane-1 traces merge into `calls` by position.
+        let mut lane1 = self.lane1.iter().peekable();
+        for (k, call) in self.calls.iter().enumerate() {
+            while let Some(trace) = lane1.next_if(|trace| trace.at <= k) {
+                push_move(trace, &mut out);
+            }
             match call {
                 HostCall::Ingest {
                     conn,
@@ -260,8 +266,39 @@ impl QuicPumpReport {
                 _ => {}
             }
         }
+        for trace in lane1 {
+            push_move(trace, &mut out);
+        }
         out
     }
+}
+
+/// T155 C-5: one lane-1 trace as a `Rejection::Move`, or nothing. A
+/// `QueueFull` refusal is held and retried, so it is not a rejection.
+fn push_move(trace: &Lane1Trace, out: &mut Vec<Rejection>) {
+    let Lane1Call::IngestMove {
+        conn,
+        peer,
+        frame,
+        len,
+        result,
+    } = &trace.call
+    else {
+        return;
+    };
+    let (seq, code) = match result {
+        MoveAdmission::Refused { seq, code } if *code != CodeV3::QueueFull => (*seq, *code),
+        MoveAdmission::Rejected { seq, code } => (Some(*seq), *code),
+        _ => return,
+    };
+    out.push(Rejection::Move {
+        conn: *conn,
+        peer: *peer,
+        frame: *frame,
+        len: *len,
+        seq,
+        code,
+    });
 }
 
 /// One rejected client message, read from a pump report (Reading 5).
@@ -327,6 +364,22 @@ pub enum Rejection {
         /// What `check_frame` returned.
         error: HostError,
     },
+    /// A lane-1 frame `ingest_move` refused (never `QueueFull`), or an
+    /// intent it admitted as `Rejected` (T155 Reading 9).
+    Move {
+        /// The connection the frame came from.
+        conn: ConnectionId,
+        /// Its binding.
+        peer: PeerHandle,
+        /// The frame's ordinal on the connection's lane-1 stream.
+        frame: u64,
+        /// The frame's length in bytes.
+        len: usize,
+        /// The intent's sequence, when decoding got that far.
+        seq: Option<u64>,
+        /// The v3 rejection code.
+        code: CodeV3,
+    },
 }
 
 impl fmt::Display for Rejection {
@@ -388,6 +441,28 @@ impl fmt::Display for Rejection {
                 peer.get(),
                 error
             ),
+            Self::Move {
+                conn,
+                peer,
+                frame,
+                len,
+                seq,
+                code,
+            } => {
+                write!(
+                    f,
+                    "move conn={} peer={} frame={} len={} seq=",
+                    conn.get(),
+                    peer.get(),
+                    frame,
+                    len
+                )?;
+                match seq {
+                    Some(seq) => write!(f, "{seq}")?,
+                    None => f.write_str("-")?,
+                }
+                write!(f, " code={}", *code as u8)
+            }
         }
     }
 }
@@ -886,10 +961,10 @@ impl QuicHost {
     /// On failure, both are returned unchanged.
     ///
     /// The server must come from `QuicServer::bind`, `QuicServer::bind_dual`
-    /// or `QuicServer::bind_movement`, never `QuicServer::bind_resumable`:
-    /// the adapter polls only `poll_event`, which stops for good at a resume
-    /// notice, and no public call tells a resumable server apart. T025b lifts
-    /// this precondition.
+    /// or `QuicServer::bind_movement`, never `QuicServer::bind_resumable` or
+    /// `QuicServer::bind_movement_resumable`: the adapter polls only
+    /// `poll_event`, which stops for good at a resume notice, and no public
+    /// call tells a resumable server apart. T025b lifts this precondition.
     pub fn start(
         host: Host,
         server: QuicServer,
@@ -1196,6 +1271,17 @@ impl QuicHost {
                 return Ok(());
             }
         };
+        // (1b) T155 C-1: the connection's kind, read before any host call.
+        // An `Err` is unreachable (a pending record stays visible).
+        let Ok(movement) = self.server.movement(conn) else {
+            report.resumes.push(ResumeReport {
+                conn,
+                outcome: ResumeOutcome::Lost {
+                    reason: CloseReason::EndpointFailed,
+                },
+            });
+            return Ok(());
+        };
         // (2) Decide.
         let result = self.host.resume_peer(&request, now_ms);
         report.calls.push(HostCall::ResumePeer {
@@ -1254,7 +1340,7 @@ impl QuicHost {
                     epoch: accepted.epoch,
                     invitation,
                     framing: Framing::V2,
-                    movement: false,
+                    movement,
                     fence: accepted.granted,
                     frames: 0,
                     lane1_frames: 0,
@@ -1748,6 +1834,36 @@ impl QuicHost {
                 Ok(Some(frame)) => {
                     if let Some(bound) = self.bound_mut(conn) {
                         bound.lane1_frames += 1;
+                    }
+                    // T155 C-3 (ADR-0032 H2): fence-tag each fresh lane-1
+                    // frame as a lane-0 frame is (a held retry is exempt).
+                    if self.resumable {
+                        let Some((peer, fence)) =
+                            self.bound(conn).map(|bound| (bound.peer, bound.fence))
+                        else {
+                            return Ok(());
+                        };
+                        let check = self.host.check_frame(peer, fence);
+                        report.calls.push(HostCall::CheckFrame {
+                            conn,
+                            peer,
+                            fence,
+                            result: check.clone(),
+                        });
+                        match check {
+                            Ok(()) => {}
+                            Err(HostError::SessionFenced) => {
+                                report.lane1_refused += 1;
+                                self.retire_resumed(conn, Some(report));
+                                return Ok(());
+                            }
+                            Err(HostError::UnknownPeer) => {
+                                report.lane1_refused += 1;
+                                self.fence(conn, FenceCause::EpochClosed, Some(report));
+                                return Ok(());
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                     match self.ingest_move_one(conn, &frame, now_ms, report)? {
                         Disposition::Continue => {}
@@ -2312,6 +2428,10 @@ impl QuicHost {
         if let Some(report) = report {
             if bound.held.is_some() {
                 report.frames_discarded += 1;
+            }
+            // T155 C-4: a held lane-1 frame is discarded too.
+            if bound.held_lane1.is_some() {
+                report.lane1_discarded += 1;
             }
             report.fences.push(fence);
         }
@@ -3440,6 +3560,153 @@ mod tests {
                 conns[1].get(),
                 HostError::UnknownPeer
             )
+        );
+    }
+
+    /// T155 QR5 (C-5): lane-1 traces merge into the `calls` by position. A
+    /// trace at `at` comes before `calls[at]`; one at `calls.len()` comes
+    /// last; a `QueueFull` refusal is listed nowhere. Connection ids come
+    /// from real refused hellos (`ConnectionId::from_raw` is `pub(crate)` in
+    /// `crpg-net-quic`), the peer from a scratch host.
+    #[test]
+    fn lane1_rejections_merge_by_position() {
+        let (mut qh, mut now) = adapter();
+        let addr = qh.local_addr();
+        let mut conns = Vec::new();
+        for _ in 0..3 {
+            let hello = crpg_net_quic::Hello {
+                wire_version: 2,
+                credential: Credential::new(vec![0xB2; 32]).expect("32-byte credential"),
+            };
+            let pending = std::thread::spawn(move || {
+                QuicClient::connect_framed(client_config(), addr, &hello, Framing::V2)
+            });
+            let report = pump_until(&mut qh, &mut now, "hello decided", |report| {
+                !report.hellos.is_empty()
+            });
+            assert_eq!(report.hellos.len(), 1, "{:?}", report.hellos);
+            conns.push(report.hellos[0].conn);
+            assert!(
+                pending.join().expect("client thread").is_err(),
+                "the unknown credential is refused"
+            );
+        }
+        let (k1, k2, k3) = (conns[0], conns[1], conns[2]);
+        assert!(k1 < k2 && k2 < k3, "real ids rise: {conns:?}");
+
+        let mut host = Host::from_history(
+            fixture(),
+            HostConfig {
+                protocol: ProtocolSelection::V1,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let p = host
+            .bind_peer(
+                ControlGrant { actors: vec![] },
+                DisclosureGrants::default(),
+                NOW,
+            )
+            .expect("binds");
+
+        let mut report = QuicPumpReport::new();
+        report.calls.push(HostCall::Ingest {
+            conn: k1,
+            peer: p,
+            frame: 1,
+            len: 3,
+            result: IngestDisposition::Refused {
+                status: ReceiptStatus::Rejected(RejectionCode::Malformed),
+            },
+        });
+        report.calls.push(HostCall::Pump {
+            summary: PumpSummary {
+                admitted: 0,
+                applied: 0,
+                rejected: 0,
+                backpressured: 0,
+                dropped_replies: 0,
+                results: Vec::new(),
+            },
+        });
+        report.lane1.push(Lane1Trace {
+            at: 0,
+            call: Lane1Call::IngestMove {
+                conn: k2,
+                peer: p,
+                frame: 1,
+                len: 5,
+                result: MoveAdmission::Rejected {
+                    seq: 4,
+                    code: CodeV3::NotAuthorized,
+                },
+            },
+        });
+        report.lane1.push(Lane1Trace {
+            at: 1,
+            call: Lane1Call::IngestMove {
+                conn: k2,
+                peer: p,
+                frame: 2,
+                len: 5,
+                result: MoveAdmission::Refused {
+                    seq: Some(5),
+                    code: CodeV3::QueueFull,
+                },
+            },
+        });
+        report.lane1.push(Lane1Trace {
+            at: 2,
+            call: Lane1Call::IngestMove {
+                conn: k3,
+                peer: p,
+                frame: 1,
+                len: 1,
+                result: MoveAdmission::Refused {
+                    seq: None,
+                    code: CodeV3::Malformed,
+                },
+            },
+        });
+
+        let found = report.rejections();
+        assert_eq!(
+            found,
+            vec![
+                Rejection::Move {
+                    conn: k2,
+                    peer: p,
+                    frame: 1,
+                    len: 5,
+                    seq: Some(4),
+                    code: CodeV3::NotAuthorized,
+                },
+                Rejection::Ingest {
+                    conn: k1,
+                    peer: p,
+                    frame: 1,
+                    len: 3,
+                    code: RejectionCode::Malformed,
+                },
+                Rejection::Move {
+                    conn: k3,
+                    peer: p,
+                    frame: 1,
+                    len: 1,
+                    seq: None,
+                    code: CodeV3::Malformed,
+                },
+            ]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            format!("move conn={} peer=1 frame=1 len=5 seq=4 code=17", k2.get())
+        );
+        assert_eq!(
+            found[2].to_string(),
+            format!("move conn={} peer=1 frame=1 len=1 seq=- code=6", k3.get())
         );
     }
 }
