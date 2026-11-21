@@ -1354,8 +1354,8 @@ starts the binary with standard output discarded and standard error read by
 one thread into a channel, and checks the start line exactly (incarnation 8,
 the rig's pin, `nav=none ai=off invitations=2`). Two `QuicClient`s connect on
 `/1` with wire version 2, so they speak v2 deltas with no transfers and no
-movement lane; the binary serves no `/3` endpoint, so movement over the
-dedicated server is not smoked here (D71a, T041e). The epoch's first half is
+movement lane; a combat-world binary serves no `/3` endpoint, so movement over the
+dedicated server is smoked by G2, below (D71a, T041e). The epoch's first half is
 8 and its second half is the peer handle (1, 2).
 
 **What it proves.** (1) Player 2 ends the turn of `a`, which it does not
@@ -1381,6 +1381,32 @@ adds exactly one `code=15` reject line that the log check expects; any other
 refusal panics `refused`. The binary paces by the wall clock, so every wait is
 a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
 (`Drop` on `Server`) kills and reaps the child on every failure path.
+
+**G2: movement over the dedicated binary (T155e = T041e).** A second test in
+the same file, `dedicated_server_two_clients_move_to_identical_positions`, runs
+the binary in movement mode (T155d). Its `setup_movement` saves the `MV3rt`
+three-mover authority (`mv3rt_value()` and `history_of()` copied from
+`host_quic_move.rs`), writes two movement invitations (`0x11` controlling `a`,
+`0x22` controlling `b`, full grants and facts, no pause right) and adds
+`"movement": true` and a 10 m square `area` to the configuration. Two `Mover`
+players connect on `/3` (`connect_movement`), each with a `ReassemblyPoolV4`,
+a `ReplicaWorldV4` and a `MoveOutbox`, and publish after the first snapshot as
+`host_lane1.rs`'s `Client` does. The test proves, in order: (1) the start line
+ends `nav=bound ai=off invitations=2 movement=on`; (2) each player's first
+lane-stream frame is its 52-byte resume ticket and its replica anchors the
+three start points; (3) each player walks its own mover and player 2 also
+sends a `MoveTo` for `a`'s mover; (4) the receipts are `[Accepted]` and
+`[Accepted, Rejected(NotAuthorized)]`, and the log holds exactly one reject
+line, `move conn=.. peer=2 frame=2 len=.. seq=2 code=17`; (5) samples bring
+both replicas to the same end positions, none moving; (6) `quit` exits 0 and
+the log is the start, the reject and the stop line; (7) the save, read only
+after that exit and loaded at incarnation 9, anchors the same end positions
+through a fresh `bind_v4_peer` observer. Control: the start points differ from
+the end points for the two walkers. Readings: the replicas' positions are
+compared without their sample ticks (two players need not see the same refresh
+tick), and no `start_tick` is pinned (the server's tick is wall-clock paced);
+the test never resumes through the binary (a silent loss needs the 60 s idle
+timeout, `tasks/T155.md` "Out of scope").
 
 ## Authorities and consumers
 
@@ -1448,3 +1474,4 @@ a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Made v4 (movement) sessions resumable and documented the lane-1 reset at grace and resume in "Reconnect grace (T025b)", so the doc matches `resumable_kind` and `reset_lane1`.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Documented the `/3` resume route (the movement flag, the lane-1 fence check, the retired lane-1 frame count) and replaced "Lane-1 traces are not read" with the `Rejection::Move` merge, so the doc matches the adapter now.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155d · Extended "The dedicated binary (T040b)" with the `movement` key, the `facts` and `rights` invitation keys, the `bind_movement_resumable` bind and the ` movement=on` start-line suffix, so the doc matches the binary T155d ships.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155e · Added the G2 paragraph to "Gate-13 dedicated smoke (T041d)" (movement over the dedicated binary: what the test sets up, proves in seven steps and reads), and corrected G1's sentence that movement is not smoked, so the doc matches the smoke the crate now has.
