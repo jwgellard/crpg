@@ -305,8 +305,20 @@ GDExtension surface. v2 keeps every byte and behaviour.
   through `RunnerHandle::submit`) without ever blocking the frame; the
   bridge holds the client half, the runner owns the host. `declare_move`,
   `move_to` and `halt` are the move entry points.
-- **Later parts.** The shell gains `open_v4`, `declare_move`, `move_to`,
-  `halt` and four view getters (T151c).
+- **The shell surface (T151c).** `CrpgSession` gains `open_v4` (as `open`,
+  including setting `opened_at`), `declare_move(revision, x, y, z)`,
+  `move_to(actor, x, y, z)` and `halt(actor)`; `CrpgView` gains
+  `positions`, `position_known`, `moving` and `move_receipts` (through
+  `dictionary`). Each `#[func]` makes one core call and does no
+  arithmetic on its arguments; coordinates are raw `Fx16_16` integers
+  (metres x 65,536), `actor` is a `NetId`, and a v2 session answers a
+  move call `3`. `apps/client/tests/movement.gd` (M1-M5, a local engine
+  gate like `scene_sync.gd`, not in CI) builds the MOVE ruleset at test
+  time in `user://t151_move/` because no checked-in ruleset may declare
+  `movement`; it exits 0 pass, 2 class missing, 3 unexpected code, 4
+  timeout (20 s), 5 MOVE edit failed, 6 value check failed. A view keeps
+  its receipts until the next revision, so the script waits for a later
+  revision before reading a second receipt.
 
 ## Decisions and traps
 
@@ -368,3 +380,4 @@ Agent log:
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Amended the SceneSync bullet for the mesh-only lift (D44b) and per-side surface palette, and extended the scene-sync cases bullet to S15–S18, so the client-side layout matches the approved T048b contract.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Added the Protocol v4 sessions section for the v4 client half: the frozen v2, first-byte routing, `ClientV4`'s pool/replica/outbox shape, the position columns and their later parts, so T151b wires a documented baseline rather than re-deriving it.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Replaced the "Later parts" bullet with the v4-session-on-the-run-loop description: `encounter_bounds`, the NPC driver as `NpcHook` on the loop's AI stage, legal options read between cycles through `RunnerHandle::submit`, and the three move entry points, leaving only the shell (T151c) as later.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Replaced the "Later parts" bullet with the shell surface (`open_v4`, `declare_move`, `move_to`, `halt`, four view getters) and the `movement.gd` gate: how MOVE is built at test time, its exit codes and the receipt-revision trap.

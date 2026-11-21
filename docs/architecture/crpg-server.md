@@ -5,9 +5,9 @@
 `crpg-server` owns authoritative world state. As of T022 it is a library plus
 a thin dedicated binary (D02): the library is the one platform-neutral host
 that the Windows embedded single-player adapter and the Windows/Linux
-dedicated adapters reuse through the T154a run loop, and the binary stays a
-wiring shell that still refuses to run until the dedicated product (T040)
-wires it. The exact contract —
+dedicated adapters reuse through the T154a run loop, and the binary is the
+OS adapter over it (T040b, below): a wiring shell that holds no host policy.
+The exact contract —
 API, error precedence, numeric caps, checkpoint shape and acceptance cases —
 is the "Specification revision — 2026-09-29" appendix of
 [T022](../../tasks/T022.md); the reasoning is
@@ -25,16 +25,14 @@ compressed, capped envelope and atomic-replace file store, and (T023b,
 [ADR-0026](../adr/0026-quic-host-adapter.md)) the real-transport adapter:
 one `Host` driven over a `crpg-net-quic` server with invitation
 credentials, backpressure, fencing and D02 shutdown. What is planned and
-**not** here: the dedicated binary's wiring, certificate and key loading,
-credential generation, the invitation file format and operator
-configuration (T040); reconnect, resume and the 30 s grace (T025a/T025b);
-production interest facts
-(T027a–c supply values for these grant shapes); save slot/autosave policy,
-the save directory and the incarnation source (T040); OS service
-integration; listen-server mixed mode; and the GM endpoint. The run loop and the in-memory local hosting exist since T154a, the
-background runner and its clock since T154b, and the QUIC hosting of the same
-loop since T154d; the binary still refuses to run until the dedicated product
-(T040) wires it.
+**not** here: credential generation; reconnect, resume and the 30 s grace
+(T025a/T025b); production interest facts
+(T027a–c supply values for these grant shapes); save slot/autosave policy and
+the save directory; native OS service integration; listen-server mixed mode;
+and the GM endpoint. The run loop and the in-memory local hosting exist since T154a, the
+background runner and its clock since T154b, the QUIC hosting of the same
+loop since T154d, and the dedicated binary that wires them to operator files
+since T040b.
 
 ## Where it sits
 
@@ -1175,6 +1173,154 @@ the AI stage; a failed `pump` calls nothing, and the observer changes no host
 or adapter state. Tests: `tests/run_intake_observer.rs` (T1, T3a, T3b, T4,
 T5) and `quic.rs` `mod tests` (T2).
 
+## The dedicated binary (T040b)
+
+`src/main.rs` is the dedicated server program for Windows/MSVC and a
+Godot-free Linux/GNU build (`tasks/T040.md`, Readings 1 to 16). It is the OS
+adapter ADR-0012 puts above the simulation crates: it may use `std::fs`,
+`std::io`, `std::sync`, `std::process::exit` and the `ctrlc` handler, and it
+holds no host policy. It hosts T154's loop, it does not reimplement it:
+`runner::spawn(HostLoop::new(QuicHosting, START_MS), SystemClock::starting_at(START_MS))`,
+reached only through `RunnerHandle`. The binary reads no clock (it keeps
+`run_source_rules.rs`'s fence): load, start and loop all use `now_ms = 0`, so
+the clock origin equals the loop start. It creates no thread: the main thread
+reads the console, the runner thread is T154's, and the signal handler runs
+on the one thread `ctrlc` creates.
+
+**Command line.** `crpg-server --config <path>`, `--help`, `--version`; no
+other flag. `--help` wins over `--version`, which wins over a run. A usage
+failure is one line `crpg-server: usage: ...` on standard error and exit 2.
+Standard output carries only help and version.
+
+**Configuration** is one JSON file (`deny_unknown_fields` on every object).
+Required: `listen` (socket address), `certificate`, `private_key`,
+`invitations`, `save`, `campaign_id`, `campaign_version`. Optional: `area`
+(`{ "min": [x, y, z], "max": [x, y, z] }` in whole world units,
+`-32768..=32767`, bound with `Host::bind_area_bounds` before the world is
+unpaused), `ai` (a file of `sides` and `controlled`, driven once per loop
+cycle through `QuicHost::drive_ai`), `log_file` (appended, created if absent,
+its parent directory is not created). A relative path resolves against the
+configuration file's own directory. The certificate and key files are PEM
+(a `CERTIFICATE` and a `PRIVATE KEY` section, PKCS#8 only) or DER, told apart
+by a leading `-----BEGIN` after any ASCII whitespace; PKCS#1 and SEC1 PEM keys
+are refused ("no items found"). The invitations file is a JSON array of 1 to
+`MAX_INVITATIONS` entries, each with `credential` (64 lowercase hex digits),
+`control` and `grants`, every key required, mapping field for field onto
+`Invitation`. Credentials are parsed and registered, never printed.
+
+**The incarnation** is automatic. The loader needs one above every one ever
+used for the authority, so the binary keeps `<save>.incarnation` (decimal and a
+newline), uses `last + 1` (absent: `1`) and writes it **before** loading. A
+crash after clients bound can therefore never reuse it, and a refused load
+still spends one. A sidecar deleted while the save holds a higher incarnation
+is refused by the loader; restore the sidecar rather than deleting it.
+
+**Start-up order** (a failure is one line `crpg-server: error {stage}: {detail}`
+and exit 1; nothing after it runs): `config`, `log`, `certificate`,
+`invitations`, `ai`, `incarnation`, `load`, `area`, `unpause`, `bind`, `start`,
+`register`, `spawn`, `signals`. Every file is read and validated before the
+incarnation is spent; the mesh is bound before the unpause (a restored host
+is unbound and `Restore`-paused); the endpoint is `bind_resumable` with
+`start_resumable`. The last line of start-up is
+`crpg-server: start listen=... incarnation=N pin=<64 hex> nav=bound|none ai=on|off invitations=K`,
+written after the signal handler is set. `pin` is the certificate pin clients
+hold.
+
+**Logs** go to standard error and, when configured, the log file, one
+unbuffered line per write. One line per rejected client message is
+`crpg-server: reject t={now_ms} {rejection}`, from the intake observer over
+`QuicPumpReport::rejections()` (T040a): the binary defines no rejection of its
+own, and `now_ms` is the loop's time in milliseconds from the start, not a
+multiple of the 50 ms period. A rejected message is never an exit.
+
+**Stopping.** The console command `quit`, Ctrl-C and stop signals all run one
+`finish` routine: stop the loop, close the adapter, save the world to its save
+file through `save_host_file` (an atomic replace), write
+`crpg-server: stop reason=quit|signal saved=<path>` and exit 0. `finish`
+locks one shared slot, takes the runner handle and exits **while still
+holding the lock**, so whichever of the console and the signal arrives first
+finishes and the other blocks until the process ends. End of standard input
+does not stop the server: the main thread then calls the loop once per cycle
+and checks the stop flag between calls. A loop that ends by itself (a stage
+error or a panic) is `crpg-server: error loop: ...`, exit 1, and **no save**.
+A failed save is `crpg-server: error save: ...`, exit 1.
+
+What the operator can rely on, and what not: on Unix `SIGINT`, `SIGTERM`
+(systemd's stop) and `SIGHUP` save; on Windows every console control event
+reaches the handler (Ctrl-C, Ctrl-Break, and a service wrapper that sends
+Ctrl-C such as NSSM's default stop). Windows ends a process soon after its
+handler returns for a console close, log-off or shutdown event, and the
+handler returns at once, so **closing the console window does not guarantee a
+save** (the save file stays whole: the replace is atomic). A native Windows
+service (the Service Control Manager) sends no console event, so **a service
+needs a wrapper that sends Ctrl-C**. A second signal during a stop does
+nothing, since the handler's thread is busy in the first. A forced kill
+(`SIGKILL`, `taskkill /F`) never saves.
+
+**Exit codes:** 0 clean stop, 2 command-line usage, 1 everything else.
+
+**Edges.** Two crates.io dependencies, approved by the user on 2026-11-19:
+`ctrlc` 3.5.2 with `termination` (exact pin; the stop signals) and
+`rustls-pki-types` (PEM decoding through `pem::PemObject`; already locked
+through the QUIC stack). No workspace edge is added.
+
+**Tests.** `tests/server_binary.rs` drives the built binary black box
+(`CARGO_BIN_EXE_crpg-server`): help and version, usage errors, configuration
+and invitation refusals that spend nothing, the sidecar, the served, logged and
+saved-on-`quit` run, end of input, the area and AI files, a registration
+refusal, PEM and DER, and (Unix only, compile-time gate) the signals.
+Windows has no automated Ctrl-C case; sending a console control event to a
+child needs an FFI call the test crate may not make, so the manual Windows
+check is recorded in the pull request.
+
+## Gate-13 dedicated smoke (T041d)
+
+`tests/dedicated_smoke.rs` is gate 13's dedicated leg (`tasks/T041.md`, B-26 to
+B-32): one test, G1, over the built binary and two real QUIC clients. It lives
+in this crate because Cargo sets `CARGO_BIN_EXE_crpg-server` only for the
+package's own binaries; the embedded leg is `crpg-testkit`'s `desync` D5. It
+runs in the ordinary workspace test job on Windows/MSVC and Linux/GNU; no CI
+job is added. It includes the shared QUIC rig (`tests/support/quic_host_rig.rs`)
+for the fixture host, grants, wire encoders, the v2 `Replica` and its
+`expected_state` oracle.
+
+**What it does.** `setup` writes a fresh directory under `CARGO_TARGET_TMPDIR`:
+the rig's certificate and key as DER, a save of the three-combatant fixture
+host, the sidecar `7`, an invitations file of two entries (credential `0x11`
+controlling `a` and `c`, credential `0x22` controlling `b`, both with the
+rig's full grants) and a configuration with no optional key. `Server::spawn`
+starts the binary with standard output discarded and standard error read by
+one thread into a channel, and checks the start line exactly (incarnation 8,
+the rig's pin, `nav=none ai=off invitations=2`). Two `QuicClient`s connect on
+`/1` with wire version 2, so they speak v2 deltas with no transfers and no
+movement lane; the binary serves no `/3` endpoint, so movement over the
+dedicated server is not smoked here (D71a, T041e). The epoch's first half is
+8 and its second half is the peer handle (1, 2).
+
+**What it proves.** (1) Player 2 ends the turn of `a`, which it does not
+control: the binary logs `reject t=... admission peer=2 seq=1 code=17
+cached=false` and player 2 gets receipt `Rejected(NotAuthorized)`. (2) The
+players fight: each acts once per new turn of one of its own actors with the
+strike that always succeeds for 3 and ends the turn, so the six strikes are
+a to b, b to a, c to b, a to b, b to a, c to b, read back from both replicas'
+`ActionResolved` events. (3) Both replicas end with health `{1: (4, 10,
+false), 2: (0, 10, true), 3: (3, 3, false)}`, equal to each other and to
+`expected_state` of an independent mirror (`HistoryWorld` given the same six
+actions); the control is that the mirror after five strikes differs. (4)
+`quit` ends with exit 0 and the last line `stop reason=quit saved=<path>`, the
+save loads at incarnation 9, every line is the start line, a reject line or
+the stop line, and no line holds either credential's hex.
+
+**Readings.** The reject line's `t` is the loop's time in milliseconds
+(T040-E2), so the test checks a decimal number below 30,000, not a multiple of
+50. The certificate and key are DER; PEM is `server_binary`'s. An intent the
+server answers `StaleTick` (a stalled machine) is re-sent with the next seq and
+the receipt's `processed_tick`, at most three times a turn, and each re-send
+adds exactly one `code=15` reject line that the log check expects; any other
+refusal panics `refused`. The binary paces by the wall clock, so every wait is
+a guard that panics `deadline: ...` after 30 s and never an oracle. A guard
+(`Drop` on `Server`) kills and reaps the child on every failure path.
+
 ## Authorities and consumers
 
 - Contract: [T022 appendix](../../tasks/T022.md) and
@@ -1236,3 +1382,5 @@ T5) and `quic.rs` `mod tests` (T2).
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Added "QUIC v4 sessions (T150c)" (the `/3` route's v4 invitations, hello precedence, lane-1 drain and delivery, retire and fence, shutdown flush, the side trace and its `at`, and the untraced `advance`), so the doc describes the movement route the adapter now serves beside `/1` and `/2`.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Extended the run-loop section with the dedicated hosting (`QuicHosting`'s five stages, `flush` as `pump`'s phases 4–7 with `pump` running 1–3 then the same body, the three untraced pass-throughs, and a loaded save running through the `Restore` unpause) and updated Scope, so the doc describes the QUIC hosting the loop now has.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Added "Rejections and the intake observer (T040a)" (`QuicPumpReport::rejections` as the single definition of a rejected client message, its B-1 order, why an undecodable frame is an admission rejection and an `Ingest` rejection is a rate-limited frame, and the `QuicHosting` intake observer), so the dedicated binary's log has one library-defined source.
+- 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Added "The dedicated binary (T040b)" (the OS-adapter shell, the configuration, invitations, AI and PEM/DER files, the automatic incarnation sidecar, the start-up order, the rejection log, the one `finish` stop path with its Windows and signal limits, and the exit codes) and dropped the binary wiring, certificate loading, invitation format, operator configuration and incarnation source from the "not here" list, so the doc describes the program the crate now ships.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T041d · Added "Gate-13 dedicated smoke (T041d)" (what G1 does over the real binary and two QUIC clients, what it proves, and the readings: DER files, `t` as loop time, the StaleTick re-send and its code-15 lines), so the doc describes the smoke the crate now has.

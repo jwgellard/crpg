@@ -98,6 +98,8 @@ Godot4 --headless --path apps/client --import
 Godot4 --headless --path apps/client -s res://tests/load.gd      # exit 0
 Godot4 --headless --path apps/client -s res://tests/scene_sync.gd   # exit 0
 Godot4 --headless --path apps/client -s res://tests/hud.gd          # exit 0
+Godot4 --headless --path apps/client -s res://tests/smoke.gd        # exit 0
+Godot4 --headless --path apps/client -s res://tests/movement.gd     # exit 0 (T151c, local only)
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/load.gd   # control: exit 3
 ```
 
@@ -184,6 +186,13 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
   `absent_movement_is_unchanged` suite pins that every fixture is movement-free;
   build the MOVE variant at test time by inserting the movement field into
   `minimal-d6.json` (as `authority/v4/tests.rs` does), never check it in.
+- **`movement.gd` builds MOVE itself and polls until conditions.** It copies
+  BASIC to `user://t151_move/` and inserts the movement line before the one
+  `"name": "fixture.minimal-d6",` line (exit 5 if it is not found exactly
+  once). A view keeps its receipts until the next revision, so a second
+  receipt is awaited as "a later revision with receipts", never "receipts
+  non-empty". `Godot4 --import` may segfault on this machine; the `-s` runs
+  still work, and the `*.uid` files it writes are not committed.
 
 Agent log:
 
@@ -197,3 +206,4 @@ Agent log:
 - 2026-11-07 (UTC) · opencode-go/deepseek-v4-pro + T048b · Added the side-colour/dead-tint override trap and the mesh-only lift rule, so future work keeps the surface override out of `material_override` and the proxy node at `y = 0`.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Froze v2 for the v4 work: new protocol v4 code goes in `client_v4.rs` and `authority/v4.rs`, so the v4 client half lands without touching the v2 session or its tests.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Added the run-loop invariants (the bridge never ticks, pumps or drives lane 1; `poll` never waits on the loop thread) and amended invariants 2 and 8 for the per-session authority and the runner's `SystemClock`, plus the MOVE fixture trap, so T151c extends the v4 session rather than re-deriving it.
+- 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Added the `movement.gd` and `smoke.gd` engine-gate lines and the trap that `movement.gd` builds MOVE at test time and waits for a later revision for the second receipt.

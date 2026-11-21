@@ -356,6 +356,77 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # T040c: gate 12's server half -- the dedicated server for Windows/MSVC and
+  # Godot-free Linux/GNU (ADR-0012). Always runs and reports; the scope step
+  # is a byte-identical copy of the one in `check`; keep them equal.
+  server-artifacts:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            exe: target/release/crpg-server.exe
+            artifact: crpg-server-windows-x86_64
+          - os: ubuntu-latest
+            exe: target/release/crpg-server
+            artifact: crpg-server-linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Classify the change (documentation-only pull requests skip the Rust gates)
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "${{ github.event_name }}: every gate runs"
+            exit 0
+          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE_SHA" --depth=1 || true
+          MERGE_BASE="$(git merge-base HEAD "$BASE_SHA")"
+          CHANGED="$(git diff --name-only --no-renames "$MERGE_BASE...HEAD")"
+          CODE="$(printf '%s\n' "$CHANGED" | grep -vE '^(docs|tasks)/|^[^/]+\.md$|^crates/[^/]+/AGENTS\.md$' || true)"
+          if [ -n "$CODE" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "every gate runs; first paths outside the documentation allowlist:"
+            printf '%s\n' "$CODE" | head -20
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            echo "documentation-only change: fmt, clippy and test skipped. Changed paths:"
+            printf '%s\n' "$CHANGED" | head -40
+          fi
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.rust == 'true'
+      - name: No godot package in crpg-server's graph
+        if: steps.scope.outputs.rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(cargo tree -p crpg-server --locked -e normal,build --target all --prefix none --format '{p}')"
+          if grep -E '^(godot(-[a-z]+)?|gdextension-api) v' <<<"$tree"; then
+            echo "crpg-server's graph holds the godot packages above"; exit 1
+          fi
+      - run: cargo build --release --locked -p crpg-server --bin crpg-server
+        if: steps.scope.outputs.rust == 'true'
+      - name: The built binary runs
+        if: steps.scope.outputs.rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$("${{ matrix.exe }}" --version)"
+          grep -qxE 'crpg-server [0-9]+\.[0-9]+\.[0-9]+' <<<"$out" || { echo "unexpected: $out"; exit 1; }
+      - uses: actions/upload-artifact@v7
+        if: steps.scope.outputs.rust == 'true'
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.exe }}
+          if-no-files-found: error
+          retention-days: 14
+
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 15

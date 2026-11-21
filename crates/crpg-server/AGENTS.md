@@ -25,6 +25,16 @@ those lists the as-built crate adds only `Copy` on `ProtocolSelection`
 (required by `as_u8(self)`). The binary (`src/main.rs`) is a wiring shell: no host
 policy lives there.
 
+T040b's binary surface (no item of `main.rs` is public; `tasks/T040.md`
+"Interface" is the exact contract): `crpg-server --config <path>`, `--help`,
+`--version`; one JSON configuration (`listen`, `certificate`, `private_key`,
+`invitations`, `save`, `campaign_id`, `campaign_version`, and optional `area`,
+`ai`, `log_file`), an invitations file and an AI file; the `<save>.incarnation`
+sidecar; the log lines `crpg-server: start ...`, `reject t=...`, `stop
+reason=quit|signal saved=...` and `error {stage}: ...`; and the exit codes 0
+(clean), 2 (usage) and 1 (everything else). Changing a key, a line's text or a
+code is a contract change for T041's smokes and every operator.
+
 T024h's additive `host` items (ADR-0031): `DeliveryKind`,
 `DeliveryEntry`, `GrantUpdate::SnapshotStaged`, `TransferDisposition`,
 `TransferRefusal`, `TransferState`, `Host::bind_snapshot_peer`,
@@ -164,7 +174,12 @@ are named by path, never re-exported.
    I/O exists **only** in `quic.rs`, only through `crpg-net-quic`'s API,
    which owns the socket, runtime and thread. `host`, `capture` and
    `checkpoint` stay I/O-free apart from T022's generic checkpoint reader.
-   No `HashMap`/`HashSet`.
+   No `HashMap`/`HashSet`. The binary (`src/main.rs`) is the OS adapter
+   (T040b, ADR-0012): it alone may use `std::fs`, `std::io`, `std::sync`,
+   `std::process::exit` and the `ctrlc` handler, but it still names none of
+   the tokens `run_source_rules.rs` fences (`Instant`, `SystemTime`,
+   `thread::`, `sleep`, `recv_timeout`, `UdpSocket`, `TcpListener`), so it
+   reads no clock and spawns no thread.
 8. `#![forbid(unsafe_code)]` and `#![warn(missing_docs)]` on both crate
    roots (`src/lib.rs`, `src/main.rs`).
 
@@ -185,7 +200,10 @@ exposes none of their types. T037a adds the `crpg-nav` path edge (ADR-0036
 H1–H5, the user's approval at T037 Question 1 (a)) for the mesh, its bake,
 queries and paths; the crate names no other navigation type. T153 adds the
 `crpg-ai` path edge (D65f) for the MVP decision; its own edges (`crpg-core`,
-`crpg-sim`, `crpg-nav`) are already dependencies above. Anything else
+`crpg-sim`, `crpg-nav`) are already dependencies above. T040b adds two
+crates.io edges, both approved by the user on 2026-11-19 and used by
+`src/main.rs` alone: `ctrlc` (`=3.5.2`, feature `termination`; D70a (b)) and
+`rustls-pki-types` (`1.15.1`, caret; D70b). Anything else
 needs its own approval; never widen `deny.toml`.
 
 ## Definition of done for any change
@@ -197,7 +215,9 @@ cargo test -p crpg-server --test host_capture --locked
 cargo test -p crpg-server --test host_save --locked
 cargo test -p crpg-server --test host_quic --locked
 cargo test -p crpg-server --test host_quic_move --locked
+cargo test -p crpg-server --test server_binary --locked
 cargo test -p crpg-server --locked
+cargo build --release --locked -p crpg-server --bin crpg-server
 python tools/lint/deps.py
 python tools/lint/determinism.py
 python -m unittest discover -s tools/lint -p "test_*.py"
@@ -528,6 +548,40 @@ git diff --check
   `Ingest` is held, not rejected; and `IntakeObserver` must not change host
   or adapter state.
 
+- **The binary never reads a clock: the loop starts at `START_MS` (T040b).**
+  Load, start and loop use `now_ms = 0` and the clock is
+  `SystemClock::starting_at(START_MS)`, so the clock origin equals the loop
+  start. Do not read the wall clock in `main.rs` (`SystemTime` and `Instant`
+  are fenced there); the host's time is per process and nothing compares it
+  across processes. A rejection line's `t` is the loop's `now_ms`, not a
+  multiple of the 50 ms period.
+- **The sidecar is written before the load (T040b).** `<save>.incarnation` is
+  spent (`last + 1`, absent is 1) before `load_host_file`, so a crash after
+  clients bound never reuses it, and a refused load still spends one. Never
+  move the write after the load or ask the operator for a value, and never
+  spend one before the cheap checks (config, certificate, invitations, AI file)
+  have passed.
+- **`finish` exits while holding the lock; never release it first (T040b).**
+  The console `quit` and the signal handler both run `finish`, which takes the
+  runner handle out of the shared slot and calls `std::process::exit` with the
+  guard held, so the other caller blocks until the process ends. Releasing the
+  guard before the exit lets the second caller find an empty slot and exit
+  early, with the save unfinished. The end-of-input wait calls the loop with
+  the guard held once per cycle, so a pending signal never waits longer than
+  one cycle.
+- **Closing the Windows console window does not guarantee a save (T040b).**
+  Windows ends a process soon after its handler returns for a console close,
+  log-off or shutdown event, and `ctrlc`'s handler returns at once. Ctrl-C,
+  Ctrl-Break and a wrapper that sends Ctrl-C do save; a native service needs
+  such a wrapper; a forced kill never saves. The save file stays whole either
+  way (atomic replace).
+- **PEM is told apart by its header, then decoded from the header (T040b).**
+  A certificate or key file is PEM when its bytes after leading ASCII
+  whitespace start `-----BEGIN`; the decoder needs the header at the start of a
+  line, so the binary passes it the block with that whitespace dropped, never
+  the whole file. Any other file is DER, passed through unchecked for `bind` to
+  validate, and a PKCS#1 or SEC1 PEM key is "no items found".
+
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the crate contract with the host invariants, the D20 dependency boundary, the gate list and the traps found while implementing T022, so later transport and persistence tasks start from the as-built rules.
@@ -556,3 +610,4 @@ git diff --check
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Recorded the `/3` movement route's `quic` surface (`V4Invitation`, `Lane1Call`, `Lane1Trace`, `register_v4_invitation`, `advance`, the five lane-1 report counts, `undelivered_receipts`), added its gate and the four lane-1 traps, so the crate contract matches the route the adapter now serves beside `/1` and `/2`.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Recorded the dedicated hosting's surface (`QuicHosting`, `QuicAiHook`, and `QuicHost::{flush, drive_ai, pause, unpause}`, with `flush` as `pump`'s phases 4–7), so the crate contract names the stages the dedicated loop now runs.
 - 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Recorded the rejection and intake-observer surface and the trap that `rejections()` is the only definition of a rejected client message, so the dedicated binary logs the library's reading rather than its own.
+- 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040b · Recorded the dedicated binary's surface, amended invariant 7 for the OS adapter with its fence kept, noted the `ctrlc` and `rustls-pki-types` edges and the `server_binary` gate, and added the traps (no clock in the binary, the sidecar before the load, `finish` exits holding the lock, the Windows console-close limit, and PEM decoded from its header), so the crate contract matches the program the crate now ships.

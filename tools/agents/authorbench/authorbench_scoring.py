@@ -226,12 +226,21 @@ def read_log(path: Path) -> dict:
 
 
 def ends_in_service_fault(path: Path) -> bool:
-    """True when the log's last non-empty line is the OpenCode service's fault.
+    """True when the OpenCode service, not the model, ended the run.
 
-    T100-E2: a run the service cut off is excluded like a run that never
-    reached the model, rather than counted against the model. Only the last
-    non-empty line is read, because a run that kept working after a transient
-    error did not end in one.
+    A run the service cut off is excluded like a run that never reached the
+    model, rather than counted against the model. Two rules apply:
+
+    * T100-E4: a Go quota error on ANY non-empty line (a JSON object with
+      ``type == "error"`` whose ``error`` is an object with
+      ``error["type"] == "provider.go-limit"``) excludes the run, because
+      OpenCode retries a quota stop only after hours, so such a run can end
+      only in the harness timeout.
+    * T100-E2: otherwise only the LAST non-empty line is read, because a run
+      that kept working after a transient error did not end in one. That line
+      is a fault when it is an error event mentioning ``Failed to execute
+      statement`` or carrying a 5xx ``statusCode`` (integer, not boolean),
+      or a non-JSON line containing ``Failed to execute statement``.
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -241,6 +250,16 @@ def ends_in_service_fault(path: Path) -> bool:
     lines = [line for line in _lines(text) if line.strip()]
     if not lines:
         return False
+
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("type") == "error":
+            err = parsed.get("error")
+            if isinstance(err, dict) and err.get("type") == "provider.go-limit":
+                return True
 
     last = lines[-1]
     try:
