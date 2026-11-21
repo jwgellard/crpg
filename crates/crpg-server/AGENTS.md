@@ -81,6 +81,12 @@ T154d's `run` and `quic` items: `QuicHosting` (`new`, `set_ai`, `quic`,
 `pump`'s phases 4–7 alone and `pump` runs phases 1–3 then the same body;
 `drive_ai`, `pause` and `unpause` are untraced trusted pass-throughs.
 
+T040a's additive `quic` and `run` items: `Rejection` (six variants, with a
+B-2 `Display`), `QuicPumpReport::rejections`, `IntakeObserver` and
+`QuicHosting::set_intake_observer`. `QuicHosting` gains one private `observer`
+field; `Hosting::intake` calls it once per successful pump, with `now_ms` and
+the report, before the AI stage.
+
 T154b's `runner` items: `Clock`, `SystemClock` (`new`, `starting_at`,
 `default`), `spawn`, `RunnerHandle` (`submit`, `call`, `stop`,
 `is_finished`, `join`), `RunnerExit`, `RunnerGone` and `RunnerPanicked`.
@@ -515,6 +521,13 @@ git diff --check
 - **Never hold or retry a sample (T150c).**
 - **`quic.rs` reaches lane 1 only through `crpg-net-quic`'s lane-1 API (T150c).**
 
+- **`rejections()` is the only place a rejection is defined (T040a).** A
+  consumer logs `report.rejections()`, never its own reading of `calls`,
+  `hellos` or `resumes`. `ingest` never decodes, so an undecodable frame is
+  `Staged` and an `Admission` rejection, not an `Ingest` one; a `QueueFull`
+  `Ingest` is held, not rejected; and `IntakeObserver` must not change host
+  or adapter state.
+
 ## Agent log
 
 - 2026-10-04 (UTC) · claude-code + T022 · Opened the crate contract with the host invariants, the D20 dependency boundary, the gate list and the traps found while implementing T022, so later transport and persistence tasks start from the as-built rules.
@@ -542,3 +555,4 @@ git diff --check
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T153 · Added the AI-driver surface (`AiBudget`, `AiReport`, `AiStep`, `MVP_AI_BUDGET`, `Host::drive_ai`), the approved `crpg-ai` edge, the caller's-actors note on the T141a trap, and the four T153 traps (one turn-based step per call; `ai_turn` is host state that a restore restarts; `decide` gets the host's own mesh or `None`; only `Closed` is an `Err`, refusals are steps), so the crate contract matches the AI driver the host now runs.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4.1-flash + T150c · Recorded the `/3` movement route's `quic` surface (`V4Invitation`, `Lane1Call`, `Lane1Trace`, `register_v4_invitation`, `advance`, the five lane-1 report counts, `undelivered_receipts`), added its gate and the four lane-1 traps, so the crate contract matches the route the adapter now serves beside `/1` and `/2`.
 - 2026-11-20 (UTC) · opencode-go/deepseek-v4.1-flash + T154d · Recorded the dedicated hosting's surface (`QuicHosting`, `QuicAiHook`, and `QuicHost::{flush, drive_ai, pause, unpause}`, with `flush` as `pump`'s phases 4–7), so the crate contract names the stages the dedicated loop now runs.
+- 2026-11-21 (UTC) · claude-code/claude-sonnet-5-5 + T040a · Recorded the rejection and intake-observer surface and the trap that `rejections()` is the only definition of a rejected client message, so the dedicated binary logs the library's reading rather than its own.

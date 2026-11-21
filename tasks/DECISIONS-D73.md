@@ -1,6 +1,6 @@
 # Decision D73 — the authoring benchmark (T100): runs cut short by a service fault
 
-Status: **open, 2026-11-21.** One question, D73a.
+Status: **answered, 2026-11-21.** D73a (b).
 
 The authoring benchmark (T100, D72) hands each AI model a task, lets it work,
 and then scores what it wrote. The scorer already leaves out a run that never
@@ -30,5 +30,8 @@ time.
 already made may change slightly when the baseline is re-scored (re-scoring
 needs no new runs).
 
+**Answer (user, 2026-11-21): (b).**
+
 ## Agent log
 - 2026-11-21 (UTC) · claude-code/opus-5.5 (manager) + session 88 · Drafted D73a from the session 86–87 baseline, where five runs cut off by the OpenCode service were counted as model failures, with a recommendation.
+- 2026-11-21 (UTC) · claude-code/opus-5.5 (manager) + D73 answer · Recorded the user's answer (b): runs cut off by a service fault are excluded; the scorer change is a T100 erratum still to be written.

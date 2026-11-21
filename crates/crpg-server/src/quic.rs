@@ -180,6 +180,216 @@ impl QuicPumpReport {
             resumes: Vec::new(),
         }
     }
+
+    /// Every rejection in this report, in the order of B-1: refused hellos,
+    /// refused resume openings, then the `calls` in order (T040a). This is
+    /// the only place a rejected client message is defined (Reading 5).
+    pub fn rejections(&self) -> Vec<Rejection> {
+        let mut out = Vec::new();
+        for decision in &self.hellos {
+            if let HelloOutcome::Refused { code } = &decision.outcome {
+                out.push(Rejection::Hello {
+                    conn: decision.conn,
+                    code: *code,
+                });
+            }
+        }
+        for resume in &self.resumes {
+            if let ResumeOutcome::Refused { code } = &resume.outcome {
+                out.push(Rejection::Resume {
+                    conn: resume.conn,
+                    code: *code,
+                });
+            }
+        }
+        for call in &self.calls {
+            match call {
+                HostCall::Ingest {
+                    conn,
+                    peer,
+                    frame,
+                    len,
+                    result:
+                        IngestDisposition::Refused {
+                            status: ReceiptStatus::Rejected(code),
+                        },
+                } if *code != RejectionCode::QueueFull => out.push(Rejection::Ingest {
+                    conn: *conn,
+                    peer: *peer,
+                    frame: *frame,
+                    len: *len,
+                    code: *code,
+                }),
+                HostCall::IngestTransfer {
+                    conn,
+                    peer,
+                    frame,
+                    len,
+                    result: TransferDisposition::Refused(refusal),
+                } => out.push(Rejection::Transfer {
+                    conn: *conn,
+                    peer: *peer,
+                    frame: *frame,
+                    len: *len,
+                    refusal: *refusal,
+                }),
+                HostCall::CheckFrame {
+                    conn,
+                    peer,
+                    result: Err(error),
+                    ..
+                } => out.push(Rejection::Frame {
+                    conn: *conn,
+                    peer: *peer,
+                    error: error.clone(),
+                }),
+                HostCall::Pump { summary } => {
+                    for result in &summary.results {
+                        if let ReceiptStatus::Rejected(code) = result.status {
+                            if !result.retained_in_ingress {
+                                out.push(Rejection::Admission {
+                                    peer: result.peer,
+                                    seq: result.seq,
+                                    code,
+                                    cached: result.cached,
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// One rejected client message, read from a pump report (Reading 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rejection {
+    /// A hello refused with `code`.
+    Hello {
+        /// The connection the hello arrived on.
+        conn: ConnectionId,
+        /// The close code it was refused with.
+        code: CloseCode,
+    },
+    /// A resume opening refused with `code`.
+    Resume {
+        /// The connection the resume arrived on.
+        conn: ConnectionId,
+        /// The close code it was refused with.
+        code: CloseCode,
+    },
+    /// A lane-0 frame `ingest` refused (never `QueueFull`).
+    Ingest {
+        /// The connection the frame came from.
+        conn: ConnectionId,
+        /// Its binding.
+        peer: PeerHandle,
+        /// The frame's ordinal on the connection.
+        frame: u64,
+        /// The frame's length in bytes.
+        len: usize,
+        /// The rejection code `ingest` returned.
+        code: RejectionCode,
+    },
+    /// A transfer-channel frame `ingest_transfer` refused.
+    Transfer {
+        /// The connection the frame came from.
+        conn: ConnectionId,
+        /// Its binding.
+        peer: PeerHandle,
+        /// The frame's ordinal on the connection.
+        frame: u64,
+        /// The frame's length in bytes.
+        len: usize,
+        /// Why `ingest_transfer` refused it.
+        refusal: TransferRefusal,
+    },
+    /// A command the admission pump finalized as rejected.
+    Admission {
+        /// The submitting binding.
+        peer: PeerHandle,
+        /// The command's sequence, when decoding got that far.
+        seq: Option<u64>,
+        /// The rejection code.
+        code: RejectionCode,
+        /// Answered from the retry cache without re-execution.
+        cached: bool,
+    },
+    /// A frame `check_frame` refused.
+    Frame {
+        /// The connection the frame arrived on.
+        conn: ConnectionId,
+        /// Its binding.
+        peer: PeerHandle,
+        /// What `check_frame` returned.
+        error: HostError,
+    },
+}
+
+impl fmt::Display for Rejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hello { conn, code } => {
+                write!(f, "hello conn={} code={}", conn.get(), *code as u32)
+            }
+            Self::Resume { conn, code } => {
+                write!(f, "resume conn={} code={}", conn.get(), *code as u32)
+            }
+            Self::Ingest {
+                conn,
+                peer,
+                frame,
+                len,
+                code,
+            } => write!(
+                f,
+                "ingest conn={} peer={} frame={} len={} code={}",
+                conn.get(),
+                peer.get(),
+                frame,
+                len,
+                *code as u8
+            ),
+            Self::Transfer {
+                conn,
+                peer,
+                frame,
+                len,
+                refusal,
+            } => write!(
+                f,
+                "transfer conn={} peer={} frame={} len={} refusal={:?}",
+                conn.get(),
+                peer.get(),
+                frame,
+                len,
+                refusal
+            ),
+            Self::Admission {
+                peer,
+                seq,
+                code,
+                cached,
+            } => {
+                write!(f, "admission peer={} seq=", peer.get())?;
+                match seq {
+                    Some(seq) => write!(f, "{seq}")?,
+                    None => f.write_str("-")?,
+                }
+                write!(f, " code={} cached={}", *code as u8, cached)
+            }
+            Self::Frame { conn, peer, error } => write!(
+                f,
+                "frame conn={} peer={} error={}",
+                conn.get(),
+                peer.get(),
+                error
+            ),
+        }
+    }
 }
 
 /// One host call, with what it returned.
@@ -2920,6 +3130,316 @@ mod tests {
                 .graced
                 .is_none(),
             "the ended grace's record is cleared"
+        );
+    }
+
+    /// T040a T2: `rejections()` lists only a rejected admission that is not
+    /// the retained head, in order, and each `Display` is B-2's text.
+    #[test]
+    fn admissions_filter_and_display() {
+        let mut host = Host::from_history(
+            fixture(),
+            HostConfig {
+                protocol: ProtocolSelection::V1,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let mut peer = None;
+        for _ in 0..3 {
+            peer = Some(
+                host.bind_peer(
+                    ControlGrant { actors: vec![] },
+                    DisclosureGrants::default(),
+                    NOW,
+                )
+                .expect("binds"),
+            );
+        }
+        let peer = peer.expect("three binds");
+        assert_eq!(peer.get(), 3);
+
+        let (c1, c2) = (RejectionCode::IllegalAction, RejectionCode::NotAuthorized);
+        let result = |seq, status, cached, retained| AdmissionResult {
+            peer,
+            seq,
+            status,
+            cached,
+            retained_in_ingress: retained,
+        };
+        let rejected = ReceiptStatus::Rejected;
+        let report_of = |results: Vec<AdmissionResult>| {
+            let mut report = QuicPumpReport::new();
+            report.calls.push(HostCall::Pump {
+                summary: PumpSummary {
+                    admitted: 0,
+                    applied: 0,
+                    rejected: 0,
+                    backpressured: 0,
+                    dropped_replies: 0,
+                    results,
+                },
+            });
+            report
+        };
+        let applied = result(Some(6), ReceiptStatus::Applied, false, false);
+        let first = result(Some(7), rejected(c1), false, false);
+        let head = result(Some(8), rejected(RejectionCode::QueueFull), false, true);
+        let second = result(None, rejected(c2), true, false);
+
+        let report = report_of(vec![
+            applied.clone(),
+            first.clone(),
+            head.clone(),
+            second.clone(),
+        ]);
+        let found = report.rejections();
+        assert_eq!(
+            found,
+            vec![
+                Rejection::Admission {
+                    peer,
+                    seq: Some(7),
+                    code: c1,
+                    cached: false
+                },
+                Rejection::Admission {
+                    peer,
+                    seq: None,
+                    code: c2,
+                    cached: true
+                },
+            ]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            format!("admission peer=3 seq=7 code={} cached=false", c1 as u8)
+        );
+        assert_eq!(
+            found[1].to_string(),
+            format!("admission peer=3 seq=- code={} cached=true", c2 as u8)
+        );
+
+        // Control: the same head, not retained, is a rejection like any other.
+        let mut loose = head;
+        loose.retained_in_ingress = false;
+        let control = report_of(vec![applied, first, loose, second]).rejections();
+        assert_eq!(
+            control.len(),
+            3,
+            "a non-retained QueueFull result is listed"
+        );
+        assert!(matches!(
+            control[1],
+            Rejection::Admission {
+                seq: Some(8),
+                code: RejectionCode::QueueFull,
+                ..
+            }
+        ));
+    }
+
+    /// Fix round A (T040a B-1, B-2): one hand-built report holding every
+    /// rejection source; `rejections()` lists them in B-1's order (hellos,
+    /// resumes, then calls) with the right connection, peer and code in each,
+    /// and each `Display` is B-2's text. Connection ids come from real refused
+    /// hellos (`ConnectionId` has no public constructor); peers from a host
+    /// whose first six handles were unbound, so no peer number equals a
+    /// connection number and a swap of the two shows.
+    #[test]
+    fn fx_a1_rejections_list_every_source_in_order() {
+        let (mut qh, mut now) = adapter();
+        let addr = qh.local_addr();
+        let mut conns = Vec::new();
+        for _ in 0..5 {
+            let hello = crpg_net_quic::Hello {
+                wire_version: 2,
+                credential: Credential::new(vec![0xB2; 32]).expect("32-byte credential"),
+            };
+            let pending = std::thread::spawn(move || {
+                QuicClient::connect_framed(client_config(), addr, &hello, Framing::V2)
+            });
+            let report = pump_until(&mut qh, &mut now, "hello decided", |report| {
+                !report.hellos.is_empty()
+            });
+            assert_eq!(report.hellos.len(), 1, "{:?}", report.hellos);
+            assert_eq!(
+                report.hellos[0].outcome,
+                HelloOutcome::Refused {
+                    code: CloseCode::AuthRefused
+                }
+            );
+            conns.push(report.hellos[0].conn);
+            assert!(
+                pending.join().expect("client thread").is_err(),
+                "the unknown credential is refused"
+            );
+        }
+        for (i, a) in conns.iter().enumerate() {
+            assert!(a.get() < 7, "connection ids stay below the peer numbers");
+            assert!(
+                conns[i + 1..].iter().all(|b| a != b),
+                "distinct connections"
+            );
+        }
+
+        let mut host = Host::from_history(
+            fixture(),
+            HostConfig {
+                protocol: ProtocolSelection::V1,
+                incarnation: 7,
+            },
+            NOW,
+        )
+        .expect("wraps an acknowledged authority");
+        let bind = |host: &mut Host| {
+            host.bind_peer(
+                ControlGrant { actors: vec![] },
+                DisclosureGrants::default(),
+                NOW,
+            )
+            .expect("binds")
+        };
+        let early: Vec<PeerHandle> = (0..6).map(|_| bind(&mut host)).collect();
+        for peer in early {
+            host.unbind_peer(peer);
+        }
+        let (p7, p8, p9) = (bind(&mut host), bind(&mut host), bind(&mut host));
+        assert_eq!((p7.get(), p8.get(), p9.get()), (7, 8, 9));
+
+        let mut report = QuicPumpReport::new();
+        report.hellos.push(HelloDecision {
+            conn: conns[0],
+            outcome: HelloOutcome::Refused {
+                code: CloseCode::AuthRefused,
+            },
+        });
+        report.resumes.push(ResumeReport {
+            conn: conns[1],
+            outcome: ResumeOutcome::Lost {
+                reason: CloseReason::Transport,
+            },
+        });
+        report.resumes.push(ResumeReport {
+            conn: conns[2],
+            outcome: ResumeOutcome::Refused {
+                code: CloseCode::ServerBusy,
+            },
+        });
+        report.calls.push(HostCall::Ingest {
+            conn: conns[4],
+            peer: p7,
+            frame: 11,
+            len: 13,
+            result: IngestDisposition::Refused {
+                status: ReceiptStatus::Rejected(RejectionCode::Malformed),
+            },
+        });
+        report.calls.push(HostCall::IngestTransfer {
+            conn: conns[3],
+            peer: p8,
+            frame: 5,
+            len: 9,
+            result: TransferDisposition::Published,
+        });
+        report.calls.push(HostCall::IngestTransfer {
+            conn: conns[3],
+            peer: p8,
+            frame: 6,
+            len: 21,
+            result: TransferDisposition::Refused(TransferRefusal::RateLimited),
+        });
+        report.calls.push(HostCall::CheckFrame {
+            conn: conns[4],
+            peer: p9,
+            fence: ConnectionFence::FIRST,
+            result: Ok(()),
+        });
+        report.calls.push(HostCall::CheckFrame {
+            conn: conns[1],
+            peer: p8,
+            fence: ConnectionFence::FIRST,
+            result: Err(HostError::UnknownPeer),
+        });
+        report.calls.push(HostCall::Pump {
+            summary: PumpSummary {
+                admitted: 0,
+                applied: 0,
+                rejected: 1,
+                backpressured: 0,
+                dropped_replies: 0,
+                results: vec![AdmissionResult {
+                    peer: p9,
+                    seq: Some(3),
+                    status: ReceiptStatus::Rejected(RejectionCode::IllegalAction),
+                    cached: false,
+                    retained_in_ingress: false,
+                }],
+            },
+        });
+
+        let found = report.rejections();
+        assert_eq!(
+            found,
+            vec![
+                Rejection::Hello {
+                    conn: conns[0],
+                    code: CloseCode::AuthRefused
+                },
+                Rejection::Resume {
+                    conn: conns[2],
+                    code: CloseCode::ServerBusy
+                },
+                Rejection::Ingest {
+                    conn: conns[4],
+                    peer: p7,
+                    frame: 11,
+                    len: 13,
+                    code: RejectionCode::Malformed
+                },
+                Rejection::Transfer {
+                    conn: conns[3],
+                    peer: p8,
+                    frame: 6,
+                    len: 21,
+                    refusal: TransferRefusal::RateLimited
+                },
+                Rejection::Frame {
+                    conn: conns[1],
+                    peer: p8,
+                    error: HostError::UnknownPeer
+                },
+                Rejection::Admission {
+                    peer: p9,
+                    seq: Some(3),
+                    code: RejectionCode::IllegalAction,
+                    cached: false
+                },
+            ]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            format!("hello conn={} code=5", conns[0].get())
+        );
+        assert_eq!(
+            found[1].to_string(),
+            format!("resume conn={} code=7", conns[2].get())
+        );
+        assert_eq!(
+            found[3].to_string(),
+            format!(
+                "transfer conn={} peer=8 frame=6 len=21 refusal=RateLimited",
+                conns[3].get()
+            )
+        );
+        assert_eq!(
+            found[4].to_string(),
+            format!(
+                "frame conn={} peer=8 error={}",
+                conns[1].get(),
+                HostError::UnknownPeer
+            )
         );
     }
 }
