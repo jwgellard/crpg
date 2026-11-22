@@ -73,5 +73,13 @@ fight ends, not this one, so it needs its own yes.
 - The four new bridge functions (`open_v4_walk`, `request_mode`, and the
   view's `movement` and `movement_max`) are on your review list, as before.
 
+## Answers (the user, 2026-11-22)
+- **D80a: (a) on the encounter, as the default for now**, with the user's condition: "It will be variable. On the encounter is fine as a default now but there needs to be different ways for different rulesets along with alternate ways to trigger fights." The data shape and ADR text must leave room for other trigger kinds and per-ruleset choices without a schema break.
+- **D80b: (a) yes**, the two named pinned assertions change.
+- **ADR-0029 Amendment 1 and ADR-0036 Amendment 1: accepted.**
+
+Status: **answered.** Revision 3 makes the engagement trigger extensible.
+
 ## Agent log
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T157 revision 2 · Wrote the two user questions revision 2 leaves open (where the notice distance is authored, and whether two pinned tests may change so survivors walk again), each with its recommendation, and listed the sides and readout defaults decided in the contract.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (manager) + D80 answers · Recorded the user's answers and their condition that fight triggers be variable per ruleset, so revision 3 builds on them.
