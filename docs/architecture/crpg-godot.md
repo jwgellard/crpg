@@ -256,8 +256,21 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   `"PASS"` or `"H<n>: detail"`, so a crash (`""` from a `-> String` function)
   fails. **`tests/hud.gd`** runs them and exits 6 on a failure, 3 when the case
   file fails to load.
-- **No input.** Camera control and picking are T050 and deliberately absent;
-  T049 owns positions.
+- **The walk scene (T050b).** `scenes/Walk.tscn` is the click-to-move demo
+  (`Godot4 --path apps/client res://scenes/Walk.tscn`); `Main.tscn` stays the
+  default scene and the combat demo. `scripts/Walk.gd` opens a real-time v4
+  session over `campaigns/demo/walk`, polls it once per frame, feeds
+  `SceneSync.gd` and `CombatHud.gd` unchanged, and draws every proxy itself
+  after `sync` from `render_positions()` (`SceneSync.gd` may call only
+  `view.net_ids/names/sides/dead`, S13, so a position never goes through it).
+  The camera is fixed, aimed at the floor's centre. A left click on the ground
+  within 0.6 m of a controlled proxy selects it, otherwise sends `move_to` for
+  the selected actor to the click, raw (`round(m * 65536)`) on the plane
+  `y = 0`; a right click sends `halt`. One press is one call. The client
+  decides no rule: the host snaps, clamps and refuses, and a refusal shows as a
+  HUD notice. No path preview (it needs a client mesh); pan and zoom are later.
+  `tests/walk.gd` is the local engine gate for WK1-WK10 and exits 3 when the
+  open fails.
 
 ## Protocol v4 sessions (T151)
 
@@ -412,3 +425,4 @@ Agent log:
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Replaced the "Later parts" bullet with the v4-session-on-the-run-loop description: `encounter_bounds`, the NPC driver as `NpcHook` on the loop's AI stage, legal options read between cycles through `RunnerHandle::submit`, and the three move entry points, leaving only the shell (T151c) as later.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Replaced the "Later parts" bullet with the shell surface (`open_v4`, `declare_move`, `move_to`, `halt`, four view getters) and the `movement.gd` gate: how MOVE is built at test time, its exit codes and the receipt-revision trap.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the "Real-time sessions, `controlled()` and `render_positions()`" subsection: the real-time open, the session-held controlled list, the unsmoothed render hook and the walk campaign.
+- 2026-11-22 (UTC) � claude-code/sonnet-5.5 + T050b � Replaced the "No input." bullet with the walk scene's input and drawing rules, now that picking and click-to-move exist.

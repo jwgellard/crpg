@@ -100,6 +100,8 @@ Godot4 --headless --path apps/client -s res://tests/scene_sync.gd   # exit 0
 Godot4 --headless --path apps/client -s res://tests/hud.gd          # exit 0
 Godot4 --headless --path apps/client -s res://tests/smoke.gd        # exit 0
 Godot4 --headless --path apps/client -s res://tests/movement.gd     # exit 0 (T151c, local only)
+Godot4 --headless --path apps/client -s res://tests/walk.gd         # exit 0 (T050b, local only)
+CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/walk.gd   # control: exit 3
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/load.gd   # control: exit 3
 ```
 
@@ -198,6 +200,10 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
   `movement`.** `open_v4_rt*` on `combat_basic` answers `25`
   `ModeUnsupported`; use `campaigns/demo/walk`, and keep its ids the
   fixture's plus the one second-Hero placement.
+- **`SceneSync.gd` may call only `view.net_ids/names/sides/dead` (S13): draw
+  positions outside it.** `Walk.gd` writes each proxy's `position` after
+  `sync` in the same `_process`; a `place(view, ..)` inside `SceneSync.gd`
+  fails `scene_sync.gd`.
 
 Agent log:
 
@@ -213,3 +219,4 @@ Agent log:
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Added the run-loop invariants (the bridge never ticks, pumps or drives lane 1; `poll` never waits on the loop thread) and amended invariants 2 and 8 for the per-session authority and the runner's `SystemClock`, plus the MOVE fixture trap, so T151c extends the v4 session rather than re-deriving it.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Added the `movement.gd` and `smoke.gd` engine-gate lines and the trap that `movement.gd` builds MOVE at test time and waits for a later revision for the second receipt.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the trap that a real-time open needs `round_ticks` and that the walk campaign lives outside `campaigns/fixtures` because no fixture may declare `movement`.
+- 2026-11-22 (UTC) � claude-code/sonnet-5.5 + T050b � Added the `walk.gd` engine gate and its control to the gate block, and the trap that positions are drawn outside `SceneSync.gd` (S13).
