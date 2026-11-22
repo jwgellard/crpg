@@ -213,7 +213,7 @@ func _wk5() -> bool:
 	if _done:
 		return false
 	var arrived := func() -> bool:
-		return walk.view.positions().slice(3, 6) == PackedInt64Array([196608, 0, 655360]) and walk.view.moving()[1] == 0
+		return walk.view.positions().slice(3, 6) == PackedInt64Array([196608, 0, 655360]) and walk.view.moving()[1] == 0 and _near(_p(2), Vector3(3, 0, 10))
 	if not await _wait("WK5 hero 2 arrives at (3,0,10)", arrived):
 		return false
 	_want("WK5 P(2)", _near(_p(2), Vector3(3, 0, 10)), str(_p(2)))
