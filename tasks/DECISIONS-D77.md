@@ -1,8 +1,22 @@
 # Decision D77 — movement in the Godot client (T050, T049, T026)
 
-Status: **open.** Contracts `tasks/T050.md` (T050a, T050b), `tasks/T049.md`
-(T049a) and the revision at the end of `tasks/T026.md`, all written for the
-recommended answers below (architect, T026c).
+Status: **decided by the user, 2026-11-22: all five as recommended, (a).**
+Contracts `tasks/T050.md` (T050a, T050b), `tasks/T049.md` (T049a) and the
+revision at the end of `tasks/T026.md` (architect, T026c), revised in
+attempt 2 for the contract review; ADR-0033 amended
+(`docs/adr/0033-godot-bridge.md`, "Amendment 2026-11-22").
+
+## Answers
+- **D77a (Q1) — (a).** The walk demo is a real-time encounter; nobody gets
+  combat options in real time in this build.
+- **D77b (Q2) — (a).** `campaigns/demo/walk` is checked in.
+- **D77c (Q3) — (a).** The three `CrpgSession` functions are approved, with
+  smoothing in the Rust client core (the user confirmed: client-side Rust,
+  not the server), replacing ADR-0033's planned `previous_positions()`.
+- **D77d (Q4) — (a).** A new `Walk.tscn`, launched by command; CI and the
+  downloadable build come later as their own task.
+- **D77e (Q5) — (a).** T026 prediction is deferred until the game can join a
+  server over the network.
 
 ## What you would see
 Launch the walk scene, click the floor, and the selected Hero walks there at
@@ -71,3 +85,4 @@ on screen.
 
 ## Agent log
 - 2026-11-21 (UTC) · claude-code/opus-5.5 (architect) + T026c · Drafted D77 with the five choices only the user can make for the walk demo (real-time scene, a demo campaign, the three bridge functions, how to launch it, and whether prediction waits), each with the contract's recommendation.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T026c attempt 2 · Recorded the user's five answers, all (a), including the confirmation that smoothing runs in the Rust client core, and pointed to the revised contracts and the ADR-0033 amendment.

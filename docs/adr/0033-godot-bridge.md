@@ -655,10 +655,54 @@ features on both native targets; BR-21 runs in CI; BR-22 runs on Windows.
 | BR-22 | `Godot4 --headless --path apps/client -s tests/smoke.gd` spawns one proxy per participant, plays `combat_basic` to `ended()` choosing option 0, exits 0 |
 | L1–L6 | `crates/crpg-server/tests/host_legal.rs`, on the checked-in fixture |
 
+## Amendment 2026-11-22 — movement in the client (T151, T050, T049; D66, D77)
+
+Accepted by the user 2026-11-22 (D77c, `tasks/DECISIONS-D77.md`) for the T050
+and T049 items. The T151 items record the surface the user approved with
+T151 (D66d, 2026-11-17, `tasks/T151.md`), which this ADR had not yet
+recorded; the T050 members extend it. Earlier text is superseded only where
+an item says so.
+
+- **M1. Decision 8, session kinds.** Beside the v2 snapshot-peer session, the
+  bridge opens protocol v4 sessions: `open_v4` starts the encounter turn-based
+  (T151), `open_v4_rt` real-time (T050a; the ruleset needs `round_ticks`). A
+  v4 session's server is `crpg-server`'s run loop on a background thread at
+  20 Hz (T154); the bridge never ticks, pumps or drives lane 1 (T151 Reading
+  7, D65a), which supersedes decision 4's rejection of a worker thread for v4
+  sessions only. The link carries `0x82` transfer, v4 lane-0 and `0xA1`
+  lane-1 frames, routed by first byte (decision 3; T151 Reading 6). Code 54
+  stays v2-only.
+- **M2. §10, the FFI surface.** `CrpgSession` gains `open_v4`,
+  `declare_move(revision, x, y, z)`, `move_to(actor, x, y, z)` and
+  `halt(actor)` (T151c), and `open_v4_rt`, `controlled() -> PackedInt64Array`
+  (the replica ids the player may move, ascending) and `render_positions() ->
+  PackedInt64Array` (T050b). `CrpgView` gains `positions()`,
+  `position_known()`, `moving()` and `move_receipts()` (T151c). Coordinates
+  are raw `Fx16_16` integers (metres × 65,536). A turn-based move names no
+  actor; a lane-1 move names one by `NetId`, and the host decides (T151
+  Readings 14–15). The surface is now 13 session and 20 view members, not
+  "6 + 16" (Consequences).
+- **M3. The T049 consequence is replaced.** T049 adds no
+  `previous_positions()` (Consequences, the T049 bullet). `render_positions()`
+  returns three raw integers per row of `view()`: in a live v4 session the
+  position smoothed in the Godot-free core (T049a: per-entity sample buffers
+  keyed by server tick, drawn 100 ms behind the estimated server time,
+  holding the newest sample and never extrapolating); in every other state
+  the view's positions. It is a session member, not a view member, because
+  it changes every frame without a new revision (decision 6's one revision
+  per poll), and smoothing in the core is exact integer arithmetic that
+  `cargo test` covers on both targets. It is presentation only: nothing it
+  computes reaches the replica, an intent or the server.
+- **M4. The thin-slice cuts.** Movement, positions, interpolation,
+  click-to-move and real-time encounters ("What the thin slice cuts") are now
+  in scope through T151, T050 and T049. Prediction stays cut: T026 is deferred
+  until a remote session exists (D77e).
+
 ## Supersession and corrections
 
-None.
+"Amendment 2026-11-22" above supersedes decision 8's single session kind, decision 4's thread rule for v4 sessions only, §10's member list, the T049 consequence and the thin-slice cuts it names.
 
 ## Agent log
 
 - 2026-11-01 (UTC) · claude-code/opus-5.5 (architect) + T045 · Adjudicated the two blind bridge drafts against the source into one Proposed ADR, adding the host read API, NPC driver, in-memory link and capture watermark that the thin slice needs and neither draft fully covered; numbered 0033 because ADR-0030 is reserved for T024q, and no ADR index exists to update.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T026c attempt 2 (D77c) · Amended the bridge ADR for movement: recorded T151's v4 session kinds and members, which had not been written here, added T050's three session members, and replaced the planned `previous_positions()` with a core-smoothed `render_positions()` on the session, because a per-frame value cannot live in a revisioned view.
