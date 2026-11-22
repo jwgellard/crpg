@@ -31,7 +31,7 @@ use crpg_server::host::{
 };
 use crpg_server::run::{HostLoop, LocalClient, LocalHost};
 use crpg_server::runner::{spawn, Clock, RunnerHandle, RunnerPanicked, SystemClock};
-use crpg_sim::HistoryWorld;
+use crpg_sim::{EncounterMode, HistoryWorld};
 
 use authority::v4::{encounter_bounds, read_options, NpcHook, OptionsReply};
 use authority::{
@@ -90,6 +90,8 @@ struct LiveV4 {
     options: Vec<Offered>,
     reply: Option<Receiver<Result<OptionsReply, HostError>>>,
     seen_refused: u64,
+    /// The player's controlled replica ids, ascending (Reading 3).
+    controlled: Vec<i64>,
 }
 
 /// Test-only fault injection points (K29).
@@ -190,11 +192,84 @@ impl BridgeCore {
         seed: i64,
         clock: impl Clock,
     ) -> BridgeCode {
+        self.open_v4_mode(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            clock,
+            EncounterMode::TurnBased,
+        )
+    }
+
+    /// Opens the named encounter as a real-time protocol v4 session on the
+    /// run loop (W-1).
+    pub fn open_v4_rt(
+        &mut self,
+        campaign_dir: &str,
+        encounter_id: &str,
+        player_side: &str,
+        seed: i64,
+    ) -> BridgeCode {
+        self.open_v4_rt_with(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            SystemClock::new(),
+        )
+    }
+
+    /// `open_v4_rt` with the runner's clock injected.
+    pub(crate) fn open_v4_rt_with(
+        &mut self,
+        campaign_dir: &str,
+        encounter_id: &str,
+        player_side: &str,
+        seed: i64,
+        clock: impl Clock,
+    ) -> BridgeCode {
+        self.open_v4_mode(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            clock,
+            EncounterMode::RealTime,
+        )
+    }
+
+    /// The replica ids the player may move in an open v4 session, ascending;
+    /// empty in every other state (W-2).
+    pub fn controlled(&self) -> Vec<i64> {
+        match &self.state {
+            State::OpenV4(live) => live.controlled.clone(),
+            State::Closed | State::Open(_) | State::Fenced(_) => Vec::new(),
+        }
+    }
+
+    /// Three raw `Fx16_16` integers per row of `view()`, in `net_ids()` order:
+    /// where to draw each row this frame (W-3).
+    pub fn render_positions(&self) -> Vec<i64> {
+        self.view.positions().to_vec()
+    }
+
+    /// The one body of `open_v4_with` and `open_v4_rt_with`: validation, the
+    /// panic guard, then the guarded work in `mode`.
+    fn open_v4_mode(
+        &mut self,
+        campaign_dir: &str,
+        encounter_id: &str,
+        player_side: &str,
+        seed: i64,
+        clock: impl Clock,
+        mode: EncounterMode,
+    ) -> BridgeCode {
         if seed < 0 || (!encounter_id.is_empty() && Ulid::from_str(encounter_id).is_err()) {
             return self.fail(BridgeCode::BadArgument, Some("bad argument"));
         }
         let result = catch_unwind(AssertUnwindSafe(|| {
-            self.open_v4_guarded(campaign_dir, encounter_id, player_side, seed, clock)
+            self.open_v4_guarded(campaign_dir, encounter_id, player_side, seed, clock, mode)
         }));
         match result {
             Ok(code) => code,
@@ -334,7 +409,13 @@ impl BridgeCore {
             }
             State::Closed => {}
         }
-        let prefix = match self.open_prefix(campaign_dir, encounter_id, player_side, seed) {
+        let prefix = match self.open_prefix(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            EncounterMode::TurnBased,
+        ) {
             Ok(prefix) => prefix,
             Err(code) => return code,
         };
@@ -409,6 +490,7 @@ impl BridgeCore {
         player_side: &str,
         seed: i64,
         clock: impl Clock,
+        mode: EncounterMode,
     ) -> BridgeCode {
         #[cfg(test)]
         if self.probe == Some(Probe::Open) {
@@ -420,7 +502,7 @@ impl BridgeCore {
             }
             State::Closed => {}
         }
-        let prefix = match self.open_prefix(campaign_dir, encounter_id, player_side, seed) {
+        let prefix = match self.open_prefix(campaign_dir, encounter_id, player_side, seed, mode) {
             Ok(prefix) => prefix,
             Err(code) => return code,
         };
@@ -451,6 +533,7 @@ impl BridgeCore {
         if let Err(error) = host.bind_area_bounds(min, max) {
             return self.fail(BridgeCode::StartFailed, Some(&error.to_string()));
         }
+        let player_actors = prefix.player_actors.clone();
         let player = match host.bind_v4_peer(
             ControlGrant {
                 actors: prefix.player_actors,
@@ -487,6 +570,16 @@ impl BridgeCore {
             Ok(client) => client,
             Err(fault) => return self.fail_fault(fault),
         };
+        let mut controlled = Vec::with_capacity(player_actors.len());
+        for entity in &player_actors {
+            match host.replica_id(player, *entity) {
+                Ok(Some(id)) => controlled.push(client::wide(id.get())),
+                Ok(None) | Err(_) => {
+                    return self.fail(BridgeCode::StartFailed, Some("no player replica id"))
+                }
+            }
+        }
+        controlled.sort_unstable();
 
         let mut local = LocalHost::new(host);
         let link = match local.attach(player, NonZeroUsize::new(LINK_FRAMES).expect("nonzero")) {
@@ -508,6 +601,7 @@ impl BridgeCore {
             options: Vec::new(),
             reply: None,
             seen_refused: 0,
+            controlled,
         }));
         self.view = Rc::new(SessionView::default());
         self.last_error.clear();
@@ -522,6 +616,7 @@ impl BridgeCore {
         encounter_id: &str,
         player_side: &str,
         seed: i64,
+        mode: EncounterMode,
     ) -> Result<OpenPrefix, BridgeCode> {
         let files = match collect_campaign(&RealFs, Path::new(campaign_dir)) {
             Ok(files) => files,
@@ -581,7 +676,7 @@ impl BridgeCore {
             Err(_) => return Err(self.fail(BridgeCode::BadArgument, Some("negative seed"))),
         };
         let mut history = HistoryWorld::new(seed_value);
-        if let Err(error) = history.start_encounter(&parts.spec(encounter)) {
+        if let Err(error) = history.start_encounter_in_mode(&parts.spec(encounter), mode) {
             return Err(self.fail(BridgeCode::StartFailed, Some(&error.to_string())));
         }
         let bound: Vec<(EntityId, Ulid)> = history

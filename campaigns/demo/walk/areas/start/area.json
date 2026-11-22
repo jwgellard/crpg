@@ -1,0 +1,20 @@
+{
+  "ambience": null,
+  "bounds": {
+    "max": [
+      1048576,
+      65536,
+      786432
+    ],
+    "min": [
+      0,
+      0,
+      0
+    ]
+  },
+  "id": "0000000000000000000000000D",
+  "name": "fixture.start",
+  "neighbours": [],
+  "schema": "crpg.area/1",
+  "slug": "start"
+}

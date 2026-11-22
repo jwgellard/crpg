@@ -320,6 +320,36 @@ GDExtension surface. v2 keeps every byte and behaviour.
   its receipts until the next revision, so the script waits for a later
   revision before reading a second receipt.
 
+### Real-time sessions, `controlled()` and `render_positions()` (T050a)
+
+- **`open_v4_rt`.** `open_v4_rt(_with)` is `open_v4(_with)` with one
+  difference: `open_prefix` starts the encounter with
+  `HistoryWorld::start_encounter_in_mode(spec, mode)`, `RealTime` for
+  `open_v4_rt*` and `TurnBased` for `open` and `open_v4*` (so no
+  turn-based byte changes). In real time lane 1 walks combatants; nobody
+  has combat options, because `legal_intents` is empty without an active
+  turn. A ruleset with no `round_ticks` refuses the real-time start:
+  `25` `START_FAILED: ModeUnsupported at combat/mode`, closed, no runner.
+- **`controlled()`.** The player's control grant is fixed at open, so the
+  list lives in `LiveV4`, not in the view: after `presentation_tables`
+  each granted entity is mapped with `Host::replica_id` and the ids are
+  stored ascending. It is empty in `Closed`, `Open` (v2) and `Fenced`.
+  Dead or departed rows stay in it; the caller intersects with
+  `net_ids()` and the host still decides every move.
+- **`render_positions()`.** Three raw `Fx16_16` integers per row of
+  `view()`, in `net_ids()` order. In T050a it is the view's positions;
+  T049a replaces the v4 body with smoothed positions, with no shell or
+  GDScript change.
+- **The walk campaign.** `campaigns/demo/walk` is a copy of `combat_basic`
+  with `movement` (2 m/s at 20 Hz), `round_ticks` 100, a 16 x 12 m floor
+  and a second Hero placement (`...0Q`). It lives outside
+  `campaigns/fixtures` because no fixture may declare `movement`. Rows
+  are `n(1)` Hero (3, 0, 5), `n(2)` Hero (3, 0, 7), `n(3)` Goblin
+  (12, 0, 6). The tests are `authority/v4/tests/rt.rs` (module
+  `authority::v4::rt_tests`, under a `tests` directory so K31's core
+  scan skips it); its `ManualClock`, `walk_root` and `settle` are
+  `pub(crate)` for T049a.
+
 ## Decisions and traps
 
 Governed by ADR-0033 and ADR-0012. The core holds no float,
@@ -381,3 +411,4 @@ Agent log:
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Added the Protocol v4 sessions section for the v4 client half: the frozen v2, first-byte routing, `ClientV4`'s pool/replica/outbox shape, the position columns and their later parts, so T151b wires a documented baseline rather than re-deriving it.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Replaced the "Later parts" bullet with the v4-session-on-the-run-loop description: `encounter_bounds`, the NPC driver as `NpcHook` on the loop's AI stage, legal options read between cycles through `RunnerHandle::submit`, and the three move entry points, leaving only the shell (T151c) as later.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Replaced the "Later parts" bullet with the shell surface (`open_v4`, `declare_move`, `move_to`, `halt`, four view getters) and the `movement.gd` gate: how MOVE is built at test time, its exit codes and the receipt-revision trap.
+- 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the "Real-time sessions, `controlled()` and `render_positions()`" subsection: the real-time open, the session-held controlled list, the unsmoothed render hook and the walk campaign.

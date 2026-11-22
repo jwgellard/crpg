@@ -1,0 +1,78 @@
+{
+  "area": "0000000000000000000000000D",
+  "placements": [
+    {
+      "id": "0000000000000000000000000E",
+      "name": "fixture.hero-spawn",
+      "overrides": {},
+      "prefab": "0000000000000000000000000G",
+      "slug": "hero-spawn",
+      "transform": {
+        "position": [
+          196608,
+          0,
+          327680
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          65536,
+          65536,
+          65536
+        ]
+      }
+    },
+    {
+      "id": "0000000000000000000000000F",
+      "name": "fixture.goblin-spawn",
+      "overrides": {},
+      "prefab": "0000000000000000000000000H",
+      "slug": "goblin-spawn",
+      "transform": {
+        "position": [
+          786432,
+          0,
+          393216
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          65536,
+          65536,
+          65536
+        ]
+      }
+    },
+    {
+      "id": "0000000000000000000000000Q",
+      "name": "demo.second-hero-spawn",
+      "overrides": {},
+      "prefab": "0000000000000000000000000G",
+      "slug": "second-hero-spawn",
+      "transform": {
+        "position": [
+          196608,
+          0,
+          458752
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          65536,
+          65536,
+          65536
+        ]
+      }
+    }
+  ],
+  "schema": "crpg.placements/1"
+}

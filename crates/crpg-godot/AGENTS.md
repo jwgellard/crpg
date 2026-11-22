@@ -193,6 +193,11 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/l
   receipt is awaited as "a later revision with receipts", never "receipts
   non-empty". `Godot4 --import` may segfault on this machine; the `-s` runs
   still work, and the `*.uid` files it writes are not committed.
+- **A real-time open needs a ruleset with `round_ticks`; the walk campaign
+  lives outside `campaigns/fixtures` because no fixture may declare
+  `movement`.** `open_v4_rt*` on `combat_basic` answers `25`
+  `ModeUnsupported`; use `campaigns/demo/walk`, and keep its ids the
+  fixture's plus the one second-Hero placement.
 
 Agent log:
 
@@ -207,3 +212,4 @@ Agent log:
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Froze v2 for the v4 work: new protocol v4 code goes in `client_v4.rs` and `authority/v4.rs`, so the v4 client half lands without touching the v2 session or its tests.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Added the run-loop invariants (the bridge never ticks, pumps or drives lane 1; `poll` never waits on the loop thread) and amended invariants 2 and 8 for the per-session authority and the runner's `SystemClock`, plus the MOVE fixture trap, so T151c extends the v4 session rather than re-deriving it.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Added the `movement.gd` and `smoke.gd` engine-gate lines and the trap that `movement.gd` builds MOVE at test time and waits for a later revision for the second receipt.
+- 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the trap that a real-time open needs `round_ticks` and that the walk campaign lives outside `campaigns/fixtures` because no fixture may declare `movement`.
