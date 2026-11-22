@@ -32,6 +32,7 @@ use super::client::{
     ViewMoveReceipt, ViewReceipt,
 };
 use super::errors::{BridgeCode, Fault};
+use super::smooth::Smoother;
 
 /// The v4 client half: pool, replica, lane-0 intent state and lane-1 outbox.
 pub(crate) struct ClientV4 {
@@ -45,6 +46,7 @@ pub(crate) struct ClientV4 {
     pending: Option<u64>,
     next_seq: u64,
     ended: bool,
+    smooth: Smoother,
 }
 
 impl ClientV4 {
@@ -71,12 +73,38 @@ impl ClientV4 {
             pending: None,
             next_seq: SEQ_FIRST,
             ended: false,
+            smooth: Smoother::new(),
         })
     }
 
     /// The current immutable snapshot.
     pub(crate) fn view(&self) -> Rc<SessionView> {
         Rc::clone(&self.view)
+    }
+
+    /// Three raw integers per row of `view()`: the smoothed position at
+    /// `now_ms`, or the row's newest disclosed position when it has none
+    /// (B-S4).
+    pub(crate) fn render_positions(&self, now_ms: u64) -> Vec<i64> {
+        let net_ids = self.view.net_ids();
+        let positions = self.view.positions();
+        let known = self.view.position_known();
+        let mut out = Vec::with_capacity(positions.len());
+        for (index, id) in net_ids.iter().enumerate() {
+            let smoothed = if known.get(index).copied() == Some(1) {
+                u64::try_from(*id)
+                    .ok()
+                    .and_then(NetId::new)
+                    .and_then(|entity| self.smooth.render(entity, now_ms))
+            } else {
+                None
+            };
+            match smoothed {
+                Some(point) => out.extend(point),
+                None => out.extend_from_slice(&positions[3 * index..3 * index + 3]),
+            }
+        }
+        out
     }
 
     /// Drains delivered frames, then rebuilds the view at most once.
@@ -135,6 +163,7 @@ impl ClientV4 {
                     }
                     MoveDown::Sample(sample) => {
                         self.replica.apply_sample(&sample);
+                        self.smooth.observe_clock(sample.server_tick, now_ms);
                     }
                 }
             } else {
@@ -145,6 +174,7 @@ impl ClientV4 {
             while let Some(update) = self.pool.pop_update(self.receiver) {
                 self.apply_update(update, &mut events, &mut receipts)?;
             }
+            self.smooth.observe(self.replica.positions());
         }
         if refused {
             self.pending = None;
@@ -534,6 +564,7 @@ impl ClientV4 {
             pending: None,
             next_seq: SEQ_FIRST,
             ended: false,
+            smooth: Smoother::new(),
         }
     }
 
@@ -541,6 +572,12 @@ impl ClientV4 {
     #[cfg(test)]
     pub(crate) fn outbox(&self) -> &MoveOutbox {
         &self.outbox
+    }
+
+    /// Test seam: the smoother this half feeds.
+    #[cfg(test)]
+    pub(crate) fn smoother(&self) -> &Smoother {
+        &self.smooth
     }
 }
 

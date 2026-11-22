@@ -12,6 +12,7 @@ mod client;
 mod client_v4;
 mod errors;
 mod link;
+mod smooth;
 
 use std::any::Any;
 use std::num::NonZeroUsize;
@@ -52,6 +53,8 @@ pub struct BridgeCore {
     state: State,
     view: Rc<SessionView>,
     last_error: String,
+    /// The last `poll` time; a v4 `render_positions()` reads it. 0 at `new`.
+    last_poll_ms: u64,
     #[cfg(test)]
     probe: Option<Probe>,
 }
@@ -251,7 +254,10 @@ impl BridgeCore {
     /// Three raw `Fx16_16` integers per row of `view()`, in `net_ids()` order:
     /// where to draw each row this frame (W-3).
     pub fn render_positions(&self) -> Vec<i64> {
-        self.view.positions().to_vec()
+        match &self.state {
+            State::OpenV4(live) => live.client.render_positions(self.last_poll_ms),
+            State::Closed | State::Open(_) | State::Fenced(_) => self.view.positions().to_vec(),
+        }
     }
 
     /// The one body of `open_v4_with` and `open_v4_rt_with`: validation, the
@@ -321,6 +327,7 @@ impl BridgeCore {
 
     /// Advances the authority and the client once (B2, B3).
     pub fn poll(&mut self, now_ms: u64) -> BridgeCode {
+        self.last_poll_ms = now_ms;
         let result = catch_unwind(AssertUnwindSafe(|| self.poll_guarded(now_ms)));
         match result {
             Ok(code) => code,

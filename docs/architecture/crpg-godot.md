@@ -363,6 +363,51 @@ GDExtension surface. v2 keeps every byte and behaviour.
   scan skips it); its `ManualClock`, `walk_root` and `settle` are
   `pub(crate)` for T049a.
 
+## Smoothing (T049a)
+
+`core/smooth.rs` interpolates disclosed positions for drawing only. It is
+Godot-free integer arithmetic (`i128` for time), fed from the replica and
+writing nothing back: the replica, the outbox, the view and every frame are
+unchanged (Readings 1, 4; ADR-0036 G1, U5, U7).
+
+- **The constants.** `TICK_MS = 50` (equal to the server's
+  `TICK_PERIOD_MS`), `RENDER_DELAY_MS = 100` (two ticks behind the estimated
+  server time) and `SAMPLES_PER_ENTITY = 8` (350 ms of motion at one sample
+  per tick, more than the delay plus a tick of jitter).
+- **The clock (Reading 2).** The smoother keeps the minimum over every sample
+  of `arrival_ms − server_tick × TICK_MS`, so the least-delayed arrival wins
+  and a late or old sample never moves it back. It renders at
+  `now_ms − offset − RENDER_DELAY_MS`. Without a clock it holds the newest
+  point. One process (embedded) has no clock drift; a remote client's drift
+  policy belongs to the join-a-server task.
+- **The buffers (Reading 4).** After each received frame the client compares
+  every disclosed position with its buffer: a newer tick appends (the oldest
+  is dropped beyond eight); the same tick replaces the newest only when the
+  value differs; a lower tick restarts the buffer (a revoke and re-anchor
+  inside one frame); an id with no disclosed position is dropped at once
+  (G1's revocation rule). The replica already stores a sample only for an
+  anchored entity and only when strictly newer, so the buffer never holds
+  what the replica refused.
+- **The render (Readings 3, 5).** At or after the newest sample the newest
+  point is held and never extrapolated; at or before the oldest the oldest is
+  drawn; between the unique adjacent pair the point is interpolated per
+  component, with a truncating division. When the earlier sample is at rest,
+  the motion starts at `newest_tick − TICK_MS`, so a rest followed by a move
+  does not creep across the whole refresh gap; between two moving samples the
+  whole gap is used, which also covers a dropped sample. All time and the
+  `(b − a) × elapsed` product are `i128`, so the coordinate and tick limits do
+  not overflow.
+- **The feed points (B-S4).** `ClientV4::step` observes the clock in the
+  `MoveDown::Sample` arm right after `apply_sample`, and observes the replica's
+  positions at the end of each frame's loop body, after its update drain. A
+  fault returns at once: the frames completed before it stay observed, and the
+  faulting frame observes nothing.
+- **The bridge (B-S5).** `BridgeCore::poll` records `last_poll_ms` as its first
+  statement in every state. `render_positions()` draws a live v4 session's rows
+  smoothed at that time and keeps the view's positions in every other state,
+  including `Fenced`, where the view is the last revision before the fault. No
+  shell or GDScript change: the walk scene already draws it every frame.
+
 ## Decisions and traps
 
 Governed by ADR-0033 and ADR-0012. The core holds no float,
@@ -426,3 +471,4 @@ Agent log:
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Replaced the "Later parts" bullet with the shell surface (`open_v4`, `declare_move`, `move_to`, `halt`, four view getters) and the `movement.gd` gate: how MOVE is built at test time, its exit codes and the receipt-revision trap.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the "Real-time sessions, `controlled()` and `render_positions()`" subsection: the real-time open, the session-held controlled list, the unsmoothed render hook and the walk campaign.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050b · Replaced the "No input." bullet with the walk scene's input and drawing rules, now that picking and click-to-move exist.
+- 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T049a · Added the "Smoothing (T049a)" section: the constants, the sample clock offset, the replica-following buffers, the rest-then-move render rule and the two feed points, so the walk's smooth draw has a stated contract rather than a second derivation.

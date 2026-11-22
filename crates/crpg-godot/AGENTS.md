@@ -75,6 +75,14 @@ integration tests; T047b landed `src/shell.rs` and `apps/client`.
     it.** A v4 `poll` reads legal options between cycles by `submit`ting one
     `read_options` closure and adopting its reply on a later poll, so a
     frame never blocks on the loop thread (Reading 19).
+19. **Smoothing is presentation only: `smooth.rs` reads replica positions and
+    writes nothing back; its time arithmetic is `i128`.** A v4 session's
+    `render_positions()` interpolates each disclosed row
+    `RENDER_DELAY_MS` behind the estimated server time and holds the newest
+    sample without extrapolating; every other state, and every row without a
+    buffer, draws the view's positions. `BridgeCore::poll` records
+    `last_poll_ms` before its guard, and `ClientV4::step` feeds the smoother
+    once per received frame, so a fault keeps the frames completed before it.
 
 ## Definition of done for any change
 
@@ -220,3 +228,4 @@ Agent log:
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Added the `movement.gd` and `smoke.gd` engine-gate lines and the trap that `movement.gd` builds MOVE at test time and waits for a later revision for the second receipt.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the trap that a real-time open needs `round_ticks` and that the walk campaign lives outside `campaigns/fixtures` because no fixture may declare `movement`.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050b · Added the `walk.gd` engine gate and its control to the gate block, and the trap that positions are drawn outside `SceneSync.gd` (S13).
+- 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T049a · Added invariant 19: smoothing is presentation only, `smooth.rs` writes nothing back and its time arithmetic is `i128`, with the poll/step feed points that make a fault keep the frames before it.
