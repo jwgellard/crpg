@@ -129,5 +129,31 @@ runner), "calls nothing else" (A-4, no `ingest`/NPC sequence), and one-decision-
 to `ai.rs` (A9 for M17/M18/M19/M23, A5 for M26). No source defect found. `git status --short crates`
 and `git diff -- crates` were empty after the last batch.
 
+## Fix round A
+
+Tests only, in `crates/crpg-godot/src/core/authority/v4/tests/ai.rs`; no source,
+doc or manifest file changed (`git diff` of `v4.rs` and `mod.rs` is empty after
+the re-run). Baseline after the fix: 124 passed, 0 failed. The five real gaps
+were re-run through `run_mutants.py M17 M18 M19 M23 M26` (rows in
+`results.jsonl` are replaced per id, the first-run `survived` rows are in the
+table above; the re-run output is appended to `run.log`). Every one is now killed:
+
+| id | new outcome | killed by | assertion added |
+|---|---|---|---|
+| M17 | killed | `ai_pacer_delay_is_600` | `assert_eq!(AI_STEP_DELAY_MS, 600)` (D78b) |
+| M18 | killed | `ai_pacer_not_ai_turn_disarms_an_armed_pacer` | `step(0,true)` false, `step(1,false)` false, `step(D,true)` false, fires at `2D` |
+| M19 | killed | `ai_pacer_steps` | a second `step(u64::MAX - 1, true)` is false before `step(u64::MAX, true)` |
+| M23 | killed | `ai_pacer_firing_disarms_then_rearms_at_the_next_step` | after the firing at `D`: `step(D+50)` false, `step(2D)` false, `step(2D+49)` false, `step(2D+50)` true |
+| M26 | killed | `ai_hook_acknowledges_through_the_last_entry` | a drain over two delivery entries leaves none redelivered |
+
+M26 note: a host-op action (`drive_ai`) is not delivered to the NPC peer, so
+the test gets its second entry from the player's second Strike. With the hook
+cleared the NPC's log holds ordinals 2 and 3 (the Goblin's Strike, then, after
+the Hero's `drive_ai` turn, the Goblin's second Strike); one direct
+`ServerAiHook::run` (empty sides, no actors, so it decides nothing) then
+acknowledges through the last and `take_delivery_entries` returns nothing.
+Under M26 ordinal 3 is redelivered.
+
 ## Agent log
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a mutant run · 35-row mutant table over the T156a source lines, results and survivors recorded for the manager; no source or test edited.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a fix A · Added the five test assertions that kill M17, M18, M19, M23 and M26, and recorded each re-run outcome.

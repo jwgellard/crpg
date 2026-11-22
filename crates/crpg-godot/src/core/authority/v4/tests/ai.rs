@@ -5,11 +5,12 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crpg_ai::SideId;
+use crpg_ai::{SideId, Sides};
 use crpg_core::GenerationalArena;
+use crpg_server::host::{PeerHandle, MVP_AI_BUDGET};
 
 use super::rt_tests::{basic_root, call, settle, ManualClock};
-use super::{ai_sides, AiPacer, AI_STEP_DELAY_MS};
+use super::{ai_sides, AiPacer, ServerAiHook, AI_STEP_DELAY_MS};
 use crate::core::client::{SessionView, ViewEvent, ViewReceipt};
 use crate::core::{BridgeCode, BridgeCore};
 
@@ -415,6 +416,68 @@ fn ai_hook_drains_the_npc_delivery() {
 }
 
 // ---------------------------------------------------------------------------
+// A5b the hook acknowledges through the last drained entry (A-4 (2)).
+// ---------------------------------------------------------------------------
+
+/// The NPC's unacknowledged delivery entries (`take_delivery_entries` does not
+/// acknowledge), read on the loop thread.
+fn npc_entries(core: &BridgeCore, npc: PeerHandle) -> usize {
+    call(core, move |l| {
+        l.hosting_mut()
+            .host_mut()
+            .take_delivery_entries(npc)
+            .unwrap()
+            .len()
+    })
+}
+
+#[test]
+fn ai_hook_acknowledges_through_the_last_entry() {
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    assert_eq!(open_ai(&mut core, &clock, "Goblin"), BridgeCode::Ok);
+    // With the hook cleared the NPC's delivery piles up over three cycles.
+    call(&core, |l| l.hosting_mut().set_ai(None));
+    assert_eq!(settle(&mut core, &clock, 0).0, BridgeCode::Ok);
+    let (_player, npc) = core.v4_peers().expect("live v4");
+    // Cycle one: the player (the Goblin) Strikes; the NPC's delivery gains it.
+    let goblin = call(&core, |l| l.hosting().host().awaiting_orders());
+    assert_eq!(goblin.len(), 1);
+    let revision = core.view().revision();
+    assert_eq!(core.submit_option(revision, 0), BridgeCode::Ok);
+    assert_eq!(settle(&mut core, &clock, 50).0, BridgeCode::Ok);
+    // Cycle two: the Hero (the NPC's side) acts through the host's own AI.
+    let hero = call(&core, |l| l.hosting().host().awaiting_orders());
+    assert_eq!(hero.len(), 1);
+    assert_ne!(hero, goblin);
+    let (hero, goblin) = (hero[0], goblin[0]);
+    let report = call(&core, move |l| {
+        let sides = Sides::new(vec![(hero, SideId(0)), (goblin, SideId(1))]).unwrap();
+        l.hosting_mut()
+            .host_mut()
+            .drive_ai(&sides, &[hero], MVP_AI_BUDGET)
+            .unwrap()
+    });
+    assert_eq!(report.steps.len(), 1, "the Hero's one decision");
+    assert_eq!(settle(&mut core, &clock, 100).0, BridgeCode::Ok);
+    // Cycle three: the player's turn again, a second Strike.
+    let revision = core.view().revision();
+    assert_eq!(core.submit_option(revision, 0), BridgeCode::Ok);
+    assert_eq!(settle(&mut core, &clock, 150).0, BridgeCode::Ok);
+    let pending = npc_entries(&core, npc);
+    assert!(pending >= 2, "a drain over two or more entries: {pending}");
+
+    // One run of the hook (an empty side table and no actors, so it decides
+    // nothing) drains and acknowledges through the last: none is redelivered.
+    let result = call(&core, move |l| {
+        let mut hook = ServerAiHook::new(npc, Sides::new(Vec::new()).unwrap(), Vec::new());
+        hook.run(l.hosting_mut().host_mut(), 150)
+    });
+    assert!(result.is_ok());
+    assert_eq!(npc_entries(&core, npc), 0);
+}
+
+// ---------------------------------------------------------------------------
 // A6 a shut-down host ends the AI session as HOST_CLOSED (A-4 (1)).
 // ---------------------------------------------------------------------------
 
@@ -540,5 +603,39 @@ fn ai_pacer_steps() {
 
     let mut saturated = AiPacer::default();
     assert!(!saturated.step(u64::MAX - 1, true), "arms at u64::MAX");
+    assert!(
+        !saturated.step(u64::MAX - 1, true),
+        "the saturated due does not wrap to a small value"
+    );
     assert!(saturated.step(u64::MAX, true), "due is saturated");
+}
+
+#[test]
+fn ai_pacer_delay_is_600() {
+    // D78b: the server AI's per-step delay.
+    assert_eq!(AI_STEP_DELAY_MS, 600);
+}
+
+#[test]
+fn ai_pacer_not_ai_turn_disarms_an_armed_pacer() {
+    let mut pacer = AiPacer::default();
+    assert!(!pacer.step(0, true), "arms at 0, due D");
+    assert!(!pacer.step(1, false), "the turn is lost: disarmed");
+    assert!(
+        !pacer.step(D, true),
+        "re-arms at D, not fired by the old due"
+    );
+    assert!(!pacer.step(2 * D - 1, true));
+    assert!(pacer.step(2 * D, true), "fires one delay after re-arming");
+}
+
+#[test]
+fn ai_pacer_firing_disarms_then_rearms_at_the_next_step() {
+    let mut pacer = AiPacer::default();
+    assert!(!pacer.step(0, true));
+    assert!(pacer.step(D, true), "fires at D");
+    assert!(!pacer.step(D + 50, true), "arms at D + 50, due 2D + 50");
+    assert!(!pacer.step(2 * D, true), "not the firing's re-arm at 2D");
+    assert!(!pacer.step(2 * D + 49, true));
+    assert!(pacer.step(2 * D + 50, true));
 }
