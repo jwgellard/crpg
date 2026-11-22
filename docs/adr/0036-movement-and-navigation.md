@@ -614,6 +614,41 @@ rule.
   (`tasks/T026p.md` Readings 1, 7, 8).
 - 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + T037 contract (D60) · H1's announcement is the trusted `nav_revision()` until a `crpg-net` task carries it to clients, and H2's per-tick query bound is per `advance` window (`tasks/T037.md` Readings 4 and 12, D60).
 
+## Amendment 1: survivors of a finished turn-based fight move again (T157)
+
+Status: **Proposed** (2026-11-22, architect, `tasks/T157.md` revision 2);
+it takes effect only with the user's D80b answer (a). Nothing above is
+rewritten.
+
+Why: M4's `set_route` refuses `TurnBased` for "a participant of a TB
+encounter" even after the encounter is terminal (`active` is `None`), and the
+host's lane-1 decision refuses it `WrongMode` first
+(`crates/crpg-server/src/host.rs:4061–4068`). No host operation closes a
+finished encounter, so the survivors of a turn-based fight never walk again,
+while survivors of a finished real-time fight already can (`set_route`
+refuses turn-based participants only). With ADR-0029 Amendment 1 a party wins
+when one side is left, and the user wants it to walk on (D79).
+
+M4′. `set_route` refuses `TurnBased` only for a participant of a TB
+encounter **that has a turn head** (`active.is_some()`). Every other check
+and its order are unchanged.
+
+W2′. Participants of a TB encounter move only by `perform_move` on their own
+turn **while the encounter has a turn head**. A finished TB encounter holds no
+one: its survivors move as RT participants do, by `set_route` plus stage 4.
+`perform_move` still needs the turn and so is refused (`OutOfTurn`) in a
+finished encounter.
+
+H′. The host's lane-1 decision (HM-4 (1)) refuses `WrongMode` with the same
+predicate as M4′.
+
+Tests this changes, named and covered by D80b (a): the two assertions that
+pinned "a survivor of a terminal TB encounter is `TurnBased`",
+`crates/crpg-sim/tests/movement_core.rs:928–931` and
+`crates/crpg-sim/tests/movement_core_contract.rs:1194–1198`. Compatibility:
+no golden records a route on a finished TB encounter's survivor; the part's
+golden check proves it.
+
 ## Agent log
 
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (architect) + T034 · Filed the proposed movement and navigation ADR. Authoritative positions are fixed-point with an `f32` mirror, the host supplies nav routes to sim by revision and tag, TB moves are atomic pool spends, and lane 1 carries reliable intents with datagram samples. Six user questions are left open.
@@ -621,3 +656,4 @@ rule.
 - 2026-11-08 (UTC) · claude-code/opus-5.5 (manager) + user acceptance · Marked the ADR Accepted: the user accepted it on 2026-11-08 after reviewing D46 and the five acceptance notes.
 - 2026-11-14 (UTC) · claude-code/claude-opus-5-5 (architect) + T026p revision · Appended the dated L5 correction note after the user chose (a) for T026p Question 2, so the ADR says where reconnect positions travel and names lane 1's `0xA1` subprotocol.
 - 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Appended the dated Supersession note on H1's announcement and H2's per-`advance` query bound (T037 Readings 4 and 12, D60), so the ADR matches the approved contract.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T157 revision 2 · Appended Amendment 1 (Proposed): a finished turn-based fight frees its survivors to move (M4, W2 and the host's lane-1 check), gated on the user's D80b answer; no prior text or entry changed.
