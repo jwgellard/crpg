@@ -151,4 +151,7 @@ pub(crate) fn read_options(
 }
 
 #[cfg(test)]
+#[path = "v4/tests/rt.rs"]
+pub(crate) mod rt_tests;
+#[cfg(test)]
 mod tests;

@@ -256,8 +256,21 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   `"PASS"` or `"H<n>: detail"`, so a crash (`""` from a `-> String` function)
   fails. **`tests/hud.gd`** runs them and exits 6 on a failure, 3 when the case
   file fails to load.
-- **No input.** Camera control and picking are T050 and deliberately absent;
-  T049 owns positions.
+- **The walk scene (T050b).** `scenes/Walk.tscn` is the click-to-move demo
+  (`Godot4 --path apps/client res://scenes/Walk.tscn`); `Main.tscn` stays the
+  default scene and the combat demo. `scripts/Walk.gd` opens a real-time v4
+  session over `campaigns/demo/walk`, polls it once per frame, feeds
+  `SceneSync.gd` and `CombatHud.gd` unchanged, and draws every proxy itself
+  after `sync` from `render_positions()` (`SceneSync.gd` may call only
+  `view.net_ids/names/sides/dead`, S13, so a position never goes through it).
+  The camera is fixed, aimed at the floor's centre. A left click on the ground
+  within 0.6 m of a controlled proxy selects it, otherwise sends `move_to` for
+  the selected actor to the click, raw (`round(m * 65536)`) on the plane
+  `y = 0`; a right click sends `halt`. One press is one call. The client
+  decides no rule: the host snaps, clamps and refuses, and a refusal shows as a
+  HUD notice. No path preview (it needs a client mesh); pan and zoom are later.
+  `tests/walk.gd` is the local engine gate for WK1-WK10 and exits 3 when the
+  open fails.
 
 ## Protocol v4 sessions (T151)
 
@@ -320,6 +333,81 @@ GDExtension surface. v2 keeps every byte and behaviour.
   its receipts until the next revision, so the script waits for a later
   revision before reading a second receipt.
 
+### Real-time sessions, `controlled()` and `render_positions()` (T050a)
+
+- **`open_v4_rt`.** `open_v4_rt(_with)` is `open_v4(_with)` with one
+  difference: `open_prefix` starts the encounter with
+  `HistoryWorld::start_encounter_in_mode(spec, mode)`, `RealTime` for
+  `open_v4_rt*` and `TurnBased` for `open` and `open_v4*` (so no
+  turn-based byte changes). In real time lane 1 walks combatants; nobody
+  has combat options, because `legal_intents` is empty without an active
+  turn. A ruleset with no `round_ticks` refuses the real-time start:
+  `25` `START_FAILED: ModeUnsupported at combat/mode`, closed, no runner.
+- **`controlled()`.** The player's control grant is fixed at open, so the
+  list lives in `LiveV4`, not in the view: after `presentation_tables`
+  each granted entity is mapped with `Host::replica_id` and the ids are
+  stored ascending. It is empty in `Closed`, `Open` (v2) and `Fenced`.
+  Dead or departed rows stay in it; the caller intersects with
+  `net_ids()` and the host still decides every move.
+- **`render_positions()`.** Three raw `Fx16_16` integers per row of
+  `view()`, in `net_ids()` order. In T050a it is the view's positions;
+  T049a replaces the v4 body with smoothed positions, with no shell or
+  GDScript change.
+- **The walk campaign.** `campaigns/demo/walk` is a copy of `combat_basic`
+  with `movement` (2 m/s at 20 Hz), `round_ticks` 100, a 16 x 12 m floor
+  and a second Hero placement (`...0Q`). It lives outside
+  `campaigns/fixtures` because no fixture may declare `movement`. Rows
+  are `n(1)` Hero (3, 0, 5), `n(2)` Hero (3, 0, 7), `n(3)` Goblin
+  (12, 0, 6). The tests are `authority/v4/tests/rt.rs` (module
+  `authority::v4::rt_tests`, under a `tests` directory so K31's core
+  scan skips it); its `ManualClock`, `walk_root` and `settle` are
+  `pub(crate)` for T049a.
+
+## Smoothing (T049a)
+
+`core/smooth.rs` interpolates disclosed positions for drawing only. It is
+Godot-free integer arithmetic (`i128` for time), fed from the replica and
+writing nothing back: the replica, the outbox, the view and every frame are
+unchanged (Readings 1, 4; ADR-0036 G1, U5, U7).
+
+- **The constants.** `TICK_MS = 50` (equal to the server's
+  `TICK_PERIOD_MS`), `RENDER_DELAY_MS = 100` (two ticks behind the estimated
+  server time) and `SAMPLES_PER_ENTITY = 8` (350 ms of motion at one sample
+  per tick, more than the delay plus a tick of jitter).
+- **The clock (Reading 2).** The smoother keeps the minimum over every sample
+  of `arrival_ms − server_tick × TICK_MS`, so the least-delayed arrival wins
+  and a late or old sample never moves it back. It renders at
+  `now_ms − offset − RENDER_DELAY_MS`. Without a clock it holds the newest
+  point. One process (embedded) has no clock drift; a remote client's drift
+  policy belongs to the join-a-server task.
+- **The buffers (Reading 4).** After each received frame the client compares
+  every disclosed position with its buffer: a newer tick appends (the oldest
+  is dropped beyond eight); the same tick replaces the newest only when the
+  value differs; a lower tick restarts the buffer (a revoke and re-anchor
+  inside one frame); an id with no disclosed position is dropped at once
+  (G1's revocation rule). The replica already stores a sample only for an
+  anchored entity and only when strictly newer, so the buffer never holds
+  what the replica refused.
+- **The render (Readings 3, 5).** At or after the newest sample the newest
+  point is held and never extrapolated; at or before the oldest the oldest is
+  drawn; between the unique adjacent pair the point is interpolated per
+  component, with a truncating division. When the earlier sample is at rest,
+  the motion starts at `newest_tick − TICK_MS`, so a rest followed by a move
+  does not creep across the whole refresh gap; between two moving samples the
+  whole gap is used, which also covers a dropped sample. All time and the
+  `(b − a) × elapsed` product are `i128`, so the coordinate and tick limits do
+  not overflow.
+- **The feed points (B-S4).** `ClientV4::step` observes the clock in the
+  `MoveDown::Sample` arm right after `apply_sample`, and observes the replica's
+  positions at the end of each frame's loop body, after its update drain. A
+  fault returns at once: the frames completed before it stay observed, and the
+  faulting frame observes nothing.
+- **The bridge (B-S5).** `BridgeCore::poll` records `last_poll_ms` as its first
+  statement in every state. `render_positions()` draws a live v4 session's rows
+  smoothed at that time and keeps the view's positions in every other state,
+  including `Fenced`, where the view is the last revision before the fault. No
+  shell or GDScript change: the walk scene already draws it every frame.
+
 ## Decisions and traps
 
 Governed by ADR-0033 and ADR-0012. The core holds no float,
@@ -381,3 +469,6 @@ Agent log:
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + T151a · Added the Protocol v4 sessions section for the v4 client half: the frozen v2, first-byte routing, `ClientV4`'s pool/replica/outbox shape, the position columns and their later parts, so T151b wires a documented baseline rather than re-deriving it.
 - 2026-11-19 (UTC) · opencode-go/deepseek-v4-pro + T151b · Replaced the "Later parts" bullet with the v4-session-on-the-run-loop description: `encounter_bounds`, the NPC driver as `NpcHook` on the loop's AI stage, legal options read between cycles through `RunnerHandle::submit`, and the three move entry points, leaving only the shell (T151c) as later.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 + T151c · Replaced the "Later parts" bullet with the shell surface (`open_v4`, `declare_move`, `move_to`, `halt`, four view getters) and the `movement.gd` gate: how MOVE is built at test time, its exit codes and the receipt-revision trap.
+- 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the "Real-time sessions, `controlled()` and `render_positions()`" subsection: the real-time open, the session-held controlled list, the unsmoothed render hook and the walk campaign.
+- 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050b · Replaced the "No input." bullet with the walk scene's input and drawing rules, now that picking and click-to-move exist.
+- 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T049a · Added the "Smoothing (T049a)" section: the constants, the sample clock offset, the replica-following buffers, the rest-then-move render rule and the two feed points, so the walk's smooth draw has a stated contract rather than a second derivation.
