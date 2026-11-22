@@ -537,8 +537,12 @@ including the toggle-refresh count (T10).
 
 ## Amendment 1: sides, the end of a fight, and engagement (T157)
 
-Status: **Proposed** (2026-11-22, architect, from the user's D79 answers:
-D79a (c), D79b (c); `tasks/DECISIONS-D79.md`, `tasks/T157.md` revision 2).
+Status: **Accepted** by the user on 2026-11-22 (D79a (c), D79b (c), D80;
+`tasks/DECISIONS-D79.md`, `tasks/DECISIONS-D80.md`), drafted by the
+architect for `tasks/T157.md`. The trigger wording of S3 was widened in
+T157 revision 3 at the user's D80a condition ("It will be variable ...
+there needs to be different ways for different rulesets along with
+alternate ways to trigger fights"); every accepted decision stands.
 Nothing above is rewritten; where this amendment and §2 disagree, the
 amendment wins once accepted.
 
@@ -568,18 +572,30 @@ host's `awaiting_orders` and AI gate (T15). With no factions the two readings
 are equal. A terminal encounter is otherwise unchanged ("Terminal rules are
 the TB rules").
 
-S3. **Engagement (amends T11).** An encounter may declare a notice distance
-(data; where it is authored is D80a, default: the encounter document, an
-optional raw `Fx16_16` length). Between ticks, in its pause-aware driver and
-after the tick, every host checks the sim's read-only `noticed(world)`: the
-encounter is RT, no mode is pending, it declares a distance, and two living
-opposed combatants with movers stand within it (the horizontal U4 measure of
-ADR-0036). When it holds, the host makes its own mode request for TB, which
+S3. **Engagement (amends T11).** What starts a fight by itself is data and
+varies by ruleset, with more kinds to come. An encounter carries an
+optional list of tagged engagement triggers (`engage`; absent means no
+authored trigger, empty means never, several mean any one); the first kind,
+`proximity`, fires when two living opposed combatants with movers stand
+within its distance (the horizontal U4 measure of ADR-0036). The sim
+resolves the triggers at start into the encounter's rules and gives the
+read-only `engagement_due(world)` (RT, no mode pending, the fight live, some
+rule holds). Between ticks, in its pause-aware driver and after the tick,
+every host checks it. When it holds, the host makes its own mode request for TB, which
 applies at the next round boundary as T9–T10 say. The sim still never
 chooses a mode; the host's rule is the same on every host (embedded and
 dedicated), so single-player and multiplayer agree. A player's
 `RequestMode` (with the `pause` right, T141 Reading 16) keeps working beside
 it. A paused host does not tick and so does not engage.
+
+S3a. **Extension points (D80a).** New trigger kinds are additive variants
+of the one vocabulary and join the data at its current tags (the T136a and
+T136b rules), so no later kind is a schema break: a ruleset-level default
+list used when an encounter has none; kinds a ruleset parametrises with its
+own stats (per-creature sight); a scripted start (an event-graph action and
+a `script` kind) and a dialogue outcome, both ending in the host's mode
+request; an ambush kind. Whatever the kind, the sim only reports that a rule
+holds and the host requests the mode; the sim never chooses one.
 
 S4. **AI sides follow (T15).** The host AI is still handed its sides by the
 caller (`Host::drive_ai`); deriving them from S1 is the follow-up the
@@ -588,7 +604,7 @@ D78a), now unblocked.
 
 Compatibility: S1–S3 add only optional state; every existing world, save,
 history and golden is unchanged, because no existing campaign or fixture
-sets a creature faction on a combatant or a notice distance (checked:
+sets a creature faction on a combatant or an engagement trigger (checked:
 `campaigns/**` and the sim, server and testkit fixtures; only
 `crates/crpg-data/tests/fixtures/broken_references` names a faction, and it
 never starts an encounter).
@@ -602,3 +618,4 @@ never starts an encounter).
 - 2026-11-09 (UTC) · opencode-go/deepseek-v4.1-flash + ADR36-notes · Added the dated correction entry to "Supersession and corrections" so T16's `f32` positions point at ADR-0036 U2/M3; no prior entry changed.
 - 2026-11-15 (UTC) · claude-code/claude-opus-5-5 (architect) + T037 brief, notes owed by T141 and T143 · Added two dated entries to "Supersession and corrections": §3 now points at the T141 host contract, and Follow-on 10 records T143's added `crpg-data` part; no prior entry changed.
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T157 revision 2 · Appended Amendment 1 (Proposed): sides from creature factions, a fight lasting while two sides stand, and the host's engagement rule, from the user's D79 answers; no prior text or entry changed.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T157 revision 3 · Marked Amendment 1 Accepted as the user decided, and widened S3's trigger wording (a list of tagged triggers, variable per ruleset, with S3a's extension points) at the user's D80a condition; the accepted decisions are unchanged.

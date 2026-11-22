@@ -616,9 +616,11 @@ rule.
 
 ## Amendment 1: survivors of a finished turn-based fight move again (T157)
 
-Status: **Proposed** (2026-11-22, architect, `tasks/T157.md` revision 2);
-it takes effect only with the user's D80b answer (a). Nothing above is
-rewritten.
+Status: **Accepted** by the user on 2026-11-22 (D80b (a),
+`tasks/DECISIONS-D80.md`), drafted by the architect for `tasks/T157.md`.
+Nothing above is rewritten. Which triggers start a fight is variable per
+ruleset, with more kinds to come (ADR-0029 Amendment 1 S3, S3a); whatever
+starts it, a fight that ends frees its survivors as below.
 
 Why: M4's `set_route` refuses `TurnBased` for "a participant of a TB
 encounter" even after the encounter is terminal (`active` is `None`), and the
@@ -657,3 +659,4 @@ golden check proves it.
 - 2026-11-14 (UTC) · claude-code/claude-opus-5-5 (architect) + T026p revision · Appended the dated L5 correction note after the user chose (a) for T026p Question 2, so the ADR says where reconnect positions travel and names lane 1's `0xA1` subprotocol.
 - 2026-11-15 (UTC) · claude-code/claude-haiku-5-5 (bookkeeper) + S59-bookkeeping · Appended the dated Supersession note on H1's announcement and H2's per-`advance` query bound (T037 Readings 4 and 12, D60), so the ADR matches the approved contract.
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T157 revision 2 · Appended Amendment 1 (Proposed): a finished turn-based fight frees its survivors to move (M4, W2 and the host's lane-1 check), gated on the user's D80b answer; no prior text or entry changed.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T157 revision 3 · Marked Amendment 1 Accepted as the user decided (D80b (a)) and noted that fight triggers are variable per ruleset (ADR-0029 Amendment 1); the decision itself is unchanged.
