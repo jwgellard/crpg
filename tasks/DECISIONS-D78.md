@@ -1,6 +1,6 @@
 # Decision D78 — the Godot combat demo (T156)
 
-Status: **open, waiting for the user.** Contract `tasks/T156.md` (architect,
+Status: **decided by the user, 2026-11-22: D78a (a), D78b (a), D78c (a), D78d (a); contract `tasks/T156.md` approved.** D78a was taken after the user asked what is best long term: `Host::drive_ai` already takes `crpg_ai::Sides`, so a re-export only renames it; the long-term fix (the server derives AI sides from campaign data) is a backlog follow-up. Contract `tasks/T156.md` (architect,
 T156c attempt 1), written for every recommended option (a); each question
 says what changes otherwise.
 
@@ -66,3 +66,4 @@ can follow them; this waiting changes nothing about what happens, only when.
 
 ## Agent log
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T156c · Wrote the four user questions for the combat demo (the AI library link, enemy pace, click behaviour, which scene), each with its recommendation, and corrected the brief's premise that nobody drives the enemy today.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (manager) + D78 answered · Recorded the user's answers (all (a)), the contract approval, and the long-term reasoning behind D78a.
