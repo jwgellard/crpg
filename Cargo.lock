@@ -191,6 +191,7 @@ dependencies = [
 name = "crpg-godot"
 version = "0.1.0"
 dependencies = [
+ "crpg-ai",
  "crpg-core",
  "crpg-data",
  "crpg-net",

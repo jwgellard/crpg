@@ -6,13 +6,14 @@
 //! drives lane 1. The NPC acts only through [`NpcHook`], and legal options
 //! are read between cycles without blocking the frame (Reading 19).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crpg_core::{Fx16_16, Ulid};
+use crpg_ai::{SideId, Sides};
+use crpg_core::{EntityId, Fx16_16, Ulid};
 use crpg_data::{Document, LoadedCampaign};
 use crpg_net::codec_v2::encode_intent;
 use crpg_net::protocol::{IntentFrame, NetId, LANE_COMBAT, SEQ_FIRST};
-use crpg_server::host::{Host, HostError, IngestDisposition, PeerHandle};
+use crpg_server::host::{Host, HostError, IngestDisposition, PeerHandle, MVP_AI_BUDGET};
 use crpg_server::run::{AiHook, HostLoop, LocalHost};
 
 use super::super::client::Offered;
@@ -115,6 +116,103 @@ impl NpcHook {
     }
 }
 
+/// How long the server AI waits before each decision (D78b).
+pub(crate) const AI_STEP_DELAY_MS: u64 = 600;
+
+/// The server AI's arming and firing state (A-3).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AiPacer {
+    due: Option<u64>,
+}
+
+impl AiPacer {
+    /// Advances the pacer; `true` means call `drive_ai` once now.
+    ///
+    /// Not the AI's turn disarms. Unarmed arms one delay ahead. Armed and due
+    /// fires and disarms, so the next step arms again (one delay per act).
+    pub(crate) fn step(&mut self, now_ms: u64, ai_turn: bool) -> bool {
+        if !ai_turn {
+            self.due = None;
+            return false;
+        }
+        match self.due {
+            None => {
+                self.due = Some(now_ms.saturating_add(AI_STEP_DELAY_MS));
+                false
+            }
+            Some(due) if now_ms >= due => {
+                self.due = None;
+                true
+            }
+            Some(_) => false,
+        }
+    }
+}
+
+/// Numbers the distinct side strings ascending from `SideId(0)` (A-2).
+///
+/// An entity listed twice is `25` `START_FAILED` with the `SidesError` text.
+pub(crate) fn ai_sides(rows: &[(EntityId, String)]) -> Result<Sides, Fault> {
+    let names: BTreeSet<&str> = rows.iter().map(|(_, side)| side.as_str()).collect();
+    let ids: BTreeMap<&str, SideId> = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, side)| (side, SideId(index as u32)))
+        .collect();
+    let entries = rows
+        .iter()
+        .map(|(entity, side)| (*entity, ids[side.as_str()]))
+        .collect();
+    Sides::new(entries).map_err(|error| Fault {
+        code: BridgeCode::StartFailed,
+        detail: error.to_string(),
+    })
+}
+
+/// The server's MVP AI as the run loop's AI hook (A-4).
+pub(crate) struct ServerAiHook {
+    npc: PeerHandle,
+    sides: Sides,
+    actors: Vec<EntityId>,
+    pacer: AiPacer,
+}
+
+impl ServerAiHook {
+    /// An unarmed hook for the NPC peer, the sides and the AI's actors.
+    pub(crate) fn new(npc: PeerHandle, sides: Sides, actors: Vec<EntityId>) -> Self {
+        Self {
+            npc,
+            sides,
+            actors,
+            pacer: AiPacer::default(),
+        }
+    }
+
+    /// One AI stage (A-4): a closed host is `Closed` before any other call;
+    /// otherwise drain the NPC's delivery unread, read "the AI's turn" as "the
+    /// NPC peer has legal options", and when the pacer fires make one
+    /// `drive_ai` call, discarding its report.
+    pub(crate) fn run(&mut self, host: &mut Host, now_ms: u64) -> Result<(), HostError> {
+        if host.is_closed() {
+            return Err(HostError::Closed);
+        }
+        let entries = host.take_delivery_entries(self.npc)?;
+        if let Some(last) = entries.last() {
+            host.acknowledge_delivery(self.npc, last.ordinal)?;
+        }
+        let ai_turn = !host.legal_intents(self.npc)?.is_empty();
+        if self.pacer.step(now_ms, ai_turn) {
+            host.drive_ai(&self.sides, &self.actors, MVP_AI_BUDGET)?;
+        }
+        Ok(())
+    }
+
+    /// The boxed hook `LocalHost::set_ai` takes: `run` on the moved `self`.
+    pub(crate) fn into_hook(mut self) -> AiHook {
+        Box::new(move |host: &mut Host, now_ms: u64| self.run(host, now_ms))
+    }
+}
+
 /// One between-cycles read for the client half (Reading 19).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OptionsReply {
@@ -150,6 +248,9 @@ pub(crate) fn read_options(
     }
 }
 
+#[cfg(test)]
+#[path = "v4/tests/ai.rs"]
+mod ai_tests;
 #[cfg(test)]
 #[path = "v4/tests/rt.rs"]
 pub(crate) mod rt_tests;
