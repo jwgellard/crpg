@@ -5,8 +5,8 @@
 <title>CRPG M6 authoring prototype (T102)</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; font-size:13px; background:#1e1e2e; color:#e6e6f0; }
-  #app { display:grid; grid-template-rows: 32px 1fr 140px; height:100vh; }
+  body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; font-size:13px; background:#1e1e2e; color:#e6e6f0; height:100vh; display:flex; flex-direction:column; }
+  #app { display:grid; grid-template-rows: 32px 1fr 140px; flex:1; min-height:0; }
   #menubar { display:flex; align-items:center; gap:4px; padding:4px 8px; background:#2a2a3e; border-bottom:1px solid #444; }
   .menu-btn { background:#3a3a52; color:#e6e6f0; border:1px solid #555; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px; }
   .menu-btn.play { background:#2e7d32; }
@@ -35,10 +35,34 @@
   .prob { padding:3px 0; border-bottom:1px solid #333; }
   .prob .fix { margin-left:8px; background:#3a3a52; border:1px solid #555; color:#e6e6f0; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:11px; }
   .playview { padding:12px; background:#0f0f1a; border:1px solid #444; border-radius:6px; }
-  #walkbanner { position:fixed; top:0; left:0; right:0; background:#ffca28; color:#1a1a1a; padding:8px 12px; display:none; z-index:1000; font-weight:600; }
-  #walkbanner .btns { float:right; display:flex; gap:6px; }
-  #walkbanner button { background:#1a1a1a; color:#ffca28; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; }
+  /* Walkthrough banner: docked above the editor (not over it). It grows with its text up to a limit, then scrolls. */
+  #walkbanner { display:none; flex:none; min-height:190px; max-height:min(46vh, 340px); overflow:auto; padding:10px 14px 12px; background:#fff1b8; color:#1a1a1a; border-bottom:3px solid #ffca28; font-size:14px; line-height:1.45; }
+  #walkbanner .wt-head { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; margin-bottom:8px; }
+  #walkbanner .wt-flow { font-weight:700; font-size:15px; }
+  #walkbanner .wt-count { background:#1a1a1a; color:#ffca28; border-radius:10px; padding:1px 10px; font-weight:600; font-size:12px; }
+  #walkbanner .btns { margin-left:auto; display:flex; gap:6px; }
+  #walkbanner button { background:#1a1a1a; color:#ffca28; border:1px solid #1a1a1a; padding:4px 12px; border-radius:4px; cursor:pointer; font-size:13px; }
+  #walkbanner button:disabled { opacity:0.45; cursor:default; }
+  #walkbanner .wt-body { display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:0 28px; }
+  @media (max-width: 900px) { #walkbanner .wt-body { grid-template-columns:1fr; } }
+  #walkbanner .wt-block { margin:0 0 7px; }
+  #walkbanner .wt-label { display:block; font-size:11px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color:#6b4e00; }
+  #walkbanner .wt-click { background:#ffffff; border-left:5px solid #ffca28; padding:4px 8px; border-radius:3px; font-weight:600; }
+  #walkbanner .wt-mock { font-style:italic; }
+  #walkbanner .wt-term { margin:0 0 4px; font-size:13px; }
+  #walkbanner .wt-help { font-size:13px; color:#4a3a00; }
+  #walkbanner .wt-hint { min-height:1.2em; color:#9b1c1c; font-weight:600; }
+  @media (prefers-color-scheme: dark) {
+    #walkbanner { background:#2b2410; color:#f6f0da; }
+    #walkbanner .wt-count { background:#ffca28; color:#1a1a1a; }
+    #walkbanner button { background:#ffca28; color:#1a1a1a; border-color:#ffca28; }
+    #walkbanner .wt-label { color:#ffd966; }
+    #walkbanner .wt-click { background:#3d3312; }
+    #walkbanner .wt-help { color:#e0d4a0; }
+    #walkbanner .wt-hint { color:#ff9b9b; }
+  }
   .wt-highlight { outline:3px solid #ffca28 !important; box-shadow:0 0 8px #ffca28; }
+  .flowhint { color:#aaa; font-size:12px; margin-bottom:8px; }
   .flowitem { padding:4px; cursor:pointer; border-radius:3px; }
   .flowitem:hover { background:#33334d; }
   .flowitem.active { background:#4a4a6a; }
@@ -51,7 +75,7 @@
 </style>
 </head>
 <body>
-<div id="walkbanner"></div>
+<div id="walkbanner" role="region" aria-label="Guided walkthrough"></div>
 <div id="app">
   <div id="menubar">
     <button class="menu-btn" id="menu-campaign" data-wt="menu-campaign">Campaign ▾</button>
@@ -68,14 +92,15 @@
     <div id="explorer"><div class="panel-title">CAMPAIGN</div><div id="explorer-tree"></div></div>
     <div id="center">
       <div id="tabs"></div>
-      <div id="docarea"></div>
+      <div id="docarea" data-wt="panel-doc"></div>
     </div>
     <div id="right">
-      <div class="panel-title">PROPERTIES</div><div id="properties"></div>
-      <div class="section"><h4>REFERENCES</h4><div id="references"></div></div>
+      <div class="panel-title">PROPERTIES</div><div id="properties" data-wt="panel-properties"></div>
+      <div class="section" data-wt="panel-references"><h4>REFERENCES</h4><div id="references"></div></div>
     </div>
     <div id="flowspanel">
       <div class="panel-title">Flows</div>
+      <div class="flowhint">Click a flow to start a guided walkthrough. Each one begins with a short introduction.</div>
       <div id="flowlist"></div>
     </div>
   </div>
@@ -261,7 +286,6 @@ function renderExplorer(){
     div.addEventListener('click',function(e){
       if(e.target && e.target.getAttribute && e.target.getAttribute('data-action')) return;
       view.selected=n.id; renderAll();
-      if(walkthrough) maybeAdvance(n.id);
     });
     root.appendChild(div);
     if(n.children && n.expanded){
@@ -291,7 +315,6 @@ function renderExplorer(){
     div.addEventListener('click',function(e){
       if(e.target && e.target.getAttribute && e.target.getAttribute('data-action')) return;
       view.selected=n.id; renderAll();
-      if(walkthrough) maybeAdvance(n.id);
     });
     container.appendChild(div);
     if(n.children && n.expanded){
@@ -307,8 +330,8 @@ function renderTabs(){
   (view.tabs||[]).forEach(function(t){
     var lbl=t.split(':').pop().replace(/-/g,' ');
     lbl=lbl.charAt(0).toUpperCase()+lbl.slice(1);
-    var d=document.createElement('div'); d.className='tab'+(view.activeTab===t?' active':''); d.textContent=lbl; d.setAttribute('data-wt',t);
-    d.addEventListener('click',function(){ view.activeTab=t; renderAll(); if(walkthrough) maybeAdvance(t); });
+    var d=document.createElement('div'); d.className='tab'+(view.activeTab===t?' active':''); d.textContent=lbl; d.setAttribute('data-wt','tab:'+t);
+    d.addEventListener('click',function(){ view.activeTab=t; renderAll(); });
     root.appendChild(d);
   });
 }
@@ -357,7 +380,7 @@ function renderProblems(){
   (view.problems||[]).forEach(function(pr){
     var div=document.createElement('div'); div.className='prob';
     div.textContent=pr.severity+' — '+pr.object+' — '+pr.field+' — '+pr.message;
-    if(pr.fix){var b=document.createElement('button'); b.className='fix'; b.textContent='Fix'; b.setAttribute('data-wt','fix-'+pr.code); b.addEventListener('click',function(){ if(walkthrough) maybeAdvance('fix'); }); div.appendChild(b);}
+    if(pr.fix){var b=document.createElement('button'); b.className='fix'; b.textContent='Fix'; b.setAttribute('data-wt','fix-'+pr.code); b.addEventListener('click',function(){}); div.appendChild(b);}
     root.appendChild(div);
   });
   if((view.problems||[]).length===0) root.innerHTML='<em>Problems empty</em>';
@@ -412,218 +435,580 @@ function doAction(action){
 }
 
 // ---------- Walkthrough ----------
+// Each flow has: id, title (plain words), intro (what you will make and why), steps, endScreen,
+// see ("What you should now see") and ask (one question for the reviewer).
+// Each step has: screen (what the editor shows while the step is on), target (the data-wt value of the
+// gold-outlined element), kind ('click' by default, or 'look'), why, click, optional mock, and after.
+// 'after' is shown at the start of the NEXT step (or on the end card) as "What just happened".
+// A 'look' step highlights a panel to read; clicking it or pressing Next goes on.
+
+// Editor terms. A term is explained the first time its pattern appears in the banner text of a flow.
+var GLOSS = [
+ {key:'explorer', name:'Explorer', re:/\bexplorer\b/i, text:'The tree on the left, headed CAMPAIGN. It lists everything in your campaign, grouped by kind: creatures, quests, rules and so on.'},
+ {key:'area', name:'Area', re:/\bareas?\b/i, text:'One place in your game world, such as a village or a cave. The player is in one area at a time.'},
+ {key:'creature', name:'Creature', re:/\bcreatures?\b/i, text:'Any character or monster: the hero, a villager, a goblin.'},
+ {key:'placement', name:'Placement', re:/\bplacements?\b|\bplaced\b|\bplacing\b/i, text:'A thing put into an area. It says \'this goblin stands here\'. You make a creature once and can place it many times.'},
+ {key:'playerstart', name:'Player start', re:/\bplayer start\b/i, text:'The spot where the player\'s character appears when the game begins.'},
+ {key:'props', name:'Props', re:/\bprops?\b|\bscenery\b/i, text:'Scenery objects, such as trees and rocks.'},
+ {key:'terrain', name:'Terrain', re:/\bterrain\b/i, text:'The shape of the ground in an area. \'flat\' is the default. You can raise or lower parts of it.'},
+ {key:'properties', name:'Properties', re:/\bproperties\b/i, text:'The panel on the right. It lists the fields of whatever you selected, such as its name or its stats, and is where you edit them.'},
+ {key:'references', name:'References', re:/\breferences\b/i, text:'The box under Properties. \'Uses\' lists what the selected thing relies on. \'Used by\' lists what relies on it. It shows what a change would affect.'},
+ {key:'problems', name:'Problems', re:/\bproblems?\b/i, text:'The strip along the bottom. It lists anything broken or unfinished in your campaign. \'Problems empty\' means all is well. Some rows have a Fix button.'},
+ {key:'stats', name:'Stats', re:/\bstats?\b|\bmight\b/i, text:'The numbers that describe a creature, such as Might (how strong it is) and Health. The rules decide which stats exist.'},
+ {key:'rules', name:'Rules', re:/\brules\b|\bruleset\b/i, text:'The set of game rules a campaign uses: which stats creatures have, how dice rolls work and what attacks do. This prototype\'s starter set is called minimal-d6.'},
+ {key:'rolltable', name:'Roll table', re:/\broll tables?\b/i, text:'A table that turns a dice roll into a result, such as how much damage an attack does. \'2d6\' means two six-sided dice added together.'},
+ {key:'template', name:'Template', re:/\btemplates?\b/i, text:'A ready-made starting point. You copy it, then change your copy. The original stays as it was.'},
+ {key:'override', name:'Override', re:/\boverrides?\b/i, text:'A change that only your campaign sees. The original files stay as they are. Your campaign stores the difference.'},
+ {key:'dialogue', name:'Dialogue', re:/\bdialogue\b/i, text:'A conversation: what a character says, and the choices the player can pick.'},
+ {key:'node', name:'Node', re:/\bnodes?\b/i, text:'One step of a conversation, such as a line someone says or a choice the player is offered.'},
+ {key:'quest', name:'Quest', re:/\bquests?\b/i, text:'A task given to the player. It moves through states, here Started and then Completed.'},
+ {key:'journal', name:'Journal', re:/\bjournal\b/i, text:'The player\'s list of quests and the state each one is in.'},
+ {key:'event', name:'Event', re:/\bevents?\b/i, text:'A rule of the form \'When something happens, if a condition holds, do something\'. For example: when the goblin dies, complete the quest.'},
+ {key:'fight', name:'Fight', re:/\bfights?\b/i, text:'A battle you set up ahead of time: who takes part. Playing it rolls dice according to the rules.'},
+ {key:'play', name:'Play and Stop', re:/▶|⏹|\bplay view\b/i, text:'▶ Play runs your campaign inside the editor so you can try it as a player. ⏹ stops it and returns you to editing. Playing never changes your campaign.'},
+ {key:'navigation', name:'Baking navigation', re:/\bnavigation\b|\bbak(e|ed|ing)\b/i, text:'The editor works out where characters are allowed to walk. Click-to-move needs this map, or the hero would not know where the ground is.'},
+ {key:'walkable', name:'Walkable overlay', re:/\bwalkable\b/i, text:'A coloured layer drawn on the ground that shows where characters can walk.'},
+ {key:'asset', name:'Asset', re:/\bassets?\b/i, text:'A file you bring in from outside, such as a 3D model (a .glb file). Imported files are listed under Assets in the explorer.'},
+ {key:'plan', name:'Plan', re:/\bplans?\b/i, text:'A file listing edits, prepared by an AI agent or a script. The editor shows you a summary before it changes anything.'},
+ {key:'undo', name:'Undo', re:/\bundo\b/i, text:'Reverses your last action. A whole plan counts as one action, so one Undo reverses all of it.'}
+];
+
 const FLOWS = [
- {id:'F1',title:'New campaign',check:'Problems empty; ▶ Play starts at once.',
+ {id:'F1', title:'Start a new campaign',
+  intro:'You\'ll create a new campaign: the project that holds your whole game. It starts with a world, one area to play in and a ready-made hero. Authors do this first, because every other task needs an open campaign.',
+  endScreen:'play-start',
+  see:'The middle panel shows the play view (a line of text in the mock): \'area Start. Player start: Hero.\' The Problems strip at the bottom is still empty.',
+  ask:'Was it clear what a campaign is made of, and that you can play it before adding anything?',
   steps:[
-    {text:'Campaign ▸ New… → pick starter-d6, type a name.', screen:'empty', target:'menu-campaign'},
-    {text:'Click "New campaign…" in the Campaign menu.', screen:'empty', target:'menu-campaign-new'},
-    {text:'Campaign created: explorer shows World ▸ Start, Hero, Rules.', screen:'campaign-created', target:'play-button'}
+   {screen:'empty', target:'menu-campaign',
+    why:'Actions that affect the whole campaign live in the Campaign menu, so that is where you begin.',
+    click:'Click **Campaign ▾** at the left end of the menu bar along the top (outlined in gold).',
+    after:'The Campaign menu opened. Notice how empty the editor is: the explorer on the left has nothing in it, and the middle says no campaign is open.'},
+   {screen:'empty', target:'menu-campaign-new',
+    why:'This command creates the campaign.',
+    click:'In the menu that just opened, click **New campaign…** (outlined in gold).',
+    mock:'The real editor now asks you to pick a starter and type a name. The mock skips both and creates \'My Campaign\' straight away.',
+    after:'Your campaign now exists. The explorer lists what came with it: a World with a Start area, a Hero creature and the Rules. The Problems strip says \'Problems empty\': nothing is wrong.'},
+   {screen:'campaign-created', target:'play-button',
+    why:'Pressing Play straight away is the quickest proof that a new campaign works.',
+    click:'Click **▶ Play** in the menu bar (outlined in gold).',
+    mock:'The mock shows a line of text where the real game would run.',
+    after:'The game started with no extra setup. The middle of the editor now shows the play view.'}
   ]},
- {id:'F2',title:'§17.2-1 Area, terrain, props',check:'placements listed under the area; Problems empty.',
+
+ {id:'F2', title:'Make a new area and add scenery',
+  intro:'You\'ll make a new area: a place in your game world, such as a village square. You\'ll shape its ground and put scenery, such as trees, in it. Authors do this to build the places where the story happens.',
+  endScreen:'area-withprops',
+  see:'The Start area\'s page lists Placements: Tree, Hero. The Problems strip is empty.',
+  ask:'Was it clear that scenery is \'placed\' in an area, and where to look to see what is in it?',
   steps:[
-    {text:'Worlds ▸ World ▸ New area → name → the area tab opens.', screen:'campaign-created', target:'new-new-area'},
-    {text:'New area tab opens.', screen:'area-newtab', target:'menu-world'},
-    {text:'Terrain tool → flat or raise/lower; bake navigation.', screen:'area-newtab', target:'new-area-bake'},
-    {text:'Place tool → drag props from the asset browser.', screen:'area-withprops', target:'play-button'}
+   {screen:'campaign-created', target:'menu-world',
+    why:'New areas belong to the world, so you add them from the World menu.',
+    click:'Click **World ▾** in the menu bar (outlined in gold).',
+    after:'The World menu opened. It has one command, New area.'},
+   {screen:'campaign-created', target:'menu-world-newarea',
+    why:'This command adds an area to your world.',
+    click:'Click **New area** in the menu that just opened (outlined in gold).',
+    mock:'The real editor asks you to name the area first. The mock skips that and calls it \'New area\'.',
+    after:'Your area now exists. It is listed under World in the explorer on the left, and it opened as a new tab in the middle (labelled New). Properties on the right shows its Name and Terrain.'},
+   {screen:'area-newtab', target:'panel-properties', kind:'look',
+    why:'The ground comes first, because everything else stands on it.',
+    click:'Look at **Properties** on the right (outlined in gold) and find the **Terrain** row. It says \'flat\'.',
+    mock:'In the real editor you would use a Terrain tool to keep the ground flat or to raise and lower it. The mock has no such tool.',
+    after:'Your area starts with flat ground. Reshaping it would be how you make hills or hollows.'},
+   {screen:'area-newtab', target:'panel-doc', kind:'look',
+    why:'Scenery goes into the area by placing it. A placement says \'this tree stands here\'.',
+    click:'Look at the large middle panel (outlined in gold), where your area is shown.',
+    mock:'In the real editor you would drag props, such as trees and rocks, from an asset browser onto the ground. The mock cannot drag, so the next step shows a finished example.',
+    after:'In the finished example the area holds two placements: a Tree and the Hero.'},
+   {screen:'area-withprops', target:'panel-references', kind:'look',
+    why:'Once things are placed, you want a quick way to check what is in the area.',
+    click:'Look at **References** on the right (outlined in gold). Its **Uses** line lists Tree and Hero.',
+    mock:'To keep things simple the mock jumps to the Start area, where a Tree is already placed. Imagine it is your new area.',
+    after:'References shows what the area contains: the Tree and the Hero.'}
   ]},
- {id:'F3',title:'§17.2-2 Player start, NPC, hostile',check:'References on the area lists three placements.',
+
+ {id:'F3', title:'Add the player, a villager and an enemy',
+  intro:'You\'ll put three characters into the area: where the player appears, a friendly villager to talk to, and a goblin to fight. Authors do this to fill a place with the people and enemies of the story.',
+  endScreen:'references-area',
+  see:'References for the Start area lists three placements: Hero (the player start), Elder (the villager) and Goblin.',
+  ask:'Was it clear how a creature you make becomes a character standing in an area?',
   steps:[
-    {text:'Move player start by drag, or right-click → Make player start.', screen:'area-withprops', target:'area:start'},
-    {text:'Creatures ▸ New creature ×2 ("Elder", "Goblin").', screen:'area-withprops', target:'new-new-creature'},
-    {text:'Drag each into the area (place).', screen:'creatures-created', target:'area:start'},
-    {text:'References on the area lists three placements.', screen:'references-area', target:'play-button'}
+   {screen:'area-withprops', target:'creature:hero',
+    why:'The player needs somewhere to appear, called the player start. The starter\'s Hero is already the player start, so there is nothing to build.',
+    click:'Click **Hero** under Creatures in the explorer (outlined in gold).',
+    mock:'In the real editor you would move the player start by dragging the Hero to a new spot, or by right-clicking another character and choosing Make player start. The mock shows neither.',
+    after:'Hero is the character the player controls. The next steps add the other two characters.'},
+   {screen:'area-withprops', target:'new-new-creature',
+    why:'The villager and the goblin do not exist yet. You make each one as a creature before you place it.',
+    click:'Click the small **New…** button on the **Creatures** row in the explorer (outlined in gold).',
+    mock:'In the real editor you do this twice and name them Elder and Goblin. The mock makes both with one click.',
+    after:'Elder and Goblin now appear under Creatures, and the middle panel opened the Goblin\'s page.'},
+   {screen:'creatures-created', target:'area:start',
+    why:'Making a creature does not put it in the world. First go back to the area where you want them.',
+    click:'Click **Start** under World in the explorer (outlined in gold).',
+    after:'The Start area is open again.'},
+   {screen:'references-area', target:'panel-references', kind:'look',
+    why:'To place a creature you drag it from the explorer onto the ground of the area. Each one you place becomes a placement.',
+    click:'Look at **References** on the right (outlined in gold). Under **Uses** it lists Hero, Elder and Goblin, each marked \'placement\'.',
+    mock:'The mock cannot drag, so it shows the finished result.',
+    after:'All three characters are now in the area.'}
   ]},
- {id:'F4',title:'§17.2-3 Creatures use minimal-d6',check:'crpgc explain creature:goblin shows the same values.',
+
+ {id:'F4', title:'See where a creature\'s numbers come from',
+  intro:'You\'ll open the goblin and look at its numbers, such as Might and Health. You\'ll see that what those numbers mean comes from the campaign\'s rules, not from the goblin. Authors do this to tune how tough or weak a creature is.',
+  endScreen:'creature-stats',
+  see:'The Goblin page lists Might 4, Health 6, Strike damage 2d6 and Roll table 2d6, and References says Uses: minimal-d6.',
+  ask:'Was it clear which numbers belong to the goblin and which come from the campaign\'s rules?',
   steps:[
-    {text:'Creature tab shows the campaign rules\' stat block in decimals; edit Might.', screen:'creatures-created', target:'creature:goblin'},
-    {text:'set /stats/might.', screen:'creature-stats', target:'play-button'}
+   {screen:'creatures-created', target:'creature:goblin',
+    why:'A creature\'s numbers are on its own page, so you open the creature first.',
+    click:'Click **Goblin** under Creatures in the explorer (outlined in gold).',
+    mock:'The Goblin page is already open in the mock. Click it anyway, as you would in the real editor.',
+    after:'The Goblin page lists its stats: Might 4 and Health 6, plus Strike damage and a roll table that come from the rules.'},
+   {screen:'creature-stats', target:'panel-properties', kind:'look',
+    why:'Properties is where you would change a number.',
+    click:'Look at **Properties** on the right (outlined in gold). Find **Might** (4), **Health** (6), **Strike damage** (2d6) and **Roll table** (2d6).',
+    mock:'In the real editor you click a number and type a new one. The mock does not let you type.',
+    after:'You would change Might here. The change is recorded as one step you can undo. Strike damage and the roll table are shown for reference: they belong to the rules.'},
+   {screen:'creature-stats', target:'panel-references', kind:'look',
+    why:'The goblin has no rules of its own, so check which rules it follows.',
+    click:'Look at **References** on the right (outlined in gold). **Uses** says \'minimal-d6\'.',
+    after:'The Goblin follows the campaign\'s rules, minimal-d6. It has no rules of its own.'}
   ]},
- {id:'F5',title:'§17.2-4 Dialogue with a quest-starting choice',check:'Walk this conversation reaches all three nodes; none greyed.',
+
+ {id:'F5', title:'Write a conversation that starts a quest',
+  intro:'You\'ll write a short conversation for the villager, Elder. The player can pick a choice that starts a quest. Authors do this so characters can give the player tasks.',
+  endScreen:'dialogue-texttoggle',
+  see:'The middle panel shows the conversation as indented text: Elder says \'Hello\', the choice \'Help?\' leads to quest Main, and the talk ends.',
+  ask:'Was it clear where the villager\'s lines are written, and where the choice starts the quest?',
   steps:[
-    {text:'Dialogue ▸ New dialogue (speaker Elder).', screen:'creatures-created', target:'new-new-dialogue'},
-    {text:'Add a choice and a line (create dialogue-choice, dialogue-line, connect).', screen:'dialogue-new', target:'play-button'},
-    {text:'On the choice, Actions ▸ Start quest Main.', screen:'dialogue-new', target:'play-button'},
-    {text:'Text toggle shows the indented form and back without change.', screen:'dialogue-texttoggle', target:'play-button'}
+   {screen:'creatures-created', target:'new-new-dialogue',
+    why:'A conversation is its own item in the campaign, so you make it from the Dialogue group.',
+    click:'Click the small **New…** button on the **Dialogue** row in the explorer (outlined in gold).',
+    mock:'The real editor asks who speaks first, and you pick Elder. The mock picks Elder for you.',
+    after:'A conversation called \'Elder talk\' appears under Dialogue and opens in the middle. It has three nodes: entry, choice and end.'},
+   {screen:'dialogue-new', target:'panel-doc', kind:'look',
+    why:'A conversation is a chain of nodes. You add a line for Elder to say and a choice for the player, then join them up.',
+    click:'Look at the middle panel (outlined in gold). The **Nodes** row lists entry, choice and end.',
+    mock:'In the real editor you would add the choice and the line one at a time and connect them. The mock has them ready-made.',
+    after:'The conversation has its three nodes: Elder greets the player, the player chooses, and the talk ends.'},
+   {screen:'dialogue-new', target:'panel-doc', kind:'look',
+    why:'The choice should start a quest, so you give it an action.',
+    click:'Look at the middle panel again (outlined in gold).',
+    mock:'In the real editor you would select the choice, open Actions and pick Start quest Main. The mock has no Actions menu and shows the result on the next screen. (The quest Main is made in flow F6.)',
+    after:'The choice now starts the quest Main.'},
+   {screen:'dialogue-texttoggle', target:'panel-doc', kind:'look',
+    why:'The text view shows the same conversation as plain indented text, which is quicker to read through.',
+    click:'Look at the middle panel (outlined in gold). It now shows the conversation as indented text.',
+    mock:'The mock has no button to switch views, so it simply shows the text view.',
+    after:'You can switch between the node view and the text view without changing the conversation.'}
   ]},
- {id:'F6',title:'§17.2-5 Quest, completes on enemy death',check:'reachability shows Completed reachable.',
+
+ {id:'F6', title:'Make a quest that finishes when the goblin dies',
+  intro:'You\'ll make a quest named Main. It has two states, Started and Completed, and it completes when the goblin dies. Authors do this so the story moves on because of something the player did.',
+  endScreen:'event-page',
+  see:'The event page reads: When Goblin dies. If (none). Do set quest Main to Completed. References on the right shows that it uses the Goblin and the quest Main.',
+  ask:'Was it clear how a quest gets completed by something that happens in the game?',
   steps:[
-    {text:'Quests ▸ New quest (Started, Completed).', screen:'creatures-created', target:'new-new-quest'},
-    {text:'On Completed, "Completes when…" → Goblin dies (on page).', screen:'quest-new', target:'new-new-event'},
-    {text:'Event page: When Goblin dies → set quest Main to Completed.', screen:'event-page', target:'play-button'}
+   {screen:'creatures-created', target:'new-new-quest',
+    why:'A quest is its own item, so you make it from the Quests group.',
+    click:'Click the small **New…** button on the **Quests** row in the explorer (outlined in gold).',
+    mock:'The real editor asks for a name and the states. The mock makes \'Main\' with the states Started and Completed.',
+    after:'The quest \'Main\' appears under Quests and opens in the middle. It lists its States (Started, Completed), its Entry (Started) and when it is Completed: \'Goblin dies\'.'},
+   {screen:'quest-new', target:'panel-doc', kind:'look',
+    why:'A quest needs a rule that says when it is finished.',
+    click:'Look at the **Completed when** row in the middle panel (outlined in gold). It says \'Goblin dies\'.',
+    mock:'In the real editor you would pick Completes when… on the Completed state and choose \'Goblin dies\'. The mock has this filled in.',
+    after:'The quest knows it is finished when the goblin dies. Something still has to make that happen in the game: an event.'},
+   {screen:'quest-new', target:'new-new-event',
+    why:'Choosing \'Completes when…\' makes an event that does the work, so look at the Events group.',
+    click:'Click the small **New…** button on the **Events** row in the explorer (outlined in gold).',
+    mock:'The real editor creates this event for you when you choose Completes when…. The mock creates it with this button instead.',
+    after:'An event called \'Goblin dies\' appears under Events and opens in the middle. It says: When Goblin dies, if (none), do set quest Main to Completed.'}
   ]},
- {id:'F7',title:'§17.2-6 Press Play',check:'playtest log shows the session; Stop returns to editing with the document unchanged.',
+
+ {id:'F7', title:'Try the game with Play, then Stop',
+  intro:'You\'ll start your campaign inside the editor, then stop it and return to editing. Authors do this all the time to test a change. Play never changes your campaign.',
+  endScreen:'quest-new',
+  see:'The middle panel shows the Main quest page again, not the play view. Nothing you did while playing has changed your campaign.',
+  ask:'Was it clear that Play is safe to press at any time?',
   steps:[
-    {text:'▶ Play → in-process server and client in the document area.', screen:'quest-new', target:'play-button'},
-    {text:'Play view shown; Stop returns to editing.', screen:'play-start', target:'stop-button'}
+   {screen:'quest-new', target:'play-button',
+    why:'Playing is the quickest way to see your work as a player will.',
+    click:'Click **▶ Play** in the menu bar (outlined in gold).',
+    mock:'The mock shows a line of text where the real game would run.',
+    after:'The middle panel became the play view. In the real editor the game itself runs there.'},
+   {screen:'play-start', target:'stop-button',
+    why:'When you have finished testing, Stop takes you back to editing.',
+    click:'Click **⏹** (the stop button, next to Play) in the menu bar (outlined in gold).',
+    after:'You are back to editing. The Main quest page is open again, exactly as you left it.'}
   ]},
- {id:'F8',title:'§17.2-7 Click-to-move',check:'the overlay shows the walkable region; the character walks there.',
+
+ {id:'F8', title:'Prepare the ground so the player can click to walk',
+  intro:'You\'ll prepare an area so the player can click the ground and the hero walks there. The editor first has to work out where characters may walk. Authors do this so characters do not walk through trees or walls.',
+  endScreen:'play-navigate',
+  see:'The play view says \'Walkable overlay ON. Click ground to move Hero.\'',
+  ask:'Was it clear why navigation has to be baked first, and where in the editor you would do it?',
   steps:[
-    {text:'Area tab → Bake navigation, walkable overlay on one key.', screen:'area-withprops', target:'new-area-bake'},
-    {text:'Play → click the ground.', screen:'play-navigate', target:'stop-button'}
+   {screen:'area-withprops', target:'tab:area:start',
+    why:'The walking map is made while an area is open for editing.',
+    click:'Click the **Start** tab in the middle of the editor (outlined in gold).',
+    mock:'In the real editor, with this tab open, you would run a command called Bake navigation. The mock has no such command, so clicking the tab stands in for it. Where that command should live is one of the design questions this prototype raises.',
+    after:'The navigation for this area is now baked.'},
+   {screen:'terrain-baked', target:'panel-properties', kind:'look',
+    why:'Check that the bake worked and see where characters may walk.',
+    click:'Look at **Properties** on the right (outlined in gold). **Terrain** says \'baked\' and **Walkable overlay** says \'ON\'.',
+    mock:'The real editor draws the overlay on the ground, and one key switches it on and off. The mock only shows the two words.',
+    after:'The walkable overlay is on, so you can see where the hero may go.'},
+   {screen:'terrain-baked', target:'play-button',
+    why:'Now test it the way a player would.',
+    click:'Click **▶ Play** in the menu bar (outlined in gold).',
+    after:'The game is running, with the walkable overlay still showing.'},
+   {screen:'play-navigate', target:'play-view',
+    why:'In the game, the player clicks the ground and the hero walks to that spot.',
+    click:'Click the play view in the middle panel (outlined in gold).',
+    mock:'The mock cannot move anyone. Clicking the play view stands in for clicking the ground.',
+    after:'In the real game the hero would now be walking to the spot you clicked.'}
   ]},
- {id:'F9',title:'§17.2-8 Talk, quest starts',check:'debugger quest watch.',
+
+ {id:'F9', title:'Talk to the villager and start the quest',
+  intro:'You\'ll play the game, talk to the villager and pick the choice that starts the quest. This checks that the conversation and the quest work together as a player would see them. Authors do this to make sure the story is wired up correctly.',
+  endScreen:'play-talk',
+  see:'The play view shows the talk with Elder: the choice \'Help?\' starts quest Main, and the journal says \'Main: Started\'.',
+  ask:'Was it clear how picking a choice in a conversation turns into a quest in the player\'s journal?',
   steps:[
-    {text:'Play → click the Elder → choose.', screen:'play-start', target:'play-button'},
-    {text:'Journal shows Main: Started.', screen:'play-talk', target:'stop-button'}
+   {screen:'quest-new', target:'play-button',
+    why:'A conversation can only be tested in the running game.',
+    click:'Click **▶ Play** in the menu bar (outlined in gold).',
+    after:'The game is running with your campaign.'},
+   {screen:'play-start', target:'play-view',
+    why:'To talk to the villager, the player clicks Elder and then picks a choice.',
+    click:'Click the play view in the middle panel (outlined in gold).',
+    mock:'In the real game you click Elder, then choose \'Help?\' in the conversation. The mock cannot show people, so clicking the play view stands in for both clicks.',
+    after:'The conversation ran. The player chose \'Help?\', which started the quest Main.'}
   ]},
- {id:'F10',title:'§17.2-9 Fight',check:'combat log with rolls; Goblin dies.',
+
+ {id:'F10', title:'Set up a fight with the goblin',
+  intro:'You\'ll set up a fight between the hero and the goblin and try it in the game. Authors do this to build the battles of a story. The combat log shows every dice roll, so you can check that the rules behave.',
+  endScreen:'play-fight',
+  see:'The play view shows the combat log: \'Hero rolls 2d6… Goblin dies.\'',
+  ask:'Was it clear where the dice rolls are shown, so you can tell the rules are working?',
   steps:[
-    {text:'Fights ▸ New fight with Hero and Goblin (or approach mode).', screen:'creatures-created', target:'new-new-fight'},
-    {text:'Play → attack.', screen:'play-fight', target:'stop-button'}
+   {screen:'creatures-created', target:'new-new-fight',
+    why:'A fight says who takes part, so you make it from the Fights group.',
+    click:'Click the small **New…** button on the **Fights** row in the explorer (outlined in gold).',
+    mock:'The real editor asks who takes part, and you pick Hero and Goblin. A fight can also start by itself when the player walks near the goblin, but the mock shows only the first kind. The mock also does not add the new fight to the explorer.',
+    after:'The fight, Hero against Goblin, is set up.'},
+   {screen:'creatures-created', target:'play-button',
+    why:'You test a fight by playing it.',
+    click:'Click **▶ Play** in the menu bar (outlined in gold).',
+    mock:'In the real game you would then click Attack. The mock plays the fight for you.',
+    after:'The fight played out. The play view shows the combat log: Hero rolls 2d6 (two six-sided dice added together), and the Goblin dies.'}
   ]},
- {id:'F11',title:'§17.2-10 Quest completes',check:'journal shows Completed.',
+
+ {id:'F11', title:'See the quest complete',
+  intro:'This continues the fight flow. When the goblin dies, the event you made earlier runs by itself and the quest becomes Completed. You\'ll check the journal. Authors do this to confirm that story progress follows what happens in play.',
+  endScreen:'quest-new',
+  see:'You are back in the editor with the quest Main open. Its \'Completed when\' row says \'Goblin dies\'.',
+  ask:'Was it clear that the journal changed by itself, and which part of your campaign made that happen?',
   steps:[
-    {text:'Continues F10: the F6 page fires.', screen:'play-fight', target:'play-button'},
-    {text:'Journal shows Completed.', screen:'play-questcomplete', target:'stop-button'}
+   {screen:'play-fight', target:'play-view', kind:'look',
+    why:'The goblin has just died, so the event \'When Goblin dies, set quest Main to Completed\' runs. You do nothing to make that happen.',
+    click:'Look at the play view in the middle panel (outlined in gold). Its last line says the Goblin died.',
+    after:'The event ran by itself. The journal now says \'Main: Completed (Goblin died)\'.'},
+   {screen:'play-questcomplete', target:'stop-button',
+    why:'You have seen what you came for, so go back to editing.',
+    click:'Click **⏹** (the stop button, next to Play) in the menu bar (outlined in gold).',
+    after:'You are back to editing, on the Main quest page.'}
   ]},
- {id:'F12',title:'§17.2-11 Save, quit, load',check:'debugger shows the same quest state and positions.',
+
+ {id:'F12', title:'Save, quit and load a game in progress',
+  intro:'You\'ll save a game while playing, stop, then play again and load the save. This is the player\'s game save, not saving your campaign files. Authors do this to prove that quest progress survives quitting.',
+  endScreen:'play-questcomplete',
+  see:'The play view is back to where you saved it: the journal says \'Main: Completed (Goblin died)\'.',
+  ask:'Was it clear that this saves the player\'s game, not your campaign files?',
   steps:[
-    {text:'Play → Save.', screen:'play-questcomplete', target:'play-button'},
-    {text:'Stop → Play → Load.', screen:'play-save', target:'stop-button'}
+   {screen:'play-questcomplete', target:'play-view', kind:'look',
+    why:'A save captures the game as it is now: where everyone stands and the state of each quest.',
+    click:'Look at the play view in the middle panel (outlined in gold). Its journal says \'Main: Completed\'.',
+    mock:'In the real game you would choose Save here. The mock has no Save button, so it saves for you when you go on.',
+    after:'The game is saved, with the quest Completed.'},
+   {screen:'play-save', target:'stop-button',
+    why:'Stopping is like quitting the game.',
+    click:'Click **⏹** (the stop button, next to Play) in the menu bar (outlined in gold).',
+    after:'You are back to editing. The game is no longer running. Only the save remains.'},
+   {screen:'quest-new', target:'play-button',
+    why:'Start the game again, then load the save.',
+    click:'Click **▶ Play** in the menu bar (outlined in gold).',
+    mock:'In the real game you would choose Load. The mock loads the save for you.',
+    after:'The game is running again with the save loaded. The journal says \'Main: Completed\' again.'}
   ]},
- {id:'F13',title:'§17.2-12 Separate server, two clients',check:'both clients show the same world.',
+
+ {id:'F13', title:'Run a game server with two players',
+  intro:'You\'ll see how two players would join the same game on a separate game server. This is not done in the editor: the author types commands in a terminal. The mock only shows the end result. Authors do this to check that everyone in a multiplayer game sees the same world.',
+  endScreen:'play-two-clients',
+  see:'Properties lists Mode: two clients connected, and Status: both show same world.',
+  ask:'Is it clear that this part happens from the command line and not inside the editor?',
   steps:[
-    {text:'Save and run crpg-server with campaign; two clients from CLI.', screen:'play-save', target:'play-button'},
-    {text:'Both clients show the same world.', screen:'play-two-clients', target:'play-button'}
+   {screen:'play-save', target:'play-view', kind:'look',
+    why:'The editor\'s own Play runs one player. For two players, the game runs on a separate server program.',
+    click:'Look at the play view in the middle panel (outlined in gold). Nothing in the editor does this step.',
+    mock:'In real life you would save the campaign, then type a command in a terminal to start the game server with it, and one more command for each of two players. The editor is not involved and the mock cannot do it.',
+    after:'Two players are connected to the server.'},
+   {screen:'play-two-clients', target:'panel-properties', kind:'look',
+    why:'Both players should see the same world.',
+    click:'Look at **Properties** on the right (outlined in gold). **Mode** says \'two clients connected\' and **Status** says \'both show same world\'.',
+    mock:'This panel is only a stand-in for the two game windows.',
+    after:'Both players see the same world.'}
   ]},
- {id:'F14',title:'New rules from a template',check:'validate clean; encounter dry-run or crpgc play runs a fight with the new rules.',
+
+ {id:'F14', title:'Make your own copy of the rules',
+  intro:'You\'ll copy the starter rules, minimal-d6, into a new set of your own and change your copy. The original template stays as it was. Authors do this when the starter rules are not quite right for their game.',
+  endScreen:'rules-new',
+  see:'The New rules tab shows Origin: minimal-d6, a new stat, an edited roll table row and an edited Strike damage.',
+  ask:'Was it clear that you are editing a copy, and that the original rules are untouched?',
   steps:[
-    {text:'Rules ▸ New rules from template… → minimal-d6 → name.', screen:'campaign-created', target:'menu-rules-newfromtemplate'},
-    {text:'Rules tab shows the copy; add a stat, edit a roll table row, change Strike\'s damage.', screen:'rules-new', target:'play-button'},
-    {text:'Fights using it: pick the new rules.', screen:'rules-new', target:'play-button'}
+   {screen:'campaign-created', target:'menu-rules',
+    why:'Everything about rules is in the Rules menu.',
+    click:'Click **Rules ▾** in the menu bar (outlined in gold).',
+    after:'The Rules menu opened. It offers two commands: one copies rules from a template, the other changes them for this campaign only.'},
+   {screen:'campaign-created', target:'menu-rules-newfromtemplate',
+    why:'Copying lets you change things without touching the original.',
+    click:'Click **New rules from template…** in the menu that just opened (outlined in gold).',
+    mock:'The real editor asks which template to copy (minimal-d6) and what to call your copy. The mock picks minimal-d6 and calls the copy \'New rules\'.',
+    after:'A new tab, \'New rules\', opened in the middle. Its Origin says minimal-d6, the template it was copied from.'},
+   {screen:'rules-new', target:'panel-doc', kind:'look',
+    why:'Now you change your copy: add a stat, edit a roll table row and make Strike (the basic attack) hit harder.',
+    click:'Look at the middle panel (outlined in gold). **Stats** now includes a new stat, **Roll table** says \'edited row\' and **Strike damage** says \'edited\'.',
+    mock:'In the real editor you make each change by typing. The mock shows the finished result. The last real step, telling a fight to use your new rules, is not shown.',
+    after:'Your copy has its own stats, roll table and Strike damage. The template minimal-d6 is unchanged.'}
   ]},
- {id:'F15',title:'Change rules for this campaign',check:'the template\'s own files are unchanged.',
+
+ {id:'F15', title:'Change the rules for this campaign only',
+  intro:'You\'ll tweak the campaign\'s rules without making a copy. The change is stored as an override, and the template\'s own files stay untouched. Authors do this for a small adjustment, such as making all attacks hit a little harder.',
+  endScreen:'rules-override',
+  see:'The rules tab shows Override: stored for this campaign, and Template files: unchanged.',
+  ask:'Was the difference between \'new rules from a template\' (F14) and \'change for this campaign\' clear?',
   steps:[
-    {text:'Rules ▸ minimal-d6 ▸ Change for this campaign… → edit.', screen:'campaign-created', target:'menu-rules-change'},
-    {text:'Stored as an override.', screen:'rules-override', target:'play-button'}
+   {screen:'campaign-created', target:'menu-rules',
+    why:'Everything about rules is in the Rules menu.',
+    click:'Click **Rules ▾** in the menu bar (outlined in gold).',
+    after:'The Rules menu opened.'},
+   {screen:'campaign-created', target:'menu-rules-change',
+    why:'This command changes the rules for the open campaign only.',
+    click:'Click **Change for this campaign…** in the menu that just opened (outlined in gold).',
+    mock:'The real editor reaches this through Rules ▸ minimal-d6 ▸ Change for this campaign…, then lets you edit. The mock\'s Rules menu offers it directly and skips the editing.',
+    after:'The rules tab opened. It says \'Override: stored for this campaign\' and \'Template files: unchanged\'.'},
+   {screen:'rules-override', target:'panel-properties', kind:'look',
+    why:'Confirm where your change went.',
+    click:'Look at **Properties** on the right (outlined in gold). Check **Override** and **Template files**.',
+    after:'Your change is kept in your campaign. The template files are unchanged, so other campaigns using minimal-d6 are not affected.'}
   ]},
- {id:'F16',title:'Import a model and use it',check:'asset appears in Assets; assets.lock and campaign.lock agree (validate clean).',
+
+ {id:'F16', title:'Bring in a 3D model for the goblin',
+  intro:'You\'ll import a 3D model file (a .glb) and give it to the goblin as its look. The editor checks the file as it comes in. Authors do this to replace stand-in visuals with their own art.',
+  endScreen:'asset-import',
+  see:'Assets lists goblin.glb, the Goblin\'s Appearance is \'goblin-model (model)\', and the Problems strip is empty.',
+  ask:'Was it clear that a model is imported and checked first, then chosen on the creature?',
   steps:[
-    {text:'Assets ▸ Import… → pick a .glb → class Model.', screen:'campaign-created', target:'new-import-asset'},
-    {text:'Checks pass or show problems.', screen:'asset-import-check', target:'play-button'},
-    {text:'Goblin\'s Appearance picker lists it (import, set /appearance).', screen:'asset-import', target:'play-button'}
+   {screen:'campaign-created', target:'new-import-asset',
+    why:'A model is a kind of asset, so you bring it in from the Assets group.',
+    click:'Click the small **New…** button on the **Assets** row in the explorer (outlined in gold).',
+    mock:'On this row the real editor\'s button is Import…, but the mock labels every group button New…. The real editor asks you to pick a .glb file and its kind, Model. The mock uses goblin.glb.',
+    after:'An Import tab opened in the middle. It shows File goblin.glb, Class Model, and Checks: \'glTF 2.0 OK; rig conforms\'.'},
+   {screen:'asset-import-check', target:'panel-doc', kind:'look',
+    why:'The editor checks the file before accepting it, so a bad file cannot break your game later.',
+    click:'Look at the **Checks** row in the middle panel (outlined in gold). It says \'glTF 2.0 OK; rig conforms\'.',
+    mock:'If a check failed, the real editor would list it in the Problems strip. The mock shows only the passing case.',
+    after:'The file passed its checks, so it can be used.'},
+   {screen:'asset-import-check', target:'creature:goblin',
+    why:'An imported model does nothing until a creature uses it.',
+    click:'Click **Goblin** under Creatures in the explorer (outlined in gold).',
+    mock:'In the real editor you would open the Goblin\'s Appearance picker and choose the model from its list. The mock shows the finished result.',
+    after:'goblin.glb is listed under Assets. The Goblin page says \'Appearance: goblin-model (model)\', and References says the Goblin uses goblin-model.'}
   ]},
- {id:'F17',title:'An agent\'s plan in the open editor',check:'Undo reverts all of it.',
+
+ {id:'F17', title:'Apply a plan from an agent',
+  intro:'An AI agent or a script can prepare a list of edits, called a plan. You\'ll load a plan into the open editor, apply it, and see that one Undo takes it all back. Authors do this to let an agent help without it working behind their back.',
+  endScreen:'plan-applied',
+  see:'Properties shows Plan applied: 3 changed objects, and Undo: reverts all.',
+  ask:'Where did you expect to find Undo, and was it clear that a whole plan is undone in one go?',
   steps:[
-    {text:'Campaign ▸ Apply plan… → review.', screen:'campaign-created', target:'menu-campaign-applyplan'},
-    {text:'Apply → Undo reverts all of it.', screen:'plan-applied', target:'play-button'}
+   {screen:'campaign-created', target:'menu-campaign',
+    why:'Plans are loaded from the Campaign menu.',
+    click:'Click **Campaign ▾** in the menu bar (outlined in gold).',
+    after:'The Campaign menu opened.'},
+   {screen:'campaign-created', target:'menu-campaign-applyplan',
+    why:'This command loads a plan file and lets you review it before anything changes.',
+    click:'Click **Apply plan…** in the menu that just opened (outlined in gold).',
+    mock:'The real editor shows a summary of the changes and any new problems, and waits for you to confirm. The mock skips the review and applies the plan.',
+    after:'The plan is applied. Properties on the right now says \'Plan applied: 3 changed objects\'.'},
+   {screen:'plan-applied', target:'panel-properties', kind:'look',
+    why:'Check what the plan did, and what undoing it would do.',
+    click:'Look at **Properties** on the right (outlined in gold). **Plan applied** says \'3 changed objects\' and **Undo** says \'reverts all\'.',
+    mock:'In the real editor you would choose Undo once and all three changes would vanish together, because a whole plan counts as one step. The mock has no Undo control.',
+    after:'One Undo would reverse all three changes.'}
   ]}
 ];
 
-// map some target tokens to data-wt values present in DOM
-// We'll assign data-wt to new buttons: 'new-new-area' etc via newAction button data-wt = 'new-'+action. For new-area action button data-wt='new-new-area'? Wait newAction='new-area', button data-wt='new-new-area'. In F2 step1 target 'new-new-area' (I wrote 'new-new-area'? I wrote 'new-new-area' no I wrote 'new-new-area'? Let's check: target:'new-new-area'. yes). Good.
-// For creature new button data-wt 'new-new-creature'. F3 uses 'new-new-creature'. Good.
-// bake nav: no button; I'll add data-wt to... none. Let's adjust targets to existing: use 'area:start' or 'play-button'. Already some.
+// ---------- Banner text ----------
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmt(s){ return esc(s).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>'); }
+function clickText(step){
+  return step.click + (step.kind==='look' ? ' Click the outlined box, or press **Next**, to go on.' : '');
+}
+// Plain text of everything the banner shows at position i (-1 = introduction, n = end card), except definitions.
+function bannerPlain(f,i){
+  var n=f.steps.length, parts=[];
+  if(i<0){ parts.push(f.title,f.intro); }
+  else if(i<n){
+    var s=f.steps[i];
+    if(i>0) parts.push(f.steps[i-1].after);
+    parts.push(s.why,clickText(s)); if(s.mock) parts.push(s.mock);
+  } else { parts.push(f.steps[n-1].after,f.see,f.ask); }
+  return parts.join(' \n ').replace(/\*\*/g,'');
+}
+// Terms that appear here for the first time in this flow, so each is explained once.
+function termsFor(f,i){
+  var seen={}, k;
+  for(k=-1;k<i;k++){ var t=bannerPlain(f,k); GLOSS.forEach(function(g){ if(g.re.test(t)) seen[g.key]=true; }); }
+  var cur=bannerPlain(f,i);
+  return GLOSS.filter(function(g){ return g.re.test(cur) && !seen[g.key]; });
+}
 
+// ---------- Walkthrough control ----------
+var DD_OWNER={'dd-campaign':'menu-campaign','dd-world':'menu-world','dd-rules':'menu-rules'};
+function cloneScreen(name){ return JSON.parse(JSON.stringify(SCREENS[name])); }
 function startFlow(id){
   var f=FLOWS.find(function(x){return x.id===id;});
   if(!f) return;
-  walkthrough={flowId:id,stepIndex:0};
+  walkthrough={flowId:id,stepIndex:-1};
   applyStep();
 }
 function currentFlow(){ return walkthrough? FLOWS.find(function(x){return x.id===walkthrough.flowId;}):null; }
 function applyStep(){
   var f=currentFlow(); if(!f) return;
-  var step=f.steps[walkthrough.stepIndex];
-  view = JSON.parse(JSON.stringify(SCREENS[step.screen]));
-  renderAll();
-  showBanner(step.text + '  ('+f.id+' step '+(walkthrough.stepIndex+1)+'/'+f.steps.length+')');
+  var i=walkthrough.stepIndex, n=f.steps.length;
+  var screen = i<0 ? f.steps[0].screen : (i>=n ? f.endScreen : f.steps[i].screen);
+  view=cloneScreen(screen);
+  closeAllDd();
+  renderAll(); renderFlows();
+  showBanner(f,i);
+  if(i>=0 && i<n) openDdForTarget(f.steps[i].target);
   applyHighlight();
 }
-function showBanner(text){
-  var b=el('walkbanner'); b.style.display='block';
-  b.innerHTML = text + ' <div class="btns"><button id="wt-back">Back</button><button id="wt-next">Next</button><button id="wt-restart">Restart</button><button id="wt-close">Close</button></div>';
+// A step whose target sits in a drop-down menu needs that menu open, or the gold outline would be invisible.
+function openDdForTarget(token){
+  var item=document.querySelector('.dropdown [data-wt="'+token+'"]');
+  if(!item) return;
+  var dd=item.closest('.dropdown');
+  toggleDd(dd.id, el(DD_OWNER[dd.id]));
+}
+function showBanner(f,i){
+  var n=f.steps.length, b=el('walkbanner'), h='', left='', right='';
+  var badge = i<0 ? 'Introduction' : (i<n ? 'Step '+(i+1)+' of '+n : 'Finished');
+  function block(label,cls,text){ return '<div class="wt-block"><span class="wt-label">'+label+'</span><span class="'+(cls||'')+'">'+fmt(text)+'</span></div>'; }
+  if(i<0){
+    left += block('What you will do','',f.intro);
+    left += '<div class="wt-help">Each step tells you what you are doing and why, then what to click. Click the item outlined in gold. Press Next if you would rather skip a click.</div>';
+  } else if(i<n){
+    var s=f.steps[i];
+    if(i>0) left += block('Just happened','',f.steps[i-1].after);
+    left += block('What you are doing and why','',s.why);
+    left += block(s.kind==='look'?'What to look at':'What to click','wt-click',clickText(s));
+    if(s.mock) right += block('About the mock','wt-mock',s.mock);
+  } else {
+    left += block('Just happened','',f.steps[n-1].after);
+    left += block('What you should now see','',f.see);
+    left += block('Question for you','',f.ask);
+  }
+  var terms=termsFor(f,i);
+  if(terms.length){
+    right += '<div class="wt-block"><span class="wt-label">What\'s this?</span>'+terms.map(function(g){ return '<div class="wt-term"><strong>'+esc(g.name)+'</strong>: '+esc(g.text)+'</div>'; }).join('')+'</div>';
+  }
+  var hasNextFlow = FLOWS.indexOf(f) < FLOWS.length-1;
+  h += '<div class="wt-head"><span class="wt-flow">'+esc(f.id)+' · '+esc(f.title)+'</span><span class="wt-count">'+badge+'</span>';
+  h += '<div class="btns"><button id="wt-back"'+(i<0?' disabled':'')+'>Back</button>';
+  if(i<n) h += '<button id="wt-next">'+(i<0?'Start':'Next')+'</button>';
+  else if(hasNextFlow) h += '<button id="wt-nextflow">Next flow</button>';
+  h += '<button id="wt-restart">Restart</button><button id="wt-close">Close</button></div></div>';
+  h += '<div class="wt-body"><div>'+left+'</div><div>'+right+'</div></div><div class="wt-hint" id="wt-hint" role="status"></div>';
+  b.style.display='block';
+  b.innerHTML=h; b.scrollTop=0;
   el('wt-back').addEventListener('click',backStep);
-  el('wt-next').addEventListener('click',nextStep);
+  if(el('wt-next')) el('wt-next').addEventListener('click',nextStep);
+  if(el('wt-nextflow')) el('wt-nextflow').addEventListener('click',function(){ startFlow(FLOWS[FLOWS.indexOf(currentFlow())+1].id); });
   el('wt-restart').addEventListener('click',restartFlow);
   el('wt-close').addEventListener('click',closeWalk);
 }
-function backStep(){
-  if(!walkthrough) return;
-  var f=currentFlow();
-  if(walkthrough.stepIndex>0){ walkthrough.stepIndex--; applyStep(); }
-}
-function nextStep(){
-  if(!walkthrough) return;
-  var f=currentFlow();
-  if(walkthrough.stepIndex < f.steps.length-1){ walkthrough.stepIndex++; applyStep(); }
-  else if(walkthrough.stepIndex === f.steps.length-1){ walkthrough.stepIndex = f.steps.length; showBanner('Check: '+f.check); }
-}
-function restartFlow(){
-  if(!walkthrough) return;
-  walkthrough.stepIndex=0; applyStep();
-}
+function setHint(msg){ var h=el('wt-hint'); if(h) h.textContent=msg; }
+function backStep(){ if(walkthrough && walkthrough.stepIndex>-1){ walkthrough.stepIndex--; applyStep(); } }
+function nextStep(){ if(walkthrough && walkthrough.stepIndex<currentFlow().steps.length){ walkthrough.stepIndex++; applyStep(); } }
+function restartFlow(){ if(walkthrough){ walkthrough.stepIndex=-1; applyStep(); } }
 function closeWalk(){
-  walkthrough=null; el('walkbanner').style.display='none'; renderAll();
+  walkthrough=null; el('walkbanner').style.display='none'; closeAllDd(); renderAll(); renderFlows();
 }
-function maybeAdvance(clickedToken){
-  if(!walkthrough) return;
-  var f=currentFlow();
-  var step=f.steps[walkthrough.stepIndex];
-  if(clickedToken===step.target){
-    if(walkthrough.stepIndex < f.steps.length-1){
-      walkthrough.stepIndex++;
-      applyStep();
-    } else {
-      // last step done -> show Check
-      showBanner('Check: '+f.check);
-      walkthrough.stepIndex = f.steps.length; // done
-    }
+// All data-wt values on the clicked element and the elements around it.
+function tokensOf(node){
+  var out=[];
+  while(node && node.getAttribute){ var t=node.getAttribute('data-wt'); if(t) out.push(t); node=node.parentNode; }
+  return out;
+}
+function isEditorControl(t){
+  return !!(t.closest && t.closest('.menu-btn:not(#btn-flows), .dropdown .item, .newbtn, .tree-node, .tab, .fix'));
+}
+// Returns true when the click was consumed by the walkthrough (advanced, or answered with a hint).
+function walkClick(e){
+  var f=currentFlow(), i=walkthrough.stepIndex, n=f.steps.length, t=e.target;
+  if(i>=0 && i<n && tokensOf(t).indexOf(f.steps[i].target)>=0){
+    e.stopPropagation(); e.preventDefault();
+    walkthrough.stepIndex++; applyStep();
+    return true;
   }
+  if(isEditorControl(t)){
+    e.stopPropagation(); e.preventDefault();
+    setHint(i<0 ? 'Read the introduction, then press Start.'
+          : i>=n ? 'This flow is finished. Use Back, Restart, Next flow or Close.'
+          : 'That is not the highlighted item. Click the one outlined in gold, or press Next to skip this step.');
+    return true;
+  }
+  return false;
 }
 function applyHighlight(){
-  // clear
   document.querySelectorAll('.wt-highlight').forEach(function(e){e.classList.remove('wt-highlight');});
   if(!walkthrough) return;
   var f=currentFlow();
-  if(!f || walkthrough.stepIndex>=f.steps.length) return;
-  var step=f.steps[walkthrough.stepIndex];
-  var token=step.target;
-  document.querySelectorAll('[data-wt="'+token+'"]').forEach(function(e){e.classList.add('wt-highlight');});
+  if(!f || walkthrough.stepIndex<0 || walkthrough.stepIndex>=f.steps.length) return;
+  var found=document.querySelectorAll('[data-wt="'+f.steps[walkthrough.stepIndex].target+'"]');
+  found.forEach(function(e){e.classList.add('wt-highlight');});
+  if(found.length && found[0].scrollIntoView) found[0].scrollIntoView({block:'nearest',inline:'nearest'});
 }
 
 // ---------- Event wiring ----------
 document.addEventListener('click',function(e){
   var t=e.target;
-  // dropdown toggles
-  if(t && t.id==='menu-campaign'){ if(walkthrough) maybeAdvance('menu-campaign'); toggleDd('dd-campaign',t); return;}
-  if(t && t.id==='menu-world'){ if(walkthrough) maybeAdvance('menu-world'); toggleDd('dd-world',t); return;}
-  if(t && t.id==='menu-rules'){ if(walkthrough) maybeAdvance('menu-rules'); toggleDd('dd-rules',t); return;}
-  // menu items
+  if(t && t.closest && t.closest('#walkbanner, #flowspanel')) return;
+  if(walkthrough){
+    walkClick(e);
+    return; // while a walkthrough is open, only the highlighted step does anything
+  }
+  // Free exploration (no walkthrough open)
+  if(t && t.id==='menu-campaign'){ toggleDd('dd-campaign',t); return;}
+  if(t && t.id==='menu-world'){ toggleDd('dd-world',t); return;}
+  if(t && t.id==='menu-rules'){ toggleDd('dd-rules',t); return;}
   if(t && t.getAttribute && t.getAttribute('data-action')){
-    var a=t.getAttribute('data-action');
-    // walkthrough advance for target
-    if(walkthrough){ maybeAdvance(t.getAttribute('data-wt')); }
-    doAction(a);
+    doAction(t.getAttribute('data-action'));
     closeAllDd();
     return;
   }
-  // new buttons
-  if(t && t.classList && t.classList.contains('newbtn')){
-    var a2=t.getAttribute('data-action');
-    if(walkthrough){ maybeAdvance(t.getAttribute('data-wt')); }
-    doAction(a2);
-    return;
-  }
-  // play/stop
   if(t && t.id==='btn-play'){
-    if(walkthrough){ maybeAdvance('play-button'); }
     view.playMode=true;
     if(!view.playView) view.playView='Play view — area Start.';
     renderAll();
     return;
   }
-  if(t && t.id==='btn-stop'){
-    if(walkthrough){ maybeAdvance('stop-button'); }
-    view.playMode=false; renderAll();
-    return;
-  }
-  // flows toggle (no-op, panel always visible)
-  if(t && t.id==='btn-flows'){ return; }
-  // explorer node clicks handled in render; but walkthrough advance for node target
-  // generic: if clicked element has data-wt, try advance
-  var wt = t && t.getAttribute && t.getAttribute('data-wt');
-  if(wt && walkthrough){ maybeAdvance(wt); }
+  if(t && t.id==='btn-stop'){ view.playMode=false; renderAll(); return; }
   closeAllDd();
 },true);
 
