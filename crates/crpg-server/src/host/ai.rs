@@ -134,19 +134,15 @@ impl Host {
                     }
                 }
                 EncounterMode::RealTime => {
-                    // D-6: the `awaiting_orders` fight gate.
+                    // D-6: the `awaiting_orders` fight gate: two or more
+                    // sides still stand (`fight_is_live`, T157d).
                     let Some(clock) = combat.clock else {
                         return Ok(AiReport {
                             steps: Vec::new(),
                             capped: false,
                         });
                     };
-                    let alive = world
-                        .combatants()
-                        .iter()
-                        .filter(|(_, state)| !state.dead())
-                        .count();
-                    if alive < 2 || clock.elapsed >= crpg_sim::RT_CLOCK_MAX {
+                    if !crpg_sim::fight_is_live(world) || clock.elapsed >= crpg_sim::RT_CLOCK_MAX {
                         return Ok(AiReport {
                             steps: Vec::new(),
                             capped: false,

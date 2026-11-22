@@ -292,6 +292,12 @@ from `new` or `from_history` starts running; a host from `load_checkpoint`
   (saturating), `None` when disarmed. A private timer epoch counts arm,
   disarm, freeze and resume of an armed timer only, so a pause with no timer
   changes nothing; T141d's host-facts image reads it.
+- **Engagement (T157d).** After its `tick()` returned `Ok` — never while
+  paused, never from the bare `tick()` — `advance` asks for the turn-based
+  fight when `crpg_sim::engagement_due(world)` holds: it runs
+  `request_mode`'s body (`EncounterMode::TurnBased`, the same history call and
+  `HostOp::Action` tail), and `AdvanceReport` is unchanged. The sim decides
+  which sides met; the host only requests the switch.
 
 `HostError::InvalidSettings` is the new variant; its `Display` is
 `InvalidSettings at host/admission`.
@@ -611,8 +617,9 @@ shared with lane 0.
   `server_tick()`; `tick` never decides. Pending slots are taken in host-wide
   admission order and, for each actor, only the last admitted one is decided —
   every earlier one is `Superseded`, whichever session sent it. A winner that
-  is a combatant of a turn-based encounter is `Rejected(WrongMode)`; `MoveTo`
-  plans its route with `plan_route(.., RouteTag(seq))` (any refusal
+  is a combatant of a turn-based encounter **with a turn head** is
+  `Rejected(WrongMode)` — a finished turn-based fight holds no one (T157d);
+  `MoveTo` plans its route with `plan_route(.., RouteTag(seq))` (any refusal
   `IllegalAction`) and sets it (`TurnBased` is `WrongMode`, any other refusal
   `IllegalAction`); `Halt` clears it (any refusal `IllegalAction`); else the
   outcome is `Accepted { start_tick: t + 1 }`, so the route starts in the stage
@@ -1475,3 +1482,4 @@ timeout, `tasks/T155.md` "Out of scope").
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Documented the `/3` resume route (the movement flag, the lane-1 fence check, the retired lane-1 frame count) and replaced "Lane-1 traces are not read" with the `Rejection::Move` merge, so the doc matches the adapter now.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155d · Extended "The dedicated binary (T040b)" with the `movement` key, the `facts` and `rights` invitation keys, the `bind_movement_resumable` bind and the ` movement=on` start-line suffix, so the doc matches the binary T155d ships.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155e · Added the G2 paragraph to "Gate-13 dedicated smoke (T041d)" (movement over the dedicated binary: what the test sets up, proves in seven steps and reads), and corrected G1's sentence that movement is not smoked, so the doc matches the smoke the crate now has.
+- 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T157d · Added engagement to the T141b tick-driver section and narrowed lane 1's `WrongMode` to a turn-based encounter with a head, so the doc records that `advance` (not `tick`) requests the switch and that a finished fight frees its survivors.
