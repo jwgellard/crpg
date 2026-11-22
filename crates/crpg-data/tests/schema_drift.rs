@@ -225,7 +225,7 @@ fn roots_are_single_tagged_closed_shapes_and_self_contained() {
                 "outcomes",
                 "screens",
             ],
-            "encounter" => &["_note", "respawns"],
+            "encounter" => &["_note", "respawns", "engage"],
             _ => &["_note"],
         };
         for key in shape["properties"]

@@ -22,6 +22,40 @@
       ],
       "type": "object"
     },
+    "EngageTriggerWire": {
+      "description": "One authored engagement trigger (Reading 3a). Adjacent `type`/`value`,\nsnake case, exact keys per variant (hand-written `Deserialize`, as the\ncrate's other tagged wires). New kinds are additive variants.",
+      "oneOf": [
+        {
+          "description": "Two opposed combatants within `distance` (horizontal) start the fight.",
+          "properties": {
+            "type": {
+              "const": "proximity",
+              "type": "string"
+            },
+            "value": {
+              "properties": {
+                "distance": {
+                  "description": "Raw fixed-point metres, positive.",
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "distance"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "UlidText": {
       "description": "Core ULID: case-insensitive Crockford base32, I/L aliases for 1 and O for 0; first decoded digit at most 7.",
       "pattern": "^[0-7IiLlOo][0-9A-Ta-tV-Zv-z]{25}$",
@@ -38,6 +72,16 @@
           "description": "Preserved author annotation.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "engage": {
+          "description": "What starts this fight by itself (ADR-0029 Amendment 1 S3), any one\nentry sufficing; absent means no authored trigger, empty means never.",
+          "items": {
+            "$ref": "#/$defs/EngageTriggerWire"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },

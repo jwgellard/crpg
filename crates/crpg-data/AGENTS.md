@@ -35,7 +35,7 @@ prescribed accessors. Do not extend the surface casually.
   `natural_die`, `round_ticks`, `recovery_ticks`, `repeats_in_real_time`,
   `derived`, `initiative`, `bonus_stats`, `range`, damage `dice`, `grants`,
   `creature_persistence`, `late_join`, `effects_on_exit`, `movement` and its
-  `measure`, encounter `respawns`) may
+  `measure`, encounter `respawns` and `engage`) may
   be missing; other nullable fields
   need a required-nullable serde helper and matching schema required annotation.
 - A field may join a family at its current version, with no tag change and no
@@ -489,3 +489,14 @@ meaning here.
   `schema_drift.rs` and `rt_fields_contract.rs`.
 
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143a · Recorded the optional ruleset `preview` field, the engine ceiling, the schema-bound trap and the four test-list lines a new optional ruleset field needs.
+
+- Encounter `engage` (T157b) is an optional list of `EngageTriggerWire`: adjacent
+  `type`/`value`, snake case, a hand-written `Deserialize` taking exactly `type`
+  and `value` (and `distance` inside `proximity`), at most `MAX_ENGAGE_TRIGGERS`
+  (8) entries, a `proximity` distance that is positive raw fixed point. Absent
+  means no authored trigger, `[]` means never by itself, several mean any of
+  them. A new kind is an additive variant at `crpg.encounter/1`; never change
+  `proximity` or the meaning of an absent or empty list. The sim reads it in
+  T157c.
+
+- 2026-11-22 (UTC) · claude-code/sonnet-5.5 (implementer) + T157b · Added encounter `engage` to the optional-missing list and recorded the tagged trigger vocabulary (`proximity` only), its exact-key decoder and its two read-time limits.
