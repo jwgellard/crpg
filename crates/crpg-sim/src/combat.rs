@@ -44,7 +44,7 @@ use crpg_rules::{
 use crate::creature::{CreatureState, Entrant, SuspendedEffect};
 use crate::event::SimEvent;
 use crate::movement::{
-    build_mover, stop, within_range, write_mirror, Measure, MovementFact, TurnMovement,
+    build_mover, seg_len, stop, within_range, write_mirror, Measure, MovementFact, TurnMovement,
 };
 use crate::tick::end_turn;
 use crate::timeline::InitiativeKey;
@@ -572,6 +572,69 @@ pub struct CombatDefinition {
     pub initiative: Option<InitiativeRule>,
     /// The turn-based movement rules (T036c); `None` means nothing moves.
     pub movement: Option<TurnMovement>,
+    /// The encounter's resolved engagement rules, authored order (T157c S-C1).
+    /// Serialized only when non-empty.
+    pub engage: Vec<EngageRule>,
+}
+
+/// One resolved engagement rule (T157c S-C1). Serialized as
+/// `{"type": "proximity", "value": {"distance": <raw>}}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum EngageRule {
+    /// Two living opposed combatants with movers within `distance`.
+    Proximity {
+        /// Horizontal raw metres, positive.
+        distance: Fx16_16,
+    },
+}
+
+impl EngageRule {
+    /// Whether the rule's distance is a positive raw value.
+    fn is_valid(&self) -> bool {
+        match self {
+            Self::Proximity { distance } => distance.to_raw() > 0,
+        }
+    }
+}
+
+/// The engagement test the host runs after each tick (T157c S-C2).
+///
+/// `true` exactly when the encounter is real-time with no pending mode
+/// request, the fight is live and some rule of the definition holds. Read-only.
+pub fn engagement_due(world: &World) -> bool {
+    let Some(state) = world.combat() else {
+        return false;
+    };
+    if state.mode != EncounterMode::RealTime
+        || state.pending_mode.is_some()
+        || !fight_is_live(world)
+    {
+        return false;
+    }
+    state.definition.engage.iter().any(|rule| match rule {
+        EngageRule::Proximity { distance } => {
+            let Ok(limit) = u64::try_from(distance.to_raw()) else {
+                return false;
+            };
+            let living: Vec<(EntityId, [Fx16_16; 3])> = world
+                .combatants()
+                .iter()
+                .filter(|(_, combatant)| !combatant.dead)
+                .filter_map(|(id, _)| world.movers().get(id).map(|mover| (id, mover.position())))
+                .collect();
+            living.iter().enumerate().any(|(index, (a, at_a))| {
+                living[index + 1..]
+                    .iter()
+                    .any(|(b, at_b)| opposed(world, *a, *b) && seg_len(*at_a, *at_b) <= limit)
+            })
+        }
+    })
 }
 
 /// Reports whether one ability entry carries only legacy-compatible behavior.
@@ -606,6 +669,7 @@ fn definition_is_legacy(definition: &CombatDefinition) -> bool {
         && definition.derived.is_empty()
         && definition.initiative.is_none()
         && definition.movement.is_none()
+        && definition.engage.is_empty()
 }
 
 fn policy_to_text(policy: StackingPolicy) -> &'static str {
@@ -700,6 +764,7 @@ impl Serialize for CombatDefinition {
             18 + usize::from(!self.derived.is_empty())
                 + usize::from(self.initiative.is_some())
                 + usize::from(self.movement.is_some())
+                + usize::from(!self.engage.is_empty())
         };
         let mut shape = serializer.serialize_struct("CombatDefinition", len)?;
         shape.serialize_field("encounter", &self.encounter)?;
@@ -729,6 +794,9 @@ impl Serialize for CombatDefinition {
             }
             if let Some(movement) = &self.movement {
                 shape.serialize_field("movement", movement)?;
+            }
+            if !self.engage.is_empty() {
+                shape.serialize_field("engage", &self.engage)?;
             }
         }
         shape.end()
@@ -765,6 +833,8 @@ struct CombatDefinitionRepr {
     initiative: Option<InitiativeRule>,
     #[serde(default)]
     movement: Option<TurnMovement>,
+    #[serde(default)]
+    engage: Vec<EngageRule>,
 }
 
 impl<'de> Deserialize<'de> for CombatDefinition {
@@ -776,6 +846,11 @@ impl<'de> Deserialize<'de> for CombatDefinition {
         D: serde::Deserializer<'de>,
     {
         let repr = CombatDefinitionRepr::deserialize(deserializer)?;
+        if !repr.engage.iter().all(EngageRule::is_valid) {
+            return Err(serde::de::Error::custom(
+                "engage proximity distance must be positive",
+            ));
+        }
         let legacy_present =
             repr.abilities.is_none() && repr.pools.is_none() && repr.effects.is_none();
         if legacy_present {
@@ -826,6 +901,7 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 derived: repr.derived,
                 initiative: repr.initiative,
                 movement: repr.movement,
+                engage: repr.engage,
             })
         } else {
             Ok(Self {
@@ -850,6 +926,7 @@ impl<'de> Deserialize<'de> for CombatDefinition {
                 derived: repr.derived,
                 initiative: repr.initiative,
                 movement: repr.movement,
+                engage: repr.engage,
             })
         }
     }
@@ -1240,6 +1317,8 @@ pub enum CombatError {
     },
     /// The target is beyond the ability's range, or either side has no mover (ADR-0036 X2).
     OutOfRange,
+    /// An encounter's engagement rule carries a non-positive distance (T157c S-C1).
+    InvalidEngage,
 }
 
 impl std::fmt::Display for CombatError {
@@ -1293,6 +1372,7 @@ impl std::fmt::Display for CombatError {
             Self::InvalidSpeed { .. } => write!(f, "InvalidSpeed at spec/movement"),
             Self::InvalidStep { .. } => write!(f, "InvalidStep at spec/movement"),
             Self::OutOfRange => write!(f, "OutOfRange at combat/target"),
+            Self::InvalidEngage => write!(f, "InvalidEngage at combat/engage"),
         }
     }
 }
@@ -2157,6 +2237,19 @@ pub(crate) fn start_encounter_with_members_tracked(
         pool: movement.turn.pool,
         step_cost: movement.turn.step_cost,
     });
+    // T157c S-C1: one arm per data variant, so a new kind cannot compile
+    // until it is resolved. The distance is checked after S4 below.
+    let engage: Vec<EngageRule> = encounter
+        .engage
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|trigger| match trigger {
+            crpg_data::EngageTriggerWire::Proximity { distance } => EngageRule::Proximity {
+                distance: *distance,
+            },
+        })
+        .collect();
     let definition = CombatDefinition {
         encounter: encounter.id,
         ruleset: ruleset.id,
@@ -2179,6 +2272,7 @@ pub(crate) fn start_encounter_with_members_tracked(
         derived,
         initiative: initiative_rule,
         movement: turn_movement,
+        engage,
     };
 
     // T139 B11: the lifecycle rules this encounter runs under.
@@ -2299,6 +2393,10 @@ pub(crate) fn start_encounter_with_members_tracked(
     // S4.
     if members.is_empty() && sources.iter().all(|source| matches!(source, Source::Skip)) {
         return Err(CombatError::NoEntrants);
+    }
+    // T157c S-C1: the engagement distances, after every existing start check.
+    if !definition.engage.iter().all(EngageRule::is_valid) {
+        return Err(CombatError::InvalidEngage);
     }
 
     // T137 B17: roll each participant's key in authored order, after every

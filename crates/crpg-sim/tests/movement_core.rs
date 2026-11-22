@@ -925,10 +925,10 @@ fn a6_set_route_order_and_dead() {
         unchanged(&mut world, |w| sets(w, a, 1)),
         Err(MoveError::DeadCombatant { entity: a })
     );
-    // B is alive in the terminal turn-based encounter.
+    // B is alive in the finished turn-based encounter: no turn holds it, so the route checks run (T157c).
     assert_eq!(
         unchanged(&mut world, |w| sets(w, b, 1)),
-        Err(MoveError::TurnBased { entity: b })
+        Err(MoveError::StartMismatch)
     );
     // C is a non-participant and may set a route during the encounter.
     let c = reg(&fixture, &mut world, 113);

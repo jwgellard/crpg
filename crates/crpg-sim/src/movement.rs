@@ -766,8 +766,9 @@ impl World {
     ///
     /// Fails `AbsentEntity`, `NotMover`, `DeadCombatant`, `TurnBased`, then the
     /// route checks of [`validate_route`] against the bound revision and the
-    /// mover's position. A combatant of a real-time encounter and every
-    /// non-participant may set a route.
+    /// mover's position. A combatant of a real-time encounter, a survivor of a
+    /// finished (head-less) turn-based encounter and every non-participant may
+    /// set a route.
     pub fn set_route(
         &mut self,
         entity: EntityId,
@@ -783,9 +784,9 @@ impl World {
             return Err(MoveError::DeadCombatant { entity });
         }
         if self.combatants().contains(entity)
-            && self
-                .combat()
-                .is_some_and(|state| state.mode == EncounterMode::TurnBased)
+            && self.combat().is_some_and(|state| {
+                state.mode == EncounterMode::TurnBased && state.active.is_some()
+            })
         {
             return Err(MoveError::TurnBased { entity });
         }

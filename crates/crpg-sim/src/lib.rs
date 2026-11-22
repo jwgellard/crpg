@@ -36,14 +36,14 @@ pub mod world;
 
 pub use area::{transfer_entity, transfer_history_entity, AreaError};
 pub use combat::{
-    end_encounter, fight_is_live, join_encounter, leave_encounter, legal_actions, opposed,
-    perform_action, request_mode, side_of, start_encounter, start_encounter_in_mode,
+    end_encounter, engagement_due, fight_is_live, join_encounter, leave_encounter, legal_actions,
+    opposed, perform_action, request_mode, side_of, start_encounter, start_encounter_in_mode,
     start_encounter_with_members, validate_action, AbilityDefense, AbilityDefinition,
     ActionOutcome, AttachedEffect, CombatAction, CombatDefinition, CombatError, CombatState,
     Combatant, DerivedStat, EffectAim, EffectDefinition, EffectModifier, EffectOp, EffectTarget,
-    EffectsOnExit, EncounterClock, EncounterMode, EncounterSpec, EncounterSummary, InitiativeRule,
-    IntFormula, LegalActionsError, Lifecycle, ParticipantResult, PlacementAndArea, PoolTemplate,
-    Side, StandingOrder, COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_STREAM, COMBAT_ROLL_TAG,
+    EffectsOnExit, EncounterClock, EncounterMode, EncounterSpec, EncounterSummary, EngageRule,
+    InitiativeRule, IntFormula, LegalActionsError, Lifecycle, ParticipantResult, PlacementAndArea,
+    PoolTemplate, Side, StandingOrder, COMBAT_BONUS_MOD_TYPE, COMBAT_ROLL_STREAM, COMBAT_ROLL_TAG,
     MAX_COMBATANTS, MAX_COMBAT_STATS, MAX_LEGAL_ACTIONS, RT_CLOCK_MAX,
 };
 pub use continuation::{ContinuationError, OpenDialogue, QuestProgress, ScriptContinuation};
