@@ -1098,7 +1098,7 @@ impl World {
     /// settles the encounter exactly as [`despawn`](Self::despawn) does
     /// (T139 D11): the active combatant leaving advances the turn, the last
     /// combatant leaving releases the encounter, and an RT encounter whose
-    /// alive count drops from two or more to below two ends. The entity stays
+    /// living-side count drops from two or more to below two ends. The entity stays
     /// live; nothing is enqueued.
     ///
     /// Crate-visible only. [`despawn_tracked`](Self::despawn_tracked) and
@@ -1116,13 +1116,8 @@ impl World {
         // The mode and the non-dead count are captured before the removal:
         // an RT removal ends the encounter when it drops the count from two
         // or more to below two (T138b, H2).
-        let prior_rt_alive = self.combat.as_ref().and_then(|state| {
-            (state.mode == EncounterMode::RealTime).then(|| {
-                self.combatants
-                    .iter()
-                    .filter(|(_, combatant)| !combatant.dead())
-                    .count()
-            })
+        let prior_rt_sides = self.combat.as_ref().and_then(|state| {
+            (state.mode == EncounterMode::RealTime).then(|| crate::combat::live_sides(self))
         });
         let removed = self.combatants.remove(id);
         self.timeline.remove(id);
@@ -1147,12 +1142,8 @@ impl World {
         {
             facts = crate::combat::advance_tracked(&mut *self);
         }
-        if let (Some(before), Some((encounter, round, _))) = (prior_rt_alive, prior) {
-            let after = self
-                .combatants
-                .iter()
-                .filter(|(_, combatant)| !combatant.dead())
-                .count();
+        if let (Some(before), Some((encounter, round, _))) = (prior_rt_sides, prior) {
+            let after = crate::combat::live_sides(self);
             if before >= 2 && after < 2 {
                 facts.encounter_ended = Some((encounter, round));
             }

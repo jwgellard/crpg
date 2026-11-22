@@ -452,6 +452,15 @@ The read-only odds query was built in three packages: the `Ruleset.preview` fiel
 - **Transfer (Reading 10).** `transfer_entity` and `transfer_history_entity` refuse a continuation holder or a dialogue participant as `AreaError::ScriptState { entity }`, the last preflight check, because the move carries only meta, transform, creature and mover and would otherwise drop the state silently.
 - **Equivalence (Reading 11).** `tests/continuation.rs` runs the spec's 500 + 500 versus 1000 comparison over `World` and `HistoryWorld` JSON; the restart through the real host file save is the `crpg-server` part (T052b).
 
+## Sides (T157a, ADR-0029 Amendment 1)
+
+A creature's **side** is its faction (`Side::Faction`); a creature with no faction is a side of one (`Side::Alone(entity)`), so a world in which no creature has a faction behaves, serializes and hashes exactly as before. Faction relations are not read: any two different sides are opposed.
+
+- **Where it lives (S-A1, S-A2).** `Combatant.faction` and `CreatureState.faction` are `Option<Ulid>`, declared last and skipped when `None`, so an unfactioned world keeps its bytes and its `state_hash`. A spawned participant takes its prefab creature document's `faction`; `register_creature` copies it into the record; entering (start member, joiner) copies the record's into the combatant; leaving and release copy the combatant's back. Nothing else writes either field.
+- **Reading it (S-A3, S-A4).** `side_of(world, entity)` is the combatant's side, else the record's, else `None`; `opposed(world, a, b)` is true for two different entities that both have a side and whose sides differ. `fight_is_live(world)` is true when an encounter exists and its not-dead combatants stand on at least two sides. `live_sides(world)` (crate-private) is that count.
+- **Every "two alive" rule reads "two sides" (S-A5).** The sites are the action end in `perform_action`, both gates of `advance_tracked`, `rt_running` (and with it stages 2 and 3), stage 3's per-actor break and its end report, the real-time validation stages of `admit` (`Stop` and `UseAbility`), the join refusal of `join_encounter`, and the real-time end on a leave or despawn in `World::remove_combatant_tracked`. `rt_alive` is gone. The load-time real-time coherence check (timeline against living combatants) still counts combatants: it checks scheduling, not the end of a fight.
+- **Nothing else changes (S-A6).** No event, history version, error variant or hosted rule was added; the host's two copies of the old count follow in T157d.
+
 ## Agent log
 
 - 2026-09-06 (UTC) · opencode/muse-spark + T007 · Wrote the crate doc for the skeleton: position above core/data/rules, module map, today-vs-planned table with owners, and what consumers inherit.
@@ -488,3 +497,4 @@ The read-only odds query was built in three packages: the `Ruleset.preview` fiel
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143b · Added the action-preview section: the exact `PreviewCount`, the three counting algorithms with their cost formulas and the two scoped dead-code allows T143c removes, so the next package reads what exists before `preview_action` lands.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143c · Extended the action-preview section with the policy and scope, the limit and its part order, the rows and damage and the read-only guarantee, and dropped the dead-code-allow bullet T143c made false.
 - 2026-11-20 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T052 · Added the script, dialogue and quest state section and the `continuation` module bullet, so readers know the sim stores and counts down waits, dialogues and quests and never resumes, walks or transitions them.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T157a · Added the Sides section: faction on combatants and records, `side_of`, `opposed`, `fight_is_live`, and the sites where every "two alive" rule now reads "two sides", so a later reader finds one end-of-fight rule.

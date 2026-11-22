@@ -59,6 +59,10 @@ pub struct CreatureState {
     pub(crate) suspended: Vec<SuspendedEffect>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) tags: Vec<String>,
+    /// The creature's faction, copied from its document; skipped when absent
+    /// (T157a S-A1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) faction: Option<Ulid>,
 }
 
 impl CreatureState {
@@ -110,6 +114,11 @@ impl CreatureState {
     /// The creature's own tags, ascending and distinct; never a grant (D5).
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    /// The creature's faction, if any.
+    pub fn faction(&self) -> Option<Ulid> {
+        self.faction
     }
 }
 
@@ -223,6 +232,7 @@ pub fn register_creature(
             pools,
             suspended: Vec::new(),
             tags,
+            faction: spec.creature.faction,
         },
     );
     if let Some(mover) = mover {

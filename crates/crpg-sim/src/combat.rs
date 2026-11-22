@@ -13,7 +13,7 @@
 //! ties break on ascending [`EntityId`](crpg_core::EntityId), an accepted
 //! attack pops the actor and advances to the next head unless its definition
 //! keeps the turn, the round rolls over when the timeline empties with two
-//! or more combatants alive, and the encounter goes terminal (`active` of
+//! or more living sides (T157a), and the encounter goes terminal (`active` of
 //! `None`) otherwise. Rejected actions leave the entire world unchanged,
 //! including resources, RNG streams, the event queue, and the event sequence.
 //!
@@ -233,6 +233,19 @@ pub struct Combatant {
     /// false.
     #[serde(default, skip_serializing_if = "is_false")]
     entered: bool,
+    /// The creature's faction, copied from its document or record; skipped
+    /// when absent (T157a S-A1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    faction: Option<Ulid>,
+}
+
+/// Which side a combatant or creature record fights on (ADR-0029 Amendment 1 S1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Side {
+    /// Every combatant of this faction.
+    Faction(Ulid),
+    /// A combatant with no faction: a side of its own.
+    Alone(EntityId),
 }
 
 impl Combatant {
@@ -300,6 +313,53 @@ impl Combatant {
     pub fn entered(&self) -> bool {
         self.entered
     }
+
+    /// The creature's faction, if any.
+    pub fn faction(&self) -> Option<Ulid> {
+        self.faction
+    }
+}
+
+fn side_for(faction: Option<Ulid>, entity: EntityId) -> Side {
+    faction.map_or(Side::Alone(entity), Side::Faction)
+}
+
+/// The side of a combatant, else of a creature record, else `None` (S-A3).
+pub fn side_of(world: &World, entity: EntityId) -> Option<Side> {
+    if let Some(combatant) = world.combatants().get(entity) {
+        return Some(side_for(combatant.faction, entity));
+    }
+    world
+        .creatures()
+        .get(entity)
+        .map(|record| side_for(record.faction, entity))
+}
+
+/// Two different entities, both with a side, on different sides (S-A3).
+pub fn opposed(world: &World, a: EntityId, b: EntityId) -> bool {
+    if a == b {
+        return false;
+    }
+    match (side_of(world, a), side_of(world, b)) {
+        (Some(side_a), Some(side_b)) => side_a != side_b,
+        _ => false,
+    }
+}
+
+/// An encounter exists and its living combatants stand on two or more sides (S-A4).
+pub fn fight_is_live(world: &World) -> bool {
+    world.combat().is_some() && live_sides(world) >= 2
+}
+
+/// The number of distinct sides among the combatants that are not dead (S-A4).
+pub(crate) fn live_sides(world: &World) -> usize {
+    world
+        .combatants()
+        .iter()
+        .filter(|(_, state)| !state.dead)
+        .map(|(id, state)| side_for(state.faction, id))
+        .collect::<BTreeSet<Side>>()
+        .len()
 }
 
 /// How an ability selects its defense value.
@@ -1629,6 +1689,7 @@ pub(crate) fn start_encounter_with_members_tracked(
         health: u32,
         tags: Vec<String>,
         fixed: Vec<(String, Fx16_16)>,
+        faction: Option<Ulid>,
     }
 
     let mut pending = Vec::with_capacity(encounter.participants.len());
@@ -1652,6 +1713,7 @@ pub(crate) fn start_encounter_with_members_tracked(
             health,
             tags,
             fixed,
+            faction: creature.faction,
         });
     }
 
@@ -2370,6 +2432,7 @@ pub(crate) fn start_encounter_with_members_tracked(
                 tags: member.tags,
                 fixed: member.fixed,
                 entered: false,
+                faction: member.faction,
             },
         );
         let key = match mode {
@@ -2576,6 +2639,7 @@ fn enter_combatant(
         pools,
         suspended,
         tags,
+        faction,
         ..
     } = record;
     let mut pools = pools.into_iter();
@@ -2602,6 +2666,7 @@ fn enter_combatant(
         tags,
         fixed,
         entered: true,
+        faction,
     }
 }
 
@@ -2652,6 +2717,7 @@ fn exit_record(
         pools,
         suspended,
         tags,
+        faction: combatant.faction,
     })
 }
 
@@ -2659,7 +2725,7 @@ fn exit_record(
 /// T14; T139 B23-B28).
 ///
 /// Checks, in order: J1 `NoEncounter`; J2 `EncounterTerminal` (TB with no
-/// active turn, or RT with fewer than two alive); J3 `TooManyParticipants`; J4
+/// active turn, or RT with fewer than two sides alive); J3 `TooManyParticipants`; J4
 /// `AbsentActor`; J5 `AlreadyParticipant`; J6 `NotCreature`; J7 `DeadActor`; J8
 /// `RulesetMismatch`; J9 `PlacementInUse` (a current combatant, dead or alive,
 /// holds the record's placement); J10 `InvalidStatValue`; J11 `TooManyTags`.
@@ -2679,7 +2745,7 @@ pub fn join_encounter(world: &mut World, joiner: &Entrant) -> Result<(), CombatE
     // J2.
     let terminal = match state.mode {
         EncounterMode::TurnBased => state.active.is_none(),
-        EncounterMode::RealTime => rt_alive(world) < 2,
+        EncounterMode::RealTime => live_sides(world) < 2,
     };
     if terminal {
         return Err(CombatError::EncounterTerminal);
@@ -3444,7 +3510,7 @@ pub(crate) fn action_plan(
 ///
 /// In a real-time encounter (T138, ADR-0029 T8) only the turn stage changes:
 /// `UseAbility` and `Stop` meet the terminal gate (`OutOfTurn` with no
-/// active, fewer than two alive) where turn-based play checks the head,
+/// active, fewer than two living sides) where turn-based play checks the head,
 /// `EndTurn` fails `WrongMode`, and `Stop` in turn-based play fails
 /// `WrongMode`. `Stop` checks `NoEncounter`; live nonparticipant actor;
 /// `AbsentActor`; `DeadActor`; then the mode stage.
@@ -3466,7 +3532,7 @@ pub(crate) enum Admission {
 /// The one legality source; [`validate_action`] is `admit(…, Execute)`.
 ///
 /// `Plan` differs in exactly two places, both for `UseAbility`: the turn
-/// stage becomes the terminal gate (fewer than two alive is `OutOfTurn` with
+/// stage becomes the terminal gate (fewer than two living sides is `OutOfTurn` with
 /// no active) in both modes, and the affordability loops are skipped.
 pub(crate) fn admit(
     world: &World,
@@ -3499,7 +3565,7 @@ pub(crate) fn admit(
                     mode: EncounterMode::TurnBased,
                 }),
                 EncounterMode::RealTime => {
-                    if rt_alive(world) < 2 {
+                    if live_sides(world) < 2 {
                         return Err(OutOfTurn {
                             actor,
                             active: None,
@@ -3575,7 +3641,7 @@ pub(crate) fn admit(
                     }
                 }
                 (Admission::Execute, EncounterMode::RealTime) | (Admission::Plan, _) => {
-                    if rt_alive(world) < 2 {
+                    if live_sides(world) < 2 {
                         return Err(OutOfTurn {
                             actor,
                             active: None,
@@ -3882,14 +3948,10 @@ pub(crate) fn perform_action_tracked(
             for id in dead {
                 world.timeline_mut().remove(id);
             }
-            let alive = world
-                .combatants()
-                .iter()
-                .filter(|(_, state)| !state.dead)
-                .count();
+            let sides = live_sides(world);
             let mut facts = TransitionFacts::default();
             let actor_dead = !world.timeline().contains(actor);
-            if alive < 2 {
+            if sides < 2 {
                 if world.timeline().contains(actor) {
                     let popped = end_turn(world);
                     debug_assert_eq!(popped.map(|(_, id)| id), Some(actor));
@@ -4141,7 +4203,7 @@ fn attach_effect(
 /// refresh of every alive combatant, attachment expiry, every alive
 /// combatant (re)inserted at its stored initiative, one `TurnStart` refresh
 /// for the head, and `active = Some(head)`. Returns the head and the new
-/// round. The caller guarantees two or more alive combatants.
+/// round. The caller guarantees two or more living sides.
 ///
 /// This is the rollover body of [`advance_tracked`] moved without change
 /// (T138); the RT to TB switch runs it too (ADR-0029 T10).
@@ -4205,8 +4267,8 @@ fn tb_round_start(world: &mut World) -> (EntityId, u32) {
 ///
 /// Crate-visible only: the tracked combat entry points and the history
 /// wrapper consume the facts (T020, ADR-0017). The rule is one, owned here:
-/// timeline nonempty with two or more alive sets the new head with one
-/// `TurnStart` refresh; timeline empty with two or more alive rolls the round
+/// timeline nonempty with two or more living sides sets the new head with one
+/// `TurnStart` refresh; timeline empty with two or more living sides rolls the round
 /// over (`round + 1`, `RoundStart` refresh of all alive, re-add alive at
 /// their initiative keys, head with `TurnStart`, expired attachments
 /// dropped); otherwise terminal (`active = `None`). The caller has already
@@ -4238,12 +4300,7 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
     }
     let mut facts = TransitionFacts::default();
     if world.timeline().is_empty() {
-        let alive = world
-            .combatants()
-            .iter()
-            .filter(|(_, state)| !state.dead)
-            .count();
-        if alive >= 2 {
+        if live_sides(world) >= 2 {
             let advanced = world
                 .combat()
                 .expect("the encounter is checked above")
@@ -4283,12 +4340,7 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
             facts.encounter_ended = Some(ended);
         }
     } else {
-        let alive = world
-            .combatants()
-            .iter()
-            .filter(|(_, state)| !state.dead)
-            .count();
-        if alive >= 2 {
+        if live_sides(world) >= 2 {
             let head = world
                 .timeline()
                 .iter()
@@ -4331,7 +4383,7 @@ pub(crate) fn advance_tracked(world: &mut World) -> TransitionFacts {
 /// joiner (T139 D45a, so a terminal save still satisfies the loader's Q1). The
 /// two `advance_tracked` sites reach here after its B27 flush has already taken
 /// the list, so the clear is a no-op there; the `UseAbility` kill that leaves
-/// fewer than two alive does not pass through `advance_tracked`, and relies on it.
+/// fewer than two living sides does not pass through `advance_tracked`, and relies on it.
 fn set_terminal(world: &mut World) {
     let state = world
         .combat_mut()
@@ -4339,16 +4391,6 @@ fn set_terminal(world: &mut World) {
         .expect("the encounter is checked above");
     state.active = None;
     state.pending_joins.clear();
-}
-
-/// The number of combatants with `dead == false`; the RT terminal rule is
-/// "fewer than two" (T138 D15).
-fn rt_alive(world: &World) -> usize {
-    world
-        .combatants()
-        .iter()
-        .filter(|(_, state)| !state.dead)
-        .count()
 }
 
 /// The ids of every alive combatant in ascending [`EntityId`] order.
@@ -4495,7 +4537,7 @@ fn rt_running(world: &World) -> bool {
         && combat
             .clock
             .is_some_and(|clock| clock.elapsed < RT_CLOCK_MAX)
-        && rt_alive(world) >= 2
+        && live_sides(world) >= 2
 }
 
 /// Tick stage 2 for an RT encounter (ADR-0029 T3, T6, T9, T10).
@@ -4567,7 +4609,7 @@ pub(crate) fn execution_stage(world: &mut World, facts: &mut TickFacts) {
         .map(|(_, id)| id)
         .collect();
     for actor in due {
-        if rt_alive(world) < 2 {
+        if live_sides(world) < 2 {
             break;
         }
         let Some(state) = world.combatants().get(actor) else {
@@ -4641,7 +4683,7 @@ pub(crate) fn execution_stage(world: &mut World, facts: &mut TickFacts) {
             }
         }
     }
-    if rt_alive(world) < 2 {
+    if live_sides(world) < 2 {
         // The pass made the encounter terminal: the first, and only, end.
         let state = world.combat().expect("the encounter is checked above");
         facts.transitions.encounter_ended = Some((state.definition.encounter, state.round));
