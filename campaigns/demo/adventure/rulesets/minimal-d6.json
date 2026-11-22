@@ -1,0 +1,66 @@
+{
+  "abilities": [
+    "0000000000000000000000000K"
+  ],
+  "attributes": [
+    "might",
+    "guile",
+    "resolve"
+  ],
+  "health_stat": "health",
+  "id": "0000000000000000000000000J",
+  "movement": {
+    "speed": {
+      "type": "constant",
+      "value": 6554
+    },
+    "turn": {
+      "pool": "0000000000000000000000000R",
+      "step": {
+        "type": "constant",
+        "value": 65536
+      },
+      "step_cost": 1
+    }
+  },
+  "name": "fixture.minimal-d6",
+  "package": "minimal-d6",
+  "pools": [
+    {
+      "id": "0000000000000000000000000P",
+      "max": 1,
+      "refresh": {
+        "type": "on_turn_start"
+      }
+    },
+    {
+      "id": "0000000000000000000000000R",
+      "max": 6,
+      "refresh": {
+        "type": "on_turn_start"
+      }
+    }
+  ],
+  "round_ticks": 10,
+  "schema": "crpg.ruleset/2",
+  "slug": "minimal-d6",
+  "stats": [
+    {
+      "kind": "int",
+      "name": "might"
+    },
+    {
+      "kind": "int",
+      "name": "guile"
+    },
+    {
+      "kind": "int",
+      "name": "resolve"
+    },
+    {
+      "kind": "int",
+      "name": "health"
+    }
+  ],
+  "version": "0.1.0"
+}
