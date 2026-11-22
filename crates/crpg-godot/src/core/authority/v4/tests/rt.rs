@@ -8,12 +8,13 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crpg_net::transport::Transport;
 use crpg_server::run::{HostLoop, LocalHost};
 use crpg_server::runner::Clock;
 
 use crate::core::client::{SessionView, ViewMoveReceipt};
 use crate::core::link::{LocalLink, LINK_FRAMES};
-use crate::core::{BridgeCode, BridgeCore};
+use crate::core::{BridgeCode, BridgeCore, State};
 
 // ---------------------------------------------------------------------------
 // Helpers (authority/v4/tests.rs, copied; the originals are private there).
@@ -153,6 +154,11 @@ fn shape(receipts: &[ViewMoveReceipt]) -> Vec<(i64, i64, &'static str, i64)> {
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|v| (*v).to_owned()).collect()
+}
+
+/// `State::Fenced(code)` (`tests.rs:47–49`, copied; the original is private).
+fn is_fenced(core: &BridgeCore, code: BridgeCode) -> bool {
+    matches!(core.state, State::Fenced(fenced) if fenced == code)
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +340,15 @@ fn controlled_and_render_positions_by_state() {
     assert_eq!(core.poll(0), BridgeCode::Ok);
     assert!(core.controlled().is_empty());
     assert_eq!(core.render_positions(), vec![0; 6]);
+
+    // Fenced: a corrupt downstream frame keeps the view; the controlled list
+    // is empty and the render positions are the kept view's positions (A23).
+    link.authority_end().send(&[0xff]).expect("room");
+    assert_eq!(core.poll(10), BridgeCode::FrameUndecodable);
+    assert!(is_fenced(&core, BridgeCode::FrameUndecodable));
+    assert!(core.controlled().is_empty());
+    assert_eq!(core.render_positions(), core.view().positions().to_vec());
+    assert_eq!(core.render_positions(), vec![0; 6]);
     core.close();
 
     // Open v4 as the Goblin: the Goblin's replica id only.
@@ -398,6 +413,19 @@ fn rt_open_precedence() {
     let link = LocalLink::new(LINK_FRAMES);
     assert_eq!(core.open_on(dir, "", "", 1, &link), BridgeCode::AlreadyOpen);
 
+    // A bad argument still wins over the already-open guard on the live core
+    // (A06): both opens answer 3 and leave the session untouched.
+    assert_eq!(
+        core.open_v4_rt_with(dir, "", "", -1, clock.clone()),
+        BridgeCode::BadArgument
+    );
+    assert_eq!(core.last_error(), "BAD_ARGUMENT: bad argument");
+    assert_eq!(
+        core.open_v4_rt_with(dir, "nope", "", 1, clock.clone()),
+        BridgeCode::BadArgument
+    );
+    assert_eq!(core.last_error(), "BAD_ARGUMENT: bad argument");
+
     // The first session is untouched.
     let (code, _views) = settle(&mut core, &clock, 50);
     assert_eq!(code, BridgeCode::Ok);
@@ -411,4 +439,24 @@ fn rt_open_precedence() {
     core.close();
     assert_eq!(open_rt(&mut core, &clock), BridgeCode::Ok);
     core.close();
+}
+
+// ---------------------------------------------------------------------------
+// W7.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn public_open_v4_rt_is_real_time() {
+    // The public wrapper (with its own `SystemClock`) must be real time too:
+    // a wrapper that called the turn-based open would return 0 on BASIC.
+    let mut core = BridgeCore::new();
+    let code = core.open_v4_rt(basic_root().to_str().expect("basic path"), "", "", 1);
+    assert_eq!(code, BridgeCode::StartFailed);
+    assert_eq!(code as i64, 25);
+    assert_eq!(
+        core.last_error(),
+        "START_FAILED: ModeUnsupported at combat/mode"
+    );
+    assert!(core.runner().is_none());
+    assert!(core.controlled().is_empty());
 }
