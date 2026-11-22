@@ -171,7 +171,7 @@ bridge, and the scene decides no rule (ADR-0033 §14).
 
 - **`scripts/Main.gd`** (`Node3D`) exposes `session`, `seen`, `view`, and
   `choose(i)` → `session.submit_option(seen, i)`. `_ready` instantiates
-  `CrpgSession` and calls `open` (fixture, default side, seed 1); `_process`
+  `CrpgSession` and calls `open_v4_ai` (fixture, default side, seed 1); `_process`
   makes exactly one `poll()` and, when the revision changes, updates `seen` and
   calls `Proxies.sync(view)` and `Hud.sync(view)`. A 30 (intent refused) is a
   notice shown in the log and processing continues; any other non-zero code
@@ -561,3 +561,4 @@ Agent log:
 - 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T049a · Added the "Smoothing (T049a)" section: the constants, the sample clock offset, the replica-following buffers, the rest-then-move render rule and the two feed points, so the walk's smooth draw has a stated contract rather than a second derivation.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T156c · Added the `Pick.gd` and `Feedback.gd` bullets to the Client section (click-to-attack by ray, and event-driven bars, numbers and flash) and named the `combat.gd` gate, as the approved T156c contract requires.
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a · Added the "Server AI sessions (T156a)" subsection: the opt-in `open_v4_ai` open, its `ServerAiHook` stage, pacing, side numbering and the `crpg-ai` edge, including that a Strike ends the fixture turn so the AI's whole turn is one step.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156b · Changed the `Main.gd` bullet from `open` to `open_v4_ai` (the shell's new thin wrapper), so the default scene's enemy is the server's AI, as the approved T156b contract requires.

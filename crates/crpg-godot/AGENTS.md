@@ -120,6 +120,8 @@ CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/w
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/load.gd   # control: exit 3
 Godot4 --headless --path apps/client -s res://tests/combat.gd        # exit 0 (T156c, local only)
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/combat.gd   # control: exit 3
+Godot4 --headless --path apps/client -s res://tests/enemy_ai.gd      # exit 0 (T156b, local only)
+CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/enemy_ai.gd   # control: exit 3
 ```
 
 ## Known traps
@@ -248,3 +250,4 @@ Agent log:
 - 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T049a · Added invariant 19: smoothing is presentation only, `smooth.rs` writes nothing back and its time arithmetic is `i128`, with the poll/step feed points that make a fault keep the frames before it.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T156c · Added the `combat.gd` engine gate and its control to the gate block, and the trap that a `Control` over the 3D view must ignore the mouse or it swallows the click `Pick.gd` needs.
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a · Added invariant 20 (two NPC drivers) and the turn-based-only trap for `open_v4_ai`, so the peer NPC and the server AI are not mixed up.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156b · Added the `enemy_ai.gd` engine gate and its control to the gate block, so the shell's `open_v4_ai` and the default scene's server-AI enemy have a local engine proof.
