@@ -329,6 +329,31 @@ fn sa4_sides_of_combatants_and_records() {
     assert_eq!(w.creatures().get(c).expect("C").faction(), Some(f1()));
 }
 
+/// S-A2, "enter": a participant whose placement already has a living record
+/// (a non-respawning lifecycle) becomes a combatant that copies the record's
+/// faction. SA4(b) drives the member seat; this drives the participant arm.
+#[test]
+fn sa4c_participant_enters_from_record_keeps_faction() {
+    let mut fx = three();
+    faction(&mut fx, 123, f1());
+    let mut w = World::new(1);
+    let r = fx
+        .register(&mut w, pl(113))
+        .expect("the record registers at C's placement");
+    assert_eq!(w.creatures().get(r).expect("record").faction(), Some(f1()));
+    fx.with_spec(|spec| start_encounter_in_mode(&mut w, spec, EncounterMode::TurnBased))
+        .expect("the start enters the record");
+    let entered = w
+        .combatants()
+        .get(r)
+        .expect("the record became a combatant");
+    assert!(entered.entered(), "C came from its record, not a spawn");
+    assert_eq!(entered.placement(), pl(113));
+    assert_eq!(entered.faction(), Some(f1()));
+    assert_eq!(side_of(&w, r), Some(Side::Faction(f1())));
+    assert!(w.creatures().get(r).is_none(), "the record is consumed");
+}
+
 #[test]
 fn sa5_two_on_each_side_fight_on() {
     let mut fx = three();

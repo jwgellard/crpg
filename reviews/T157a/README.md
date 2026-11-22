@@ -94,5 +94,19 @@ M29 (SA8b). No contract item is reached by no test except the M07 arm above.
 VERDICT: fix. One real gap (M07: participant enters from an existing record, S-A2 "enter"),
 one equivalent (M15). 28/30 killed. Source needs no change; one test (above) is the fix.
 
+## Fix round A
+
+Branch `task/T157a-i1`, fix commit on top of `f953149`. Test only; no source file changed.
+
+- Added `sa4c_participant_enters_from_record_keeps_faction` to `crates/crpg-sim/tests/sides.rs`: a record
+  with faction F1 registered at participant C's placement (non-respawning lifecycle), then
+  `start_encounter_in_mode`; asserts the combatant came from the record (`entered()`), its `faction()` is
+  `Some(F1)` and its `side_of` is `Side::Faction(F1)`. Values come from S-A2.
+- **M07 new outcome: KILLED** by `sa4c_participant_enters_from_record_keeps_faction` (re-run through
+  `run_mutants.py M07`; the driver replaced M07's row in `results.jsonl`, the earlier `survived` outcome stays in
+  `run.log` and git history). `git diff -- crates/crpg-sim/src` is empty after the run.
+- Totals now: 29 killed, 1 survived (M15, equivalent, accepted). The table row for M07 above is the first-run result.
+
 ## Agent log
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T157a mutant run · Ran 30 single-edit mutants over the T157a source diff; 28 killed, M07 (participant-enters-from-record faction copy) survives, M15 is equivalent.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T157a fix A · Added the participant-enters-from-record test and re-ran M07 through the driver, killed; the first-run table above is left as it was.
