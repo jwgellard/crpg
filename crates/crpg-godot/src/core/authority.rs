@@ -737,6 +737,7 @@ pub(crate) fn presentation_tables(
     let table = PresentationTable {
         rows,
         abilities: presentation.ability_table(),
+        movement_pool: None,
     };
     Ok((table, npc_sides))
 }

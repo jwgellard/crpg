@@ -54,7 +54,11 @@ fn table() -> PresentationTable {
     );
     let mut abilities = std::collections::BTreeMap::new();
     abilities.insert(strike(), "Strike".to_string());
-    PresentationTable { rows, abilities }
+    PresentationTable {
+        rows,
+        abilities,
+        movement_pool: None,
+    }
 }
 
 fn client() -> Client {

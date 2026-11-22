@@ -46,6 +46,8 @@ pub struct SessionView {
     position_known: Vec<u8>,
     moving: Vec<u8>,
     move_receipts: Vec<ViewMoveReceipt>,
+    movement: Vec<i64>,
+    movement_max: Vec<i64>,
 }
 
 impl SessionView {
@@ -150,6 +152,16 @@ impl SessionView {
         &self.move_receipts
     }
 
+    /// Current points of the ruleset's movement pool per row, -1 when undisclosed (K-5).
+    pub fn movement(&self) -> &[i64] {
+        &self.movement
+    }
+
+    /// That pool's maximum per row, -1 when undisclosed (K-5).
+    pub fn movement_max(&self) -> &[i64] {
+        &self.movement_max
+    }
+
     /// Assembles one view revision from its columns.
     ///
     /// The v4 client half's build; the v2 half fills the position columns
@@ -176,6 +188,8 @@ impl SessionView {
         position_known: Vec<u8>,
         moving: Vec<u8>,
         move_receipts: Vec<ViewMoveReceipt>,
+        movement: Vec<i64>,
+        movement_max: Vec<i64>,
     ) -> Self {
         Self {
             revision,
@@ -198,6 +212,8 @@ impl SessionView {
             position_known,
             moving,
             move_receipts,
+            movement,
+            movement_max,
         }
     }
 }
@@ -393,6 +409,9 @@ pub(crate) struct PresentationTable {
     pub(crate) rows: BTreeMap<NetId, PresentationRow>,
     /// Ability display names by authored ULID.
     pub(crate) abilities: BTreeMap<Ulid, String>,
+    /// The ruleset's movement pool (`movement.turn.pool`), `None` when it
+    /// declares no movement (K-2).
+    pub(crate) movement_pool: Option<Ulid>,
 }
 
 /// The engine-neutral client half of one session.
@@ -601,6 +620,8 @@ impl Client {
             position_known: vec![0; rows],
             moving: vec![0; rows],
             move_receipts: Vec::new(),
+            movement: vec![-1; rows],
+            movement_max: vec![-1; rows],
         });
         self.options = options.to_vec();
         Ok(())

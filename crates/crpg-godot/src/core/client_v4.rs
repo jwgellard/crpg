@@ -21,7 +21,7 @@ use crpg_net::pool_v4::{
     TransferOutcome,
 };
 use crpg_net::protocol::{IntentBody, NetId, SessionEpoch, LANE_COMBAT, SEQ_FIRST};
-use crpg_net::protocol_v3::{DeltaOp as DeltaOpV3, ReceiptStatus};
+use crpg_net::protocol_v3::{DeltaOp as DeltaOpV3, EncounterMode, ReceiptStatus};
 use crpg_net::protocol_v4::{DeltaOp, IntentBody as IntentBodyV4, IntentFrame, Point};
 use crpg_net::replica_v4::ReplicaWorldV4;
 use crpg_net::transfer_v3::{encode_up, TransferUp, TRANSFER_VERSION_V3};
@@ -253,6 +253,22 @@ impl ClientV4 {
         self.send_intent(actor, IntentBodyV4::DeclareMove { destination }, link)
     }
 
+    /// Sends one lane-0 `RequestMode { mode }` with `actor` in the header (K-4).
+    ///
+    /// An outstanding lane-0 intent is `5` `"an intent is outstanding"`; a
+    /// full link is `30` `"link full"` and the sequence stays where it was.
+    pub(crate) fn request_mode(
+        &mut self,
+        actor: NetId,
+        mode: EncounterMode,
+        link: &mut impl Transport,
+    ) -> Result<(), Fault> {
+        if self.pending.is_some() {
+            return Err(fault(BridgeCode::IntentPending, "an intent is outstanding"));
+        }
+        self.send_intent(actor, IntentBodyV4::RequestMode { mode }, link)
+    }
+
     /// A lane-1 `MoveTo` for `actor`.
     ///
     /// An outbox refusal is `30`; a full link restores the outbox and is
@@ -452,11 +468,31 @@ impl ClientV4 {
         let mut max_health = Vec::with_capacity(net_ids.len());
         let mut health_known = Vec::with_capacity(net_ids.len());
         let mut dead = Vec::with_capacity(net_ids.len());
+        let mut movement = Vec::with_capacity(net_ids.len());
+        let mut movement_max = Vec::with_capacity(net_ids.len());
         for entity in inner.entities() {
             let row = self.table.rows.get(&entity.net_id);
             names.push(row.map(|row| row.name.clone()).unwrap_or_default());
             sides.push(row.map(|row| row.side.clone()).unwrap_or_default());
             placements.push(row.map(|row| row.placement.to_string()).unwrap_or_default());
+            let pool = self.table.movement_pool.and_then(|wanted| {
+                entity
+                    .facts
+                    .pools
+                    .as_ref()?
+                    .iter()
+                    .find(|fact| fact.pool == wanted)
+            });
+            match pool {
+                Some(fact) => {
+                    movement.push(i64::from(fact.current));
+                    movement_max.push(i64::from(fact.max));
+                }
+                None => {
+                    movement.push(-1);
+                    movement_max.push(-1);
+                }
+            }
             match &entity.health {
                 Some(fact) => {
                     health.push(i64::from(fact.health));
@@ -514,7 +550,9 @@ impl ClientV4 {
             && option_targets == current.option_targets()
             && positions == current.positions()
             && position_known == current.position_known()
-            && moving == current.moving();
+            && moving == current.moving()
+            && movement == current.movement()
+            && movement_max == current.movement_max();
         if events.is_empty() && receipts.is_empty() && move_receipts.is_empty() && unchanged {
             self.options = options.to_vec();
             return;
@@ -541,6 +579,8 @@ impl ClientV4 {
             position_known,
             moving,
             move_receipts,
+            movement,
+            movement_max,
         ));
         self.options = options.to_vec();
     }

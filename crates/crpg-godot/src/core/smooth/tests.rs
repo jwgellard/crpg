@@ -270,7 +270,11 @@ fn table() -> PresentationTable {
     );
     let mut abilities = std::collections::BTreeMap::new();
     abilities.insert(Ulid::from_u128(10), "Strike".to_string());
-    PresentationTable { rows, abilities }
+    PresentationTable {
+        rows,
+        abilities,
+        movement_pool: None,
+    }
 }
 
 /// A live v4 client half.
