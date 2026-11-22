@@ -267,6 +267,10 @@ Windows/MSVC, through the embedded server.
 | T050a | C → I | crpg-godot | T151 | Real-time v4 open, `controlled()`, unsmoothed `render_positions()`, the `campaigns/demo/walk` campaign |
 | T050b | C → I, S | crpg-godot (shell) + `apps/client` | T050a | Three `CrpgSession` members, `Walk.tscn`: pick, select, move, halt; `tests/walk.gd`. H-review |
 | T051 | C → I | crpg-godot | T048, T104, T108 | HUD, combat log, `SimEvent`-driven VFX/audio hooks. Cut-down demo version has no T104/T108 prerequisite (ADR-0033). |
+| T156 | C → I | crpg-godot + `apps/client` | T050b, T153 | Combat demo v1 (`tasks/T156.md`, D78): the server AI plays the enemy in the embedded host, click an enemy to attack, health bars, damage numbers and a hit flash. T156a ∥ T156c, then T156b |
+| T156a | C → I | crpg-godot | T151, T153 | `open_v4_ai`: a turn-based v4 session whose non-player side `Host::drive_ai` plays, paced; the `crpg-godot → crpg-ai` edge (D78a) |
+| T156b | C → I, S | crpg-godot (shell) + `apps/client` | T156a | `CrpgSession.open_v4_ai`; `Main.gd` opens the AI session; `tests/enemy_ai.gd`. H-review |
+| T156c | C → I | `apps/client` | T048, T051 | `Pick.gd` (click to attack) and `Feedback.gd` (bars, numbers, flash) as two `Main.tscn` nodes; `tests/combat.gd`; parallel with T156a and T156b |
 
 **Player experience and art (added 2026-10-16 with D28j's method).** H-play
 above checks only that the game runs; these check that it reads well and has
@@ -474,3 +478,4 @@ estimates slip.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S80-t040-edits · Changed the T040 row's prerequisites to T153, T150c and T154d and appended the T040a–c parts note, so the plan records the D70 approval.
 - 2026-11-19 (UTC) · opencode-go/muse-spark-1.3-contributor + S81-d71-d72-record · Recorded the D71/D72 approvals on the T041 and T100 rows (T041a–e parts and T041d prerequisites; scripted `crpgc play` with `run` kept as a health check, parts T100a/b).
 - 2026-11-21 (UTC) · claude-code/opus-5.5 (architect) + T026c · Re-cut the M5 movement rows into T050a, T050b (S) and T049a for the walk demo and marked T026 deferred, so the plan matches the new contracts and D77.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T156c · Added the T156 combat-demo rows (T156a core AI open, T156b S-set shell and default scene, T156c click and feedback in GDScript), so the plan carries the new contract and its D78 questions.

@@ -171,7 +171,7 @@ bridge, and the scene decides no rule (ADR-0033 §14).
 
 - **`scripts/Main.gd`** (`Node3D`) exposes `session`, `seen`, `view`, and
   `choose(i)` → `session.submit_option(seen, i)`. `_ready` instantiates
-  `CrpgSession` and calls `open` (fixture, default side, seed 1); `_process`
+  `CrpgSession` and calls `open_v4_ai` (fixture, default side, seed 1); `_process`
   makes exactly one `poll()` and, when the revision changes, updates `seen` and
   calls `Proxies.sync(view)` and `Hud.sync(view)`. A 30 (intent refused) is a
   notice shown in the log and processing continues; any other non-zero code
@@ -271,6 +271,40 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   HUD notice. No path preview (it needs a client mesh); pan and zoom are later.
   `tests/walk.gd` is the local engine gate for WK1-WK10 and exits 3 when the
   open fails.
+- **`scripts/Pick.gd`** (T156c, `Node`, a child of `Main`) is click-to-attack
+  and decides no rule. A left press (only a pressed `InputEventMouseButton`;
+  `input_calls` counts the handled ones) casts the camera ray through the click
+  and `pick_proxy` takes the `proxy_<id>` whose centre (`global_position` plus
+  `0.6` m up) lies nearest the ray, within `0.7` m and in front of the camera
+  (the smaller id on a tie, 0 for none; other children are ignored). `attack(id)`
+  submits the first option whose `option_targets()` entry is that id through
+  `main.choose` (End turn's target 0 never matches, and sides are not checked:
+  the host's option list is the rule). With no such option it writes the HUD
+  notice `No option targets <name>` and sends nothing (-1); a refused submit
+  follows the HUD button rule (0, 4 and 5 silent, 30 a notice, anything else
+  `show_error`). It does not mark the event handled, and it matches options by
+  target only, which is exact while one actor holds all options (turn-based).
+  `Main.gd` is unchanged: `Pick` finds `Main` as its parent.
+- **`scripts/Feedback.gd`** (T156c, `Node3D`, a child of `Main` after `Pick`)
+  draws bars, damage numbers and the hit flash from the session's events and
+  health columns, reads only the view and sends nothing. Godot processes a
+  parent before its children, so its `_process` reads `main.view` after `Main`
+  polled and synced it in the same frame; `sync(view)` runs `show_view` once per
+  revision. A `ProgressBar` `bar_<id>` (under a `CanvasLayer` `Overlay`, layer 0,
+  below the HUD) exists for each row whose health is known with a positive
+  maximum, and is visible while the row is alive. Each `action_resolved` event
+  spawns a `Label` `num_<n>`: `-<damage>` (plus `!` on a critical success) in
+  red, `miss` for a failure or critical failure and `0` otherwise in grey; it
+  rises 48 px and fades over one second. A hit (damage above 0) also shows a
+  half-transparent white unshaded sphere `flash_<target>` for 250 ms, one per
+  target, its age reset by a second hit. `place` positions bars and numbers each
+  frame with `unproject_position` over the proxy's current node position, so
+  they follow whoever draws the proxy (`SceneSync` here, `Walk.gd`'s `draw_rows`
+  in the walk scene). The flash is a separate node because `SceneSync` owns the
+  proxy's materials. All timing is presentation. `tests/combat.gd` is the local
+  engine gate: P1-P6 (pick, attack, input, source scan), F1-F8 (bars, numbers,
+  flash, revision gate, placement) against fakes, then L1-L4 against the real
+  `Main.tscn` session; exit 3 when the open fails.
 
 ## Protocol v4 sessions (T151)
 
@@ -362,6 +396,59 @@ GDExtension surface. v2 keeps every byte and behaviour.
   `authority::v4::rt_tests`, under a `tests` directory so K31's core
   scan skips it); its `ManualClock`, `walk_root` and `settle` are
   `pub(crate)` for T049a.
+
+### Server AI sessions (T156a)
+
+- **`open_v4_ai`.** `open_v4_ai(_with)` is `open_v4(_with)` (turn-based)
+  with the non-player side played by the server's own AI, `Host::drive_ai`,
+  the call the dedicated binary makes. A v2 session cannot show host
+  operations (`host_action` sends no frame to a v1/v2 session) and
+  `open_v4`'s tests pin its peer NPC, so the AI session is a new open.
+  `open`, `open_v4` and `open_v4_rt` keep the peer NPC byte for byte. A
+  private `NpcDriver { Peer, ServerAi }` beside `EncounterMode` is a final
+  parameter of `open_v4_mode` and `open_v4_guarded`; the real-time wrappers
+  and `open_v4_with` pass `Peer`, so no clone, `ai_sides` call or hook
+  differs for them.
+- **`ServerAiHook`.** One AI stage, in order: a shut-down host answers
+  `Closed` (a deliberate shutdown is `50`); the NPC peer's delivery is
+  drained unread (the peer stays bound because `presentation_tables` needs
+  its replica ids); "the AI's turn" is read as "the NPC peer has legal
+  options" (`Host` has no public active-head read, and `legal_intents` is
+  empty unless the active head is one of the peer's actors); when `AiPacer`
+  fires, `host.drive_ai(&sides, &actors, MVP_AI_BUDGET)` runs once and its
+  report is discarded. It calls nothing else on the host: no `ingest`, no
+  `encode_intent`, no NPC sequence.
+- **Pacing.** `AiPacer::step(now, ai_turn)` disarms when it is not the AI's
+  turn, arms `AI_STEP_DELAY_MS` (600 ms, D78b) ahead when unarmed, and
+  fires and disarms when armed and due, so the AI acts one delay after it
+  first sees its turn and again one delay after each act while the turn is
+  still its. `drive_ai` makes one decision per call. In the `combat_basic`
+  ruleset a Strike ends the turn (`ends_turn`), so the Goblin's whole turn
+  is one step: its attack and the Hero's `TurnStarted` arrive in the same
+  cycle.
+- **Who the AI controls, and the sides.** Every combatant not on the
+  player's side: the NPC peer's existing grant (`prefix.npc_actors`, cloned
+  before `bind_peer` moves it, only under `ServerAi`). `ai_sides` numbers
+  the distinct side strings `Presentation::combatant` gives (faction text,
+  else creature name) in ascending order from `SideId(0)` and builds
+  `crpg_ai::Sides`, so "hostile" means "a different side string", the
+  peer NPC's `choose_npc` rule. A `SidesError` (an entity listed twice) is
+  `25` `START_FAILED`; the open never meets it because bound entities are
+  distinct.
+- **What the player sees.** The AI's actions reach the player as
+  host-operation deltas in the same cycle (`host_action` publishes to
+  v3/v4 sessions), so events, health, round and end equal a peer-NPC
+  session's for the same choices. `host_action` is never a peer command, so
+  `Host::executions()` counts only the player's commands: the tests use
+  that to tell the AI from the peer NPC.
+- **Edge.** `crpg-godot` depends on `crpg-ai` (D78a) because the hook holds
+  a `crpg_ai::Sides`, which `crpg-server` does not re-export. The edge is
+  already in `deps.py`'s table and adds no third-party code.
+- **Turn-based only.** The gate is the NPC peer's legal options, which real
+  time never has; a real-time AI open needs its own gate as another
+  `NpcDriver` variant. The tests are `authority/v4/tests/ai.rs` (module
+  `authority::v4::ai_tests`, under a `tests` directory so K31's core scan
+  skips it).
 
 ## Smoothing (T049a)
 
@@ -472,3 +559,6 @@ Agent log:
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the "Real-time sessions, `controlled()` and `render_positions()`" subsection: the real-time open, the session-held controlled list, the unsmoothed render hook and the walk campaign.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050b · Replaced the "No input." bullet with the walk scene's input and drawing rules, now that picking and click-to-move exist.
 - 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T049a · Added the "Smoothing (T049a)" section: the constants, the sample clock offset, the replica-following buffers, the rest-then-move render rule and the two feed points, so the walk's smooth draw has a stated contract rather than a second derivation.
+- 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T156c · Added the `Pick.gd` and `Feedback.gd` bullets to the Client section (click-to-attack by ray, and event-driven bars, numbers and flash) and named the `combat.gd` gate, as the approved T156c contract requires.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a · Added the "Server AI sessions (T156a)" subsection: the opt-in `open_v4_ai` open, its `ServerAiHook` stage, pacing, side numbering and the `crpg-ai` edge, including that a Strike ends the fixture turn so the AI's whole turn is one step.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156b · Changed the `Main.gd` bullet from `open` to `open_v4_ai` (the shell's new thin wrapper), so the default scene's enemy is the server's AI, as the approved T156b contract requires.

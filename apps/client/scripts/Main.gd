@@ -1,6 +1,6 @@
 extends Node3D
 # T047d: owns the session, polls it once per frame, and feeds both the proxy
-# view and the combat HUD. No rule is decided here (ADR-0033 §14).
+# view and the combat HUD; the server's AI plays the enemy (T156b). No rule here.
 
 const OPEN_SEED := 1
 
@@ -16,7 +16,7 @@ func _ready() -> void:
 		open_code = 2
 		$Hud.show_error("CrpgSession is not available")
 		return
-	var code: int = session.open(_campaign_dir(), "", "", OPEN_SEED)
+	var code: int = session.open_v4_ai(_campaign_dir(), "", "", OPEN_SEED)
 	if code != 0:
 		open_code = code
 		$Hud.show_error(session.last_error())

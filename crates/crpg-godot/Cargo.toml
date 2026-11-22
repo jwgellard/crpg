@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 engine = ["dep:godot"]
 
 [dependencies]
+crpg-ai     = { path = "../crpg-ai" }
 crpg-core   = { path = "../crpg-core" }
 crpg-data   = { path = "../crpg-data" }
 crpg-net    = { path = "../crpg-net" }

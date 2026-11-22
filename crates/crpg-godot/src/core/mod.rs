@@ -34,7 +34,9 @@ use crpg_server::run::{HostLoop, LocalClient, LocalHost};
 use crpg_server::runner::{spawn, Clock, RunnerHandle, RunnerPanicked, SystemClock};
 use crpg_sim::{EncounterMode, HistoryWorld};
 
-use authority::v4::{encounter_bounds, read_options, NpcHook, OptionsReply};
+use authority::v4::{
+    ai_sides, encounter_bounds, read_options, NpcHook, OptionsReply, ServerAiHook,
+};
 use authority::{
     check_binding, collect_campaign, first_encounter, grants, presentation_tables,
     ruleset_abilities, Authority, Presentation, RealFs, SpecParts,
@@ -132,6 +134,15 @@ enum V4Cause {
     ReadError(HostError),
 }
 
+/// Who plays the non-player side of a v4 session (A-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpcDriver {
+    /// The bridge's NPC peer (`NpcHook`, invariant 12).
+    Peer,
+    /// The server's `Host::drive_ai` (`ServerAiHook`, invariant 20).
+    ServerAi,
+}
+
 /// The shared `open` prefix: everything both session kinds do identically up
 /// to the host wrap (steps 1-8 of B1), returned as owned values.
 struct OpenPrefix {
@@ -202,6 +213,7 @@ impl BridgeCore {
             seed,
             clock,
             EncounterMode::TurnBased,
+            NpcDriver::Peer,
         )
     }
 
@@ -239,6 +251,45 @@ impl BridgeCore {
             seed,
             clock,
             EncounterMode::RealTime,
+            NpcDriver::Peer,
+        )
+    }
+
+    /// Opens the named encounter as a turn-based protocol v4 session whose
+    /// non-player combatants the server's MVP AI plays (A-1).
+    pub fn open_v4_ai(
+        &mut self,
+        campaign_dir: &str,
+        encounter_id: &str,
+        player_side: &str,
+        seed: i64,
+    ) -> BridgeCode {
+        self.open_v4_ai_with(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            SystemClock::new(),
+        )
+    }
+
+    /// `open_v4_ai` with the runner's clock injected.
+    pub(crate) fn open_v4_ai_with(
+        &mut self,
+        campaign_dir: &str,
+        encounter_id: &str,
+        player_side: &str,
+        seed: i64,
+        clock: impl Clock,
+    ) -> BridgeCode {
+        self.open_v4_mode(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            clock,
+            EncounterMode::TurnBased,
+            NpcDriver::ServerAi,
         )
     }
 
@@ -261,7 +312,9 @@ impl BridgeCore {
     }
 
     /// The one body of `open_v4_with` and `open_v4_rt_with`: validation, the
-    /// panic guard, then the guarded work in `mode`.
+    /// panic guard, then the guarded work in `mode` with `driver` playing the
+    /// non-player side.
+    #[allow(clippy::too_many_arguments)] // `driver` is the contract's eighth parameter
     fn open_v4_mode(
         &mut self,
         campaign_dir: &str,
@@ -270,12 +323,21 @@ impl BridgeCore {
         seed: i64,
         clock: impl Clock,
         mode: EncounterMode,
+        driver: NpcDriver,
     ) -> BridgeCode {
         if seed < 0 || (!encounter_id.is_empty() && Ulid::from_str(encounter_id).is_err()) {
             return self.fail(BridgeCode::BadArgument, Some("bad argument"));
         }
         let result = catch_unwind(AssertUnwindSafe(|| {
-            self.open_v4_guarded(campaign_dir, encounter_id, player_side, seed, clock, mode)
+            self.open_v4_guarded(
+                campaign_dir,
+                encounter_id,
+                player_side,
+                seed,
+                clock,
+                mode,
+                driver,
+            )
         }));
         match result {
             Ok(code) => code,
@@ -490,6 +552,7 @@ impl BridgeCore {
     }
 
     /// The whole `open_v4` work inside the panic guard (B-B1).
+    #[allow(clippy::too_many_arguments)] // `driver` is the contract's eighth parameter
     fn open_v4_guarded(
         &mut self,
         campaign_dir: &str,
@@ -498,6 +561,7 @@ impl BridgeCore {
         seed: i64,
         clock: impl Clock,
         mode: EncounterMode,
+        driver: NpcDriver,
     ) -> BridgeCode {
         #[cfg(test)]
         if self.probe == Some(Probe::Open) {
@@ -541,6 +605,10 @@ impl BridgeCore {
             return self.fail(BridgeCode::StartFailed, Some(&error.to_string()));
         }
         let player_actors = prefix.player_actors.clone();
+        let npc_actors = match driver {
+            NpcDriver::ServerAi => Some(prefix.npc_actors.clone()),
+            NpcDriver::Peer => None,
+        };
         let player = match host.bind_v4_peer(
             ControlGrant {
                 actors: prefix.player_actors,
@@ -569,6 +637,22 @@ impl BridgeCore {
                 Ok(tables) => tables,
                 Err(fault) => return self.fail_fault(fault),
             };
+        let ai_hook = match (driver, npc_actors) {
+            (NpcDriver::ServerAi, Some(npc_actors)) => {
+                let rows: Vec<(EntityId, String)> = prefix
+                    .bound
+                    .iter()
+                    .map(|(entity, placement)| {
+                        (*entity, prefix.presentation.combatant(*placement).1)
+                    })
+                    .collect();
+                match ai_sides(&rows) {
+                    Ok(sides) => ServerAiHook::new(npc, sides, npc_actors).into_hook(),
+                    Err(fault) => return self.fail_fault(fault),
+                }
+            }
+            (_, _) => NpcHook::new(npc, npc_sides).into_hook(),
+        };
         let epoch = match host.epoch(player) {
             Ok(epoch) => SessionEpoch(epoch),
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),
@@ -593,7 +677,7 @@ impl BridgeCore {
             Ok(link) => link,
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),
         };
-        local.set_ai(Some(NpcHook::new(npc, npc_sides).into_hook()));
+        local.set_ai(Some(ai_hook));
         let runner = match spawn(HostLoop::new(local, 0), clock) {
             Ok(runner) => runner,
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),

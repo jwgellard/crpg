@@ -1,8 +1,10 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/SceneSync.gd" id="2_sync"]
 [ext_resource type="Script" path="res://scripts/CombatHud.gd" id="3_hud"]
+[ext_resource type="Script" path="res://scripts/Pick.gd" id="4_pick"]
+[ext_resource type="Script" path="res://scripts/Feedback.gd" id="5_feedback"]
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_ground"]
 size = Vector2(12, 12)
@@ -34,3 +36,9 @@ script = ExtResource("2_sync")
 
 [node name="Hud" type="CanvasLayer" parent="."]
 script = ExtResource("3_hud")
+
+[node name="Pick" type="Node" parent="."]
+script = ExtResource("4_pick")
+
+[node name="Feedback" type="Node3D" parent="."]
+script = ExtResource("5_feedback")
