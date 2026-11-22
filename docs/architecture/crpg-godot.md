@@ -271,6 +271,40 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   HUD notice. No path preview (it needs a client mesh); pan and zoom are later.
   `tests/walk.gd` is the local engine gate for WK1-WK10 and exits 3 when the
   open fails.
+- **`scripts/Pick.gd`** (T156c, `Node`, a child of `Main`) is click-to-attack
+  and decides no rule. A left press (only a pressed `InputEventMouseButton`;
+  `input_calls` counts the handled ones) casts the camera ray through the click
+  and `pick_proxy` takes the `proxy_<id>` whose centre (`global_position` plus
+  `0.6` m up) lies nearest the ray, within `0.7` m and in front of the camera
+  (the smaller id on a tie, 0 for none; other children are ignored). `attack(id)`
+  submits the first option whose `option_targets()` entry is that id through
+  `main.choose` (End turn's target 0 never matches, and sides are not checked:
+  the host's option list is the rule). With no such option it writes the HUD
+  notice `No option targets <name>` and sends nothing (-1); a refused submit
+  follows the HUD button rule (0, 4 and 5 silent, 30 a notice, anything else
+  `show_error`). It does not mark the event handled, and it matches options by
+  target only, which is exact while one actor holds all options (turn-based).
+  `Main.gd` is unchanged: `Pick` finds `Main` as its parent.
+- **`scripts/Feedback.gd`** (T156c, `Node3D`, a child of `Main` after `Pick`)
+  draws bars, damage numbers and the hit flash from the session's events and
+  health columns, reads only the view and sends nothing. Godot processes a
+  parent before its children, so its `_process` reads `main.view` after `Main`
+  polled and synced it in the same frame; `sync(view)` runs `show_view` once per
+  revision. A `ProgressBar` `bar_<id>` (under a `CanvasLayer` `Overlay`, layer 0,
+  below the HUD) exists for each row whose health is known with a positive
+  maximum, and is visible while the row is alive. Each `action_resolved` event
+  spawns a `Label` `num_<n>`: `-<damage>` (plus `!` on a critical success) in
+  red, `miss` for a failure or critical failure and `0` otherwise in grey; it
+  rises 48 px and fades over one second. A hit (damage above 0) also shows a
+  half-transparent white unshaded sphere `flash_<target>` for 250 ms, one per
+  target, its age reset by a second hit. `place` positions bars and numbers each
+  frame with `unproject_position` over the proxy's current node position, so
+  they follow whoever draws the proxy (`SceneSync` here, `Walk.gd`'s `draw_rows`
+  in the walk scene). The flash is a separate node because `SceneSync` owns the
+  proxy's materials. All timing is presentation. `tests/combat.gd` is the local
+  engine gate: P1-P6 (pick, attack, input, source scan), F1-F8 (bars, numbers,
+  flash, revision gate, placement) against fakes, then L1-L4 against the real
+  `Main.tscn` session; exit 3 when the open fails.
 
 ## Protocol v4 sessions (T151)
 
@@ -472,3 +506,4 @@ Agent log:
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a · Added the "Real-time sessions, `controlled()` and `render_positions()`" subsection: the real-time open, the session-held controlled list, the unsmoothed render hook and the walk campaign.
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050b · Replaced the "No input." bullet with the walk scene's input and drawing rules, now that picking and click-to-move exist.
 - 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T049a · Added the "Smoothing (T049a)" section: the constants, the sample clock offset, the replica-following buffers, the rest-then-move render rule and the two feed points, so the walk's smooth draw has a stated contract rather than a second derivation.
+- 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T156c · Added the `Pick.gd` and `Feedback.gd` bullets to the Client section (click-to-attack by ray, and event-driven bars, numbers and flash) and named the `combat.gd` gate, as the approved T156c contract requires.
