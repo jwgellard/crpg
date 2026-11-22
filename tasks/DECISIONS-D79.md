@@ -87,5 +87,13 @@ is a request to the server, which applies it at the next round boundary
 - The two new bridge functions (`open_v4_walk`, `request_mode`) are on your
   review list: T157d waits for your review, as T156b did.
 
+## Answers (the user, 2026-11-22)
+- **D79a: (c) both.** A server rule starts the fight when a hero comes near the enemy, and clicking the enemy still starts it early.
+- **D79b: (c) teach the engine sides first.** A fight ends when one side is left; parties work properly; ADR-0029 is amended. The demo waits for it.
+- **D79c: (b) yes, now.** The server discloses the hero's own movement pool, the bridge gains the function, and the HUD shows what is left.
+
+Status: **answered.** The contract goes back to the architect for revision 2.
+
 ## Agent log
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T157 contract · Wrote the three user questions for walk-then-fight (how the fight starts, how it ends so you walk again, whether to show movement left), each with its recommendation, after finding that fights end only below two living fighters and that a finished turn-based fight freezes its survivors.
+- 2026-11-22 (UTC) · claude-code/opus-5.5 (manager) + D79 answers · Recorded the user's answers (D79a c, D79b c, D79c b) so the contract revision builds on them.
