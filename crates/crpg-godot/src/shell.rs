@@ -80,6 +80,41 @@ impl CrpgSession {
         code
     }
 
+    /// Opens a real-time protocol v4 session; 0 on success, otherwise a
+    /// bridge code. `opened_at` is set exactly as `open` sets it.
+    #[func]
+    fn open_v4_rt(
+        &mut self,
+        campaign_dir: GString,
+        encounter_id: GString,
+        player_side: GString,
+        seed: i64,
+    ) -> i64 {
+        let code = self.core.open_v4_rt(
+            &campaign_dir.to_string(),
+            &encounter_id.to_string(),
+            &player_side.to_string(),
+            seed,
+        );
+        let code = code.as_i64();
+        if code == 0 {
+            self.opened_at = Some(Instant::now());
+        }
+        code
+    }
+
+    /// The replica ids this session may move, ascending.
+    #[func]
+    fn controlled(&self) -> PackedInt64Array {
+        PackedInt64Array::from(self.core.controlled().as_slice())
+    }
+
+    /// Three raw `Fx16_16` integers per row of `view()`: where to draw it now.
+    #[func]
+    fn render_positions(&self) -> PackedInt64Array {
+        PackedInt64Array::from(self.core.render_positions().as_slice())
+    }
+
     /// Turn-based move of the current options' actor to a raw `Fx16_16` point.
     #[func]
     fn declare_move(&mut self, revision: i64, x: i64, y: i64, z: i64) -> i64 {
