@@ -78,5 +78,36 @@ session is open (A06), add a W4 `Fenced` check (A23) and a public `open_v4_rt`
 smoke (A12). No source defect found: all 22 behaviour mutants of W-1..W-4 on
 the mode wiring, controlled list, and `render_positions` die.
 
+## Fix round A
+
+Test-only, `rt.rs`, commit `e816e11` (on `77d8d28`); `mod.rs` is byte for byte
+(`git diff 469f7d2 -- crates/crpg-godot/src/core/mod.rs` empty).
+
+- **A06** — W5 now issues `open_v4_rt_with(walk, "", "", -1)` and
+  `("nope", "", 1)` on the live core after the already-open calls: both answer
+  3 `BAD_ARGUMENT: bad argument`, then the existing `settle(50)`/`controlled`
+  checks prove the session is untouched.
+- **A23** — W4's v2 session sends a corrupt downstream frame, polls to
+  `FrameUndecodable`, asserts `State::Fenced` through a copied `is_fenced`
+  helper, then `controlled()` empty and `render_positions() ==
+  view().positions() == [0; 6]`.
+- **A12** — new W7 `public_open_v4_rt_is_real_time`: the public `open_v4_rt`
+  (its own `SystemClock`) on BASIC answers 25 `START_FAILED: ModeUnsupported at
+  combat/mode`, no runner, empty `controlled()`.
+
+Gates: `cargo fmt --all` (0), clippy `--all-targets` (0), `cargo test -p
+crpg-godot --locked -j 2` 98 passed / 0 failed (97 before, W7 is the one new
+test).
+
+Re-run `python reviews/T050a/run_mutants.py A06 A12 A23`: **3 mutants, 3
+killed, 0 survived, 0 compile errors.**
+
+| id | status | killed by |
+|---|---|---|
+| A06 | killed | rt_open_precedence |
+| A12 | killed | public_open_v4_rt_is_real_time |
+| A23 | killed | controlled_and_render_positions_by_state |
+
 ## Agent log
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T050a mutant run · 28-row mutant table over the new `mod.rs` lines, run mechanically; recorded kills, survivors and the W1-W5 reading.
+- 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T050a fix round A · Closed the three test gaps (A06, A12, A23) in rt.rs only and re-ran the survivors, all killed, with no source change.
