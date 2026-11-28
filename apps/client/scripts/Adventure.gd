@@ -11,10 +11,13 @@ extends "res://scripts/Walk.gd"
 # _unhandled_input runs before its parent's.
 
 const MODE_TURN_BASED := 0
+const MODE_EXPLORING := "Exploring"
+const MODE_FIGHT := "Fight"
 const ENGAGE := "You engage %s: the fight starts at the next round."
 const MOVE_TEXT := "Movement: %d / %d"
 
 func _ready() -> void:
+	$Hud.waiting_needs_turn = true
 	$Pick.set_process_unhandled_input(false)
 	$Camera3D.look_at_from_position(CAMERA_AT, LOOK_AT, Vector3.UP)
 	session = ClassDB.instantiate("CrpgSession")
@@ -34,6 +37,8 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	super._process(delta)
 	if session == null or open_code != 0 or stop_code != 0 or view == null:
+		$MoveHud/ModeLabel.text = mode_text()
+		$MoveHud/ModeLabel.visible = $MoveHud/ModeLabel.text != ""
 		return
 	var active: int = int(view.active())
 	if active != 0 and controlled.has(active):
@@ -42,6 +47,15 @@ func _process(delta: float) -> void:
 	var text: String = move_text()
 	$MoveHud/MoveLabel.text = text
 	$MoveHud/MoveLabel.visible = text != ""
+	$MoveHud/ModeLabel.text = mode_text()
+	$MoveHud/ModeLabel.visible = $MoveHud/ModeLabel.text != ""
+
+# The mode line: "Fight" while a turn is active, "Exploring" while walking, ""
+# when there is no live view. It reads the view's active head only, no rule.
+func mode_text() -> String:
+	if session == null or open_code != 0 or stop_code != 0 or view == null:
+		return ""
+	return MODE_FIGHT if in_fight() else MODE_EXPLORING
 
 func in_fight() -> bool:
 	return view != null and int(view.active()) != 0

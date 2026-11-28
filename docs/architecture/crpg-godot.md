@@ -215,7 +215,10 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   whose press calls `main.choose(i)` (0, 4 and 5 are silent, 30 is a log
   notice, anything else `show_error`; `NOT_OPEN` when `main.session` is null);
   and `Waiting for <name>...` (`Waiting...` for `-`), visible exactly when the
-  encounter has not ended and there are no options. The log is a private
+  encounter has not ended and there are no options; its opt-in
+  `waiting_needs_turn` (default false) additionally requires `active() != 0`,
+  so `Adventure.tscn`, which sets it in `_ready`, shows no Waiting line while
+  the party walks. The log is a private
   200-line buffer written to `Log.text` (never `append_text`, which parses
   BBCode). Each new revision appends its `events()` then its rejected
   `receipts()`, once: `<actor> | <ability> -> <target>: <verdict>, <n> damage`
@@ -250,15 +253,16 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   contract. **`tests/scene_sync.gd`** runs those
   cases and exits 6 on a failure, 7 when a freed proxy is still valid after
   two frames or a kept one is not, and 3 when a script fails to load.
-- **`tests/hud_cases.gd`** holds H1-H19 against an inner `FakeView` with
+- **`tests/hud_cases.gd`** holds H1-H21 against an inner `FakeView` with
   exactly the 14 getters the HUD may read, a `FakeSession` and a `FakeMain`;
   every case returns the token `"ok"` (or a detail) and `run(root)` returns
   `"PASS"` or `"H<n>: detail"`, so a crash (`""` from a `-> String` function)
   fails. **`tests/hud.gd`** runs them and exits 6 on a failure, 3 when the case
   file fails to load.
 - **The walk scene (T050b).** `scenes/Walk.tscn` is the click-to-move demo
-  (`Godot4 --path apps/client res://scenes/Walk.tscn`); `Main.tscn` stays the
-  default scene and the combat demo. `scripts/Walk.gd` opens a real-time v4
+  (`Godot4 --path apps/client res://scenes/Walk.tscn`); `Adventure.tscn` is the
+  default scene (`project.godot`'s `run/main_scene`) and `Main.tscn` stays the
+  combat demo, both still working when named explicitly. `scripts/Walk.gd` opens a real-time v4
   session over `campaigns/demo/walk`, polls it once per frame, feeds
   `SceneSync.gd` and `CombatHud.gd` unchanged, and draws every proxy itself
   after `sync` from `render_positions()` (`SceneSync.gd` may call only
@@ -316,11 +320,17 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   option against it through `Pick.attack`, and on the floor declares a move
   (`declare_move`); a right click does nothing. `selected` follows the turn head and
   `MoveLabel` shows `Movement: <now> / <max>` from `movement()` and
-  `movement_max()`, hidden outside a fight. Pick's own handler is switched off in
+  `movement_max()`, hidden outside a fight. A second label in `MoveHud`,
+  `ModeLabel`, shows `Fight` while `active() != 0` and `Exploring` otherwise
+  (`mode_text()`), drawn each frame after the readout and hidden with empty
+  text when there is no live view. `Hud.waiting_needs_turn` is set in `_ready`
+  before the open, so the walking frames show no `Waiting` line while the
+  combat demo keeps it. Pick's own handler is switched off in
   `_ready` and the scene routes clicks itself. The client checks no side, reach,
   distance or allowance; the host refuses and the refusal reaches the HUD log as a
-  receipt. `tests/adventure.gd` is the local engine gate (AD1-AD10) and exits 3
-  when the open fails; `Main.tscn` stays the default scene.
+  receipt. `tests/adventure.gd` is the local engine gate (AD1-AD10 plus the
+  AD11 mode-line and default-scene checks) and exits 3
+  when the open fails; `Adventure.tscn` is the default scene.
 
 ## Protocol v4 sessions (T151)
 
@@ -633,3 +643,4 @@ Agent log:
 - 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157f · Added the shell paragraph under a "Walk-then-fight sessions (T157e)" heading, which T157e's commit did not write, so the four new `#[func]`s and their engine gate are described; the rest of that subsection is still T157e's to add.
 - 2026-11-28 (UTC) · opencode-go/muse-spark-1.3-contributor + T157e docs · Wrote the missing T157e subsection text (the walk open, the movement pool, the mode request, the readout, Readings 5–8) under the heading T157f created, leaving T157f's shell paragraph byte for byte.
 - 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157g · Added the adventure-scene bullet to the Client section: the walk and fight click routing, the movement readout, `Pick`'s handler switched off in `_ready`, and the `adventure.gd` gate.
+- 2026-11-28 (UTC) · opencode-go/deepseek-v4.1-flash + T163 · Recorded the demo polish: `Adventure.tscn` is the default scene, `MoveHud/ModeLabel` shows `Fight`/`Exploring` from `mode_text()`, and `CombatHud.waiting_needs_turn` keeps the Waiting line off while the party walks.

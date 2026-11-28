@@ -59,3 +59,9 @@ visible = false
 offset_left = 12
 offset_top = 680
 mouse_filter = 2
+
+[node name="ModeLabel" type="Label" parent="MoveHud"]
+visible = false
+offset_left = 12
+offset_top = 652
+mouse_filter = 2

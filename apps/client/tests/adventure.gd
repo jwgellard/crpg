@@ -91,6 +91,12 @@ func _log() -> String:
 func _label() -> Label:
 	return adv.get_node("MoveHud/MoveLabel")
 
+func _mode() -> Label:
+	return adv.get_node("MoveHud/ModeLabel")
+
+func _waiting() -> Label:
+	return adv.get_node("Hud").find_child("Waiting", true, false)
+
 func _press(button: int, at: Vector2) -> void:
 	var event := InputEventMouseButton.new()
 	event.button_index = button
@@ -250,6 +256,14 @@ func _ad1_frame() -> bool:
 	_want("AD1 Feedback script", adv.get_node("Feedback").get_script().resource_path == "res://scripts/Feedback.gd", "wrong script")
 	_want("AD1 MoveHud is a CanvasLayer", adv.get_node("MoveHud") is CanvasLayer, "not a CanvasLayer")
 	_want("AD1 MoveLabel is a Label", adv.get_node("MoveHud/MoveLabel") is Label, "not a Label")
+	var move_hud: Node = adv.get_node("MoveHud")
+	var move_hud_children: Array = []
+	for child in move_hud.get_children():
+		move_hud_children.append(String(child.name))
+	_want("AD1 MoveHud children", move_hud_children == ["MoveLabel", "ModeLabel"], str(move_hud_children))
+	_want("AD1 ModeLabel is a Label", adv.get_node("MoveHud/ModeLabel") is Label, "not a Label")
+	_want("AD1 ModeLabel mouse_filter", _mode().mouse_filter == 2, str(_mode().mouse_filter))
+	_want("AD11 main scene", ProjectSettings.get_setting("application/run/main_scene") == "res://scenes/Adventure.tscn", str(ProjectSettings.get_setting("application/run/main_scene")))
 	_want("AD1 Pick's own input is off", pick.is_processing_unhandled_input() == false, "on")
 	_want("AD1 base script is Walk.gd", adv.get_script().get_base_script().resource_path == "res://scripts/Walk.gd", str(adv.get_script().get_base_script().resource_path))
 	_reached = "AD1"
@@ -299,6 +313,9 @@ func _ad3() -> bool:
 	_want("AD3 selected", adv.selected == 1, str(adv.selected))
 	_want("AD3 active", adv.view.active() == 0, str(adv.view.active()))
 	_want("AD3 label hidden", _label().visible == false, "visible")
+	_want("AD11 mode exploring", _mode().visible and _mode().text == "Exploring", "%s/%s" % [str(_mode().visible), _mode().text])
+	_want("AD11 waiting hidden", _waiting().visible == false, "visible")
+	_want("AD11 waiting_needs_turn", adv.get_node("Hud").waiting_needs_turn == true, str(adv.get_node("Hud").waiting_needs_turn))
 	if _done:
 		return false
 	var log_before: String = _log()
@@ -358,6 +375,7 @@ func _ad5() -> bool:
 	_want("AD5 marker under P(1)", _near(marker.global_position, p1), "%s vs %s" % [marker.global_position, p1])
 	_want("AD5 label visible", _label().visible, "hidden")
 	_want("AD5 label text", _label().text == "Movement: 6 / 6", _label().text)
+	_want("AD11 mode fight", _mode().text == "Fight", _mode().text)
 	_reached = "AD5"
 	return not _done
 
@@ -462,6 +480,8 @@ func _ad8() -> bool:
 		return _has_move(mark, 1, "accepted") and adv.view.moving()[0] == 0 and _near(_P(1), adv.ground_point(s))
 	if not await _wait("AD8 hero 1 walks again", arrived, 15000):
 		return false
+	_want("AD11 mode exploring again", _mode().text == "Exploring", _mode().text)
+	_want("AD11 waiting hidden again", _waiting().visible == false, "visible")
 	_press(MOUSE_BUTTON_LEFT, _U(_P(2) + UP))
 	_want("AD8 selected 2", adv.selected == 2, str(adv.selected))
 	var s2: Vector2 = _U(_P(2) + Vector3(1, 0, 0))
