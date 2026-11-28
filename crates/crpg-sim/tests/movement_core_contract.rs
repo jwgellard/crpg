@@ -1192,11 +1192,8 @@ fn set_route_mode_and_death_rules() {
         unchanged_on_err(&mut w, |w| w.set_route(a, route(1, vec![p(7, 7)]))),
         MoveError::DeadCombatant { entity: a }
     );
-    assert_eq!(
-        unchanged_on_err(&mut w, |w| w
-            .set_route(b, route(2, vec![p(10, 0), p(10, 1)]))),
-        MoveError::TurnBased { entity: b }
-    );
+    // B survives the finished fight: the route checks run and pass (T157c).
+    assert_eq!(w.set_route(b, route(2, vec![p(10, 0), p(10, 1)])), Ok(None));
     // The outsider may still set (replace) a route.
     assert_eq!(
         w.set_route(c, route(4, vec![p(0, 10), p(2, 10)])),
@@ -2128,5 +2125,50 @@ fn history_transfer_rewrites_the_mirror_with_zero_velocity() {
         bits(dst.world(), new),
         ([0; 3], [0; 3]),
         "the mover's mirror wins over the copied transform"
+    );
+}
+
+/// T157c S-C3 (SC6): the survivors of a finished turn-based fight hold no
+/// turn, so they may set routes again; the control shows the live fight
+/// still refuses them.
+#[test]
+fn finished_turn_based_fight_frees_its_survivors() {
+    let mut fx = move_fixture();
+    lethal(&mut fx);
+    let mut w = World::new(7);
+    w.bind_nav(rev());
+    start_in(&mut w, &fx, EncounterMode::TurnBased).unwrap();
+    let (a, b) = (who(&w, 111), who(&w, 112));
+    // Control: a live turn-based fight holds its participants.
+    assert_eq!(
+        unchanged_on_err(&mut w, |w| w
+            .set_route(b, route(1, vec![p(10, 0), p(10, 1)]))),
+        MoveError::TurnBased { entity: b }
+    );
+    // B acts first and kills A: no turn head is left.
+    perform_action(&mut w, &use_action(b, fx.ability, a)).unwrap();
+    assert_eq!(w.combat().unwrap().active, None);
+    assert_eq!(w.combat().unwrap().mode, EncounterMode::TurnBased);
+    assert_eq!(w.set_route(b, route(2, vec![p(10, 0), p(10, 1)])), Ok(None));
+    tick(&mut w);
+    assert_eq!(
+        raw3(w.movers().get(b).unwrap().position()),
+        raw3(rp(655360, 0, 32768))
+    );
+    tick(&mut w);
+    assert_eq!(w.movers().get(b).unwrap().position(), p(10, 1));
+    assert!(w.movers().get(b).unwrap().route().is_none());
+    // The dead stay refused.
+    assert_eq!(
+        unchanged_on_err(&mut w, |w| w.set_route(a, route(3, vec![p(0, 0), p(1, 0)]))),
+        MoveError::DeadCombatant { entity: a }
+    );
+    // The turn rule still speaks in validate_move: nobody holds the turn.
+    assert_eq!(
+        validate_move(&w, b, &route(4, vec![p(10, 1), p(10, 2)])),
+        Err(MoveError::Combat(CombatError::OutOfTurn {
+            actor: b,
+            active: None
+        }))
     );
 }

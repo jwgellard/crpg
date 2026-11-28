@@ -1,0 +1,7 @@
+{
+  "id": "0000000000000000000000000T",
+  "name": "demo.goblins",
+  "relations": [],
+  "schema": "crpg.faction/1",
+  "slug": "goblins"
+}

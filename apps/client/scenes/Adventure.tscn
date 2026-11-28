@@ -1,0 +1,61 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://scripts/Adventure.gd" id="1_adventure"]
+[ext_resource type="Script" path="res://scripts/SceneSync.gd" id="2_sync"]
+[ext_resource type="Script" path="res://scripts/CombatHud.gd" id="3_hud"]
+[ext_resource type="Script" path="res://scripts/Pick.gd" id="4_pick"]
+[ext_resource type="Script" path="res://scripts/Feedback.gd" id="5_feedback"]
+
+[sub_resource type="Environment" id="Environment_arena"]
+background_mode = 1
+background_color = Color(0.18, 0.2, 0.24, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.6, 0.6, 0.65, 1)
+ambient_light_energy = 0.5
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_floor"]
+size = Vector2(16, 12)
+
+[sub_resource type="TorusMesh" id="TorusMesh_marker"]
+inner_radius = 0.45
+outer_radius = 0.55
+
+[node name="Adventure" type="Node3D"]
+script = ExtResource("1_adventure")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707107, 0.5, -0.5, 0, 0.707107, 0.707107, 0.707107, -0.5, 0.5, 0, 5, 0)
+
+[node name="Environment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_arena")
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 6)
+mesh = SubResource("PlaneMesh_floor")
+
+[node name="Marker" type="MeshInstance3D" parent="."]
+visible = false
+mesh = SubResource("TorusMesh_marker")
+
+[node name="Proxies" type="Node3D" parent="."]
+script = ExtResource("2_sync")
+
+[node name="Hud" type="CanvasLayer" parent="."]
+script = ExtResource("3_hud")
+
+[node name="Pick" type="Node" parent="."]
+script = ExtResource("4_pick")
+
+[node name="Feedback" type="Node3D" parent="."]
+script = ExtResource("5_feedback")
+
+[node name="MoveHud" type="CanvasLayer" parent="."]
+layer = 1
+
+[node name="MoveLabel" type="Label" parent="MoveHud"]
+visible = false
+offset_left = 12
+offset_top = 680
+mouse_filter = 2

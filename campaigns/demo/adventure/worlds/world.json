@@ -1,0 +1,10 @@
+{
+  "areas": [
+    "0000000000000000000000000D"
+  ],
+  "id": "0000000000000000000000000C",
+  "name": "fixture.world",
+  "schema": "crpg.world/1",
+  "slug": "world",
+  "variables": []
+}

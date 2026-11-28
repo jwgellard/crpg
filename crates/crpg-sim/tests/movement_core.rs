@@ -18,7 +18,7 @@ use crpg_sim::{
 use serde_json::{json, Value};
 use support::creature::{top_level_keys, try_with_json};
 use support::draws::start_into;
-use support::rt::{bytes_of, json_keys, make_lethal, use_action, value_of};
+use support::rt::{add_clone, bytes_of, json_keys, make_lethal, use_action, value_of};
 use support::{fx_raw, uid, Fixture};
 
 const LIMIT: i32 = COORD_LIMIT_RAW;
@@ -925,10 +925,10 @@ fn a6_set_route_order_and_dead() {
         unchanged(&mut world, |w| sets(w, a, 1)),
         Err(MoveError::DeadCombatant { entity: a })
     );
-    // B is alive in the terminal turn-based encounter.
+    // B is alive in the finished turn-based encounter: no turn holds it, so the route checks run (T157c).
     assert_eq!(
         unchanged(&mut world, |w| sets(w, b, 1)),
-        Err(MoveError::TurnBased { entity: b })
+        Err(MoveError::StartMismatch)
     );
     // C is a non-participant and may set a route during the encounter.
     let c = reg(&fixture, &mut world, 113);
@@ -946,6 +946,27 @@ fn a6_set_route_order_and_dead() {
     assert_eq!(
         (active.segment(), active.along(), active.tag()),
         (0, 0, RouteTag(3))
+    );
+}
+
+/// M30 (S-C3 order): a dead combatant in a live turn-based encounter that
+/// still holds a turn head refuses `DeadCombatant`, not `TurnBased`.
+#[test]
+fn a6b_dead_wins_over_turn_based_in_a_live_fight() {
+    let mut fixture = move_fixture();
+    add_clone(&mut fixture, 114, 124, 8);
+    make_lethal(&mut fixture, 99);
+    let (mut world, ids) = fixture.start(7);
+    let (a, _, c) = (ids[0], ids[1], ids[2]);
+    world.bind_nav(rev());
+    perform_action(&mut world, &use_action(c, fixture.ability, a)).expect("C kills A");
+    assert!(world.combatants().get(a).expect("A").dead());
+    let state = world.combat().expect("the encounter is live");
+    assert_eq!(state.mode, EncounterMode::TurnBased);
+    assert!(state.active.is_some(), "two combatants fight on");
+    assert_eq!(
+        unchanged(&mut world, |w| sets(w, a, 1)),
+        Err(MoveError::DeadCombatant { entity: a })
     );
 }
 

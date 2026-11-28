@@ -779,6 +779,47 @@ pub struct Encounter {
     /// Whether every start spawns the participants fresh and keeps none; absent means false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub respawns: Option<bool>,
+    /// What starts this fight by itself (ADR-0029 Amendment 1 S3), any one
+    /// entry sufficing; absent means no authored trigger, empty means never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engage: Option<Vec<EngageTriggerWire>>,
+}
+
+/// At most this many triggers per encounter.
+pub const MAX_ENGAGE_TRIGGERS: usize = 8;
+
+/// One authored engagement trigger (Reading 3a). Adjacent `type`/`value`,
+/// snake case, exact keys per variant (hand-written `Deserialize`, as the
+/// crate's other tagged wires). New kinds are additive variants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum EngageTriggerWire {
+    /// Two opposed combatants within `distance` (horizontal) start the fight.
+    Proximity {
+        /// Raw fixed-point metres, positive.
+        #[schemars(with = "i32")]
+        distance: Fx16_16,
+    },
+}
+
+impl<'de> Deserialize<'de> for EngageTriggerWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let map = BTreeMap::<String, Value>::deserialize(deserializer)?;
+        exact_keys::<D>(&map, &["type", "value"])?;
+        let kind: String = field::<D, String>(&map, "type")?;
+        let value: Value = field::<D, Value>(&map, "value")?;
+        match kind.as_str() {
+            "proximity" => {
+                let inner: BTreeMap<String, Value> =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                exact_keys::<D>(&inner, &["distance"])?;
+                let distance: Fx16_16 =
+                    serde_json::from_value(inner["distance"].clone()).map_err(de::Error::custom)?;
+                Ok(EngageTriggerWire::Proximity { distance })
+            }
+            other => Err(de::Error::unknown_variant(other, &["proximity"])),
+        }
+    }
 }
 
 pub(crate) fn exact_keys<'de, D: serde::Deserializer<'de>>(
@@ -1751,6 +1792,19 @@ pub(crate) fn validate_combat_local(document: &crate::Document) -> Result<(), Da
             for participant in &encounter.participants {
                 if !seen_placements.insert(participant.placement) {
                     return Err(malformed("duplicate encounter participant"));
+                }
+            }
+            if let Some(triggers) = &encounter.engage {
+                if triggers.len() > MAX_ENGAGE_TRIGGERS {
+                    return Err(malformed("encounter engage has too many triggers"));
+                }
+                for trigger in triggers {
+                    let EngageTriggerWire::Proximity { distance } = trigger;
+                    if distance.to_raw() <= 0 {
+                        return Err(malformed(
+                            "encounter engage proximity distance must be positive",
+                        ));
+                    }
                 }
             }
             Ok(())

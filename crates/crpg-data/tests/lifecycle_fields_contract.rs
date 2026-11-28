@@ -740,6 +740,7 @@ fn bd5_schemas_gain_exactly_the_four_properties() {
     assert!(!required.contains(&json!("respawns")));
     // `encounter.schema.json` gained no new `$defs` entry: `respawns` is a
     // plain inline boolean, and the three enum definitions are ruleset-only.
+    // T157b adds `EngageTriggerWire` for `engage`.
     let defs: Vec<&str> = encounter["$defs"]
         .as_object()
         .expect("encounter schema has $defs")
@@ -748,5 +749,8 @@ fn bd5_schemas_gain_exactly_the_four_properties() {
         .collect();
     let mut defs_sorted = defs.clone();
     defs_sorted.sort_unstable();
-    assert_eq!(defs_sorted, vec!["EncounterParticipant", "UlidText"]);
+    assert_eq!(
+        defs_sorted,
+        vec!["EncounterParticipant", "EngageTriggerWire", "UlidText"]
+    );
 }

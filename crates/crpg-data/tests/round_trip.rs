@@ -380,6 +380,7 @@ fn documents(
             initiative: raw,
         }],
         respawns: None,
+        engage: None,
     }));
     for document in &mut result {
         match document {

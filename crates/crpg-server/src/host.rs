@@ -4058,12 +4058,13 @@ impl Host {
         body: MoveBody,
         tick: u64,
     ) -> MoveVerdict {
-        // (1) Lane 1 is the real-time and exploration lane (Reading 14).
+        // (1) Lane 1 is the real-time and exploration lane (Reading 14). A
+        // finished turn-based fight holds no one (T157d).
         let world = self.history.world();
-        let turn_based = world
-            .combat()
-            .is_some_and(|combat| combat.mode == EncounterMode::TurnBased);
-        if turn_based && world.combatants().get(actor).is_some() {
+        let head_held = world.combat().is_some_and(|combat| {
+            combat.mode == EncounterMode::TurnBased && combat.active.is_some()
+        });
+        if head_held && world.combatants().get(actor).is_some() {
             return MoveVerdict::Rejected(CodeV3::WrongMode);
         }
         match body {
@@ -4509,6 +4510,12 @@ impl Host {
         if self.closed {
             return Err(HostError::Closed);
         }
+        self.request_mode_op(mode)
+    }
+
+    /// The body of [`request_mode`](Self::request_mode): the history call and
+    /// its `HostOp::Action` tail. T157d's `advance` reuses it to engage.
+    fn request_mode_op(&mut self, mode: EncounterMode) -> Result<(), HostError> {
         let before = self.history.last_sequence();
         match self.history.request_mode(mode) {
             Ok(()) => {}
@@ -4521,11 +4528,12 @@ impl Host {
     /// The combatants the AI must decide for now (T141a, A-4), in order.
     ///
     /// Reads the world only. Turn-based: the active head. Real-time (T15): when
-    /// at least two combatants are alive and the clock is below its maximum,
-    /// every timeline entry due at the clock (`key <= elapsed`) whose
-    /// combatant is alive and has no standing order, in timeline order. A
-    /// closed host or no encounter: empty. Which combatants are AI-controlled
-    /// is the caller's fact; this lists everyone that has no order.
+    /// the fight is live ([`crpg_sim::fight_is_live`]: two or more sides stand)
+    /// and the clock is below its maximum, every timeline entry due at the
+    /// clock (`key <= elapsed`) whose combatant is alive and has no standing
+    /// order, in timeline order. A closed host or no encounter: empty. Which
+    /// combatants are AI-controlled is the caller's fact; this lists everyone
+    /// that has no order.
     pub fn awaiting_orders(&self) -> Vec<EntityId> {
         if self.closed {
             return Vec::new();
@@ -4540,12 +4548,7 @@ impl Host {
                 let Some(clock) = combat.clock else {
                     return Vec::new();
                 };
-                let alive = world
-                    .combatants()
-                    .iter()
-                    .filter(|(_, state)| !state.dead())
-                    .count();
-                if alive < 2 || clock.elapsed >= crpg_sim::RT_CLOCK_MAX {
+                if !crpg_sim::fight_is_live(world) || clock.elapsed >= crpg_sim::RT_CLOCK_MAX {
                     return Vec::new();
                 }
                 world
@@ -4941,7 +4944,10 @@ impl Host {
     /// Precedence: [`Closed`](HostError::Closed),
     /// [`TimeRegression`](HostError::TimeRegression); `now_ms` is then
     /// recorded. A timer `EndTurn` stays committed even if the tick then
-    /// fails. One call ticks at most once and ends at most one turn.
+    /// fails. One call ticks at most once and ends at most one turn. After a
+    /// successful tick it also asks for the turn-based fight when the sim's
+    /// [`crpg_sim::engagement_due`] says two opposed combatants met (T157d);
+    /// [`tick`](Self::tick) itself never engages.
     pub fn advance(&mut self, now_ms: u64) -> Result<AdvanceReport, HostError> {
         if self.closed {
             return Err(HostError::Closed);
@@ -4964,6 +4970,11 @@ impl Host {
             });
         }
         self.tick()?;
+        // T157d: engagement runs only after a successful tick, never while
+        // paused and never from `tick`; the sim decides, the host requests.
+        if crpg_sim::engagement_due(self.history.world()) {
+            self.request_mode_op(EncounterMode::TurnBased)?;
+        }
         Ok(AdvanceReport {
             ticked: true,
             timer_ended_turn,

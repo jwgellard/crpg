@@ -1,0 +1,7 @@
+{
+  "id": "0000000000000000000000000S",
+  "name": "demo.heroes",
+  "relations": [],
+  "schema": "crpg.faction/1",
+  "slug": "heroes"
+}

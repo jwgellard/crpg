@@ -471,6 +471,7 @@ pub(crate) fn representatives(files: &Snapshot) -> Check<Vec<Vec<u8>>> {
                 initiative: 0,
             }],
             respawns: None,
+            engage: None,
         }),
         Document::Effect(Effect {
             id: id(25),

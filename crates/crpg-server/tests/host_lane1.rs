@@ -77,6 +77,10 @@ fn c() -> EntityId {
 fn strike() -> Ulid {
     Ulid::from_u128(603)
 }
+/// The fixture's always-critical 4 000 000 000-damage ability (T157d).
+fn kill() -> Ulid {
+    Ulid::from_u128(604)
+}
 fn n(raw: u64) -> NetId {
     NetId::new(raw).expect("nonzero")
 }
@@ -3435,6 +3439,154 @@ fn samples_dropped_when_lane1_fills_egress() {
                 point: pt(65536, 0, 131072),
                 moving: true,
             }],
+        }]
+    );
+}
+
+/// SD3 (S-D3): a finished turn-based fight holds no one, so lane 1 admits a
+/// survivor's walk; a live fight still refuses it (`WrongMode`). A's walk
+/// starts on the decision's tick and stops at the destination, and a `Halt`
+/// afterwards is accepted too.
+#[test]
+fn finished_turn_based_fight_frees_lane1() {
+    let (mut rig, p) = lane1_rig(&mv3_value());
+    let epoch = rig.epoch(p);
+    let mut outbox = MoveOutbox::new(epoch);
+
+    // (1) Control, live fight: A holds the turn, so the walk is refused.
+    let intent = outbox
+        .send(
+            n(1),
+            MoveBody::MoveTo {
+                destination: pt(262144, 0, 65536),
+            },
+        )
+        .expect("sends");
+    assert_eq!(intent.seq, 1);
+    assert_eq!(
+        rig.ingest_move(p, &bytes(&intent), 10),
+        MoveAdmission::Admitted { seq: 1 }
+    );
+    rig.assert_ticked(20);
+    let got = rig.receipts(p);
+    assert_eq!(
+        got,
+        vec![MoveReceipt {
+            epoch,
+            seq: 1,
+            actor: n(1),
+            processed_tick: 0,
+            outcome: MoveVerdict::Rejected(CodeV3::WrongMode),
+        }]
+    );
+    assert_eq!(outbox.receive(&got[0]), Ok(()));
+    let _ = rig.samples(p);
+
+    // (2) Finish the fight by host operations: A kills B, C ends its turn,
+    // A kills C, so one side stands and no turn head is left.
+    for action in [
+        CombatAction::UseAbility {
+            actor: a(),
+            ability: kill(),
+            target: b(),
+        },
+        CombatAction::EndTurn { actor: c() },
+        CombatAction::UseAbility {
+            actor: a(),
+            ability: kill(),
+            target: c(),
+        },
+    ] {
+        rig.host.host_action(&action).expect("a host action");
+        rig.mirror_perform(&action);
+    }
+    rig.assert_authority();
+    assert_eq!(
+        rig.oracle.world().combat().expect("an encounter").active,
+        None
+    );
+
+    // (3) The same walk is now admitted, decided by the next advance, and
+    // runs one metre per tick to the destination.
+    let intent = outbox
+        .send(
+            n(1),
+            MoveBody::MoveTo {
+                destination: pt(262144, 0, 65536),
+            },
+        )
+        .expect("sends");
+    assert_eq!(intent.seq, 2);
+    assert_eq!(
+        rig.ingest_move(p, &bytes(&intent), 30),
+        MoveAdmission::Admitted { seq: 2 }
+    );
+    rig.mirror_route(a(), m(4, 1), 2);
+    rig.assert_ticked(40);
+    assert_eq!(
+        rig.receipts(p),
+        vec![MoveReceipt {
+            epoch,
+            seq: 2,
+            actor: n(1),
+            processed_tick: 1,
+            outcome: MoveVerdict::Accepted { start_tick: 2 },
+        }]
+    );
+    assert_eq!(
+        rig.samples(p),
+        vec![MoveSample {
+            server_tick: 2,
+            processed_seq: 2,
+            entries: vec![SampleEntry {
+                entity: n(1),
+                point: pt(131072, 0, 65536),
+                moving: true,
+            }],
+        }]
+    );
+    rig.assert_ticked(90);
+    assert_eq!(
+        rig.samples(p),
+        vec![MoveSample {
+            server_tick: 3,
+            processed_seq: 2,
+            entries: vec![SampleEntry {
+                entity: n(1),
+                point: pt(196608, 0, 65536),
+                moving: true,
+            }],
+        }]
+    );
+    rig.assert_ticked(140);
+    assert_eq!(
+        rig.samples(p),
+        vec![MoveSample {
+            server_tick: 4,
+            processed_seq: 2,
+            entries: vec![SampleEntry {
+                entity: n(1),
+                point: pt(262144, 0, 65536),
+                moving: false,
+            }],
+        }]
+    );
+
+    // (4) `Halt` is accepted on the next advance.
+    assert_eq!(
+        rig.ingest_move(p, &halt_bytes(epoch, 3, 1), 150),
+        MoveAdmission::Admitted { seq: 3 }
+    );
+    rig.mirror_halt(a());
+    rig.assert_ticked(160);
+    assert_eq!(
+        rig.receipts(p),
+        vec![MoveReceipt {
+            epoch,
+            seq: 3,
+            actor: n(1),
+            processed_tick: 4,
+            outcome: MoveVerdict::Accepted { start_tick: 5 },
         }]
     );
 }

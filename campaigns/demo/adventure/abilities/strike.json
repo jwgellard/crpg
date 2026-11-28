@@ -1,0 +1,32 @@
+{
+  "allow_self_target": false,
+  "attribute": "might",
+  "cost": 1,
+  "damage": [
+    {
+      "amount": 2,
+      "outcome": {
+        "type": "success"
+      }
+    },
+    {
+      "amount": 0,
+      "outcome": {
+        "type": "failure"
+      }
+    }
+  ],
+  "defense": {
+    "type": "actor_attribute"
+  },
+  "dice": "2d6",
+  "ends_turn": true,
+  "extra_costs": [],
+  "id": "0000000000000000000000000K",
+  "name": "fixture.strike",
+  "outcome_table": "0000000000000000000000000M",
+  "range": 98304,
+  "requires_target": true,
+  "schema": "crpg.ability/2",
+  "slug": "strike"
+}

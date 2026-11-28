@@ -56,7 +56,10 @@ join_encounter, leave_encounter}`. The T143 action preview adds
 spawn_continuation, set_continuation, open_dialogue, set_dialogue_node,
 close_dialogue, set_quest_state, remove_quest}`, the same seven mutating
 operations on `HistoryWorld`, `HistoryError::Script` and
-`AreaError::ScriptState`.
+`AreaError::ScriptState`. The T157a sides surface (ADR-0029 Amendment 1) adds
+`Side`, `side_of`, `opposed`, `fight_is_live`, `Combatant::faction` and
+`CreatureState::faction`. The T157c engagement surface adds `EngageRule`,
+`engagement_due`, `CombatDefinition::engage` and `CombatError::InvalidEngage`.
 
 - `World::new(seed)`, `spawn(meta) -> EntityId`, `despawn(id) -> bool`,
   `contains`, `len`, `is_empty`, `ids`, `tick` (getter only),
@@ -307,6 +310,13 @@ operations on `HistoryWorld`, `HistoryError::Script` and
     and decisions from the kernel. A change to `resolve_use`'s draws, folds,
     damage or their order changes the preview in the same task and extends the
     G sweep (`tests/preview.rs`, G1-G7).
+16. **Every end-of-fight rule goes through `fight_is_live` (T157a, ADR-0029
+    Amendment 1).** A fight lasts while the living combatants stand on two or
+    more sides; a side is the creature's faction, and a creature with no
+    faction is a side of one. Never count living combatants against 2 again:
+    use `fight_is_live` (public) or `live_sides` (crate-private). A new
+    "is the fight over" check that counts creatures is a bug the first time a
+    faction is authored.
 
 ## Allowed dependencies
 
@@ -333,6 +343,13 @@ ignored: it is the shrunk counterexample, and losing it loses the regression.
 
 ## Known traps
 
+- **`engagement_due` is read-only: the host, not the sim, requests the mode
+  (T157c).** It never starts a fight or changes a mode; a host runs it after a
+  successful real-time tick and makes its own `request_mode`. A new trigger
+  kind is an additive `EngageRule` variant with its own arm in the start
+  resolution; never change what `proximity`, an absent list or an empty list
+  mean. `InvalidEngage` is checked after every other start check, and both
+  `Deserialize` arms of `CombatDefinition` must carry and check `engage`.
 - **The stores do no liveness checking.** `transforms_mut().insert(dead_id,
   ...)` succeeds, and `timeline_mut().insert(key, dead_id)` succeeds. The
   no-dangling invariant is `World::despawn`'s job for live ops and `World`
@@ -709,3 +726,5 @@ Design: [`docs/architecture/crpg-sim.md`](../../docs/architecture/crpg-sim.md), 
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143b · Added the action-preview section with its public addition and the traps (costs are a contract, never enumerate tuples, natural tag and zero entries, the two scoped dead-code allows), so a later change to a counting algorithm keeps its cost formula.
 - 2026-11-14 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T143c · Extended the action-preview section and the public-API sentence with `preview_action`, the planning scope and the limit, amended invariant 12 for `admit`, and added invariant 15 (the preview is execution counted), so a change to resolution's draws extends the preview and its sweep.
 - 2026-11-20 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T052 · Added the script-state public additions, the stage order with the wait countdown, and the traps (the sim never resumes or removes a continuation, a dialogue is keyed by its participant, quests are not entities), so a later change to `World` or `tick` keeps them.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T157a · Added the sides public additions and invariant 16 (every end-of-fight rule goes through `fight_is_live`), so no later change counts living combatants against 2 again.
+- 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 (implementer) + T157c · Added the engagement public additions and the trap that `engagement_due` is read-only and the host requests the mode, so a later change does not move the mode choice into the sim.

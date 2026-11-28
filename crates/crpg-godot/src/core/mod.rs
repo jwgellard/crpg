@@ -25,10 +25,11 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use crpg_core::{EntityId, Ulid};
 use crpg_data::Document;
 use crpg_net::protocol::{NetId, SessionEpoch};
+use crpg_net::protocol_v3::{EncounterMode as WireMode, PauseRights};
 use crpg_net::protocol_v4::Point;
 use crpg_server::host::{
-    ControlGrant, DisclosureGrants, FactGrants, Host, HostConfig, HostError, PeerHandle,
-    ProtocolSelection,
+    ControlGrant, DisclosureGrants, EntityFactGrant, FactGrants, Host, HostConfig, HostError,
+    PeerHandle, ProtocolSelection,
 };
 use crpg_server::run::{HostLoop, LocalClient, LocalHost};
 use crpg_server::runner::{spawn, Clock, RunnerHandle, RunnerPanicked, SystemClock};
@@ -48,6 +49,12 @@ use link::{LinkEnd, LocalLink, LINK_FRAMES};
 
 pub use client::{SessionView, ViewEvent, ViewMoveReceipt, ViewReceipt, ViewValue};
 pub use errors::BridgeCode;
+
+/// The single player's pause rights in a walk session (Reading 7).
+const WALK_RIGHTS: PauseRights = PauseRights {
+    pause: true,
+    unpause: true,
+};
 
 /// One embedded single-player session; all GDScript-visible behaviour.
 #[derive(Default)]
@@ -214,6 +221,8 @@ impl BridgeCore {
             clock,
             EncounterMode::TurnBased,
             NpcDriver::Peer,
+            PauseRights::default(),
+            false,
         )
     }
 
@@ -252,6 +261,8 @@ impl BridgeCore {
             clock,
             EncounterMode::RealTime,
             NpcDriver::Peer,
+            PauseRights::default(),
+            false,
         )
     }
 
@@ -290,7 +301,72 @@ impl BridgeCore {
             clock,
             EncounterMode::TurnBased,
             NpcDriver::ServerAi,
+            PauseRights::default(),
+            false,
         )
+    }
+
+    /// Opens the named encounter in real time for walking; the server AI
+    /// plays the non-player side's turn-based turns; the player holds the
+    /// pause rights and sees its own pools (K-1).
+    pub fn open_v4_walk(
+        &mut self,
+        campaign_dir: &str,
+        encounter_id: &str,
+        player_side: &str,
+        seed: i64,
+    ) -> BridgeCode {
+        self.open_v4_walk_with(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            SystemClock::new(),
+        )
+    }
+
+    /// `open_v4_walk` with the runner's clock injected.
+    pub(crate) fn open_v4_walk_with(
+        &mut self,
+        campaign_dir: &str,
+        encounter_id: &str,
+        player_side: &str,
+        seed: i64,
+        clock: impl Clock,
+    ) -> BridgeCode {
+        self.open_v4_mode(
+            campaign_dir,
+            encounter_id,
+            player_side,
+            seed,
+            clock,
+            EncounterMode::RealTime,
+            NpcDriver::ServerAi,
+            WALK_RIGHTS,
+            true,
+        )
+    }
+
+    /// Asks the host to switch the encounter mode, 0 turn-based or 1 real
+    /// time, for the player's first controlled actor (K-3).
+    pub fn request_mode(&mut self, mode: i64) -> BridgeCode {
+        let mode = match mode {
+            0 => WireMode::TurnBased,
+            1 => WireMode::RealTime,
+            _ => return self.fail(BridgeCode::BadArgument, Some("bad mode")),
+        };
+        let actor = self
+            .controlled()
+            .first()
+            .and_then(|id| u64::try_from(*id).ok())
+            .and_then(NetId::new);
+        self.move_guarded(move |client, link| match actor {
+            Some(actor) => client.request_mode(actor, mode, link),
+            None => Err(Fault {
+                code: BridgeCode::NoSuchOption,
+                detail: "no controlled actor".to_string(),
+            }),
+        })
     }
 
     /// The replica ids the player may move in an open v4 session, ascending;
@@ -311,10 +387,11 @@ impl BridgeCore {
         }
     }
 
-    /// The one body of `open_v4_with` and `open_v4_rt_with`: validation, the
-    /// panic guard, then the guarded work in `mode` with `driver` playing the
-    /// non-player side.
-    #[allow(clippy::too_many_arguments)] // `driver` is the contract's eighth parameter
+    /// The one body of every `open_v4*_with`: validation, the panic guard,
+    /// then the guarded work in `mode` with `driver` playing the non-player
+    /// side, the player bound with `rights` and, when `own_pools`, granted
+    /// its own actors' pools.
+    #[allow(clippy::too_many_arguments)] // `rights` and `own_pools` are the walk open's
     fn open_v4_mode(
         &mut self,
         campaign_dir: &str,
@@ -324,6 +401,8 @@ impl BridgeCore {
         clock: impl Clock,
         mode: EncounterMode,
         driver: NpcDriver,
+        rights: PauseRights,
+        own_pools: bool,
     ) -> BridgeCode {
         if seed < 0 || (!encounter_id.is_empty() && Ulid::from_str(encounter_id).is_err()) {
             return self.fail(BridgeCode::BadArgument, Some("bad argument"));
@@ -337,6 +416,8 @@ impl BridgeCore {
                 clock,
                 mode,
                 driver,
+                rights,
+                own_pools,
             )
         }));
         match result {
@@ -552,7 +633,7 @@ impl BridgeCore {
     }
 
     /// The whole `open_v4` work inside the panic guard (B-B1).
-    #[allow(clippy::too_many_arguments)] // `driver` is the contract's eighth parameter
+    #[allow(clippy::too_many_arguments)] // `rights` and `own_pools` are the walk open's
     fn open_v4_guarded(
         &mut self,
         campaign_dir: &str,
@@ -562,6 +643,8 @@ impl BridgeCore {
         clock: impl Clock,
         mode: EncounterMode,
         driver: NpcDriver,
+        rights: PauseRights,
+        own_pools: bool,
     ) -> BridgeCode {
         #[cfg(test)]
         if self.probe == Some(Probe::Open) {
@@ -589,6 +672,11 @@ impl BridgeCore {
             Ok(bounds) => bounds,
             Err(fault) => return self.fail_fault(fault),
         };
+        let movement_pool = parts
+            .ruleset
+            .movement
+            .as_ref()
+            .map(|movement| movement.turn.pool);
 
         let mut host = match Host::from_history(
             prefix.history,
@@ -609,13 +697,32 @@ impl BridgeCore {
             NpcDriver::ServerAi => Some(prefix.npc_actors.clone()),
             NpcDriver::Peer => None,
         };
+        let facts = if own_pools {
+            let mut owned = player_actors.clone();
+            owned.sort_unstable();
+            FactGrants {
+                entities: owned
+                    .into_iter()
+                    .map(|entity| EntityFactGrant {
+                        entity,
+                        pools: true,
+                        effects: false,
+                        stats: false,
+                        tags: false,
+                    })
+                    .collect(),
+                ..FactGrants::default()
+            }
+        } else {
+            FactGrants::default()
+        };
         let player = match host.bind_v4_peer(
             ControlGrant {
                 actors: prefix.player_actors,
             },
             prefix.disclosure.clone(),
-            FactGrants::default(),
-            crpg_net::protocol_v3::PauseRights::default(),
+            facts,
+            rights,
             0,
         ) {
             Ok(peer) => peer,
@@ -632,11 +739,12 @@ impl BridgeCore {
             Err(error) => return self.fail(BridgeCode::StartFailed, Some(&error.to_string())),
         };
 
-        let (table, npc_sides) =
+        let (mut table, npc_sides) =
             match presentation_tables(&host, player, npc, &prefix.bound, &prefix.presentation) {
                 Ok(tables) => tables,
                 Err(fault) => return self.fail_fault(fault),
             };
+        table.movement_pool = movement_pool;
         let ai_hook = match (driver, npc_actors) {
             (NpcDriver::ServerAi, Some(npc_actors)) => {
                 let rows: Vec<(EntityId, String)> = prefix

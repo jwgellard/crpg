@@ -57,7 +57,11 @@ fn table() -> PresentationTable {
     );
     let mut abilities = std::collections::BTreeMap::new();
     abilities.insert(strike(), "Strike".to_string());
-    PresentationTable { rows, abilities }
+    PresentationTable {
+        rows,
+        abilities,
+        movement_pool: None,
+    }
 }
 
 fn live() -> ClientV4 {
@@ -1613,4 +1617,60 @@ fn move_receipt_entries_are_in_order() {
             ("start_tick", ViewValue::Int(8)),
         ]
     );
+}
+
+// ---------------------------------------------------------------------------
+// T157e fix A: the walk open's fact grants (K-1).
+// ---------------------------------------------------------------------------
+
+/// `<CARGO_MANIFEST_DIR>/../../campaigns/demo/adventure`.
+fn adventure_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("campaigns")
+        .join("demo")
+        .join("adventure")
+}
+
+/// K-1: the walk open grants each player actor its pools and nothing else
+/// (no effects, stats or tags); the goblin's row is withheld entirely.
+#[test]
+fn walk_open_grants_pools_and_nothing_else() {
+    use crate::core::authority::v4::rt_tests::{settle, ManualClock};
+    use crate::core::{BridgeCore, State};
+
+    let mut core = BridgeCore::new();
+    let clock = ManualClock::new();
+    let root = adventure_root();
+    assert_eq!(
+        core.open_v4_walk_with(
+            root.to_str().expect("adventure path"),
+            "",
+            "",
+            1,
+            clock.clone()
+        ),
+        BridgeCode::Ok
+    );
+    let (code, _) = settle(&mut core, &clock, 0);
+    assert_eq!(code, BridgeCode::Ok);
+
+    let State::OpenV4(live) = &core.state else {
+        panic!("a live v4 session");
+    };
+    let replica = live.client.replica.v3();
+    for raw in [1u64, 2] {
+        let row = replica.entity(id(raw)).expect("a hero row");
+        assert!(row.facts.pools.is_some(), "hero {raw} pools are granted");
+        assert_eq!(row.facts.effects, None, "hero {raw} effects are withheld");
+        assert_eq!(row.facts.stats, None, "hero {raw} stats are withheld");
+        assert_eq!(row.facts.tags, None, "hero {raw} tags are withheld");
+    }
+    let goblin = replica.entity(id(3)).expect("the goblin row");
+    assert_eq!(goblin.facts.pools, None);
+    assert_eq!(goblin.facts.effects, None);
+    assert_eq!(goblin.facts.stats, None);
+    assert_eq!(goblin.facts.tags, None);
+    core.close();
 }

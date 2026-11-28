@@ -320,6 +320,12 @@ git diff --check
   still ticks through it (gate 10). A driver that honours pause, the turn timer
   and auto-pause calls `advance(now_ms)`; it ticks at most once and ends at
   most one turn per call.
+- **Engagement belongs to `advance`, after its own tick (T157d).** Only a
+  successful `self.tick()?` in `advance` may follow with
+  `crpg_sim::engagement_due` → `request_mode`'s body (`EncounterMode::TurnBased`).
+  Never engage from the bare `tick()`, never while paused, and never copy the
+  request: reuse the one history call plus `HostOp::Action` tail so the
+  journal, capture and auto-pause cannot drift.
 - **Pause and settings are never persisted (T141b).** A restored host is
   `Restore`-paused with `HostSettings::multiplayer()`; the operator calls
   `unpause` and `set_settings` again. Pause, settings and the timer are never
@@ -517,6 +523,12 @@ git diff --check
   next `advance` decides every pending slot after recording `now_ms` and before
   the timer, paused or running. `tick` never decides, and a decision makes no
   capture record and publishes no lane-0 frame.
+- **Lane 1 and `set_route` share the head predicate (T157d).** A combatant is
+  held by the turn only when the encounter is turn-based **and** has an active
+  head (`combat.active.is_some()`); a finished turn-based fight holds no one,
+  so its survivors may walk. Do not gate lane 1 on the mode alone, and do not
+  gate the "fight still on?" checks on a living count: `awaiting_orders` and
+  `drive_ai` ask `crpg_sim::fight_is_live` (sides, not bodies).
 - **Steps 1–8 never consume a sequence (T037d).** A `Refused` lane-1 frame
   leaves `next_seq`, the slots and the receipt queue as they were; only the
   buckets it spent stay spent. A `SeqConflict` fences the session. Step 9's
@@ -632,3 +644,4 @@ git diff --check
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155a · Added the trap that a grace or a resume un-admits a v4 session's unanswered lane-1 intents, so no one decides a graced session's slots or skips the reset.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155c · Recorded `Rejection::Move` and the `/3` resume route in the surface, and named `bind_movement_resumable` in the `start` trap, so the crate contract matches the adapter.
 - 2026-11-21 (UTC) · claude-code/sonnet-5.5 (implementer) + T155d · Recorded the `movement` key, the v4 invitation keys and the start-line suffix in the binary's surface, so a change to them is known to be a contract change for T155e's smoke and every operator.
+- 2026-11-22 (UTC) · opencode/deepseek-v4.1-flash-free + T157d · Added the traps that engagement belongs to `advance` after its own tick and that lane 1 and `set_route` share the turn-head predicate, so nobody engages from `tick`/while paused or holds a finished fight's survivors.

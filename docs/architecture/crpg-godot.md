@@ -305,6 +305,22 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   engine gate: P1-P6 (pick, attack, input, source scan), F1-F8 (bars, numbers,
   flash, revision gate, placement) against fakes, then L1-L4 against the real
   `Main.tscn` session; exit 3 when the open fails.
+- **The adventure scene (T157g).** `scenes/Adventure.tscn`
+  (`Godot4 --path apps/client res://scenes/Adventure.tscn`) is `Walk.tscn` plus
+  `Pick`, `Feedback` and a `MoveHud` label; `scripts/Adventure.gd` extends
+  `Walk.gd` and opens `open_v4_walk` over `campaigns/demo/adventure`. Walking, a
+  left click on a hero selects it, on the floor moves it and on anyone else calls
+  `request_mode(0)` (the host switches at the next round, and also by itself when a
+  hero comes near the Goblin); a right click halts. In a fight (`active() != 0`) a
+  left click on your own hero only selects it, on anyone else submits the first
+  option against it through `Pick.attack`, and on the floor declares a move
+  (`declare_move`); a right click does nothing. `selected` follows the turn head and
+  `MoveLabel` shows `Movement: <now> / <max>` from `movement()` and
+  `movement_max()`, hidden outside a fight. Pick's own handler is switched off in
+  `_ready` and the scene routes clicks itself. The client checks no side, reach,
+  distance or allowance; the host refuses and the refusal reaches the HUD log as a
+  receipt. `tests/adventure.gd` is the local engine gate (AD1-AD10) and exits 3
+  when the open fails; `Main.tscn` stays the default scene.
 
 ## Protocol v4 sessions (T151)
 
@@ -450,6 +466,58 @@ GDExtension surface. v2 keeps every byte and behaviour.
   `authority::v4::ai_tests`, under a `tests` directory so K31's core scan
   skips it).
 
+### Walk-then-fight sessions (T157e)
+
+- **The walk open (K-1).** `open_v4_walk(_with)` in
+  `crates/crpg-godot/src/core/mod.rs` is `open_v4_rt(_with)` with T156a's
+  `ServerAi` driver: the player is bound with `WALK_RIGHTS`
+  (`pause`/`unpause`) and one pools-only `EntityFactGrant` (`pools: true`,
+  the rest false) per player actor in ascending `EntityId` order, while
+  every other open passes `PauseRights::default()` and
+  `FactGrants::default()`. Argument, `AlreadyOpen`, campaign, side and
+  start failures are `open_v4_rt`'s, in its order and with its texts; the
+  encounter opens in real time so the party walks, and the server AI only
+  ever sees turn-based turns through the reused `ServerAiHook` gate
+  (Reading 5).
+- **The movement pool (K-2).** Every v4 open sets `table.movement_pool` from
+  the encounter ruleset's `movement.turn.pool` right after
+  `presentation_tables`, `None` when the ruleset declares no movement; the
+  v2 client keeps `None` and fills both columns with `-1`.
+- **The mode request (K-3, K-4).** `BridgeCore::request_mode(mode)` maps 0
+  to turn-based and 1 to real time (anything else is 3 `bad mode`), takes
+  the first of `controlled()` as the actor, and sends one lane-0
+  `RequestMode` through `ClientV4::request_mode` in
+  `crates/crpg-godot/src/core/client_v4.rs`, which refuses 5 while an
+  intent is outstanding and 30 on a full link with the sequence unmoved.
+  Both the player's click and the host's engagement rule end in this one
+  host operation; the sim never chooses a mode.
+- **The readout (K-5, Reading 8).** `ClientV4::rebuild` builds per-entity-row
+  `movement`/`movement_max` from the disclosed `PoolFact` whose pool is
+  `table.movement_pool`, `-1` for both when the pools are withheld, the
+  pool is absent, or `movement_pool` is `None`; both columns join the
+  revision-unchanged check. `SessionView` in
+  `crates/crpg-godot/src/core/client.rs` exposes them as
+  `movement()`/`movement_max()`; the client converts nothing (in the demo
+  one point is one metre), and a metres readout with a reach ring is a
+  follow-up.
+- **Why this shape (Readings 5–7).** Walking is the encounter's real-time
+  mode and an enemy that fights in real time is forbidden, so the walk open
+  deliberately reuses the turn-based `ServerAiHook` gate (Reading 5); the
+  AI's sides stay the bridge's presentation strings until the server derives
+  them from the sim (Reading 6); and only this open grants pause rights and
+  pool facts, because the single player both walks the party and reads its
+  allowance (Reading 7).
+
+- **The shell (T157f).** `CrpgSession` gains `open_v4_walk` (arguments and
+  `opened_at` exactly as `open_v4_rt`) and `request_mode`, and `CrpgView`
+  gains `movement` and `movement_max`, each making one core or view call
+  and nothing else: the core owns every rule, the shell converts values.
+  `adventure_session.gd` proves them against `campaigns/demo/adventure`
+  (the five open codes 20, 3, 24, 25 and 0 then 2; the readout `[6, 6, -1]`;
+  the mode request through the AI's turn to the hero's; closed is 1) with
+  the plain `open_v4_rt` open as its control (readout `-1`, the request
+  refused 17).
+
 ## Smoothing (T049a)
 
 `core/smooth.rs` interpolates disclosed positions for drawing only. It is
@@ -562,3 +630,6 @@ Agent log:
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T156c · Added the `Pick.gd` and `Feedback.gd` bullets to the Client section (click-to-attack by ray, and event-driven bars, numbers and flash) and named the `combat.gd` gate, as the approved T156c contract requires.
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a · Added the "Server AI sessions (T156a)" subsection: the opt-in `open_v4_ai` open, its `ServerAiHook` stage, pacing, side numbering and the `crpg-ai` edge, including that a Strike ends the fixture turn so the AI's whole turn is one step.
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156b · Changed the `Main.gd` bullet from `open` to `open_v4_ai` (the shell's new thin wrapper), so the default scene's enemy is the server's AI, as the approved T156b contract requires.
+- 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157f · Added the shell paragraph under a "Walk-then-fight sessions (T157e)" heading, which T157e's commit did not write, so the four new `#[func]`s and their engine gate are described; the rest of that subsection is still T157e's to add.
+- 2026-11-28 (UTC) · opencode-go/muse-spark-1.3-contributor + T157e docs · Wrote the missing T157e subsection text (the walk open, the movement pool, the mode request, the readout, Readings 5–8) under the heading T157f created, leaving T157f's shell paragraph byte for byte.
+- 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157g · Added the adventure-scene bullet to the Client section: the walk and fight click routing, the movement readout, `Pick`'s handler switched off in `_ready`, and the `adventure.gd` gate.

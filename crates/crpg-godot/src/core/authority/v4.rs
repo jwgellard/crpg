@@ -256,3 +256,6 @@ mod ai_tests;
 pub(crate) mod rt_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "v4/tests/walk.rs"]
+mod walk_tests;
