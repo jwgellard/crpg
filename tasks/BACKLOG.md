@@ -153,6 +153,17 @@ From the security review, not spec §24. Detail lives in `tasks/S001.md`.
 | T156c | done on the batch (Claude implementer) | — | `apps/client`: `Pick.gd`, `Feedback.gd`, two `Main.tscn` nodes, `tests/combat.gd` P1–P6, F1–F8, L1–L4. Route: Claude Sonnet |
 | — | proposed | — | (.github/workflows) run `enemy_ai.gd` and `combat.gd` in the `client` CI job (T156; S-set) |
 | — | proposed | — | (crpg-godot) retire the peer NPC driver (`NpcHook`, `choose_npc`) once every scene opens a server-AI session (T156) |
+| T157 | built 2026-11-28 on `mgr/session-101-batch` (T157a–g); contract `tasks/T157.md` (revision 5, errata E1, E2); approved (D79, D80) | — | walk then fight: sides, engage by proximity or click, the turn-based switch, the movement readout, the `Adventure.tscn` demo. S-set parts a, b, c, f: the user's H-review, 2026-11-28 |
+| T157a | done on the batch (Claude implementer; Claude mutant run, fix A killed M07; erratum E1) | — | `crpg-sim` sides: faction, `Side`, `side_of`, `opposed`, `fight_is_live`. S-set |
+| T157b | done on the batch (Claude implementer) | — | encounter `engage`: tagged triggers, `proximity` only, schema pins. S-set |
+| T157c | done on the batch (Claude implementer; Claude mutant run 30 rows, fix A on free DeepSeek killed M07, M08, M30) | — | engagement rules, `engagement_due`, `set_route` head predicate. S-set |
+| T157d | done on the batch (OpenCode free DeepSeek) | — | `crpg-server` host gates on `fight_is_live`, engagement in advance, lane-1 head predicate |
+| T157e | done on the batch (Claude implementer; Claude mutant run, fix A on Go DeepSeek; docs on Go Muse Spark) | — | `crpg-godot` core `open_v4_walk`, `request_mode`, movement columns; campaign `campaigns/demo/adventure` |
+| T157f | done on the batch (Claude implementer) | — | `crpg-godot` shell funcs `open_v4_walk`, `request_mode`, `movement`, `movement_max`; `tests/adventure_session.gd`. S-set |
+| T157g | done on the batch (Claude implementer; erratum E2) | — | `apps/client` `Adventure.tscn`, `Adventure.gd`, `tests/adventure.gd` AD1–AD9 |
+| T158 | proposed | T157 | ruleset-default engage trigger; must keep `fight_is_live` in `engagement_due` and test it (T157c M21 is equivalent only while `proximity` is the one kind) |
+| T159–T162 | proposed | T157 | further engage trigger kinds: sight, script, dialogue, ambush (`tasks/T157.md`) |
+| — | proposed | — | (.github/workflows) run `adventure_session.gd` and `adventure.gd` in the `client` CI job with the other engine gates (T157; S-set) |
 | — | proposed | — | (crpg-server) the server derives AI sides from campaign data, so hosts (the Godot bridge included) pass no `crpg_ai::Sides`; then drop `ai_sides` from `crpg-godot` (D78a, the user's long-term choice) |
 | T026 | deferred (D77e, user 2026-11-22) until the client joins a server over the network | — | own-movement prediction; `tasks/T026.md` revision lists what it still needs |
 | — | proposed | — | (crpg-server) make `"movement": true` the dedicated server default once terminal play and the scripted test clients speak `/3` (D76c) |
@@ -780,3 +791,4 @@ Record it here, one line per week.
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (architect) + T156c · Added the T156, T156a–c rows and two proposed follow-ups (CI for the new client tests, retiring the peer NPC), so the backlog carries the combat-demo contract waiting for D78.
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (manager) + D78 answered · Moved T156/T156a/T156c to approved and ready, and added the server-derived AI sides follow-up the user chose as the long-term fix for D78a.
 - 2026-11-22 (UTC) · claude-code/opus-5.5 (manager) + T156 built · Marked T156a–c done on the session batch with their routes and the user's T156b review.
+- 2026-11-28 (UTC) · claude-code/opus-5.5 (manager) + T157 built · Added the T157 and T157a–g rows as done on the session batch with their routes and the user's S-set review, plus the T158–T162 and client-CI follow-ups.
