@@ -37,6 +37,31 @@ Per-row kills are in `results.jsonl`.
   dead combatant in a live turn-based encounter that has a head (a three-combatant fight in
   which one dies and two fight on) refuses `DeadCombatant`.
 
+## Fix round A
+
+Three new tests, one per real survivor, with the expected values taken from the
+contract. No source file changed (`git diff -- crates/crpg-sim/src` is empty).
+
+| Mutant | New outcome | Killed by |
+| --- | --- | --- |
+| M07 | killed | `engage.rs::sc3b_an_earlier_check_wins_over_invalid_engage` |
+| M08 | killed | `engage.rs::sc3c_invalid_engage_with_initiative_draws_nothing` |
+| M30 | killed | `movement_core.rs::a6b_dead_wins_over_turn_based_in_a_live_fight` |
+
+M07: both participants hold dead records, so the start has no entrants; the
+0-distance rule must not beat S4's `NoEntrants`, and the world is byte-identical
+after the refusal. M08: the SC3 fixture gains a `1d6` initiative rule; the
+refusal must draw nothing, so the whole world (RNG included) is byte-identical.
+M30: a three-combatant turn-based fight where one dies and two fight on keeps a
+turn head (`active.is_some()`), so the dead combatant refuses `DeadCombatant`
+rather than `TurnBased`. M12 and M21 remain accepted as equivalent.
+
+The fast driver was re-run for the three rows (`run_mutants.py M07 M08 M30`,
+appended to `run.log`; `results.jsonl` rows updated). All three are `killed`
+by exactly the new test.
+
 ## Agent log
 
 - 2026-11-28 (UTC) · claude-code/opus-5.5 (manager) + T157c mutant run · Wrote the run's report from its recorded rows because the session-102 reviewer ended before writing it, classifying M12 and M21 as equivalent and M07, M08 and M30 as real gaps for fix round A.
+- 2026-11-28 (UTC) · opencode/deepseek-v4.1-flash-free + T157c fix A · Added one test per real survivor (M07, M08, M30) and re-ran the driver, so each now fails on the mutant and the run has no unexplained survivor beyond the two accepted equivalents.
+

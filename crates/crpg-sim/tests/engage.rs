@@ -23,7 +23,8 @@ use crpg_sim::{
     EngageRule, EntityMeta, Entrant, MoveRoute, NavRevision, RouteTag, World,
 };
 use serde_json::{json, Value};
-use support::creature::{add_outsider, enlist, try_with_json, with_json};
+use support::creature::{add_outsider, enlist, try_with_json, with_json, with_record};
+use support::draws::set_initiative_rule;
 use support::rt::{bytes_of, make_lethal, use_action};
 use support::surface::{always_success, set_stat_raw};
 use support::{uid, Fixture};
@@ -454,6 +455,51 @@ fn sc3_an_earlier_start_check_still_wins() {
     // Control: no member, the distance is what fails.
     let (_, started) = try_start(&fx, EncounterMode::RealTime);
     assert_eq!(started, Err(CombatError::InvalidEngage));
+}
+
+/// M07 (S-C1 place): a start that fails both an earlier check and the
+/// engagement check reports the earlier one. Both participants hold dead
+/// records, so every participant is skipped and no members are listed: the
+/// start has no entrants, and the 0-distance rule must not win over it.
+#[test]
+fn sc3b_an_earlier_check_wins_over_invalid_engage() {
+    let mut fx = move_rt();
+    fx.encounter.engage = Some(vec![proximity(0)]);
+    let mut world = World::new(7);
+    world.bind_nav(rev());
+    let a = fx.register(&mut world, pl(111)).expect("A registers");
+    let b = fx.register(&mut world, pl(112)).expect("B registers");
+    let one_dead = with_record(&world, a, |record| record["health"] = json!(0));
+    let mut both_dead = with_record(&one_dead, b, |record| record["health"] = json!(0));
+    let before = bytes_of(&both_dead);
+    let started =
+        fx.with_spec(|spec| start_encounter_in_mode(&mut both_dead, spec, EncounterMode::RealTime));
+    assert_eq!(started, Err(CombatError::NoEntrants));
+    assert_eq!(
+        bytes_of(&both_dead),
+        before,
+        "a refused start changes nothing"
+    );
+}
+
+/// M08 (S-C1 place): the engagement refusal runs before the T137 initiative
+/// draws, so a refused start leaves the RNG (and every other byte) untouched.
+#[test]
+fn sc3c_invalid_engage_with_initiative_draws_nothing() {
+    let mut fx = move_rt();
+    set_initiative_rule(&mut fx, "1d6", &[]);
+    fx.encounter.engage = Some(vec![proximity(0)]);
+    let mut world = World::new(7);
+    world.bind_nav(rev());
+    let before = serde_json::to_string(&world).expect("the world serializes");
+    let started =
+        fx.with_spec(|spec| start_encounter_in_mode(&mut world, spec, EncounterMode::RealTime));
+    assert_eq!(started, Err(CombatError::InvalidEngage));
+    assert_eq!(
+        serde_json::to_string(&world).expect("the world serializes"),
+        before,
+        "the refusal draws no initiative"
+    );
 }
 
 #[test]
