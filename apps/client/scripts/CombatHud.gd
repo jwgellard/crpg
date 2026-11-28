@@ -9,6 +9,7 @@ const NOT_OPEN := "NOT_OPEN"
 const ERROR_COLOR := Color(1.0, 0.35, 0.35)
 
 var main: Node = null
+var waiting_needs_turn: bool = false
 
 var _lines: PackedStringArray = PackedStringArray()
 var _logged_revision: int = -1
@@ -69,7 +70,7 @@ func sync(view) -> void:
 	_sync_health(view)
 	_sync_options(view)
 	_waiting_label.text = "Waiting..." if active == "-" else "Waiting for %s..." % active
-	_waiting_label.visible = not view.ended() and view.option_labels().is_empty()
+	_waiting_label.visible = not view.ended() and view.option_labels().is_empty() and (not waiting_needs_turn or int(view.active()) != 0)
 	_sync_log(view)
 	_sync_end(view)
 

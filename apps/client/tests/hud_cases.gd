@@ -76,7 +76,7 @@ func run(root: Node):
 		return "H0: CombatHud.gd did not load"
 	var cases: Array = [
 		_h1, _h2, _h3, _h4, _h5, _h6, _h7, _h8, _h9, _h10,
-		_h11, _h12, _h13, _h14, _h15, _h16, _h17, _h18, _h19, _h20,
+		_h11, _h12, _h13, _h14, _h15, _h16, _h17, _h18, _h19, _h20, _h21,
 	]
 	for i in range(cases.size()):
 		var detail = _run_case(root, cases[i])
@@ -579,4 +579,22 @@ func _h20(host, hud) -> String:
 	res.append(_eq("status text", _n(hud, "Status").text, ""))
 	res.append(_eq("chosen", host.chosen, []))
 	res.append(_eq("options count", options.get_child_count(), 2))
+	return _first(res)
+
+# T163: `waiting_needs_turn` hides Waiting while no turn is active (walking).
+func _h21(_host, hud) -> String:
+	var waiting = _n(hud, "Waiting")
+	var res: Array = []
+	res.append(_eq("flag default", hud.waiting_needs_turn, false))
+	hud.sync(_a({"active": 0, "option_labels": []}))
+	res.append(_eq("a visible", waiting.visible, true))
+	res.append(_eq("a text", waiting.text, "Waiting..."))
+	hud.waiting_needs_turn = true
+	hud.sync(_a({"active": 0, "option_labels": []}))
+	res.append(_eq("b visible", waiting.visible, false))
+	hud.sync(_a({"active": 9, "option_labels": []}))
+	res.append(_eq("c visible", waiting.visible, true))
+	res.append(_eq("c text", waiting.text, "Waiting for Goblin..."))
+	hud.sync(_a({"active": 0, "option_labels": [], "ended": true}))
+	res.append(_eq("d visible", waiting.visible, false))
 	return _first(res)
