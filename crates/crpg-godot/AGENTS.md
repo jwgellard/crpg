@@ -91,6 +91,8 @@ integration tests; T047b landed `src/shell.rs` and `apps/client`.
     `drive_ai` with `MVP_AI_BUDGET`, discard the report. Its actions move no
     `executions()`.
 
+21. **`open_v4_walk*` is the only open with pause rights and pool grants; its AI plays turn-based turns only.** `open_v4_walk_with` in `core/mod.rs` passes `WALK_RIGHTS` and one pools-only fact grant per player actor while every other open passes defaults, and it reuses the `ServerAi` driver whose gate only fires on turn-based turns.
+
 ## Definition of done for any change
 
 ```
@@ -253,3 +255,4 @@ Agent log:
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a · Added invariant 20 (two NPC drivers) and the turn-based-only trap for `open_v4_ai`, so the peer NPC and the server AI are not mixed up.
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156b · Added the `enemy_ai.gd` engine gate and its control to the gate block, so the shell's `open_v4_ai` and the default scene's server-AI enemy have a local engine proof.
 - 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157f · Added the `adventure_session.gd` engine gate to the gate block: it proves the shell's `open_v4_walk`, `request_mode`, `movement` and `movement_max` and reads no environment, so its control is a case inside it, not a missing campaign.
+- 2026-11-28 (UTC) · opencode-go/muse-spark-1.3-contributor + T157e docs · Appended invariant 21 pinning the walk open as the only pause-rights and pool-grant open with turn-based-only AI, enforced in `core/mod.rs`.
