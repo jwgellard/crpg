@@ -330,6 +330,122 @@ jobs:
           & $env:GODOT --headless --path apps/client -s res://tests/smoke.gd
           if ($LASTEXITCODE -ne 3) { throw "BR-22 control (missing campaign) exited $LASTEXITCODE, expected 3" }
           exit 0
+      - name: HUD cases
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/hud.gd
+          if ($LASTEXITCODE -ne 0) { throw "HUD cases exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Scene sync cases
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/scene_sync.gd
+          if ($LASTEXITCODE -ne 0) { throw "Scene sync cases exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Movement session
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/movement.gd
+          if ($LASTEXITCODE -ne 0) { throw "Movement session exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Walk
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/walk.gd
+          if ($LASTEXITCODE -ne 0) { throw "Walk exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Walk control (missing campaign)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          CRPG_CAMPAIGN: ${{ runner.temp }}\no-such-campaign
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/walk.gd
+          if ($LASTEXITCODE -ne 3) { throw "Walk control (missing campaign) exited $LASTEXITCODE, expected 3" }
+          exit 0
+      - name: Combat
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/combat.gd
+          if ($LASTEXITCODE -ne 0) { throw "Combat exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Combat control (missing campaign)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          CRPG_CAMPAIGN: ${{ runner.temp }}\no-such-campaign
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/combat.gd
+          if ($LASTEXITCODE -ne 3) { throw "Combat control (missing campaign) exited $LASTEXITCODE, expected 3" }
+          exit 0
+      - name: Enemy AI
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/enemy_ai.gd
+          if ($LASTEXITCODE -ne 0) { throw "Enemy AI exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Enemy AI control (missing campaign)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          CRPG_CAMPAIGN: ${{ runner.temp }}\no-such-campaign
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/enemy_ai.gd
+          if ($LASTEXITCODE -ne 3) { throw "Enemy AI control (missing campaign) exited $LASTEXITCODE, expected 3" }
+          exit 0
+      - name: Adventure session
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/adventure_session.gd
+          if ($LASTEXITCODE -ne 0) { throw "Adventure session exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Adventure
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/adventure.gd
+          if ($LASTEXITCODE -ne 0) { throw "Adventure exited $LASTEXITCODE, expected 0" }
+          exit 0
+      - name: Adventure control (missing campaign)
+        if: steps.scope.outputs.rust == 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          CRPG_CAMPAIGN: ${{ runner.temp }}\no-such-campaign
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $env:GODOT --headless --path apps/client -s res://tests/adventure.gd
+          if ($LASTEXITCODE -ne 3) { throw "Adventure control (missing campaign) exited $LASTEXITCODE, expected 3" }
+          exit 0
       - name: Stage the client slice
         if: steps.scope.outputs.rust == 'true'
         shell: bash
@@ -339,10 +455,12 @@ jobs:
           rm -rf "$stage"
           mkdir -p "$stage/target/debug"
           cp target/debug/crpg_godot.dll "$stage/target/debug/"
-          git ls-files -z -- apps/client campaigns/fixtures/combat_basic LICENSE-MIT LICENSE-APACHE \
+          git ls-files -z -- apps/client campaigns/fixtures/combat_basic campaigns/demo/adventure LICENSE-MIT LICENSE-APACHE \
             | { grep -zv '/\.[^/]*$' || true; } | xargs -0 cp --parents -t "$stage"
           for f in target/debug/crpg_godot.dll apps/client/project.godot apps/client/crpg.gdextension \
                    apps/client/THIRD_PARTY_NOTICES apps/client/scenes/Main.tscn apps/client/tests/smoke.gd \
+                   apps/client/scenes/Adventure.tscn apps/client/scripts/Adventure.gd \
+                   campaigns/demo/adventure/campaign.json \
                    campaigns/fixtures/combat_basic/campaign.json LICENSE-MIT LICENSE-APACHE; do
             test -f "$stage/$f" || { echo "artifact: $f is missing"; exit 1; }
           done

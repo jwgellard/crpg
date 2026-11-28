@@ -116,18 +116,20 @@ Godot4 --headless --path apps/client -s res://tests/load.gd      # exit 0
 Godot4 --headless --path apps/client -s res://tests/scene_sync.gd   # exit 0
 Godot4 --headless --path apps/client -s res://tests/hud.gd          # exit 0
 Godot4 --headless --path apps/client -s res://tests/smoke.gd        # exit 0
-Godot4 --headless --path apps/client -s res://tests/movement.gd     # exit 0 (T151c, local only)
-Godot4 --headless --path apps/client -s res://tests/walk.gd         # exit 0 (T050b, local only)
+Godot4 --headless --path apps/client -s res://tests/movement.gd     # exit 0 (T151c)
+Godot4 --headless --path apps/client -s res://tests/walk.gd         # exit 0 (T050b)
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/walk.gd   # control: exit 3
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/load.gd   # control: exit 3
-Godot4 --headless --path apps/client -s res://tests/combat.gd        # exit 0 (T156c, local only)
+Godot4 --headless --path apps/client -s res://tests/combat.gd        # exit 0 (T156c)
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/combat.gd   # control: exit 3
-Godot4 --headless --path apps/client -s res://tests/enemy_ai.gd      # exit 0 (T156b, local only)
+Godot4 --headless --path apps/client -s res://tests/enemy_ai.gd      # exit 0 (T156b)
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/enemy_ai.gd   # control: exit 3
-Godot4 --headless --path apps/client -s res://tests/adventure_session.gd   # exit 0 (T157f, local only; its E4 is the in-script control)
-Godot4 --headless --path apps/client -s res://tests/adventure.gd           # exit 0 (T157g, local only)
+Godot4 --headless --path apps/client -s res://tests/adventure_session.gd   # exit 0 (T157f; its E4 is the in-script control)
+Godot4 --headless --path apps/client -s res://tests/adventure.gd           # exit 0 (T157g)
 CRPG_CAMPAIGN=/no/such/dir Godot4 --headless --path apps/client -s res://tests/adventure.gd   # control: exit 3
 ```
+
+The `client` CI job runs the whole block above (the engine build, import, every script and every missing-campaign control).
 
 ## Known traps
 
@@ -264,3 +266,4 @@ Agent log:
 - 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157f · Added the `adventure_session.gd` engine gate to the gate block: it proves the shell's `open_v4_walk`, `request_mode`, `movement` and `movement_max` and reads no environment, so its control is a case inside it, not a missing campaign.
 - 2026-11-28 (UTC) · opencode-go/muse-spark-1.3-contributor + T157e docs · Appended invariant 21 pinning the walk open as the only pause-rights and pool-grant open with turn-based-only AI, enforced in `core/mod.rs`.
 - 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157g · Added the `adventure.gd` engine gate with its control to the gate block, and the trap that a child's `_unhandled_input` runs before its parent's, so `Adventure.tscn` switches `Pick`'s own handler off in its `_ready`.
+- 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T164 · Dropped "local only" from the gate block and said the `client` CI job runs the whole block, because T164 moved every engine gate and control into that job.
