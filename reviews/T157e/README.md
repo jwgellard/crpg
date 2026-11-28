@@ -64,5 +64,26 @@ Every assertion read in `walk.rs` (K1 to K10) carries the contract's values (row
 ## Verdict
 fix: add tests for the real gaps (v2 `movement()` = -1, `range`/`health` data pins, optionally the first-actor header and the grant flags), then re-run M06, M07, M16, M26, M28, M30. No source or data defect found; M13, M17 and M25 are equivalent.
 
+## Fix round A
+
+Four survivors with a real gap are now killed by added assertions only (no
+source or data change):
+
+| id | K | new outcome | killed by |
+|---|---|---|---|
+| M06 | K-1 | killed | `core::client_v4::tests::walk_open_grants_pools_and_nothing_else`: the player's disclosed replica rows carry `pools` and no `effects`, `stats` or `tags` (`walk.rs` unchanged for this one; the grant flags are only readable through the replica). |
+| M07 | K-1 | **survived, equivalent** | The host canonicalises the grant order: `bind_v4_peer` calls `normalize_fact_grants` (`crates/crpg-server/src/host.rs:1391`), which does `facts.entities.sort_by_key(|grant| grant.entity);` (`host.rs:5971`) before the session stores or reads them. No seam returns the pre-sort list, so ascending and descending input are the same `FactGrants` to every reader. |
+| M16 | K-3 | **survived, unobservable** | The actor is chosen at `crates/crpg-godot/src/core/mod.rs:358–362`; `ClientV4::request_mode` passes it to `send_intent` (`crates/crpg-godot/src/core/client_v4.rs:260–269`, `:294–317`), whose only effect is `link.send` of the encoded lane-0 frame (`:312`) — no recorded intent. `LocalClient`'s upstream queue is a private field (`crates/crpg-server/src/run.rs:819–826`). The host authorises `RequestMode` by the peer's `pause` right, not by the header actor (`crates/crpg-server/src/host.rs:6186`), and both heroes are controlled by the same peer (`:6163–6167`), so hero 1 and hero 2 produce the same receipt, event and state. |
+| M26 | K-5 | killed | `core::authority::v4::walk_tests::v2_and_default_views_withhold_movement`: a v2 session's `movement()` and `movement_max()` are `-1` for every row; the default view's are empty. |
+| M28 | K-6 | killed | `core::authority::v4::walk_tests::demo_data_pins_the_strike_range`: the loaded ability whose slug is `strike` has `range == Some(98304)` (1.5 m). |
+| M30 | K-6 | killed | `core::authority::v4::walk_tests::walk_open`: the view's `health()` and `max_health()` are `[20, 20, 6]` (heroes 1310720 raw, goblin 393216 raw) and `health_known()` is `[1, 1, 1]`. |
+
+The added tests are `walk_open_grants_pools_and_nothing_else` in
+`crates/crpg-godot/src/core/client_v4/tests.rs` and
+`v2_and_default_views_withhold_movement` plus `demo_data_pins_the_strike_range`
+in `crates/crpg-godot/src/core/authority/v4/tests/walk.rs`; `walk_open` gained
+the health assertions. No existing assertion was weakened or removed.
+
 ## Agent log
 - 2026-11-28 (UTC) · claude-code/Sonnet 5.5 + T157e mutant run · Ran 30 single-point mutants over the T157e bridge, client columns and demo data; recorded 21 kills and 9 survivors with their K items.
+- 2026-11-28 (UTC) · opencode-go/deepseek-v4.1-flash + T157e fix A · Killed M06, M26, M28 and M30 with tests only and recorded M07 (host sorts the grants) and M16 (no intent/frame seam and the host ignores the mode request's actor) as equivalent, so the fix round repairs every survivor that a test can observe.

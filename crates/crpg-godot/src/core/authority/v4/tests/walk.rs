@@ -291,6 +291,10 @@ fn walk_open() {
     );
     assert_eq!(view.movement(), &[6, 6, -1]);
     assert_eq!(view.movement_max(), &[6, 6, -1]);
+    // K-6: the hero's health is 20 (1310720 raw); the goblin's is 6 (393216).
+    assert_eq!(view.health(), &[20, 20, 6]);
+    assert_eq!(view.max_health(), &[20, 20, 6]);
+    assert_eq!(view.health_known(), &[1, 1, 1]);
 
     // Control: the real-time open of the same campaign binds neither the
     // pause rights nor the pool grants.
@@ -758,4 +762,53 @@ fn reach_is_one_and_a_half_metres() {
         session.core.view().option_labels(),
         &["Strike -> Goblin", "End turn"]
     );
+}
+
+// ---------------------------------------------------------------------------
+// K11 the withheld columns and the demo data (K-5, K-6).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v2_and_default_views_withhold_movement() {
+    // K-5: the default view has both columns empty.
+    let empty = BridgeCore::new();
+    assert!(empty.view().movement().is_empty());
+    assert!(empty.view().movement_max().is_empty());
+
+    // K-5: a v2 session fills both with -1 per row.
+    let mut core = BridgeCore::new();
+    assert_eq!(core.open(&basic(), "", "", 1), BridgeCode::Ok);
+    assert_eq!(core.poll(0), BridgeCode::Ok);
+    let view = core.view();
+    let rows = view.net_ids().len();
+    assert!(rows > 0, "the v2 view has rows");
+    assert_eq!(view.movement(), vec![-1; rows].as_slice());
+    assert_eq!(view.movement_max(), vec![-1; rows].as_slice());
+    core.close();
+}
+
+/// The adventure campaign as the bridge loads it.
+fn loaded_adventure() -> crpg_data::LoadedCampaign {
+    let files = crate::core::authority::collect_campaign(
+        &crate::core::authority::RealFs,
+        &adventure_root(),
+    )
+    .expect("collect the adventure campaign");
+    let engine = env!("CARGO_PKG_VERSION").parse().expect("engine version");
+    crpg_data::load_campaign(&files, &engine).expect("load the adventure campaign")
+}
+
+#[test]
+fn demo_data_pins_the_strike_range() {
+    // K-6: Strike's reach is 1.5 m (98304 raw).
+    let loaded = loaded_adventure();
+    let mut ranges = Vec::new();
+    for document in loaded.documents.values() {
+        if let crpg_data::Document::Ability(ability) = document {
+            if ability.slug == "strike" {
+                ranges.push(ability.range.map(|range| range.to_raw()));
+            }
+        }
+    }
+    assert_eq!(ranges, vec![Some(98304)]);
 }
