@@ -192,6 +192,37 @@ impl CrpgSession {
     fn last_error(&self) -> GString {
         GString::from(self.core.last_error())
     }
+
+    /// Opens a real-time walk session (server AI for turn-based turns); 0 on
+    /// success, otherwise a bridge code. `opened_at` is set exactly as `open`
+    /// sets it.
+    #[func]
+    fn open_v4_walk(
+        &mut self,
+        campaign_dir: GString,
+        encounter_id: GString,
+        player_side: GString,
+        seed: i64,
+    ) -> i64 {
+        let code = self.core.open_v4_walk(
+            &campaign_dir.to_string(),
+            &encounter_id.to_string(),
+            &player_side.to_string(),
+            seed,
+        );
+        let code = code.as_i64();
+        if code == 0 {
+            self.opened_at = Some(Instant::now());
+        }
+        code
+    }
+
+    /// Asks the host to switch the encounter mode (0 turn-based, 1 real
+    /// time); 0 when the request was sent, otherwise a bridge code.
+    #[func]
+    fn request_mode(&mut self, mode: i64) -> i64 {
+        self.core.request_mode(mode).as_i64()
+    }
 }
 
 /// An immutable snapshot of one view revision.
@@ -333,6 +364,20 @@ impl CrpgView {
             .iter()
             .map(|receipt| dictionary(receipt.entries()))
             .collect()
+    }
+
+    /// Movement-pool points left per row, parallel to `net_ids`, -1 when
+    /// undisclosed.
+    #[func]
+    fn movement(&self) -> PackedInt64Array {
+        PackedInt64Array::from(self.view.movement())
+    }
+
+    /// Movement-pool maximum per row, parallel to `net_ids`, -1 when
+    /// undisclosed.
+    #[func]
+    fn movement_max(&self) -> PackedInt64Array {
+        PackedInt64Array::from(self.view.movement_max())
     }
 }
 

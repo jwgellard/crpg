@@ -450,6 +450,18 @@ GDExtension surface. v2 keeps every byte and behaviour.
   `authority::v4::ai_tests`, under a `tests` directory so K31's core scan
   skips it).
 
+### Walk-then-fight sessions (T157e)
+
+- **The shell (T157f).** `CrpgSession` gains `open_v4_walk` (arguments and
+  `opened_at` exactly as `open_v4_rt`) and `request_mode`, and `CrpgView`
+  gains `movement` and `movement_max`, each making one core or view call
+  and nothing else: the core owns every rule, the shell converts values.
+  `adventure_session.gd` proves them against `campaigns/demo/adventure`
+  (the five open codes 20, 3, 24, 25 and 0 then 2; the readout `[6, 6, -1]`;
+  the mode request through the AI's turn to the hero's; closed is 1) with
+  the plain `open_v4_rt` open as its control (readout `-1`, the request
+  refused 17).
+
 ## Smoothing (T049a)
 
 `core/smooth.rs` interpolates disclosed positions for drawing only. It is
@@ -562,3 +574,4 @@ Agent log:
 - 2026-11-22 (UTC) · claude-code/sonnet-5.5 + T156c · Added the `Pick.gd` and `Feedback.gd` bullets to the Client section (click-to-attack by ray, and event-driven bars, numbers and flash) and named the `combat.gd` gate, as the approved T156c contract requires.
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156a · Added the "Server AI sessions (T156a)" subsection: the opt-in `open_v4_ai` open, its `ServerAiHook` stage, pacing, side numbering and the `crpg-ai` edge, including that a Strike ends the fixture turn so the AI's whole turn is one step.
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156b · Changed the `Main.gd` bullet from `open` to `open_v4_ai` (the shell's new thin wrapper), so the default scene's enemy is the server's AI, as the approved T156b contract requires.
+- 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157f · Added the shell paragraph under a "Walk-then-fight sessions (T157e)" heading, which T157e's commit did not write, so the four new `#[func]`s and their engine gate are described; the rest of that subsection is still T157e's to add.
