@@ -305,6 +305,22 @@ bridge, and the scene decides no rule (ADR-0033 §14).
   engine gate: P1-P6 (pick, attack, input, source scan), F1-F8 (bars, numbers,
   flash, revision gate, placement) against fakes, then L1-L4 against the real
   `Main.tscn` session; exit 3 when the open fails.
+- **The adventure scene (T157g).** `scenes/Adventure.tscn`
+  (`Godot4 --path apps/client res://scenes/Adventure.tscn`) is `Walk.tscn` plus
+  `Pick`, `Feedback` and a `MoveHud` label; `scripts/Adventure.gd` extends
+  `Walk.gd` and opens `open_v4_walk` over `campaigns/demo/adventure`. Walking, a
+  left click on a hero selects it, on the floor moves it and on anyone else calls
+  `request_mode(0)` (the host switches at the next round, and also by itself when a
+  hero comes near the Goblin); a right click halts. In a fight (`active() != 0`) a
+  left click on your own hero only selects it, on anyone else submits the first
+  option against it through `Pick.attack`, and on the floor declares a move
+  (`declare_move`); a right click does nothing. `selected` follows the turn head and
+  `MoveLabel` shows `Movement: <now> / <max>` from `movement()` and
+  `movement_max()`, hidden outside a fight. Pick's own handler is switched off in
+  `_ready` and the scene routes clicks itself. The client checks no side, reach,
+  distance or allowance; the host refuses and the refusal reaches the HUD log as a
+  receipt. `tests/adventure.gd` is the local engine gate (AD1-AD10) and exits 3
+  when the open fails; `Main.tscn` stays the default scene.
 
 ## Protocol v4 sessions (T151)
 
@@ -616,3 +632,4 @@ Agent log:
 - 2026-11-22 (UTC) · claude-code/claude-sonnet-5-5 + T156b · Changed the `Main.gd` bullet from `open` to `open_v4_ai` (the shell's new thin wrapper), so the default scene's enemy is the server's AI, as the approved T156b contract requires.
 - 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157f · Added the shell paragraph under a "Walk-then-fight sessions (T157e)" heading, which T157e's commit did not write, so the four new `#[func]`s and their engine gate are described; the rest of that subsection is still T157e's to add.
 - 2026-11-28 (UTC) · opencode-go/muse-spark-1.3-contributor + T157e docs · Wrote the missing T157e subsection text (the walk open, the movement pool, the mode request, the readout, Readings 5–8) under the heading T157f created, leaving T157f's shell paragraph byte for byte.
+- 2026-11-28 (UTC) · claude-code/claude-sonnet-5-5 + T157g · Added the adventure-scene bullet to the Client section: the walk and fight click routing, the movement readout, `Pick`'s handler switched off in `_ready`, and the `adventure.gd` gate.
